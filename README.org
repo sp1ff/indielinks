@@ -1,0 +1,24 @@
+#+TITLE: indielinks
+#+DESCRIPTION: Bookmarks in the Fediverse
+#+AUTHOR: Michael Herstine
+#+EMAIL: sp1ff@pobox.com
+#+DATE: <2024-12-26 Thu 11:20>
+#+AUTODATE: t
+#+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
+#+STARTUP: overview
+
+* Introduction
+
+Indielinks brings [[https://web.archive.org/web/20080906021806/http://delicious.com/][del.icio.us]]-style bookmarks to the [[https://en.wikipedia.org/wiki/Fediverse][Fediverse]].
+* License
+
+Indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.html][GPL v3.0]].
+* Pre-requisites
+
+At thish time, Indielinks is only available as source. Therefore, the Rust [[https://rustup.rs/][toolchain]] is required. To run Indielinks locally, you'll either need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or [[https://www.docker.com/][Docker]] (to pull run ScyllaDB images). To run Indielinks in AWS, you'll need an AWS account.
+* Installation
+
+Coming.
+* Status & Roadmap
+
+I've done some prototyping (see the =prototype= branch), but this is first code. I plan on building-out the documentation quite a bit beyond what's available now, starting here.
