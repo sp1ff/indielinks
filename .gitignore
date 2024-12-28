@@ -1,3 +1,4 @@
 .old-files
 Cargo.lock
 hello-scylla
+target

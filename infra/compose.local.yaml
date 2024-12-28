@@ -1,0 +1,40 @@
+# Docker Compose file enabling local development for indielinks.
+
+# At this point, it just stands-up a local, three-node ScyllaDB
+# cluster. In particular, the indielinks binary is intended to be run
+# locally on "bare metal" (i.e. not in a Docker container). I'll
+# containerize it at some point, probably when I move from EC2 to ECS
+# in the (AWS) cloud, at which point I may add it here.
+
+name: indielinks
+
+services:
+
+  scylla-node-1:
+    container_name: scylla-node-1
+    image: scylladb/scylla:latest
+    command: --smp 1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt # always_use_lwt?
+    ports:
+      - 9042:9042 # Cassandra native protocol
+      - 8042:8042 # Alternator port
+
+  scylla-node-2:
+    container_name: scylla-node-2
+    image: scylladb/scylla:latest
+    command: --smp 1 --seeds=scylla-node-1  --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt
+    ports:
+      - 9043:9042 # Cassandra native protocol
+      - 8043:8042 # Alternator port
+    depends_on:
+      - scylla-node-1
+
+  scylla-node-3:
+    container_name: scylla-node-3
+    image: scylladb/scylla:latest
+    command: --smp 1 --seeds=scylla-node-1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt
+    ports:
+      - 9044:9042 # Cassandra native protocol
+      - 8044:8042 # Alternator port
+    depends_on:
+      - scylla-node-1
+

@@ -22,6 +22,11 @@
 //! indielinks is a federated bookmarking service that supports [ActivityPub].
 //!
 //! [ActivityPub]: https://www.w3.org/TR/activitypub/#server-to-server-interactions
+//!
+//! Right now, the library crate has the same name as the binary, meaning that `rustdoc` will
+//! ignore the binary create.
+
+use indielinks::storage::Backend as StorageBackend;
 
 use axum::{
     extract::State,
@@ -29,6 +34,7 @@ use axum::{
     Router,
 };
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
+use either::Either;
 use libc::{
     close, dup, exit, fork, getdtablesize, getpid, lockf, open, setsid, umask, write, F_TLOCK,
 };
@@ -50,6 +56,7 @@ use tracing_subscriber::{
     layer::SubscriberExt,
     Layer, Registry,
 };
+use url::Url;
 
 use std::{
     ffi::CString,
@@ -129,6 +136,8 @@ pub enum Error {
     PrometheusExporter {
         source: opentelemetry_sdk::metrics::MetricError,
     },
+    #[snafu(display("Failed to connect to SycllaDB: {source}"))]
+    SycllaFailure { source: indielinks::scylla::Error },
     #[snafu(display("Failed to fork the indielinks process a second time: errno={errno}"))]
     SecondFork { errno: errno::Errno },
     #[snafu(display("Failed to set the tracing subscriber: {source}"))]
@@ -199,14 +208,52 @@ impl Opts {
     }
 }
 
-/// Indielinks configuration, version one
+/// Indielinks datastore configuration
+///
+/// I want to hide the details of the backing datastore from application code to the greatest extent
+/// possible; even at the outset of the project, I'm torn between ScyllaDB & DynamoDB. The idea here
+/// is that most of indielinks will write to a generic API (albeit one that will likely encode the
+/// permitted styles of data access), but that at startup, a particular *implementation* of that API
+/// will be chosen, according to configuration. This configuration.
 // Nb that we can only deserialize (i.e. not serialize) due to the presence of secrets in the
 // struct
 #[derive(Clone, Debug, Deserialize)]
+pub enum StorageConfig {
+    /// Use ScyllaDB/CQL interface
+    Scylla {
+        /// ScyllaDB credentials, if authentication is to be used
+        credentials: Option<(SecretString, SecretString)>,
+        /// ScyllaDB hosts; specify as "host:port"
+        hosts: Vec<String>,
+    },
+    /// Use DyanmoDB or Scylla over the Alternator interface
+    Dynamo {
+        /// AWS credentials: key ID & secret key; you'll pretty-much always need to specify these
+        /// when running against DDB, but one could be talking to a local SycllaDB over the
+        /// Alternator interface locally and have the cluster be open
+        credentials: Option<(SecretString, SecretString)>,
+        /// You can find DynamoDB in a few ways. If you're truly talking to DynamoDB in AWS, you can
+        /// give a region. You can also specify an URL (like
+        /// `https://dynamodb.us-west-2.amazonaws.com`). If you're talking to ScyllaDB over the
+        /// Alternator interface, we're going to have to handle load-balancing on the client-side,
+        /// so specify more than one.
+        #[serde(with = "either::serde_untagged")]
+        location: Either<String, Vec<Url>>,
+    },
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        StorageConfig::Scylla {
+            credentials: None,
+            hosts: vec![String::from("localhost:9042")],
+        }
+    }
+}
+
+/// Indielinks configuration, version one
+#[derive(Clone, Debug, Deserialize)]
 struct ConfigV1 {
-    /// ScyllaDB credentials, if authentication is to be used
-    #[serde(rename = "scylla-credentials")]
-    _scylla_credentials: Option<(SecretString, SecretString)>,
     /// Log file
     #[serde(rename = "log-file")]
     log_file: PathBuf,
@@ -220,6 +267,7 @@ struct ConfigV1 {
     // See note above RE `SocketAddr`.
     #[serde(rename = "private-address")]
     private_address: String,
+    storage_config: StorageConfig,
 }
 
 impl ConfigV1 {
@@ -234,10 +282,10 @@ impl ConfigV1 {
 impl Default for ConfigV1 {
     fn default() -> Self {
         ConfigV1 {
-            _scylla_credentials: None,
             log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(),
-            public_address: String::from("0.0.0.0:6666"),
-            private_address: String::from("127.0.0.1:6667"),
+            public_address: String::from("0.0.0.0:20673"),
+            private_address: String::from("127.0.0.1:48351"),
+            storage_config: StorageConfig::default(),
         }
     }
 }
@@ -411,6 +459,7 @@ fn configure_logging(logopts: &LogOpts, logfile: &Path) -> Result<Option<mpsc::S
 // Not sure this is going to stay here.
 pub struct Indielinks {
     pub registry: prometheus::Registry,
+    pub storage: Box<dyn StorageBackend + Send + Sync>,
 }
 
 async fn otel_middleware(
@@ -460,8 +509,9 @@ async fn metrics(State(state): State<Arc<Indielinks>>) -> String {
     String::from_utf8(result).expect("Failed to encode Prom metrics")
 }
 
-async fn dev() -> &'static str {
-    "Not implemented"
+async fn dev(State(state): State<Arc<Indielinks>>) -> String {
+    // Work in progress
+    format!("{:#?}", state.storage.user_for_name("sp1ff").await)
 }
 
 /// Make the [Router] that will be accessible to the world
@@ -483,6 +533,22 @@ fn make_local_router(state: Arc<Indielinks>) -> Router {
         .with_state(state.clone())
 }
 
+pub async fn select_storage(
+    config: &StorageConfig,
+) -> Result<Box<dyn StorageBackend + Send + Sync>> {
+    match config {
+        StorageConfig::Scylla { credentials, hosts } => Ok(Box::new(
+            indielinks::scylla::Session::new(hosts, credentials)
+                .await
+                .context(SycllaFailureSnafu)?,
+        )),
+        StorageConfig::Dynamo {
+            credentials: _,
+            location: _,
+        } => todo!("DynamoDB is not yet supported"),
+    }
+}
+
 /// Serve `indielinks` API requests
 async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
     // Produce a future which can be used to signal graceful shutdown, below.
@@ -502,8 +568,12 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
 
     // Loop forever, handling SIGHUPs, until asked to terminate.
     loop {
+        let storage =
+            select_storage(&cfg.storage_config).await.unwrap(/* TODO(sp1ff): handle me! */);
+
         let state = Arc::new(Indielinks {
             registry: registry.clone(),
+            storage,
         });
 
         let world_nfy = Arc::new(Notify::new());

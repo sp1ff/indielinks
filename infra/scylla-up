@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -ex
+docker compose -f compose.local.yaml up -d
+nnodes=$(docker exec -it scylla-node-1 nodetool status|grep -F UN|wc -l)
+while [ ${nnodes} -ne 3 ]; do
+    sleep 0.5
+    nnodes=$(docker exec -it scylla-node-1 nodetool status|grep -F UN|wc -l)
+done
+docker cp indielinks.cql scylla-node-1:/indielinks.cql
+docker cp dev-charge.cql scylla-node-1:/dev-charge.cql
+docker exec -i scylla-node-1 cqlsh -f /indielinks.cql
+docker exec -i scylla-node-1 cqlsh -f /dev-charge.cql

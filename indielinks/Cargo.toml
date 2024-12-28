@@ -4,20 +4,31 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
+async-trait = "0.1.83"
 axum = { version = "0.7.9", features = ["tracing"] }
+chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["cargo", "env"] }
+either = { version = "1.13.0", features = ["serde"] }
+enum-map = "2.7.3"
 errno = "0.3.10"
+futures = "0.3.31"
+itertools = "0.13.0"
 lazy_static = "1.5.0"
 libc = "0.2.169"
 opentelemetry = "0.27.1"
 opentelemetry-prometheus = "0.27.0"
 opentelemetry_sdk = "0.27.1"
+picky = "6.3.0"
 prometheus = "0.13.4"
+scylla = { version = "0.15.1", features = ["chrono-04"] }
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.216", features = ["derive"] }
+serde_dynamo = { version = "4.2.14", features = ["aws-sdk-dynamodb+1"] }
 snafu = "0.8.5"
+tap = "1.0.1"
 tokio = { version = "1.42.0", features = ["rt-multi-thread", "signal", "sync"] }
 toml = "0.8.19"
 tower-http = { version = "0.6.2", features = ["auth", "cors", "set-header", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
+url = { version = "2.5.4", features = ["serde"] }

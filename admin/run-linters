@@ -1,0 +1,13 @@
+#!/bin/bash
+set -x
+
+if ! rg -t rust -g '!.old-files' -g '!hello-scylla' 'TODO|TOOD|LATER|IN-?PROGRESS|\\todo|todo!|panic!|dbg!'; then
+    echo "You have TODO-s"
+    # TODO(sp1ff): make this fatal
+    # exit 1
+fi
+
+set -e
+cargo clippy -- --no-deps -Dwarnings
+RUSTDOCFLAGS=-Dwarnings cargo doc
+

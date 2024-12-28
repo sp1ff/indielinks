@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -ex
+docker compose -f compose.local.yaml down
