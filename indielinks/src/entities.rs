@@ -388,21 +388,23 @@ impl SerializeValue for UserApiKey {
 mod serde_apikey {
     use super::*;
     use serde::{Deserializer, Serializer};
+    use serde_bytes::ByteBuf;
 
     pub fn serialize<S: Serializer>(
         api_key: &SecretSlice<u8>,
         ser: S,
     ) -> StdResult<S::Ok, S::Error> {
         use secrecy::ExposeSecret;
-        <Vec<u8> as serde::Serialize>::serialize(&api_key.expose_secret().into(), ser)
+        <ByteBuf as serde::Serialize>::serialize(&ByteBuf::from(api_key.expose_secret()), ser)
     }
 
     pub fn deserialize<'de, D>(de: D) -> StdResult<SecretSlice<u8>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        <Vec<u8> as serde::Deserialize>::deserialize(de)
+        <ByteBuf as serde::Deserialize>::deserialize(de)
             .map_err(mk_serde_de_err::<'de, D>)?
+            .pipe(|x| x.into_vec())
             .conv::<SecretSlice<u8>>()
             .pipe(Ok)
     }

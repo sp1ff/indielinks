@@ -15,4 +15,22 @@
 
 //! # indielinks
 //!
-//! General documentation goes here.
+//! General (i.e. not documenting a particular struct or a method) documentation goes here. It's
+//! really just a grab bag at this point; I'll polish it after collecting some content.
+//!
+//! ## The Data Store
+//!
+//! Some might be surprised at my choice of ScyllaDB and DynamoDB. I admit, I didn't think it
+//! through very deeply; it's just that in 2024 I think we're past the point where a relational
+//! database should be the default answer when you need to write-down some state. A NoSQL
+//! wide-column store is pretty-much my default solution, and it's only when & if I discover during
+//! design that I truly can't wriggle-out of joins, or referential integrity, or full-blow ACID
+//! transactions that I change to a RDBMS.
+//!
+//! indielink's data isn't particularly relational in nature, so DynamoDB was my "go to" answer.
+//! That said, a design goal for me is to enable indielinks to be run in a wide variety of
+//! configurations. If you want to run it as a daemon on bare metal in your house, I'll support
+//! that. If you want to run a containerized cluster in the cloud, I'll support that, too.
+//! I added ScyllaDB to support the local case: you can install & run ScyllaDB locally.
+//! The choice of ScyllaDB was also motivated by their "Alternator" interface, which allows
+//! me to talk to it via the DynamoDB API.

@@ -45,8 +45,10 @@ create index on users (username);
 /* All of my queries for tags will include the user ID, so I want to
    incorporate that into the partition key to prevent
    full-table/cluster scans. Using the tag id as a clustering key is a
-   bit of an experiment, but ought to allow me to grab all of a user's
-   keys in one fell swoop. */
+   bit of an experiment. I have to include it somewhere in order to
+   have the primary key reflect identity in this table, but it also
+   ought to allow me to grab all of a user's keys in one fell swoop.
+   */
 create table tags (
   id bigint,
   user_id bigint,
@@ -80,6 +82,7 @@ create table tags (
    the first_update & last_update columns in the user channel to
    bound my search. */
 create table posts (
+  id bigint,
   url ascii,
   user_id bigint,
   posted timestamp,
@@ -89,5 +92,5 @@ create table posts (
   tags set<bigint>,
   public boolean,
   unread boolean,
-  PRIMARY KEY ((user_id, day), posted)
-) with clustering order by (posted desc);
+  PRIMARY KEY ((user_id, day), id)
+) with clustering order by (id desc);

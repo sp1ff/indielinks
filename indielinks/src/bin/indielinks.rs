@@ -116,6 +116,8 @@ pub enum Error {
         pth: PathBuf,
         source: toml::de::Error,
     },
+    #[snafu(display("Failed to connect to DynamoDB: {source}"))]
+    Dynamo { source: indielinks::dynamodb::Error },
     #[snafu(display("Failed to parse RUST_LOG: {source}"))]
     EnvFilter {
         source: tracing_subscriber::filter::FromEnvError,
@@ -137,7 +139,7 @@ pub enum Error {
         source: opentelemetry_sdk::metrics::MetricError,
     },
     #[snafu(display("Failed to connect to SycllaDB: {source}"))]
-    SycllaFailure { source: indielinks::scylla::Error },
+    Syclla { source: indielinks::scylla::Error },
     #[snafu(display("Failed to fork the indielinks process a second time: errno={errno}"))]
     SecondFork { errno: errno::Errno },
     #[snafu(display("Failed to set the tracing subscriber: {source}"))]
@@ -540,12 +542,16 @@ pub async fn select_storage(
         StorageConfig::Scylla { credentials, hosts } => Ok(Box::new(
             indielinks::scylla::Session::new(hosts, credentials)
                 .await
-                .context(SycllaFailureSnafu)?,
+                .context(SycllaSnafu)?,
         )),
         StorageConfig::Dynamo {
-            credentials: _,
-            location: _,
-        } => todo!("DynamoDB is not yet supported"),
+            credentials,
+            location,
+        } => Ok(Box::new(
+            indielinks::dynamodb::Client::new(location, credentials)
+                .await
+                .context(DynamoSnafu)?,
+        )),
     }
 }
 
@@ -568,8 +574,7 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
 
     // Loop forever, handling SIGHUPs, until asked to terminate.
     loop {
-        let storage =
-            select_storage(&cfg.storage_config).await.unwrap(/* TODO(sp1ff): handle me! */);
+        let storage = select_storage(&cfg.storage_config).await?;
 
         let state = Arc::new(Indielinks {
             registry: registry.clone(),

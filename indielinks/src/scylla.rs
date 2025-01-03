@@ -150,7 +150,7 @@ impl Session {
             // Ho-kay: here's the deal. We list here all the prepared statements we want to use, in
             // the same order as [PreparedStatements].
             "select id,username,discoverable,display_name,summary,pub_key_pem,priv_key_pem,api_key,first_update,last_update from users where username=?",
-            "insert into posts (url, user_id, posted, day, title) values (?,?,?,?,?) if not exists",
+            "insert into posts (id,url,user_id,posted,day,title,notes,tags,public,unread) values (?,?,?,?,?,?,?,?,?,?) if not exists",
             "select posted from posts where user_id=? limit 1 allow filtering",
             "select url,title,notes,tags,user_id,posted from posts where user_id=? limit ? allow filtering",
             "select url,title,notes,tags,user_id,posted from posts where user_id=? and tags contains ? limit ? allow filtering",

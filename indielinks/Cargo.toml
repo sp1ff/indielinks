@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1.83"
+aws-config = { version = "1.5.12", features = ["behavior-version-latest"] }
+aws-sdk-dynamodb = "1.57.0"
 axum = { version = "0.7.9", features = ["tracing"] }
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["cargo", "env"] }
@@ -23,6 +25,7 @@ prometheus = "0.13.4"
 scylla = { version = "0.15.1", features = ["chrono-04"] }
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.216", features = ["derive"] }
+serde_bytes = { version = "0.11.15", features = ["alloc"] }
 serde_dynamo = { version = "4.2.14", features = ["aws-sdk-dynamodb+1"] }
 snafu = "0.8.5"
 tap = "1.0.1"
