@@ -26,7 +26,7 @@
 //! Right now, the library crate has the same name as the binary, meaning that `rustdoc` will
 //! ignore the binary create.
 
-use indielinks::storage::Backend as StorageBackend;
+use indielinks::{http::Indielinks, storage::Backend as StorageBackend, webfinger::webfinger};
 
 use axum::{
     extract::State,
@@ -270,6 +270,7 @@ struct ConfigV1 {
     #[serde(rename = "private-address")]
     private_address: String,
     storage_config: StorageConfig,
+    domain: String,
 }
 
 impl ConfigV1 {
@@ -288,6 +289,7 @@ impl Default for ConfigV1 {
             public_address: String::from("0.0.0.0:20673"),
             private_address: String::from("127.0.0.1:48351"),
             storage_config: StorageConfig::default(),
+            domain: String::from("indiemark.sh"),
         }
     }
 }
@@ -457,13 +459,6 @@ fn configure_logging(logopts: &LogOpts, logfile: &Path) -> Result<Option<mpsc::S
     Ok(tx)
 }
 
-/// Application state available to all handlers
-// Not sure this is going to stay here.
-pub struct Indielinks {
-    pub registry: prometheus::Registry,
-    pub storage: Box<dyn StorageBackend + Send + Sync>,
-}
-
 async fn otel_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -521,6 +516,7 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
     Router::new()
         .route("/healthcheck", get(healthcheck))
         .route("/metrics", get(metrics))
+        .route("/.well-known/webfinger", get(webfinger))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(otel_middleware))
         .with_state(state)
@@ -579,6 +575,7 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
         let state = Arc::new(Indielinks {
             registry: registry.clone(),
             storage,
+            domain: cfg.domain.clone(),
         });
 
         let world_nfy = Arc::new(Notify::new());

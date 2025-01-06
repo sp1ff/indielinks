@@ -1,1 +1,7 @@
 THANKS                                                           -*- outline -*-
+
+  - Thanks to the following authors that got me started on implementing ActivityPub
+    + Kiran Gopinathan for his article "How I wrote an Activitypub Server in OCaml: Lessons Learnt, Weekends Lost"
+      <https://gopiandcode.uk/logs/log-writing-activitypub.html>
+    + Robb Knight for his article "Building an ActivityPub Server"
+      <https://rknight.me/blog/building-an-activitypub-server/>

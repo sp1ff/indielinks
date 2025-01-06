@@ -22,6 +22,7 @@ opentelemetry-prometheus = "0.27.0"
 opentelemetry_sdk = "0.27.1"
 picky = "6.3.0"
 prometheus = "0.13.4"
+regex = "1.11.1"
 scylla = { version = "0.15.1", features = ["chrono-04"] }
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.216", features = ["derive"] }

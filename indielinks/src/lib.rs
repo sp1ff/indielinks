@@ -18,7 +18,10 @@
 //! Right now, the library crate has the same name as the binary, meaning that `rustdoc` will
 //! ignore the binary create.
 pub mod _docs;
+pub mod acct;
 pub mod dynamodb;
 pub mod entities;
+pub mod http;
 pub mod scylla;
 pub mod storage;
+pub mod webfinger;
