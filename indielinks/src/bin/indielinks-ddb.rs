@@ -40,6 +40,7 @@ use aws_sdk_dynamodb::{
 };
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, ArgMatches, Command};
 use either::Either;
+use indielinks::util::exactly_two;
 use itertools::Itertools;
 use snafu::{prelude::*, Backtrace};
 use tap::Pipe;
@@ -100,50 +101,6 @@ type Result<T> = std::result::Result<T, Error>;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                         Implement parsing a pair of String for `clap`                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug)]
-struct ExactlyTwoError<T: std::iter::Iterator> {
-    #[allow(clippy::type_complexity)]
-    cause: Option<Either<T::Item, (T::Item, T::Item, T::Item)>>,
-}
-
-impl<T: std::iter::Iterator> Display for ExactlyTwoError<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.cause {
-            Some(either) => match either {
-                Either::Left(_one) => write!(f, "ExactlyTwoError: One element"),
-                Either::Right(_three) => write!(f, "ExactlyTwoError: Three or more elements"),
-            },
-            None => write!(f, "ExactlyTwoError: no elements"),
-        }
-    }
-}
-
-impl<T: std::iter::Iterator> ExactlyTwoError<T> {
-    #[allow(clippy::type_complexity)]
-    pub fn new(cause: Option<Either<T::Item, (T::Item, T::Item, T::Item)>>) -> ExactlyTwoError<T> {
-        ExactlyTwoError { cause }
-    }
-}
-
-fn exactly_two<T>(mut iter: T) -> std::result::Result<(T::Item, T::Item), ExactlyTwoError<T>>
-where
-    T: std::iter::Iterator,
-{
-    // sample code at https://docs.rs/itertools/latest/src/itertools/lib.rs.html#4050-4064
-    match iter.next() {
-        Some(first) => match iter.next() {
-            Some(second) => match iter.next() {
-                Some(third) => Err(ExactlyTwoError::<T>::new(Some(Either::Right((
-                    first, second, third,
-                ))))),
-                None => Ok((first, second)),
-            },
-            None => Err(ExactlyTwoError::<T>::new(Some(Either::Left(first)))),
-        },
-        None => Err(ExactlyTwoError::<T>::new(None)),
-    }
-}
 
 /// Newtype to work around Rust's orphan traits rule
 #[derive(Clone, Debug)]
@@ -309,8 +266,9 @@ async fn create_users(client: &Client) -> Result<()> {
                 name: "id".to_string(),
             })?]))
         .global_secondary_indexes(
+            //
             GlobalSecondaryIndex::builder()
-                .index_name("username")
+                .index_name("users_by_username")
                 .key_schema(
                     KeySchemaElement::builder()
                         .attribute_name("username")
@@ -352,13 +310,16 @@ async fn create_tags(client: &Client) -> Result<()> {
                     name: "user_id".to_string(),
                 })?,
             KeySchemaElement::builder()
-                .attribute_name("id")
+                .attribute_name("name")
                 .key_type(KeyType::Range)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "id".to_string(),
+                    name: "name".to_string(),
                 })?,
-        ]));
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu);
     debug!("create tags: {:#?}", out);
     Ok(())
 }
@@ -381,7 +342,7 @@ async fn create_posts(client: &Client) -> Result<()> {
             table_attr!("notes", S),
             // I guess I want this to be NS -- Number Set; not sure what to set this to...
             table_attr!("tags", S),
-            table_attr!("public", S),
+            table_attr!("public", N),
             table_attr!("unread", N),
         ]))
         .set_key_schema(Some(vec![
@@ -393,13 +354,16 @@ async fn create_posts(client: &Client) -> Result<()> {
                     name: "PK".to_string(),
                 })?,
             KeySchemaElement::builder()
-                .attribute_name("id")
+                .attribute_name("url")
                 .key_type(KeyType::Range)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "id".to_string(),
+                    name: "url".to_string(),
                 })?,
-        ]));
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu);
     debug!("create posts: {:#?}", out);
     Ok(())
 }

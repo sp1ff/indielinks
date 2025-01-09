@@ -19,9 +19,11 @@
 //! ignore the binary create.
 pub mod _docs;
 pub mod acct;
+pub mod delicious;
 pub mod dynamodb;
 pub mod entities;
 pub mod http;
 pub mod scylla;
 pub mod storage;
+pub mod util;
 pub mod webfinger;

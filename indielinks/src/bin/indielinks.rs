@@ -24,9 +24,12 @@
 //! [ActivityPub]: https://www.w3.org/TR/activitypub/#server-to-server-interactions
 //!
 //! Right now, the library crate has the same name as the binary, meaning that `rustdoc` will
-//! ignore the binary create.
+//! ignore the binary create. I should probably rename this file.
 
-use indielinks::{http::Indielinks, storage::Backend as StorageBackend, webfinger::webfinger};
+use indielinks::{
+    delicious::make_router, http::Indielinks, storage::Backend as StorageBackend,
+    webfinger::webfinger,
+};
 
 use axum::{
     extract::State,
@@ -517,6 +520,7 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
         .route("/healthcheck", get(healthcheck))
         .route("/metrics", get(metrics))
         .route("/.well-known/webfinger", get(webfinger))
+        .nest("/api/v1", make_router(state.clone()))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(otel_middleware))
         .with_state(state)

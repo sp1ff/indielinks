@@ -44,17 +44,20 @@ create index on users (username);
 
 /* All of my queries for tags will include the user ID, so I want to
    incorporate that into the partition key to prevent
-   full-table/cluster scans. Using the tag id as a clustering key is a
-   bit of an experiment. I have to include it somewhere in order to
-   have the primary key reflect identity in this table, but it also
-   ought to allow me to grab all of a user's keys in one fell swoop.
-   */
+   full-table/cluster scans. The "id" column may seem redundant, but
+   it's important to tracking tags across deletions! Imagine a user
+   creates a tag "foo" and tags many posts with it. Then, they delete
+   tag "foo", and re-add. All the old posts, in the absence of a
+   different id field, will think they're still tagged by the *old*
+   "foo, but the counts will reflect only the new "foo"! Better, I
+   think, to treat them as two different tags that happen to have the
+   same name/label. */
 create table tags (
   id uuid,
-  user_id bigint,
+  user_id uuid,
   name text,
   count int,
-  PRIMARY KEY (user_id, id)
+  PRIMARY KEY (user_id, name)
 );
 
 /* All my queries are by user ID, so I need to incorporate that into
@@ -89,8 +92,8 @@ create table posts (
   day ascii,
   title text,
   notes text,
-  tags set<bigint>,
+  tags set<uuid>,
   public boolean,
   unread boolean,
-  PRIMARY KEY ((user_id, day), id)
-) with clustering order by (id desc);
+  PRIMARY KEY ((user_id, day), url)
+) /* with clustering order by (posted desc) */;

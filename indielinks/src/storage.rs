@@ -17,9 +17,12 @@
 //!
 //! Abstractions for the indielinks storage layer.
 
-use async_trait::async_trait;
+use std::collections::HashSet;
 
-use crate::entities::User;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+
+use crate::entities::{PostUri, User};
 
 #[derive(Debug)]
 pub struct Error {
@@ -47,4 +50,19 @@ pub trait Backend {
     /// Retrieve a [User] instance given a textual username. None means there is no user by that
     /// name.
     async fn user_for_name(&self, name: &str) -> std::result::Result<Option<User>, Error>;
+    /// Add a Post for `user`; return true if a new post was actually created, false if the post
+    /// already existed and `replace` was set to false.
+    #[allow(clippy::too_many_arguments)]
+    async fn add_post(
+        &self,
+        user: &User,
+        replace: bool,
+        uri: &PostUri,
+        title: &str,
+        dt: &DateTime<Utc>,
+        notes: &Option<String>,
+        shared: bool,
+        to_read: bool,
+        tags: &Option<HashSet<String>>,
+    ) -> Result<bool, Error>;
 }

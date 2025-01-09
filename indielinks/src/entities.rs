@@ -20,6 +20,9 @@
 //! I hate these sort of "catch-all" modules named "models" or "entities", but these types are truly
 //! foundational.
 
+use std::{fmt::Display, str::FromStr};
+
+use axum::http::Uri;
 use chrono::{DateTime, Utc};
 use picky::key::{PrivateKey, PublicKey};
 use scylla::{
@@ -95,45 +98,90 @@ fn mk_serde_ser_err<S: serde::Serializer>(err: impl std::error::Error) -> S::Err
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                             UserId                                             //
+//                                          Identifiers                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Opaque user identifier; I make no propmises other than that it makes a good hash key
-// Here, I'm neither refining a native type nor implmenting a third-party crate on a third-party
-// type, I just can't use a primitive type for this...
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(transparent)]
-pub struct UserId(Uuid);
+/// identifier!
+///
+/// # Introduction
+///
+/// Use this to declare a type intended to be used as an opaque identifier for some other sort of entity.
+///
+/// # Background
+///
+/// In a NoSQL world, we can't count on an auto-increment column in our tables to serve as an
+/// opaque identifier. It is instead up to the application developer to assign their own ids.
+/// Depending on the degree of integration with the database, I've seen implementations that assign
+/// ranges of numeric identifiers to distinct nodes in the database (so as to avoid collisions), but
+/// by far the most common approach is simply to move to a UUID (I guess this trades space for ease
+/// of implementation).
+///
+/// I suppose I could have just used [Uuid] to represent this (wrapped in a newtype struct to
+/// impement the ScyllaDB-related interfaces on it)... but I just couldn't bring myself to use the
+/// same type to represent identifiers for users, tags and posts all at the same time.
+///
+/// This macro will define a newtype struct wrapping [Uuid] implementing the traits [Display],
+/// [DeserializeValue] and [SerializeValue]. I thought to use a type alias, but those don't
+/// work very well with newtype structs (in particular, you can't access the type's constructor
+/// through the alias (not sure why)).
+///
+/// As an aside, [Display] will format the uuid in the form of an URN with namespace identifier
+/// given by the corresponding macro argument.
+macro_rules! define_id {
+    ($type_name:ident, $nid:expr) => {
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+        #[serde(transparent)]
+        pub struct $type_name(Uuid);
+        impl $type_name {
+            pub fn new() -> $type_name {
+                $type_name(Uuid::new_v4())
+            }
+            pub fn from_raw_string(s: &str) -> StdResult<$type_name, uuid::Error> {
+                Ok($type_name(Uuid::parse_str(s)?))
+            }
+            pub fn to_raw_string(&self) -> String {
+                format!("{}", self.0.as_simple())
+            }
+        }
+        impl Default for $type_name {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+        impl Display for $type_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "urn:{}:{}", $nid, self.0.as_simple())
+            }
+        }
+        // Arggghhhh... the derive macro doesn't work with newtype structs.
+        impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for $type_name {
+            fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+                Uuid::type_check(typ)
+            }
+            fn deserialize(
+                typ: &'metadata ColumnType<'metadata>,
+                v: Option<FrameSlice<'frame>>,
+            ) -> StdResult<Self, DeserializationError> {
+                Ok(Self(<Uuid as DeserializeValue>::deserialize(typ, v)?))
+            }
+        }
 
-impl Display for UserId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.as_simple())
-    }
+        // Again, the derive macro doesn't work with newtype structs.
+        impl SerializeValue for $type_name {
+            fn serialize<'b>(
+                &self,
+                typ: &ColumnType<'_>,
+                writer: CellWriter<'b>,
+            ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+                SerializeValue::serialize(&self.0, typ, writer)
+            }
+        }
+    };
 }
 
-// Arggghhhh... the derive macro doesn't work with newtype structs.
-impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserId {
-    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        Uuid::type_check(typ)
-    }
-    fn deserialize(
-        typ: &'metadata ColumnType<'metadata>,
-        v: Option<FrameSlice<'frame>>,
-    ) -> StdResult<Self, DeserializationError> {
-        Ok(Self(<Uuid as DeserializeValue>::deserialize(typ, v)?))
-    }
-}
-
-// Again, the derive macro doesn't work with newtype structs.
-impl SerializeValue for UserId {
-    fn serialize<'b>(
-        &self,
-        typ: &ColumnType<'_>,
-        writer: CellWriter<'b>,
-    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        SerializeValue::serialize(&self.0, typ, writer)
-    }
-}
+define_id!(UserId, "userid");
+define_id!(TagId, "tagid");
+define_id!(PostId, "postid");
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                            Username                                            //
@@ -162,6 +210,26 @@ impl Username {
                 }
                 .build(),
             )
+    }
+}
+
+impl AsRef<str> for Username {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for Username {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Username::new(s)
+    }
+}
+
+impl Display for Username {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -344,6 +412,12 @@ mod serde_privatekey {
 #[serde(transparent)]
 pub struct UserApiKey(#[serde(with = "serde_apikey")] SecretSlice<u8>);
 
+impl From<Vec<u8>> for UserApiKey {
+    fn from(value: Vec<u8>) -> Self {
+        UserApiKey(value.into())
+    }
+}
+
 impl secrecy::SerializableSecret for UserApiKey {}
 
 impl PartialEq for UserApiKey {
@@ -436,4 +510,84 @@ pub struct User {
     first_update: Option<DateTime<Utc>>,
     // Will be null until the first post
     last_update: Option<DateTime<Utc>>,
+}
+
+impl User {
+    pub fn check_key(&self, key: &UserApiKey) -> bool {
+        use secrecy::ExposeSecret;
+        self.api_key.0.expose_secret() == key.0.expose_secret()
+    }
+    pub fn id(&self) -> UserId {
+        self.id
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            PostUri                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug)]
+pub struct PostUri(Uri);
+
+impl Display for PostUri {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+// Ugh-- need shims to call-out to the http-serde implementations
+pub mod serde_uri {
+    use super::PostUri;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(uri: &PostUri, ser: S) -> Result<S::Ok, S::Error> {
+        http_serde::uri::serialize(&uri.0, ser)
+    }
+
+    pub fn deserialize<'de, D>(de: D) -> Result<PostUri, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(PostUri(http_serde::uri::deserialize(de)?))
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for PostUri {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        type_check!(typ, Ascii, TypeCheckError, "PostUri")
+    }
+    fn deserialize(
+        _: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        v.ok_or(
+            NoFrameSliceSnafu {
+                typ: "PostUri".to_owned(),
+            }
+            .build(),
+        )
+        .map_err(mk_de_err)?
+        .as_slice()
+        .pipe(std::str::from_utf8)
+        .map_err(mk_de_err)?
+        .pipe(Uri::from_str)
+        .map_err(mk_de_err)?
+        .pipe(PostUri)
+        .pipe(Ok)
+    }
+}
+
+impl SerializeValue for PostUri {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        type_check!(typ, Ascii, SerializationError, "PostUri")?;
+        format!("{}", self.0)
+            .as_bytes()
+            .pipe(|x| writer.set_value(x))
+            .map_err(mk_ser_err)?
+            .pipe(Ok)
+    }
 }

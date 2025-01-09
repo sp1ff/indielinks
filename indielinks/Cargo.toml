@@ -7,13 +7,17 @@ edition = "2021"
 async-trait = "0.1.83"
 aws-config = { version = "1.5.12", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1.57.0"
+aws-smithy-runtime-api = { version = "1.7.3", features = ["client"] }
 axum = { version = "0.7.9", features = ["tracing"] }
+base64 = "0.22.1"
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["cargo", "env"] }
 either = { version = "1.13.0", features = ["serde"] }
 enum-map = "2.7.3"
 errno = "0.3.10"
 futures = "0.3.31"
+hex = "0.4.3"
+http-serde = "2.1.1"
 itertools = "0.13.0"
 lazy_static = "1.5.0"
 libc = "0.2.169"
@@ -28,6 +32,7 @@ secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_bytes = { version = "0.11.15", features = ["alloc"] }
 serde_dynamo = { version = "4.2.14", features = ["aws-sdk-dynamodb+1"] }
+serde_qs = { version = "0.13.0", features = ["axum", "tracing"] }
 snafu = "0.8.5"
 tap = "1.0.1"
 tokio = { version = "1.42.0", features = ["rt-multi-thread", "signal", "sync"] }
