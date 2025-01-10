@@ -290,7 +290,7 @@ async fn create_users(client: &Client) -> Result<()> {
         // DynamoDB
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![
-            table_attr!("id", N),
+            table_attr!("id", S),
             table_attr!("username", S),
             table_attr!("discoverable", N),
             table_attr!("display_name", S),
@@ -338,8 +338,8 @@ async fn create_tags(client: &Client) -> Result<()> {
         // DynamoDB
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![
-            table_attr!("id", N),
-            table_attr!("user_id", N),
+            table_attr!("id", S),
+            table_attr!("user_id", S),
             table_attr!("name", S),
             table_attr!("count", N),
         ]))
@@ -372,9 +372,9 @@ async fn create_posts(client: &Client) -> Result<()> {
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![
             table_attr!("PK", S),
-            table_attr!("id", N),
+            table_attr!("id", S),
             table_attr!("url", S),
-            table_attr!("user_id", N),
+            table_attr!("user_id", S),
             table_attr!("posted", N),
             table_attr!("day", S),
             table_attr!("title", S),
@@ -416,7 +416,7 @@ async fn charge_tables(client: &Client) -> Result<()> {
         .put_item()
         .table_name("users")
         .set_item(Some(HashMap::from([
-            ("id".to_string(), AttributeValue::N("1".to_string())),
+            ("id".to_string(), AttributeValue::S("9a1df092cd694c6491f7b8fb4022ea49".to_string())),
             ("username".to_string(), AttributeValue::S("sp1ff".to_string())),
             ("discoverable".to_string(), AttributeValue::Bool(true)),
             ("display_name".to_string(), AttributeValue::S("sp1ff".to_string())),

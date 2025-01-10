@@ -28,7 +28,7 @@ use indielinks;
   first_update exists to help me put a lower bound on a search of a
   user's complete history. */
 create table users (
-  id bigint PRIMARY KEY,
+  id uuid PRIMARY KEY,
   username ascii,
   discoverable boolean,
   display_name text,
@@ -50,7 +50,7 @@ create index on users (username);
    ought to allow me to grab all of a user's keys in one fell swoop.
    */
 create table tags (
-  id bigint,
+  id uuid,
   user_id bigint,
   name text,
   count int,
@@ -82,9 +82,9 @@ create table tags (
    the first_update & last_update columns in the user channel to
    bound my search. */
 create table posts (
-  id bigint,
+  id uuid,
   url ascii,
-  user_id bigint,
+  user_id uuid,
   posted timestamp,
   day ascii,
   title text,

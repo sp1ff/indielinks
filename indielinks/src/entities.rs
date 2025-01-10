@@ -36,6 +36,7 @@ use secrecy::SecretSlice;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace};
 use tap::{conv::Conv, pipe::Pipe};
+use uuid::Uuid;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -98,22 +99,28 @@ fn mk_serde_ser_err<S: serde::Serializer>(err: impl std::error::Error) -> S::Err
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Opaque user identifier; I make no propmises other than that it makes a good hash key
-// Here' I'm neither refining a native type nor implmenting a third-party crate on a third-party
+// Here, I'm neither refining a native type nor implmenting a third-party crate on a third-party
 // type, I just can't use a primitive type for this...
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct UserId(i64);
+pub struct UserId(Uuid);
+
+impl Display for UserId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.as_simple())
+    }
+}
 
 // Arggghhhh... the derive macro doesn't work with newtype structs.
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserId {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        i64::type_check(typ)
+        Uuid::type_check(typ)
     }
     fn deserialize(
         typ: &'metadata ColumnType<'metadata>,
         v: Option<FrameSlice<'frame>>,
     ) -> StdResult<Self, DeserializationError> {
-        Ok(Self(<i64 as DeserializeValue>::deserialize(typ, v)?))
+        Ok(Self(<Uuid as DeserializeValue>::deserialize(typ, v)?))
     }
 }
 
