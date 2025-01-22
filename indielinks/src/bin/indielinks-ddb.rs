@@ -10,7 +10,7 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
 //! # indielinks-ddb
@@ -246,18 +246,7 @@ async fn create_users(client: &Client) -> Result<()> {
         // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
         // DynamoDB
         .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("id", S),
-            table_attr!("username", S),
-            table_attr!("discoverable", N),
-            table_attr!("display_name", S),
-            table_attr!("summary", S),
-            table_attr!("pub_key_pem", S),
-            table_attr!("priv_key_pem", S),
-            table_attr!("api_key", B),
-            table_attr!("first_update", N),
-            table_attr!("last_update", N),
-        ]))
+        .set_attribute_definitions(Some(vec![table_attr!("id", S), table_attr!("username", S)]))
         .set_key_schema(Some(vec![KeySchemaElement::builder()
             .attribute_name("id")
             .key_type(KeyType::Hash)
@@ -299,7 +288,6 @@ async fn create_tags(client: &Client) -> Result<()> {
             table_attr!("id", S),
             table_attr!("user_id", S),
             table_attr!("name", S),
-            table_attr!("count", N),
         ]))
         .set_key_schema(Some(vec![
             KeySchemaElement::builder()
@@ -314,9 +302,22 @@ async fn create_tags(client: &Client) -> Result<()> {
                 .key_type(KeyType::Range)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "name".to_string(),
+                    name: "id".to_string(),
                 })?,
         ]))
+        .global_secondary_indexes(
+            GlobalSecondaryIndex::builder()
+                .index_name("tags_by_id")
+                .set_key_schema(Some(vec![KeySchemaElement::builder()
+                    .attribute_name("id")
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .unwrap()]))
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "username".to_string(),
+                })?,
+        )
         .send()
         .await
         .context(CreateTableSnafu);
@@ -332,18 +333,9 @@ async fn create_posts(client: &Client) -> Result<()> {
         // DynamoDB
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![
-            table_attr!("PK", S),
-            table_attr!("id", S),
-            table_attr!("url", S),
-            table_attr!("user_id", S),
-            table_attr!("posted", N),
-            table_attr!("day", S),
-            table_attr!("title", S),
-            table_attr!("notes", S),
-            // I guess I want this to be NS -- Number Set; not sure what to set this to...
-            table_attr!("tags", S),
-            table_attr!("public", N),
-            table_attr!("unread", N),
+            table_attr!("PK", S), // user#day
+            table_attr!("IK", S), // secondary index PK-- user#url
+            table_attr!("id", S), // sort key (for both)
         ]))
         .set_key_schema(Some(vec![
             KeySchemaElement::builder()
@@ -354,13 +346,35 @@ async fn create_posts(client: &Client) -> Result<()> {
                     name: "PK".to_string(),
                 })?,
             KeySchemaElement::builder()
-                .attribute_name("url")
+                .attribute_name("id")
                 .key_type(KeyType::Range)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "url".to_string(),
+                    name: "id".to_string(),
                 })?,
         ]))
+        .global_secondary_indexes(
+            GlobalSecondaryIndex::builder()
+                .index_name("posts_by_user_and_url")
+                .set_key_schema(Some(vec![
+                    KeySchemaElement::builder()
+                        .attribute_name("IK")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .unwrap(),
+                    KeySchemaElement::builder()
+                        .attribute_name("id")
+                        .key_type(KeyType::Range)
+                        .build()
+                        .context(GenericBuildFailureSnafu {
+                            name: "id".to_string(),
+                        })?,
+                ]))
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "posts_by_user_and_url".to_string(),
+                })?,
+        )
         .send()
         .await
         .context(CreateTableSnafu);

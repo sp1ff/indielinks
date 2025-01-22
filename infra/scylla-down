@@ -1,3 +1,5 @@
 #!/usr/bin/env bash
 set -ex
+here=$(dirname $(realpath $0))
+cd $here
 docker compose -f compose.local.yaml down

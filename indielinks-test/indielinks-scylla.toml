@@ -1,0 +1,8 @@
+version = "1"
+log-file = "indielinks.log"
+public-address = "0.0.0.0:20673"
+private-address = "127.0.0.1:48351"
+domain = "indiemark.sh"
+
+[storage_config.Scylla]
+hosts = ["127.0.0.1:9042"]

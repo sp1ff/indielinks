@@ -10,7 +10,7 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
 //! # indielinks models
@@ -20,11 +20,13 @@
 //! I hate these sort of "catch-all" modules named "models" or "entities", but these types are truly
 //! foundational.
 
-use std::{fmt::Display, str::FromStr};
+use std::{collections::HashSet, fmt::Display, str::FromStr};
 
 use axum::http::Uri;
 use chrono::{DateTime, Utc};
+use lazy_static::lazy_static;
 use picky::key::{PrivateKey, PublicKey};
+use regex::Regex;
 use scylla::{
     deserialize::{DeserializationError, DeserializeValue, FrameSlice, TypeCheckError},
     frame::response::result::ColumnType,
@@ -39,10 +41,15 @@ use secrecy::SecretSlice;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace};
 use tap::{conv::Conv, pipe::Pipe};
+use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("{text} is not a valid `day` for a post"))]
+    BadPostDay { text: String, backtrace: Backtrace },
+    #[snafu(display("{text} is not a valid tag name"))]
+    BadTagname { text: String, backtrace: Backtrace },
     #[snafu(display("{name} is not a valid indielinks username"))]
     BadUsername { name: String },
     #[snafu(display("{col_name} expected type {expected:?}; got {actual:?}"))]
@@ -139,6 +146,8 @@ macro_rules! define_id {
             pub fn from_raw_string(s: &str) -> StdResult<$type_name, uuid::Error> {
                 Ok($type_name(Uuid::parse_str(s)?))
             }
+            // This seems like a landmine; I should probably just store strings in the same way I
+            // display them?
             pub fn to_raw_string(&self) -> String {
                 format!("{}", self.0.as_simple())
             }
@@ -517,8 +526,140 @@ impl User {
         use secrecy::ExposeSecret;
         self.api_key.0.expose_secret() == key.0.expose_secret()
     }
+    pub fn date_of_last_post(&self) -> Option<DateTime<Utc>> {
+        self.last_update
+    }
+    pub fn first_update(&self) -> Option<DateTime<Utc>> {
+        self.first_update
+    }
     pub fn id(&self) -> UserId {
         self.id
+    }
+    pub fn last_update(&self) -> Option<DateTime<Utc>> {
+        self.last_update
+    }
+    pub fn username(&self) -> Username {
+        self.username.clone()
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            TagName                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Following Pinboard conventions, tags may be up to 255 characters in length; the Pinboard [docs]
+/// say "All entities are encoded as UTF-8. In the length limits below, 'characters' means logical
+/// characters rather than bytes." I'm not sure what is meant by "logical characters", but I'm going
+/// to use Unicode graphemes. Tags may not include whitespace. AFAICT, del.icio.us tags could
+/// contain commas, but Pinboard disallows them, so I will, too.
+///
+/// [docs]: https://pinboard.in/api/
+///
+/// Pinboard also provides a feature of "private tags": if the tag begins with an ASCII period, it
+/// is considered private. I model that here, although I haven't decided how to deal with it more
+/// generally.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Tagname(String);
+
+impl std::cmp::PartialOrd for Tagname {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::cmp::Ord for Tagname {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl std::fmt::Display for Tagname {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Tagname {
+    /// Correct-by-construction [Tagname] constructor
+    pub fn new(text: &str) -> Result<Tagname> {
+        [
+            !text.is_empty(),
+            UnicodeSegmentation::graphemes(text, true).count() < 256,
+            !text.contains(char::is_whitespace),
+            !text.contains(','),
+        ]
+        .into_iter()
+        // Ack! Does Rust really not offer the identity operator?
+        .all(|x| x)
+        .then_some(Tagname(text.to_string()))
+        .ok_or(
+            BadTagnameSnafu {
+                text: text.to_string(),
+            }
+            .build(),
+        )
+    }
+    pub fn private(&self) -> bool {
+        self.0.as_bytes()[0] == b'.' // Index is safe
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Tagname {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        String::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        Ok(Self(<String as DeserializeValue>::deserialize(typ, v)?))
+    }
+}
+
+impl SerializeValue for Tagname {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&self.0, typ, writer)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn tagname() {
+        assert!(Tagname::new("").is_err());
+        assert!(Tagname::new("我翻开日记，第一行便写着：“今天晚饭以后，我就无缘无故地觉得有些怕人。”我不知道怕在哪里，可是既然怕人，便躲到屋里，不敢见谁。我越想越觉得奇怪，这里的人，同住了这么多年，他们的脸色本来并不怎样可怕，但近来却时时都换了模样似的，连那小孩子也诡秘地望着我。我想，我自己总没有得罪他们罢？因为从前是不怕的。可是一想到他们那样的眼色，心里就慌起来，似乎随时都要露出牙齿，向我扑来 我便心跳得更厉害，走到门口，看看天色还早，却又不敢出门，生怕有人看见我。于是，只好坐下来，怀疑四壁的缝隙里也藏着窥伺的眼睛。我拿起一本书想看看，却又不知翻到哪里好，觉得每一页上，都仿佛写着“吃人”两个字，阴森森地直扑到我眼前，让我毛骨悚然。").is_err());
+        assert!(Tagname::new("foo bar").is_err());
+        assert!(Tagname::new("foo,bar").is_err());
+        assert!(Tagname::new("aws").is_ok());
+        assert!(Tagname::new("我不知道怕在哪里").is_ok());
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                               Tag                                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, DeserializeRow, Hash, PartialEq)]
+pub struct Tag {
+    id: TagId,
+    user_id: UserId,
+    name: Tagname,
+    count: i32,
+}
+
+impl Tag {
+    pub fn name(&self) -> Tagname {
+        self.name.clone()
+    }
+    pub fn count(&self) -> usize {
+        self.count as usize
     }
 }
 
@@ -526,8 +667,9 @@ impl User {
 //                                            PostUri                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone, Debug)]
-pub struct PostUri(Uri);
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct PostUri(#[serde(with = "serde_uri")] Uri);
 
 impl Display for PostUri {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -537,18 +679,18 @@ impl Display for PostUri {
 
 // Ugh-- need shims to call-out to the http-serde implementations
 pub mod serde_uri {
-    use super::PostUri;
+    use super::Uri;
     use serde::{Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(uri: &PostUri, ser: S) -> Result<S::Ok, S::Error> {
-        http_serde::uri::serialize(&uri.0, ser)
+    pub fn serialize<S: Serializer>(uri: &Uri, ser: S) -> Result<S::Ok, S::Error> {
+        http_serde::uri::serialize(uri, ser)
     }
 
-    pub fn deserialize<'de, D>(de: D) -> Result<PostUri, D::Error>
+    pub fn deserialize<'de, D>(de: D) -> Result<Uri, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Ok(PostUri(http_serde::uri::deserialize(de)?))
+        http_serde::uri::deserialize(de)
     }
 }
 
@@ -589,5 +731,118 @@ impl SerializeValue for PostUri {
             .pipe(|x| writer.set_value(x))
             .map_err(mk_ser_err)?
             .pipe(Ok)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            PostDay                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// It might be worth giving the `refined` crate a look: <https://github.com/tomoikey/refined_type>.
+// My concern is that in order to implement things like `SerializeValue` & `DeserializeValue`, I'll
+// have to wrap the refined type in a newtype. That might be fine, but for now I'd prefer to do that
+// in a separate patch.
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct PostDay(String);
+
+lazy_static! {
+    static ref POST_DAY: Regex = Regex::new("^[0-9]{4}-[0-9]{2}-[0-9]{2}$").unwrap(/* known good */);
+}
+
+impl PostDay {
+    pub fn new(s: &str) -> Result<PostDay> {
+        if POST_DAY.is_match(s) {
+            Ok(PostDay(s.to_string()))
+        } else {
+            Err(BadPostDaySnafu {
+                text: s.to_string(),
+            }
+            .build())
+        }
+    }
+}
+
+impl std::fmt::Display for PostDay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for PostDay {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        type_check!(typ, Ascii, TypeCheckError, "PostDay")
+    }
+    fn deserialize(
+        _: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        v.ok_or(
+            NoFrameSliceSnafu {
+                typ: "PostDay".to_owned(),
+            }
+            .build(),
+        )
+        .map_err(mk_de_err)?
+        .as_slice()
+        .pipe(std::str::from_utf8)
+        .map_err(mk_de_err)?
+        .pipe(PostDay::new)
+        .map_err(mk_de_err)?
+        .pipe(Ok)
+    }
+}
+
+impl SerializeValue for PostDay {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        type_check!(typ, Ascii, SerializationError, "PostDay")?;
+        self.0
+            .to_string()
+            .as_bytes()
+            .pipe(|x| writer.set_value(x))
+            .map_err(mk_ser_err)?
+            .pipe(Ok)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                              Post                                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Represents an indielinks post
+#[derive(Clone, Debug, Deserialize, DeserializeRow, Eq, PartialEq, Serialize)]
+pub struct Post {
+    id: PostId,
+    url: PostUri,
+    user_id: UserId,
+    posted: DateTime<Utc>,
+    day: PostDay,
+    title: String,
+    notes: Option<String>,
+    tags: HashSet<TagId>,
+    public: bool,
+    unread: bool,
+}
+
+impl Post {
+    pub fn day(&self) -> PostDay {
+        self.day.clone()
+    }
+    pub fn id(&self) -> PostId {
+        self.id
+    }
+    pub fn posted(&self) -> DateTime<Utc> {
+        self.posted
+    }
+    pub fn tags(&self) -> HashSet<TagId> {
+        self.tags.clone()
+    }
+    pub fn user_id(&self) -> UserId {
+        self.user_id
     }
 }

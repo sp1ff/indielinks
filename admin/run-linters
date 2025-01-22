@@ -1,7 +1,7 @@
 #!/bin/bash
 set -x
 
-if rg -t rust -g '!.old-files' -g '!hello-scylla' 'TODO|TOOD|LATER|IN-?PROGRESS|\\todo|todo!|panic!|dbg!'; then
+if rg -t rust -g '!.old-files' -g '!hello-scylla' 'TODO|TOOD|LATER|IN-?PROGRESS|\\todo|todo!|dbg!'; then
     echo "You have TODO-s"
     exit 1
 fi

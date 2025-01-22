@@ -10,7 +10,7 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
 //! # indielinks
@@ -23,6 +23,7 @@ pub mod delicious;
 pub mod dynamodb;
 pub mod entities;
 pub mod http;
+pub mod metrics;
 pub mod scylla;
 pub mod storage;
 pub mod util;

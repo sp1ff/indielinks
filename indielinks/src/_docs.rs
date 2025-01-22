@@ -10,7 +10,7 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
 //! # indielinks
@@ -34,3 +34,11 @@
 //! I added ScyllaDB to support the local case: you can install & run ScyllaDB locally.
 //! The choice of ScyllaDB was also motivated by their "Alternator" interface, which allows
 //! me to talk to it via the DynamoDB API.
+//!
+//! ## Observability
+//!
+//! Indielinks at this time provides for logs & metrics.
+//!
+//! ### Metrics
+//!
+//! Indielinks makes Prometheus-style metrics available publicly at the `/metrics` endpoint.

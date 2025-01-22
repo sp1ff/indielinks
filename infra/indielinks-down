@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -ex
+here=$(dirname $(realpath $0))
+cd $here
+# TODO(sp1ff): use the PID file?
+pid=$(ps aux|grep 'target/.*/indielinks'|grep -v grep|awk '{print $2}')
+if test -n "$pid"; then
+    kill ${pid}
+fi
+

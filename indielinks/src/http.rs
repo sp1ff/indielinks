@@ -10,10 +10,10 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use crate::storage::Backend as StorageBackend;
+use crate::{metrics, storage::Backend as StorageBackend};
 
 use axum::Json;
 use serde::Serialize;
@@ -46,6 +46,7 @@ pub type Result<T: axum::response::IntoResponse> = std::result::Result<T, ErrorR
 // Not sure this is going to stay here.
 pub struct Indielinks {
     pub domain: String,
-    pub registry: prometheus::Registry,
     pub storage: Box<dyn StorageBackend + Send + Sync>,
+    pub registry: prometheus::Registry,
+    pub instruments: metrics::Instruments,
 }

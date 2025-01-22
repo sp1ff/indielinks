@@ -13,112 +13,64 @@
 // You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use lazy_static::lazy_static;
+//! # The delicious API Integration Tests
+//!
+//! # Introduction
+//!
+//! The Rust unit & integration testing framework is really oriented toward testing *libraries*, not
+//! programs. There's no notion of test fixtures, nor even of simple setup & teardown operations
+//! that apply to multiple tests. [Nextest] provides a great number of features above & beyond what
+//! `cargo test` offers, but 1) is implemented as a Cargo plugin (i.e. to use it one needs to say
+//! `cargo nextest` rather than `cargo test`) and 2) still provides nothing in terms of test
+//! fixtures.
+//!
+//! [Nextest]: https://nexte.st
+//!
+//! T.J. Telan [found] himself in the same boat when building [Fluvio] and lays out an approach that
+//! takes more work, but offers limitless opportunities for customization while still fitting into
+//! the `cargo test` framework is to change-out the default *test harness*. In Cargo.toml, one is
+//! free to explicitly define tests, and opt-out of `libharness`, the default testing harness
+//! provided by Rust:
+//!
+//! ```toml
+//! [[test]]
+//!     name = "delicious"
+//!     harness = false
+//! ```
+//!
+//! [found]: https://tjtelan.com/blog/rust-custom-test-harness/
+//! [Fluvio]: https://github.com/infinyon/fluvio
+//!
+//! With this configuration, `cargo test` expects to find a file named `delicious.rs` in the `tests`
+//! subdirectory containing a `main()`. `cargo test` will compile it and execute it, passing any
+//! command-line parameters passed to `cargo test` after the `--`. It is expected to exit with
+//! status zero if all tests passed, and one else. That's it-- that's the contract.
+//!
+//! [Advanced Testing in Rust] notes that a compliant implementation could simply ignore the
+//! command-line parameters, at the cost of surprising one's users, and suggests the use of
+//! [libtest-mimic] to avoid that.
+//!
+//! [Advanced Testing in Rust]: https://rust-exercises.com/advanced-testing/00_intro/00_welcome.html
+//! [libtest-mimic]: https://docs.rs/libtest-mimic/latest/libtest_mimic/index.html
+//!
+//! For all that guidance, I'm still feeling my way. My general idea is to build a set of
+//! integration test programs, each exercising some aspect of indielinks. For now, I'm going to
+//! treat each integration test program as a fixture unto itself. I don't really see a lot of
+//! difference between this (one integration test per fixture) and allowing multiple fixtures per
+//! integration test; I just prefer to present a finer-grained test suite to the Rust test
+//! framework.
 
-use std::{ffi::OsString, path::PathBuf};
+use reqwest::Url;
 
-lazy_static! {
-    static ref CONFIG_ARG: regex::bytes::Regex =
-        regex::bytes::Regex::new("^--config(=.+)?$").unwrap(/* known good */);
-}
+pub mod delicious;
 
-/// Parse a sequence of [OsString]s (presumably command-line arguments) and parse out the `--config`
-/// option, if present. Return both that option's value and the remaining arguments (as a vector).
-pub fn parse_configuration_file_option<I>(args: I) -> (Option<PathBuf>, Vec<OsString>)
-where
-    I: Iterator,
-    I::Item: Into<OsString> + Clone,
-{
-    enum State {
-        Initial,
-        SawBareConfig,
-        GotConfig(PathBuf),
-    }
-
-    let mut state = State::Initial;
-
-    let rest = args
-        .filter_map(|s| {
-            let s: OsString = s.into();
-            match state {
-                State::Initial => {
-                    if let Some(what) = (*CONFIG_ARG).captures(s.as_encoded_bytes()) {
-                        if let Some(val) = what.get(1) {
-                            state = State::GotConfig(
-                                String::from_utf8(val
-                                              .as_bytes()
-                                              .get(1..)
-                                              .unwrap(/* known good */)
-                                              .to_vec())
-                                .unwrap(/* known good */)
-                                .into(),
-                            );
-                            None
-                        } else {
-                            state = State::SawBareConfig;
-                            None
-                        }
-                    } else {
-                        Some(s)
-                    }
-                }
-                State::SawBareConfig => {
-                    state = State::GotConfig(s.into());
-                    None
-                }
-                State::GotConfig { .. } => Some(s),
-            }
-        })
-        .collect();
-
-    if let State::GotConfig(cfg) = state {
-        (Some(cfg), rest)
-    } else {
-        (None, rest)
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn parse_configuration_file_smoke() {
-        let (arg, rest) = parse_configuration_file_option(
-            vec!["foo", "bar", "splat"].into_iter().map(OsString::from),
-        );
-        assert!(arg.is_none());
-        assert!(
-            rest == vec!["foo", "bar", "splat"]
-                .into_iter()
-                .map(OsString::from)
-                .collect::<Vec<OsString>>()
-        );
-
-        let (arg, rest) = parse_configuration_file_option(
-            vec!["foo", "--config=bar", "splat"]
-                .into_iter()
-                .map(OsString::from),
-        );
-        assert!(arg.unwrap() == PathBuf::from("bar"));
-        assert!(
-            rest == vec!["foo", "splat"]
-                .into_iter()
-                .map(OsString::from)
-                .collect::<Vec<OsString>>()
-        );
-
-        let (arg, rest) = parse_configuration_file_option(
-            vec!["foo", "--config", "bar", "splat"]
-                .into_iter()
-                .map(OsString::from),
-        );
-        assert!(arg.unwrap() == PathBuf::from("bar"));
-        assert!(
-            rest == vec!["foo", "splat"]
-                .into_iter()
-                .map(OsString::from)
-                .collect::<Vec<OsString>>()
-        );
-    }
+/// Hit the `indielinks` healthcheck endpoint; panic on anything other than success.
+pub fn test_healthcheck(url: &Url) {
+    assert!(
+        "GOOD"
+            == reqwest::blocking::get(url.join("/healthcheck").expect("Invalid URL"))
+                .expect("Failed request")
+                .text()
+                .expect("Failed to retrieve response text")
+    );
 }

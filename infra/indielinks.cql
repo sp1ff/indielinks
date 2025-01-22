@@ -40,18 +40,27 @@ create table users (
   last_update timestamp
 );
 
-create index on users (username);
+create index users_by_username on users (username);
 
 /* All of my queries for tags will include the user ID, so I want to
    incorporate that into the partition key to prevent
-   full-table/cluster scans. The "id" column may seem redundant, but
-   it's important to tracking tags across deletions! Imagine a user
-   creates a tag "foo" and tags many posts with it. Then, they delete
-   tag "foo", and re-add. All the old posts, in the absence of a
-   different id field, will think they're still tagged by the *old*
-   "foo, but the counts will reflect only the new "foo"! Better, I
-   think, to treat them as two different tags that happen to have the
-   same name/label. */
+   full-table/cluster scans.
+
+   The "id" column may seem redundant, but it's important to tracking
+   tags across deletions! Imagine a user creates a tag "foo" and tags
+   many posts with it. Then, they delete tag "foo", and re-add. All
+   the old posts, in the absence of a different id field, will think
+   they're still tagged by the *old* "foo, but the counts will reflect
+   only the new "foo"! Better, I think, to treat them as two different
+   tags that happen to have the same name/label.
+
+   That said, I've used `name` in the primary key, not `id`. This is
+   because otherwise it was impossible to atomically update the tag
+   cloud when adding posts: I could, with the help of a secondary
+   index, query for any tags with a given name for a given user, but
+   if none came back, I couldn't atomically *create* the new tag!
+   Using `name` in the primary key let's me "create-or-update"
+   atomically. */
 create table tags (
   id uuid,
   user_id uuid,
@@ -59,6 +68,8 @@ create table tags (
   count int,
   PRIMARY KEY (user_id, name)
 );
+
+create index tags_by_id on tags (id);
 
 /* All my queries are by user ID, so I need to incorporate that into
    the partition key to prevent full-table/cluster scans. That gives
@@ -95,5 +106,10 @@ create table posts (
   tags set<uuid>,
   public boolean,
   unread boolean,
-  PRIMARY KEY ((user_id, day), url)
-) /* with clustering order by (posted desc) */;
+  PRIMARY KEY ((user_id, day), id)
+);
+
+create materialized view posts_by_user_and_url as
+    select * from posts where user_id is not null and url is not null and id is not null and day is not null
+    primary key ((user_id, url), id, day);
+

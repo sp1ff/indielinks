@@ -10,7 +10,7 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
 //! # indielinks
@@ -27,8 +27,8 @@
 //! ignore the binary create. I should probably rename this file.
 
 use indielinks::{
-    delicious::make_router, http::Indielinks, storage::Backend as StorageBackend,
-    webfinger::webfinger,
+    delicious::make_router, http::Indielinks, metrics::Instruments,
+    storage::Backend as StorageBackend, webfinger::webfinger,
 };
 
 use axum::{
@@ -62,6 +62,7 @@ use tracing_subscriber::{
 use url::Url;
 
 use std::{
+    env,
     ffi::CString,
     fmt::Display,
     fs::OpenOptions,
@@ -109,6 +110,8 @@ use std::{
 pub enum Error {
     #[snafu(display("Failed to bind to localhost: {source}"))]
     Bind { source: std::io::Error },
+    #[snafu(display("Failed to change directory: {source}"))]
+    Changedir { source: std::io::Error },
     #[snafu(display("Unable to read configuration file: {source}"))]
     ConfigNotFound {
         pth: PathBuf,
@@ -119,6 +122,8 @@ pub enum Error {
         pth: PathBuf,
         source: toml::de::Error,
     },
+    #[snafu(display("Couldn't resolve the present working directory: {source}"))]
+    CurrentDir { source: std::io::Error },
     #[snafu(display("Failed to connect to DynamoDB: {source}"))]
     Dynamo { source: indielinks::dynamodb::Error },
     #[snafu(display("Failed to parse RUST_LOG: {source}"))]
@@ -165,7 +170,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
-static DEFAULT_LOCALSTATEDIR: &str = "/tmp";
+static DEFAULT_LOCALSTATEDIR: &str = ".";
 
 /// Logging-related options read from the command line or the environment
 struct LogOpts {
@@ -198,18 +203,24 @@ struct Opts {
     pub log_opts: LogOpts,
     pub cfg: Option<PathBuf>,
     pub local_statedir: PathBuf,
+    pub no_chdir: bool,
 }
 
 impl Opts {
-    fn new(matches: clap::ArgMatches) -> Opts {
-        Opts {
+    fn new(matches: clap::ArgMatches) -> Result<Opts> {
+        let here = env::current_dir().context(CurrentDirSnafu)?;
+        Ok(Opts {
             log_opts: LogOpts::new(&matches),
-            cfg: matches.get_one::<PathBuf>("config").cloned(),
+            cfg: matches
+                .get_one::<PathBuf>("config")
+                .cloned()
+                .map(|p| here.join(p)),
             local_statedir: matches
                 .get_one::<PathBuf>("local-state")
                 .unwrap_or(&PathBuf::from_str(DEFAULT_LOCALSTATEDIR).unwrap())
                 .clone(),
-        }
+            no_chdir: matches.get_flag("no-chdir"),
+        })
     }
 }
 
@@ -463,6 +474,7 @@ fn configure_logging(logopts: &LogOpts, logfile: &Path) -> Result<Option<mpsc::S
 }
 
 async fn otel_middleware(
+    State(state): State<Arc<Indielinks>>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -486,8 +498,7 @@ async fn otel_middleware(
         .collect();
 
     let name = format!("http.{}{}", request.method().as_str().to_lowercase(), stem);
-    let meter = global::meter("indielinks");
-    let counter = meter.u64_counter(name).build();
+    let counter = state.instruments.meter().u64_counter(name).build();
     // Nb. can add attributes like so: &[KeyValue::new("user", user.clone())]
     counter.add(1, &[]);
     next.run(request).await
@@ -522,7 +533,10 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
         .route("/.well-known/webfinger", get(webfinger))
         .nest("/api/v1", make_router(state.clone()))
         .layer(TraceLayer::new_for_http())
-        .layer(axum::middleware::from_fn(otel_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            otel_middleware,
+        ))
         .with_state(state)
 }
 
@@ -531,7 +545,10 @@ fn make_local_router(state: Arc<Indielinks>) -> Router {
     Router::new()
         .route("/dev", post(dev))
         .layer(TraceLayer::new_for_http())
-        .layer(axum::middleware::from_fn(otel_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            otel_middleware,
+        ))
         .with_state(state.clone())
 }
 
@@ -577,9 +594,10 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
         let storage = select_storage(&cfg.storage_config).await?;
 
         let state = Arc::new(Indielinks {
+            domain: cfg.domain.clone(),
             registry: registry.clone(),
             storage,
-            domain: cfg.domain.clone(),
+            instruments: Instruments::new("indielinks"),
         });
 
         let world_nfy = Arc::new(Notify::new());
@@ -712,9 +730,8 @@ fn init_telemetry() -> Result<prometheus::Registry> {
 ///   - <http://www.steve.org.uk/Reference/Unix/faq_2.html>
 ///   - <https://en.wikipedia.org/wiki/SIGHUP>
 ///   - <http://www.enderunix.org/docs/eng/daemon.php>
-fn daemonize(local_statedir: &Path) -> Result<()> {
+fn daemonize(local_statedir: &Path, no_chdir: bool) -> Result<()> {
     use errno::errno;
-    // use indielinks::vars::LOCALSTATEDIR;
     use std::os::unix::ffi::OsStringExt;
 
     unsafe {
@@ -730,9 +747,6 @@ fn daemonize(local_statedir: &Path) -> Result<()> {
             // We are the parent process-- exit.
             exit(0);
         }
-
-        // At this point, we're in a dangerous position: we've exited the original process (the
-        // process that had a terminal to which we could write), yet we haven't setup logging yet.
 
         // In the last step, we said we wanted to be sure we are not a process group leader. That
         // is because this call will fail if we do. It will create a new session, with us as
@@ -752,10 +766,13 @@ fn daemonize(local_statedir: &Path) -> Result<()> {
         }
 
         // We next change the present working directory to avoid keeping the present one in
-        // use. `mppopmd' can run pretty much anywhere, so /tmp is as good a place as any.
-        std::env::set_current_dir("/tmp").unwrap(); // A little unhappy about hard-coding that, but
-                                                    // if /tmp doesn't exist I expect few things
-                                                    // will work.
+        // use. `indielinks`` can run pretty much anywhere, so /tmp is as good a place as any.
+        if !no_chdir {
+            // A little unhappy about hard-coding that, but if /tmp doesn't exist I expect few
+            // things will work.
+            std::env::set_current_dir("/tmp").context(ChangedirSnafu)?;
+        }
+
         umask(0);
 
         // Close all file descriptors ("nuke 'em from orbit-- it's the only way to be sure")...
@@ -776,13 +793,22 @@ fn daemonize(local_statedir: &Path) -> Result<()> {
             .iter()
             .collect();
         let pth_c = CString::new(pth.into_os_string().into_vec()).unwrap();
-        let fd = open(
+        let mut fd = open(
             pth_c.as_ptr(),
             libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC,
             0o640,
         );
         if -1 == fd {
-            return OpenLockFileSnafu { errno: errno() }.fail();
+            // Fallback to pwd
+            let pth_c = CString::new("indielinks.pid").unwrap();
+            fd = open(
+                pth_c.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC,
+                0o640,
+            );
+            if -1 == fd {
+                return OpenLockFileSnafu { errno: errno() }.fail();
+            };
         }
         if lockf(fd, F_TLOCK, 0) < 0 {
             return LockFileSnafu { errno: errno() }.fail();
@@ -843,6 +869,15 @@ fn main() -> Result<()> {
                     .help("produce debug output"),
             )
             .arg(
+                Arg::new("no-chdir")
+                    .short('C')
+                    .long("no-chdir")
+                    .num_args(0)
+                    .action(ArgAction::SetTrue)
+                    .env("INDIELINKS_NO_CHDIR")
+                    .help("Do not change directory before daemonizing; ignored if running in foreground")
+            )
+            .arg(
                 Arg::new("no-daemon")
                     .short('F')
                     .long("no-daemon")
@@ -879,7 +914,7 @@ fn main() -> Result<()> {
                     .help("produce prolix output"),
             )
             .get_matches(),
-    );
+    )?;
     // There are a number of things that can go wrong in the process of daemonization *after* we've
     // forked this process & lost the terminal to which we could write error messages. For instance:
     //
@@ -895,7 +930,7 @@ fn main() -> Result<()> {
     // depends upon Tokio! Perhaps I can setup a "simple" logging facility for now, to be replaced
     // by the full-blown tracing implementation.
     if opts.log_opts.daemon {
-        daemonize(&opts.local_statedir)?;
+        daemonize(&opts.local_statedir, opts.no_chdir)?;
     }
     // spin-up the Tokio runtime...
     tokio::runtime::Runtime::new()
