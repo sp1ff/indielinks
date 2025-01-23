@@ -1,0 +1,20 @@
+[package]
+name = "indielinks-test"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+inventory = "0.3.17"
+lazy_static = "1.5.0"
+libtest-mimic = "0.8.1"
+regex = "1.11.1"
+reqwest = { version = "0.12.12", features = ["blocking"] }
+snafu = { version = "0.8.5", features = ["backtrace"] }
+
+
+[dev-dependencies]
+indielinks = { path = "../indielinks" }
+
+[[test]]
+name = "delicious"
+harness = false
