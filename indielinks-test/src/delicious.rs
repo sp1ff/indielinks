@@ -14,7 +14,7 @@
 // see <http://www.gnu.org/licenses/>.
 
 use indielinks::{
-    delicious::{GenericRsp, TagsGetRsp, UpdateRsp},
+    delicious::{GenericRsp, PostsGetRsp, TagsGetRsp, UpdateRsp},
     entities::{Tagname, Username},
 };
 
@@ -32,22 +32,24 @@ pub fn delicious_smoke_test(url: &Url, username: &Username, api_key: &str) {
             "/api/v1/posts/update?auth_token={}:{}",
             username, api_key
         ))
-        .expect("Invalid URL"),
+        .unwrap(),
     );
-    let rsp = rsp.expect("Request failed");
-    println!("response: {:?}", rsp);
+    let rsp = rsp.expect("/posts/update request failed");
     assert!(StatusCode::OK == rsp.status());
-    let body = rsp.json::<GenericRsp>().expect("Unexpected response");
+    let body = rsp
+        .json::<GenericRsp>()
+        .expect("unexpected /posts/update response body");
     assert!(body.result_code == format!("{} has no posts, yet", username));
 
-    // Hit `/posts/get` without an auth token; should be 401'd
+    // Now, hit `/posts/get` without an auth token; should be 401'd
     assert!(
         StatusCode::UNAUTHORIZED
-            == reqwest::blocking::get(url.join("/api/v1/posts/get").expect("Invalid URL"))
-                .expect("Failed get request")
+            == reqwest::blocking::get(url.join("/api/v1/posts/get").unwrap())
+                .expect("failed unauth'd request to /posts/get")
                 .status()
     );
 
+    // From here in, we'll use the Authorization header, so let's set-up a proper client:
     let mut headers = HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
@@ -58,40 +60,45 @@ pub fn delicious_smoke_test(url: &Url, username: &Username, api_key: &str) {
 
     // Hit it again-- should get a 200 OK, but an error message indicating that the test user has no
     // posts.
-    let rsp = client
-        .get(url.join("/api/v1/posts/get").expect("Invalid URL"))
-        .send();
-    println!("response: {:?}", rsp);
-    let rsp = rsp.expect("Request failed");
+    let rsp = client.get(url.join("/api/v1/posts/get").unwrap()).send();
+    let rsp = rsp.expect("request to /posts/get failed");
     assert!(StatusCode::OK == rsp.status());
-    let body = rsp.json::<GenericRsp>().expect("Unexpected response");
+    let body = rsp
+        .json::<GenericRsp>()
+        .expect("unexpected /posts/get response body");
     assert!(body.result_code == format!("{} has no posts, yet", username));
 
-    // Add our first post
-    let rsp = client.get(url.join("/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&tags=blog,daily,glenn-reynolds").expect("Invalid URL"))
+    // Add our first post...
+    let rsp = client.get(url.join("/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&tags=blog,daily,glenn-reynolds")
+                         .unwrap())
         .send();
-    println!("response: {:?}", rsp);
-    let rsp = rsp.expect("Request failed");
+    let rsp = rsp.expect("request to /posts/add failed");
     assert!(StatusCode::CREATED == rsp.status());
-    let body = rsp.json::<GenericRsp>().expect("Unexpected response");
+    let body = rsp
+        .json::<GenericRsp>()
+        .expect("unexpected /posts/add response body");
     assert!(body.result_code == "done");
 
-    // Add another
-    let rsp = client.get(url.join("/api/v1/posts/add?url=https://thefp.com&description=The%20Free%20Press&tags=news,daily,bari-weiss").expect("Invalid URL"))
+    // add another...
+    let rsp = client.get(url.join("/api/v1/posts/add?url=https://thefp.com&description=The%20Free%20Press&tags=news,daily,bari-weiss")
+                         .unwrap())
         .send();
-    println!("response: {:?}", rsp);
-    let rsp = rsp.expect("Request failed");
+    let rsp = rsp.expect("request to /posts/add failed");
     assert!(StatusCode::CREATED == rsp.status());
-    let body = rsp.json::<GenericRsp>().expect("Unexpected response");
+    let body = rsp
+        .json::<GenericRsp>()
+        .expect("unexpected /posts/add response body");
     assert!(body.result_code == "done");
 
-    // Add a third
-    let rsp = client.get(url.join("/api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy").expect("Invalid URL"))
+    // and add a third:
+    let rsp = client.get(url.join("/api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy")
+                         .unwrap())
         .send();
-    println!("response: {:?}", rsp);
-    let rsp = rsp.expect("Request failed");
+    let rsp = rsp.expect("request to /posts/add failed");
     assert!(StatusCode::CREATED == rsp.status());
-    let body = rsp.json::<GenericRsp>().expect("Unexpected response");
+    let body = rsp
+        .json::<GenericRsp>()
+        .expect("unexpected /posts/add response body");
     assert!(body.result_code == "done");
 
     // RN, we have the following tags:
@@ -107,48 +114,111 @@ pub fn delicious_smoke_test(url: &Url, username: &Username, api_key: &str) {
     // - glenn-reynolds
     // - news : 1
     // - bari-weiss
-    // - economy: 0
     let rsp = client
         .get(
             url.join("/api/v1/posts/delete?url=https://wsj.com")
-                .expect("Invalid URL"),
+                .unwrap(),
         )
         .send();
-    println!("response: {:?}", rsp);
-    let rsp = rsp.expect("Request failed");
+    let rsp = rsp.expect("/posts/delet request failed");
     assert!(StatusCode::OK == rsp.status());
-    let body = rsp.json::<GenericRsp>().expect("Unexpected response");
+    let body = rsp
+        .json::<GenericRsp>()
+        .expect("unexpected /posts/delete response body");
     assert!(body.result_code == "done");
 
-    let rsp = client
-        .get(url.join("/api/v1/tags/get").expect("Invalid URL"))
-        .send();
-    println!("response: {:?}", rsp);
-    let rsp = rsp.expect("Request failed");
+    let rsp = client.get(url.join("/api/v1/tags/get").unwrap()).send();
+    let rsp = rsp.expect("/tags/get request failed");
     assert!(StatusCode::OK == rsp.status());
-    let body = rsp.json::<TagsGetRsp>().expect("Unexpected response");
+    let body = rsp
+        .json::<TagsGetRsp>()
+        .expect("unexpected /tags/get response");
     let mut tags = body.map.into_iter().collect::<Vec<(Tagname, usize)>>();
     tags.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
-    println!("tags: {:#?}", tags);
     assert!(
         tags == vec![
             (Tagname::new("bari-weiss").unwrap(), 1usize),
             (Tagname::new("blog").unwrap(), 1usize),
             (Tagname::new("daily").unwrap(), 2usize),
-            (Tagname::new("economy").unwrap(), 0usize),
             (Tagname::new("glenn-reynolds").unwrap(), 1usize),
             (Tagname::new("news").unwrap(), 1usize),
         ]
     );
 
     // Hit `/posts/update` once more
-    let rsp = client
-        .get(url.join("/api/v1/posts/update").expect("Invalid URL"))
-        .send();
-    let rsp = rsp.expect("Request failed");
-    println!("response: {:?}", rsp);
+    let rsp = client.get(url.join("/api/v1/posts/update").unwrap()).send();
+    let rsp = rsp.expect("/posts/update request failed");
     assert!(StatusCode::OK == rsp.status());
-    let body = rsp.json::<UpdateRsp>().expect("Unexpected response");
+    let body = rsp
+        .json::<UpdateRsp>()
+        .expect("unexpected /posts/update response");
     let diff = Utc::now() - body.update_time;
     assert!(diff.num_seconds() < 1);
+
+    // Finally, let's exercise `/posts/get` in a few ways:
+    let rsp = client.get(url.join("/api/v1/posts/get").unwrap()).send();
+    let rsp = rsp.expect("/posts/update request failed");
+    assert!(StatusCode::OK == rsp.status());
+    let body = rsp
+        .json::<PostsGetRsp>()
+        .expect("unexpected /posts/get response body");
+    assert!(body.posts.is_empty());
+
+    let day = body.date.format("%Y-%m-%d").to_string();
+    let rsp = client
+        .get(url.join(&format!("/api/v1/posts/get?dt={}", day)).unwrap())
+        .send();
+    let rsp = rsp.expect("/posts/get request failed");
+    assert!(StatusCode::OK == rsp.status());
+
+    let body = rsp
+        .json::<PostsGetRsp>()
+        .expect("unexpected /posts/get response body");
+    assert!(body.posts.len() == 2);
+
+    // Let's try filtering on the basis of a few tags
+    let rsp = client
+        .get(
+            url.join(&format!("/api/v1/posts/get?dt={}&tag=news", day))
+                .unwrap(),
+        )
+        .send();
+    let rsp = rsp.expect("/posts/get request failed");
+    assert!(StatusCode::OK == rsp.status());
+
+    let body = rsp
+        .json::<PostsGetRsp>()
+        .expect("unexpected /posts/get response body");
+    assert!(body.posts.len() == 1);
+
+    let rsp = client
+        .get(
+            url.join(&format!("/api/v1/posts/get?dt={}&tag=news,daily", day))
+                .unwrap(),
+        )
+        .send();
+    let rsp = rsp.expect("/posts/get request failed");
+    assert!(StatusCode::OK == rsp.status());
+
+    let body = rsp
+        .json::<PostsGetRsp>()
+        .expect("unexpected /posts/get response body");
+    assert!(body.posts.len() == 1);
+
+    let rsp = client
+        .get(
+            url.join(&format!(
+                "/api/v1/posts/get?dt={}&tag=news,daily,splat",
+                day
+            ))
+            .unwrap(),
+        )
+        .send();
+    let rsp = rsp.expect("/posts/get request failed");
+    assert!(StatusCode::OK == rsp.status());
+
+    let body = rsp
+        .json::<PostsGetRsp>()
+        .expect("unexpected /posts/get response body");
+    assert!(body.posts.is_empty());
 }

@@ -36,7 +36,7 @@ use crate::{
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     storage::{self, Backend as StorageBackend},
-    util::exactly_two,
+    util::{exactly_two, UpToThree},
 };
 
 use axum::{
@@ -48,7 +48,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use base64::prelude::*;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use itertools::Itertools;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -59,7 +59,6 @@ use tracing::{debug, error};
 
 use std::{
     backtrace::Backtrace,
-    cmp::Ordering,
     collections::{HashMap, HashSet},
     str::FromStr,
     string::FromUtf8Error,
@@ -95,7 +94,6 @@ pub enum Error {
     BadTagCloud {
         username: Username,
         source: storage::Error,
-        backtrace: Backtrace,
     },
     #[snafu(display("Bad tag name: {source}"))]
     BadTagName {
@@ -108,9 +106,9 @@ pub enum Error {
         source: crate::entities::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to delete posts {posts:?}: {source}"))]
+    #[snafu(display("Failed to delete post {uri}: {source}"))]
     DeletePosts {
-        posts: Vec<Post>,
+        uri: PostUri,
         source: crate::storage::Error,
         backtrace: Backtrace,
     },
@@ -135,6 +133,11 @@ pub enum Error {
     MultipleAuthnHeaders,
     #[snafu(display("No authorization token found in the query string"))]
     NoAuthToken { backtrace: Backtrace },
+    #[snafu(display("No more than three tags may be given"))]
+    NoMoreThanThreeTags {
+        source: crate::util::NoMoreThanThree,
+        backtrace: Backtrace,
+    },
     #[snafu(display("User {username} has no posts, yet"))]
     NoPosts {
         username: Username,
@@ -143,6 +146,11 @@ pub enum Error {
     #[snafu(display("The text was not valid UTF-8"))]
     NotUtf8 {
         source: FromUtf8Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("posts by day failed: {source}"))]
+    PostsByDay {
+        source: storage::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to fetch posts by URI {uri}: {source}"))]
@@ -170,15 +178,18 @@ pub enum Error {
     UpdateTagCloudAdd {
         tags: HashSet<Tagname>,
         source: storage::Error,
-        backtrace: Backtrace,
     },
     #[snafu(display("Failed to update tag cloud {tags:?} on delete: {source}"))]
     UpdateTagCloudDel {
         tags: HashMap<TagId, usize>,
         source: storage::Error,
+    },
+    #[snafu(display("Failed to update the user's post counts: {source}"))]
+    UpdateUserPostCounts {
+        source: storage::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to update the user's post times"))]
+    #[snafu(display("Failed to update the user's post times: {source}"))]
     UpdateUserPostTimes {
         source: storage::Error,
         backtrace: Backtrace,
@@ -227,6 +238,10 @@ impl Error {
                 StatusCode::BAD_REQUEST,
                 "Multiple authorization headers".to_string(),
             ),
+            Error::NoMoreThanThreeTags { .. } => (
+                StatusCode::BAD_REQUEST,
+                "No more than three tags may be specified".to_string(),
+            ),
             Error::NotUtf8 { source, .. } => (
                 StatusCode::BAD_REQUEST,
                 format!("Bad UTF-8 encoding: {:?}", source),
@@ -259,13 +274,17 @@ impl Error {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to lookup user {}'s tag cloud: {}", username, source),
             ),
-            Error::DeletePosts { posts, source, .. } => (
+            Error::DeletePosts { uri, source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to delete posts {:?}: {}", posts, source),
+                format!("Failed to delete post {:?}: {}", uri, source),
             ),
             Error::GetPosts { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch posts: {}", source),
+            ),
+            Error::PostsByDay { source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to fetch posts by day: {source}"),
             ),
             Error::PostByUri { uri, source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -286,6 +305,10 @@ impl Error {
             Error::UpdateUserPostTimes { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to update user post times".to_string(),
+            ),
+            Error::UpdateUserPostCounts { .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to update user post counts".to_string(),
             ),
             Error::User { username, source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -550,7 +573,7 @@ async fn authenticate(
         }
         // I want to be careful about what sort of information we reveal to our caller...
         Err(err) => {
-            error!("indielinks failed to authenticate: {:?}", err);
+            error!("indielinks failed to authenticate this request");
             counter_add!(state.instruments, "delicious.auth.failures", 1, &[]);
             err.into_response()
         }
@@ -584,6 +607,20 @@ fn user_for_request<'a>(request: &'a axum::extract::Request, pth: &str) -> Resul
         .context(UnauthorizedSnafu {
             path: pth.to_string(),
         })
+}
+
+/// Parse a `tag` parameter into a [HashSet] of [Tagname]s
+fn parse_tag_parameter(tags: &Option<String>) -> Result<HashSet<Tagname>> {
+    tags.as_ref()
+        .map(|tags| {
+            tags.split(',')
+                .map(|s| Tagname::new(s.trim()))
+                .collect::<StdResult<HashSet<Tagname>, _>>()
+        })
+        .transpose()
+        .context(BadTagNameSnafu)?
+        .unwrap_or(HashSet::new())
+        .pipe(Ok)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -658,7 +695,7 @@ struct PostAddReq {
 ///   backward compatible)
 /// - tags: a list of comma-delimited tags
 /// - dt: creation time to be used for this post; if omitted the current time will be used
-/// - replace
+/// - replace: if false and `url` has already been posted, this method will fail
 /// - shared
 /// - toread
 ///
@@ -668,32 +705,19 @@ async fn add_post(
     Query(post_add_req): Query<PostAddReq>,
     request: axum::extract::Request,
 ) -> axum::response::Response {
-    // Continuing to experiment with this idiom... hoist this out into it's own function?
     async fn add_post1(
         req: PostAddReq,
         request: axum::extract::Request,
         storage: &(dyn StorageBackend + Send + Sync),
     ) -> Result<bool> {
         // I'm torn as to how to handle this; given the API offered by axum, there's no way to
-        // enforce this at compile-time.
+        // enforce this at compile-time. OTOH, it's tough to do anything in this API *without* the
+        // current user, so I don't see how I can forget this:
         let user = user_for_request(&request, "/posts/add")?;
-        let tags = req
-            .tags
-            .map(|tags| {
-                tags.split(',')
-                    .map(|s| Tagname::new(s.trim()))
-                    .collect::<StdResult<HashSet<Tagname>, _>>()
-            })
-            .transpose()
-            .context(BadTagNameSnafu)?;
-        // I would have thought `futures` would have offered something here.
-        let tags = match tags {
-            Some(tags) => storage
-                .update_tag_cloud_on_add(&user.id(), &tags)
-                .await
-                .context(UpdateTagCloudAddSnafu { tags })?,
-            None => HashSet::new(),
-        };
+        // Pull the `tag` parameter out of the request, separate the individual tags by comma, and
+        // check that they're all legit `Tagname`s:
+        let tags = parse_tag_parameter(&req.tags)?;
+        // Figure-out the post time:
         let dt = req.dt.unwrap_or(Utc::now());
         let added = storage
             .add_post(
@@ -719,9 +743,7 @@ async fn add_post(
         Ok(added)
     }
 
-    debug!("Add post: {:?}", post_add_req);
-
-    // The Pinboard API seems to just return status code 200 OK no matter what-- the caller ha to
+    // The Pinboard API seems to just return status code 200 OK no matter what-- the caller has to
     // examine the textual `result_code` in the response body to know if the request succeeded (see
     // <https://gist.github.com/takashi/2967f9c5ec8ebab5f622#file-pydelicious-py-L117>, e.g.) This
     // seems unfortunate, so for now at least, I'm going to break backwards compatibility & actually
@@ -772,35 +794,19 @@ async fn delete_post(
         request: axum::extract::Request,
     ) -> Result<bool> {
         let user = user_for_request(&request, "/posts/delete")?;
-        let posts_to_be_deleted = storage
-            .get_posts_by_uri(&user.id(), &uri)
+        let deleted = storage
+            .delete_post(user, &uri)
             .await
-            .context(PostByUriSnafu { uri: uri.clone() })?;
-        debug!("Posts to be deleted: {:?}", posts_to_be_deleted);
-        if posts_to_be_deleted.is_empty() {
-            return Ok(false);
+            .context(DeletePostsSnafu { uri })?;
+        if deleted {
+            storage
+                .update_user_post_times(user, &Utc::now())
+                .await
+                .context(UpdateUserPostTimesSnafu)?;
         }
-        let post_use_map = storage
-            .get_tag_cloud_for_uri(&user.id(), &uri)
-            .await
-            .context(TagCloudForUriSnafu { uri: uri.clone() })?;
-        debug!("Tags used by these posts: {:?}", post_use_map);
-        storage
-            .update_tag_cloud_on_delete(&user.id(), &post_use_map)
-            .await
-            .context(UpdateTagCloudDelSnafu { tags: post_use_map })?;
-        debug!("Tag cloud updated");
-        storage
-            .delete_posts(&posts_to_be_deleted)
-            .await
-            .context(DeletePostsSnafu {
-                posts: posts_to_be_deleted,
-            })?;
-        debug!("Posts deleted!");
-        Ok(true)
+        Ok(deleted)
     }
 
-    debug!("Entered handler!");
     let (status_code, status) =
         match delete_post1(state.storage.as_ref(), post_delete_req.url, request).await {
             Ok(true) => {
@@ -833,16 +839,16 @@ inventory::submit! { metrics::Registration::new("delicious.posts.retrieved", Sor
 
 #[derive(Clone, Debug, Deserialize)]
 struct PostsGetReq {
-    dt: Option<DateTime<Utc>>,
+    dt: Option<NaiveDate>,
     #[serde(rename = "url")]
-    _url: Option<PostUri>,
+    uri: Option<PostUri>,
     #[serde(default, rename = "tag")]
-    _tags: Vec<String>,
+    tags: Option<String>,
     #[serde(rename = "meta")]
     _meta: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PostsGetRsp {
     pub date: DateTime<Utc>,
     pub user: Username,
@@ -853,11 +859,12 @@ pub struct PostsGetRsp {
 ///
 /// Retrieve a single day's posts. They can be filtered in a few ways-- query parameters:
 ///
-/// - tag: filter by up to three tags
+/// - tag: filter by up to three tags; multiple tags are treated as a conjunction, not a disjunction
 /// - dt: specify the day for which bookmarks shall be returned; if omitted, the date of the
 ///   most recent bookmark will be used
 /// - url: return the post for this URL
 /// - meta: "yes" or "no"; if the former, include a change detection attribute (on which more below)
+///   Nb. that this feature is not yet implemented
 ///
 /// RE the "meta" attribute, from the original del.icio.us [docs]: "Clients wishing to maintain a
 /// synchronized local store of bookmarks should retain the value of this attribute - its value will
@@ -865,33 +872,33 @@ pub struct PostsGetRsp {
 ///
 /// [docs]: https://web.archive.org/web/20080908014047/http://delicious.com/help/api
 ///
-/// I can't quite figure-out the semantics of the `dt` parameter. Both the del.icio.us and Pinboard
-/// docs clearly state that if not supplied, it defaults to "the most recent date on which bookmarks
-/// were saved". Yet, when I make a call to the Pinboard API without this parameter, I get a
-/// response containing the timestamp of my most recent post, but *no posts*. I'm reluctantly
-/// replicating that behavior for the sake of backward compaitibility.
+/// The Pinboard docs are, ahem, terse. Empirically, I've found the following:
+///
+/// - if you specify the `url` parameter, that uniquely names a post (together with your user id),
+///   so you'll get that post back, if it exists
+/// - otherwise, you *have* to specify the `dt` parameter; if you don't you'll get a response that
+///   contains zero posts, but *does* contain your most recent post date
+/// - if you just give the `dt` parameter, you'll get back all your posts for that day
+/// - you can specify one-to-three tags *in addition*-- if present, they'll be treated as "and"
+///   conditions; i.e. posts tagged with all of them will be returned
 async fn get_posts(
     State(state): State<Arc<Indielinks>>,
     Query(post_get_req): Query<PostsGetReq>,
     request: axum::extract::Request,
 ) -> axum::response::Response {
-    // Still not sure about hoisting this out into its own function:
     async fn get_posts1(
         storage: &(dyn StorageBackend + Send + Sync),
         posts_get_req: PostsGetReq,
         request: axum::extract::Request,
     ) -> Result<PostsGetRsp> {
         let user = user_for_request(&request, "/posts/get")?;
+        // If the user has never made any posts, we're done:
         let last_dt = user.last_update().ok_or(
             NoPostsSnafu {
                 username: user.username(),
             }
             .build(),
         )?;
-
-        fn sort_posts_dec(lhs: &Post, rhs: &Post) -> Ordering {
-            lhs.posted().cmp(&rhs.posted())
-        }
 
         match posts_get_req.dt {
             None => Ok(PostsGetRsp {
@@ -900,16 +907,14 @@ async fn get_posts(
                 posts: Vec::new(),
             }),
             Some(dt) => {
-                let mut posts = storage
-                    .get_posts_by_day(
-                        &user.id(),
-                        &PostDay::new(&format!("{}", dt.format("%Y-%m-%d"))).unwrap(),
-                    )
+                let tags = UpToThree::new(parse_tag_parameter(&posts_get_req.tags)?.into_iter())
+                    .context(NoMoreThanThreeTagsSnafu)?;
+                let posts = storage
+                    .get_posts(user, &tags, &dt.into(), &posts_get_req.uri)
                     .await
                     .context(GetPostsSnafu)?;
-                posts.sort_unstable_by(sort_posts_dec);
                 Ok(PostsGetRsp {
-                    date: dt,
+                    date: last_dt,
                     user: user.username(),
                     posts,
                 })
@@ -928,6 +933,78 @@ async fn get_posts(
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(err) => {
+            if !matches!(err, Error::NoPosts { .. }) {
+                error!("{:#?}", err)
+            };
+            let (status, msg) = err.as_status_and_msg();
+            (status, Json(GenericRsp { result_code: msg })).into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         `posts/dates`                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("delicious.posts.dates", Sort::IntegralCounter) }
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct PostsDatesReq {
+    pub tag: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct PostsDate {
+    pub count: usize,
+    pub date: PostDay,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PostsDatesRsp {
+    pub user: Username,
+    // pub tag: UpToThree<Tagname>,
+    pub dates: Vec<PostsDate>,
+}
+
+async fn posts_dates(
+    State(state): State<Arc<Indielinks>>,
+    Query(posts_dates_req): Query<PostsDatesReq>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    async fn posts_dates1(
+        storage: &(dyn StorageBackend + Send + Sync),
+        posts_dates_req: PostsDatesReq,
+        request: axum::extract::Request,
+    ) -> Result<PostsDatesRsp> {
+        let user = user_for_request(&request, "/posts/dates")?;
+        let tags = UpToThree::new(parse_tag_parameter(&posts_dates_req.tag)?.into_iter())
+            .context(NoMoreThanThreeTagsSnafu)?;
+        Ok(PostsDatesRsp {
+            user: user.username(),
+            dates: storage
+                .get_posts_by_day(user, &tags)
+                .await
+                .context(PostsByDaySnafu)?
+                .iter()
+                .map(|(d, n)| PostsDate {
+                    count: *n,
+                    date: d.clone(),
+                })
+                .collect::<Vec<PostsDate>>(),
+        })
+    }
+
+    match posts_dates1(state.storage.as_ref(), posts_dates_req, request).await {
+        Ok(rsp) => {
+            counter_add!(
+                state.instruments,
+                "delicious.posts.dates",
+                rsp.dates.len() as u64,
+                &[]
+            );
+            (StatusCode::OK, Json(rsp)).into_response()
+        }
+        Err(err) => {
             error!("{:#?}", err);
             let (status, msg) = err.as_status_and_msg();
             (status, Json(GenericRsp { result_code: msg })).into_response()
@@ -938,6 +1015,8 @@ async fn get_posts(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           `tags/get`                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("delicious.posts.tags", Sort::IntegralCounter) }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(transparent)]
@@ -968,7 +1047,15 @@ async fn tags_get(
     }
 
     match tags_get1(state.storage.as_ref(), request).await {
-        Ok(rsp) => (StatusCode::OK, Json(rsp)).into_response(),
+        Ok(rsp) => {
+            counter_add!(
+                state.instruments,
+                "delicious.posts.tags",
+                rsp.map.len() as u64,
+                &[]
+            );
+            (StatusCode::OK, Json(rsp)).into_response()
+        }
         Err(err) => {
             error!("{:#?}", err);
             let (status, msg) = err.as_status_and_msg();
@@ -990,10 +1077,11 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         // compatibility, but also support the more idiomatic POST.
         .route("/posts/update", get(update))
         .route("/posts/add", get(add_post).merge(post(add_post)))
-        .route("/posts/get", get(get_posts))
         // Decided not use `DELETE` since we're not addressing the resource being deleted, but again
         // added POST since it seems more appropriate.
         .route("/posts/delete", get(delete_post).merge(post(delete_post)))
+        .route("/posts/get", get(get_posts))
+        .route("/posts/dates", get(posts_dates))
         .route("/tags/get", get(tags_get))
         // Not sure if I should push this up the stack; as is, if a request is not authorized, the CORS
         // & Content-Ty1pe headers would be added already.

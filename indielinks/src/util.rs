@@ -15,12 +15,16 @@
 
 //! # util
 //!
-//! Much as I loathe catch-all "utility" modules, I truly don't know where this belongs. Hopefully,
+//! Much as I loathe catch-all "utility" modules, I truly don't know where these belong. Hopefully,
 //! as I build-out the project, this will become more clear.
 
 use std::fmt::Display;
 
 use either::Either;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          exactly_two                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
 pub struct ExactlyTwoError<T: std::iter::Iterator> {
@@ -63,5 +67,44 @@ where
             None => Err(ExactlyTwoError::<T>::new(Some(Either::Left(first)))),
         },
         None => Err(ExactlyTwoError::<T>::new(None)),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           UpToThree                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// An enum expressing zero, one, two or three of a thing.
+#[derive(Clone, Debug)]
+pub enum UpToThree<T> {
+    None,
+    One(T),
+    Two(T, T),
+    Three(T, T, T),
+}
+
+#[derive(Debug)]
+pub struct NoMoreThanThree {}
+
+impl std::fmt::Display for NoMoreThanThree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NoMoreThanThree")
+    }
+}
+
+impl std::error::Error for NoMoreThanThree {}
+
+impl<T: Clone> UpToThree<T> {
+    pub fn new<U: IntoIterator<Item = T>>(
+        iter: U,
+    ) -> std::result::Result<UpToThree<T>, NoMoreThanThree> {
+        let v = iter.into_iter().collect::<Vec<T>>();
+        match v.len() {
+            0 => Ok(UpToThree::None),
+            1 => Ok(UpToThree::One(v[0].clone())),
+            2 => Ok(UpToThree::Two(v[0].clone(), v[1].clone())),
+            3 => Ok(UpToThree::Three(v[0].clone(), v[1].clone(), v[2].clone())),
+            _ => Err(NoMoreThanThree {}),
+        }
     }
 }

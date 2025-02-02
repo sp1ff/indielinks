@@ -34,7 +34,7 @@ use aws_sdk_dynamodb::{
     primitives::Blob,
     types::{
         AttributeDefinition, AttributeValue, BillingMode, GlobalSecondaryIndex, KeySchemaElement,
-        KeyType, ScalarAttributeType,
+        KeyType, LocalSecondaryIndex, ScalarAttributeType,
     },
     Client,
 };
@@ -277,17 +277,18 @@ async fn create_users(client: &Client) -> Result<()> {
     Ok(())
 }
 
-async fn create_tags(client: &Client) -> Result<()> {
+async fn create_posts(client: &Client) -> Result<()> {
     let out = client
         .create_table()
-        .table_name("tags")
+        .table_name("posts")
         // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
         // DynamoDB
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![
-            table_attr!("id", S),
-            table_attr!("user_id", S),
-            table_attr!("name", S),
+            table_attr!("user_id", S), // partition key
+            table_attr!("url", S),     // sort key
+            table_attr!("posted", S),  // sort key for first LSI
+            table_attr!("day", S),     // sort key for second LSI
         ]))
         .set_key_schema(Some(vec![
             KeySchemaElement::builder()
@@ -298,82 +299,52 @@ async fn create_tags(client: &Client) -> Result<()> {
                     name: "user_id".to_string(),
                 })?,
             KeySchemaElement::builder()
-                .attribute_name("name")
+                .attribute_name("url")
                 .key_type(KeyType::Range)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "id".to_string(),
+                    name: "url".to_string(),
                 })?,
         ]))
-        .global_secondary_indexes(
-            GlobalSecondaryIndex::builder()
-                .index_name("tags_by_id")
-                .set_key_schema(Some(vec![KeySchemaElement::builder()
-                    .attribute_name("id")
-                    .key_type(KeyType::Hash)
-                    .build()
-                    .unwrap()]))
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "username".to_string(),
-                })?,
-        )
-        .send()
-        .await
-        .context(CreateTableSnafu);
-    debug!("create tags: {:#?}", out);
-    Ok(())
-}
-
-async fn create_posts(client: &Client) -> Result<()> {
-    let out = client
-        .create_table()
-        .table_name("posts")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("PK", S), // user#day
-            table_attr!("IK", S), // secondary index PK-- user#url
-            table_attr!("id", S), // sort key (for both)
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("PK")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "PK".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("id")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "id".to_string(),
-                })?,
-        ]))
-        .global_secondary_indexes(
-            GlobalSecondaryIndex::builder()
-                .index_name("posts_by_user_and_url")
+        .local_secondary_indexes(
+            LocalSecondaryIndex::builder()
+                .index_name("posts_by_posted")
                 .set_key_schema(Some(vec![
                     KeySchemaElement::builder()
-                        .attribute_name("IK")
+                        .attribute_name("user_id")
                         .key_type(KeyType::Hash)
                         .build()
                         .unwrap(),
                     KeySchemaElement::builder()
-                        .attribute_name("id")
+                        .attribute_name("posted")
                         .key_type(KeyType::Range)
                         .build()
                         .context(GenericBuildFailureSnafu {
-                            name: "id".to_string(),
+                            name: "posted".to_string(),
                         })?,
                 ]))
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "posts_by_user_and_url".to_string(),
+                    name: "posts_by_posted".to_string(),
                 })?,
+        )
+        .local_secondary_indexes(
+            LocalSecondaryIndex::builder()
+                .index_name("posts_by_day")
+                .set_key_schema(Some(vec![
+                    KeySchemaElement::builder()
+                        .attribute_name("user_id")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .unwrap(),
+                    KeySchemaElement::builder()
+                        .attribute_name("day")
+                        .key_type(KeyType::Range)
+                        .build()
+                        .unwrap(),
+                ]))
+                .build()
+                .unwrap(),
         )
         .send()
         .await
@@ -384,7 +355,6 @@ async fn create_posts(client: &Client) -> Result<()> {
 
 async fn create_tables(client: &Client) -> Result<()> {
     create_users(client).await?;
-    create_tags(client).await?;
     create_posts(client).await?;
     Ok(())
 }
@@ -394,7 +364,7 @@ async fn charge_tables(client: &Client) -> Result<()> {
         .put_item()
         .table_name("users")
         .set_item(Some(HashMap::from([
-            ("id".to_string(), AttributeValue::S("9a1df092cd694c6491f7b8fb4022ea49".to_string())),
+            ("id".to_string(), AttributeValue::S("9a1df092-cd69-4c64-91f7-b8fb4022ea49".to_string())),
             ("username".to_string(), AttributeValue::S("sp1ff".to_string())),
             ("discoverable".to_string(), AttributeValue::Bool(true)),
             ("display_name".to_string(), AttributeValue::S("sp1ff".to_string())),

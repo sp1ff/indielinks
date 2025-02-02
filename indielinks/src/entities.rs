@@ -23,7 +23,7 @@
 use std::{collections::HashSet, fmt::Display, str::FromStr};
 
 use axum::http::Uri;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use lazy_static::lazy_static;
 use picky::key::{PrivateKey, PublicKey};
 use regex::Regex;
@@ -159,7 +159,10 @@ macro_rules! define_id {
         }
         impl Display for $type_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "urn:{}:{}", $nid, self.0.as_simple())
+                // I'm not thrilled with this-- I'd prefer to represent it as an URN for display
+                // purposes. Thing is, this is the format used by `serde-dynamo`, so I want to be
+                // consistent with that.
+                write!(f, "{}", self.0.as_hyphenated())
             }
         }
         // Arggghhhh... the derive macro doesn't work with newtype structs.
@@ -770,6 +773,42 @@ impl std::fmt::Display for PostDay {
     }
 }
 
+impl std::convert::From<DateTime<Utc>> for PostDay {
+    fn from(value: DateTime<Utc>) -> Self {
+        PostDay(value.format("%Y-%m-%d").to_string())
+    }
+}
+
+impl std::convert::From<&DateTime<Utc>> for PostDay {
+    fn from(value: &DateTime<Utc>) -> Self {
+        PostDay(value.format("%Y-%m-%d").to_string())
+    }
+}
+
+impl std::convert::From<NaiveDate> for PostDay {
+    fn from(value: NaiveDate) -> Self {
+        PostDay(value.format("%Y-%m-%d").to_string())
+    }
+}
+
+impl std::convert::From<&NaiveDate> for PostDay {
+    fn from(value: &NaiveDate) -> Self {
+        PostDay(value.format("%Y-%m-%d").to_string())
+    }
+}
+
+impl std::cmp::PartialOrd for PostDay {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::cmp::Ord for PostDay {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for PostDay {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
         type_check!(typ, Ascii, TypeCheckError, "PostDay")
@@ -817,14 +856,13 @@ impl SerializeValue for PostDay {
 /// Represents an indielinks post
 #[derive(Clone, Debug, Deserialize, DeserializeRow, Eq, PartialEq, Serialize)]
 pub struct Post {
-    id: PostId,
     url: PostUri,
     user_id: UserId,
     posted: DateTime<Utc>,
     day: PostDay,
     title: String,
     notes: Option<String>,
-    tags: HashSet<TagId>,
+    tags: HashSet<Tagname>,
     public: bool,
     unread: bool,
 }
@@ -833,16 +871,37 @@ impl Post {
     pub fn day(&self) -> PostDay {
         self.day.clone()
     }
-    pub fn id(&self) -> PostId {
-        self.id
-    }
     pub fn posted(&self) -> DateTime<Utc> {
         self.posted
     }
-    pub fn tags(&self) -> HashSet<TagId> {
+    pub fn tags(&self) -> HashSet<Tagname> {
         self.tags.clone()
     }
     pub fn user_id(&self) -> UserId {
         self.user_id
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        url: &PostUri,
+        user_id: &UserId,
+        posted: &DateTime<Utc>,
+        day: &PostDay,
+        title: &str,
+        notes: &Option<String>,
+        tags: &HashSet<Tagname>,
+        public: bool,
+        unread: bool,
+    ) -> Post {
+        Post {
+            url: url.clone(),
+            user_id: *user_id,
+            posted: *posted,
+            day: day.clone(),
+            title: title.to_string(),
+            notes: notes.clone(),
+            tags: tags.clone(),
+            public,
+            unread,
+        }
     }
 }

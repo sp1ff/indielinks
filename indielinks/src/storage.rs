@@ -17,16 +17,22 @@
 //!
 //! Abstractions for the indielinks storage layer.
 
-use crate::entities::{Post, PostDay, PostUri, TagId, Tagname, User, UserId};
+use crate::{
+    entities::{Post, PostDay, PostUri, Tagname, User},
+    util::UpToThree,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use snafu::Backtrace;
 
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
+#[allow(dead_code)] // `backtrace` is never read (?)
 pub struct Error {
     source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    backtrace: Backtrace,
 }
 
 impl std::fmt::Display for Error {
@@ -41,6 +47,7 @@ impl Error {
     pub fn new(err: impl std::error::Error + Send + Sync + 'static) -> Error {
         Error {
             source: Box::new(err),
+            backtrace: Backtrace::capture(),
         }
     }
 }
@@ -60,57 +67,27 @@ pub trait Backend {
         notes: &Option<String>,
         shared: bool,
         to_read: bool,
-        tags: &HashSet<TagId>,
+        tags: &HashSet<Tagname>,
     ) -> Result<bool, Error>;
-    /// Remove posts in batch
-    ///
-    /// It may seem appealing to design this as taking an iterator yielding [PostId]s, but just as
-    /// C++ can't have template virtual methods, Rust can't handle generic methods in (object-safe)
-    /// traits. However, it seems reasonable to require callers to prove that there are no
-    /// duplicates among the collection (trying to delete a given post twice would lead to errors);
-    /// the closest I know how to come to that in Rust is to demand a HashSet. Unfortunately, I
-    /// can't hash [Post]s easily because they themselves contain a [HashSet] which ironically can't
-    /// be hashed.
-    ///
-    /// [PostId]: crate::entities::PostId
-    async fn delete_posts(&self, posts: &[Post]) -> Result<(), Error>;
-    /// Retrieve full posts by day
-    async fn get_posts_by_day(&self, userid: &UserId, day: &PostDay) -> Result<Vec<Post>, Error>;
-    /// Retrieve a users's posts given a URI.
-    async fn get_posts_by_uri(&self, userid: &UserId, uri: &PostUri) -> Result<Vec<Post>, Error>;
+    /// Remove a post-- return true if a [Post] was actually removed, false else
+    async fn delete_post(&self, user: &User, url: &PostUri) -> Result<bool, Error>;
+    async fn get_posts_by_day(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+    ) -> Result<Vec<(PostDay, usize)>, Error>;
+    /// Retrieve full posts with various filtering options
+    async fn get_posts(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+        day: &PostDay,
+        uri: &Option<PostUri>,
+    ) -> Result<Vec<Post>, Error>;
     /// Retrieve the user's tag cloud
     async fn get_tag_cloud(&self, user: &User) -> Result<HashMap<Tagname, usize>, Error>;
-    /// Given a userid & URI, find the tags used on all posts for that user & that URI. Return a
-    /// mapping of [TagId] to use count.
-    async fn get_tag_cloud_for_uri(
-        &self,
-        userid: &UserId,
-        uri: &PostUri,
-    ) -> Result<HashMap<TagId, usize>, Error>;
-    /// Update the user's tag cloud. Internally, create the new tags if they're not already there,
-    /// with a count of one. If they're there, increment their counts. Return their TagIds.
-    ///
-    /// Ideally, this function would take an iterator over [String] along with a proof that the
-    /// yielded [String]s are unique. The closest approximation of which I'm aware in Rust is to
-    /// just take a [HashSet]. Returning a [HashSet] expresses this method's commitment that the
-    /// resulting collection of [TagId]s is also unique.
-    ///
-    /// This is the one place (so far) I couldn't wriggle out of performing a join in application
-    /// logic. We need to ensure that each tag exists in the database (creating them if need be) &
-    /// increment their counts,
-    async fn update_tag_cloud_on_add(
-        &self,
-        userid: &UserId,
-        tags: &HashSet<Tagname>,
-    ) -> Result<HashSet<TagId>, Error>;
-    /// Update the user's tag cloud. Decrease the use count of each tag by the given amount.
-    async fn update_tag_cloud_on_delete(
-        &self,
-        userid: &UserId,
-        counts: &HashMap<TagId, usize>,
-    ) -> Result<(), Error>;
     /// Update the `first_update` and `last_update` for the given user
-    async fn update_user_post_times(&self, userid: &User, dt: &DateTime<Utc>) -> Result<(), Error>;
+    async fn update_user_post_times(&self, user: &User, dt: &DateTime<Utc>) -> Result<(), Error>;
     /// Retrieve a [User] instance given a textual username. None means there is no user by that
     /// name.
     async fn user_for_name(&self, name: &str) -> Result<Option<User>, Error>;
