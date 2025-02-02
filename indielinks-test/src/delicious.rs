@@ -14,10 +14,11 @@
 // see <http://www.gnu.org/licenses/>.
 
 use indielinks::{
-    delicious::{GenericRsp, TagsGetRsp},
+    delicious::{GenericRsp, TagsGetRsp, UpdateRsp},
     entities::{Tagname, Username},
 };
 
+use chrono::Utc;
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     StatusCode, Url,
@@ -25,6 +26,20 @@ use reqwest::{
 
 /// Exercise the delicious API in a few simple ways (i.e. a "smoke test"); panic on failure.
 pub fn delicious_smoke_test(url: &Url, username: &Username, api_key: &str) {
+    // Hit `/posts/update` with no posts
+    let rsp = reqwest::blocking::get(
+        url.join(&format!(
+            "/api/v1/posts/update?auth_token={}:{}",
+            username, api_key
+        ))
+        .expect("Invalid URL"),
+    );
+    let rsp = rsp.expect("Request failed");
+    println!("response: {:?}", rsp);
+    assert!(StatusCode::OK == rsp.status());
+    let body = rsp.json::<GenericRsp>().expect("Unexpected response");
+    assert!(body.result_code == format!("{} has no posts, yet", username));
+
     // Hit `/posts/get` without an auth token; should be 401'd
     assert!(
         StatusCode::UNAUTHORIZED
@@ -125,4 +140,15 @@ pub fn delicious_smoke_test(url: &Url, username: &Username, api_key: &str) {
             (Tagname::new("news").unwrap(), 1usize),
         ]
     );
+
+    // Hit `/posts/update` once more
+    let rsp = client
+        .get(url.join("/api/v1/posts/update").expect("Invalid URL"))
+        .send();
+    let rsp = rsp.expect("Request failed");
+    println!("response: {:?}", rsp);
+    assert!(StatusCode::OK == rsp.status());
+    let body = rsp.json::<UpdateRsp>().expect("Unexpected response");
+    let diff = Utc::now() - body.update_time;
+    assert!(diff.num_seconds() < 1);
 }

@@ -550,7 +550,7 @@ async fn authenticate(
         }
         // I want to be careful about what sort of information we reveal to our caller...
         Err(err) => {
-            error!("indielinks failed to authenticate: {:#?}", err);
+            error!("indielinks failed to authenticate: {:?}", err);
             counter_add!(state.instruments, "delicious.auth.failures", 1, &[]);
             err.into_response()
         }
@@ -584,6 +584,45 @@ fn user_for_request<'a>(request: &'a axum::extract::Request, pth: &str) -> Resul
         .context(UnauthorizedSnafu {
             path: pth.to_string(),
         })
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        `/posts/update`                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("delicious.updates", Sort::IntegralCounter) }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UpdateRsp {
+    pub update_time: DateTime<Utc>,
+}
+
+async fn update(
+    State(state): State<Arc<Indielinks>>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    async fn update1(request: axum::extract::Request) -> Result<UpdateRsp> {
+        let user = user_for_request(&request, "/posts/update")?;
+        let update_time = user.last_update().context(NoPostsSnafu {
+            username: user.username(),
+        })?;
+
+        Ok(UpdateRsp { update_time })
+    }
+
+    match update1(request).await {
+        Ok(rsp) => {
+            counter_add!(state.instruments, "delicious.updates", 1, &[]);
+            (StatusCode::OK, Json(rsp)).into_response()
+        }
+        Err(err) => {
+            if !matches!(err, Error::NoPosts { .. }) {
+                error!("{:#?}", err)
+            };
+            let (status, msg) = err.as_status_and_msg();
+            (status, Json(GenericRsp { result_code: msg })).into_response()
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -949,6 +988,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
     Router::new()
         // The del.icio.us & Pinboard APIs use the GET verb for "add", which seems odd. I'll preserve that for
         // compatibility, but also support the more idiomatic POST.
+        .route("/posts/update", get(update))
         .route("/posts/add", get(add_post).merge(post(add_post)))
         .route("/posts/get", get(get_posts))
         // Decided not use `DELETE` since we're not addressing the resource being deleted, but again
