@@ -13,10 +13,14 @@
 // You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use indielinks_test::{delicious::delicious_smoke_test, test_healthcheck};
+use indielinks_test::{
+    delicious::{delicious_smoke_test, posts_recent},
+    test_healthcheck,
+};
 
 use common::{run, Configuration, Test};
 
+use itertools::Itertools;
 use libtest_mimic::{Arguments, Trial};
 use snafu::{prelude::*, Snafu};
 
@@ -66,7 +70,7 @@ fn teardown() -> Result<()> {
 }
 
 inventory::submit!(Test {
-    name: "test_healthcheck",
+    name: "000test_healthcheck",
     test_fn: |cfg| {
         test_healthcheck(&cfg.url);
         Ok(())
@@ -74,19 +78,34 @@ inventory::submit!(Test {
 });
 
 inventory::submit!(Test {
-    name: "delicious_smoke_test",
+    name: "001delicious_smoke_test",
     test_fn: |cfg| {
         delicious_smoke_test(&cfg.url, &cfg.username, &cfg.api_key);
         Ok(())
     },
 });
 
+inventory::submit!(Test {
+    name: "002delicious_posts_recent",
+    test_fn: |cfg| {
+        posts_recent(&cfg.url, &cfg.username, &cfg.api_key);
+        Ok(())
+    },
+});
+
 fn main() -> Result<()> {
     let config = Configuration::new().context(ConfigurationSnafu)?;
-    let args = Arguments::from_args();
+    let mut args = Arguments::from_args();
 
     if !config.no_setup {
         setup()?;
+    }
+
+    // This, together with prefixing my function names with numbers, is a hopefully temporary
+    // workaround to the fact that my tests can't be run out-of-order or simultaneously.
+    if !matches!(args.test_threads, Some(1)) {
+        eprintln!("Temporarily overriding --test-threads to 1.");
+        args.test_threads = Some(1);
     }
 
     // Nb. this program is always run from the root directory of the owning crate.
@@ -94,6 +113,7 @@ fn main() -> Result<()> {
         &args,
         inventory::iter::<common::Test>
             .into_iter()
+            .sorted_by_key(|t| t.name)
             .map(|trial| {
                 Trial::test(trial.name, {
                     let cfg = config.clone();

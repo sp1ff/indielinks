@@ -429,6 +429,54 @@ impl storage::Backend for Client {
             .pipe(Ok)
     }
 
+    async fn get_recent_posts(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+        count: usize,
+    ) -> StdResult<Vec<Post>, StorError> {
+        let mut query = self
+            .client
+            .query()
+            .table_name("posts")
+            .index_name("posts_by_posted")
+            .key_condition_expression("user_id=:id")
+            .expression_attribute_values(":id", AttributeValue::S(user.id().to_string()))
+            .limit(count as i32)
+            .scan_index_forward(false);
+        match tags {
+            UpToThree::None => {}
+            UpToThree::One(tag) => {
+                query = query
+                    .filter_expression("contains(tags,:tag)")
+                    .expression_attribute_values(":tag", AttributeValue::S(tag.to_string()));
+            }
+            UpToThree::Two(tag0, tag1) => {
+                query = query
+                    .filter_expression("contains(tags,:tag0) and contains(tags,:tag1)")
+                    .expression_attribute_values(":tag0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":tag1", AttributeValue::S(tag1.to_string()));
+            }
+            UpToThree::Three(tag0, tag1, tag2) => {
+                query = query
+                    .filter_expression(
+                        "contains(tags,:tag0) and contains(tags,:tag1) and contains(tags,:tag2)",
+                    )
+                    .expression_attribute_values(":tag0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":tag1", AttributeValue::S(tag1.to_string()))
+                    .expression_attribute_values(":tag2", AttributeValue::S(tag2.to_string()));
+            }
+        }
+
+        query
+            .send()
+            .await?
+            .items()
+            .to_vec()
+            .pipe(from_items::<Post>)?
+            .pipe(Ok)
+    }
+
     async fn get_tag_cloud(&self, user: &User) -> StdResult<HashMap<Tagname, usize>, StorError> {
         self.client
             .query()

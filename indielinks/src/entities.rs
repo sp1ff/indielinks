@@ -200,7 +200,7 @@ define_id!(PostId, "postid");
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// A refined type representing an indielinks username
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct Username(String);
 
@@ -674,6 +674,12 @@ impl Tag {
 #[serde(transparent)]
 pub struct PostUri(#[serde(with = "serde_uri")] Uri);
 
+impl std::convert::From<Uri> for PostUri {
+    fn from(value: Uri) -> Self {
+        PostUri(value)
+    }
+}
+
 impl Display for PostUri {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -868,18 +874,6 @@ pub struct Post {
 }
 
 impl Post {
-    pub fn day(&self) -> PostDay {
-        self.day.clone()
-    }
-    pub fn posted(&self) -> DateTime<Utc> {
-        self.posted
-    }
-    pub fn tags(&self) -> HashSet<Tagname> {
-        self.tags.clone()
-    }
-    pub fn user_id(&self) -> UserId {
-        self.user_id
-    }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         url: &PostUri,
@@ -903,5 +897,20 @@ impl Post {
             public,
             unread,
         }
+    }
+    pub fn day(&self) -> PostDay {
+        self.day.clone()
+    }
+    pub fn posted(&self) -> DateTime<Utc> {
+        self.posted
+    }
+    pub fn tags(&self) -> HashSet<Tagname> {
+        self.tags.clone()
+    }
+    pub fn url(&self) -> PostUri {
+        self.url.clone()
+    }
+    pub fn user_id(&self) -> UserId {
+        self.user_id
     }
 }

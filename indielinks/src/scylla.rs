@@ -222,6 +222,10 @@ enum PreparedStatements {
     GetPosts6,
     GetPosts7,
     GetPosts8,
+    RecentPosts0,
+    RecentPosts1,
+    RecentPosts2,
+    RecentPosts3,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -284,6 +288,10 @@ impl Session {
             "select url,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? allow filtering", // GetPosts6
             "select url,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? and tags contains ? allow filtering",
             "select url,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? and tags contains ? and tags contains ? allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? limit ?",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? limit ? allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? limit ? allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? limit ? allow filtering",
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -300,7 +308,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 17] = prepared_statements
+        let prepared_statements: [PreparedStatement; 21] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -509,6 +517,52 @@ impl storage::Backend for Session {
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetPosts1],
                         (user.id(), uri),
+                    )
+                    .await
+            }
+        }?
+        .into_rows_result()?
+        .rows::<Post>()?
+        .collect::<StdResult<Vec<Post>, _>>()?
+        .pipe(Ok)
+    }
+
+    async fn get_recent_posts(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+        count: usize,
+    ) -> StdResult<Vec<Post>, StorError> {
+        match tags {
+            UpToThree::None => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::RecentPosts0],
+                        (user.id(), count as i32),
+                    )
+                    .await
+            }
+            UpToThree::One(tag) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::RecentPosts1],
+                        (user.id(), tag, count as i32),
+                    )
+                    .await
+            }
+            UpToThree::Two(tag0, tag1) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::RecentPosts2],
+                        (user.id(), tag0, tag1, count as i32),
+                    )
+                    .await
+            }
+            UpToThree::Three(tag0, tag1, tag2) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::RecentPosts3],
+                        (user.id(), tag0, tag1, tag2, count as i32),
                     )
                     .await
             }

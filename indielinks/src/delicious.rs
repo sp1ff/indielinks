@@ -159,6 +159,8 @@ pub enum Error {
         source: storage::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to fetch recent posts; {source}"))]
+    RecentPosts { source: storage::Error },
     #[snafu(display("Failed to fetch the tag cloud for {uri}: {source}"))]
     TagCloudForUri {
         uri: PostUri,
@@ -293,6 +295,10 @@ impl Error {
             Error::TagCloudForUri { uri, source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch the tag cloud for {}: {}", uri, source),
+            ),
+            Error::RecentPosts { source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to fetch recent posts: {}", source),
             ),
             Error::UpdateTagCloudAdd { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -943,12 +949,81 @@ async fn get_posts(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        `/posts/recent`                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("delicious.posts.recents", Sort::IntegralCounter) }
+
+#[derive(Debug, Deserialize)]
+struct PostsRecentReq {
+    tag: Option<String>,
+    count: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PostsRecentRsp {
+    pub date: DateTime<Utc>,
+    pub user: Username,
+    pub posts: Vec<Post>,
+}
+
+/// Retrieve a list of the user's most recent posts
+///
+/// The user may filter the results by up to three tags (which will operate as a conjunction; i.e. a
+/// [Post] will only be returned if it has *all* of the specified tags) via the `tag` paramter. The
+/// `count` parameter governs the number of [Post]s returned (ten by default).
+async fn get_recent(
+    State(state): State<Arc<Indielinks>>,
+    Query(post_recent_req): Query<PostsRecentReq>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    async fn get_recent1(
+        storage: &(dyn StorageBackend + Send + Sync),
+        posts_recent_req: PostsRecentReq,
+        request: axum::extract::Request,
+    ) -> Result<PostsRecentRsp> {
+        let user = user_for_request(&request, "/posts/recent")?;
+        let tags = UpToThree::new(parse_tag_parameter(&posts_recent_req.tag)?.into_iter())
+            .context(NoMoreThanThreeTagsSnafu)?;
+        let count = posts_recent_req.count.unwrap_or(10);
+        let update_time = user.last_update().context(NoPostsSnafu {
+            username: user.username(),
+        })?;
+        Ok(PostsRecentRsp {
+            date: update_time,
+            user: user.username(),
+            posts: storage
+                .get_recent_posts(user, &tags, count)
+                .await
+                .context(RecentPostsSnafu)?,
+        })
+    }
+
+    match get_recent1(state.storage.as_ref(), post_recent_req, request).await {
+        Ok(rsp) => {
+            counter_add!(
+                state.instruments,
+                "delicious.posts.recents",
+                rsp.posts.len() as u64,
+                &[]
+            );
+            (StatusCode::OK, Json(rsp)).into_response()
+        }
+        Err(err) => {
+            error!("{:#?}", err);
+            let (status, msg) = err.as_status_and_msg();
+            (status, Json(GenericRsp { result_code: msg })).into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         `posts/dates`                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("delicious.posts.dates", Sort::IntegralCounter) }
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Debug, Deserialize)]
 pub struct PostsDatesReq {
     pub tag: Option<String>,
 }
@@ -1082,6 +1157,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         // added POST since it seems more appropriate.
         .route("/posts/delete", get(delete_post).merge(post(delete_post)))
         .route("/posts/get", get(get_posts))
+        .route("/posts/recent", get(get_recent))
         .route("/posts/dates", get(posts_dates))
         .route("/tags/get", get(tags_get))
         // Not sure if I should push this up the stack; as is, if a request is not authorized, the CORS

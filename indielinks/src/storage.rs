@@ -84,6 +84,13 @@ pub trait Backend {
         day: &PostDay,
         uri: &Option<PostUri>,
     ) -> Result<Vec<Post>, Error>;
+    /// Retrieve recent posts
+    async fn get_recent_posts(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+        count: usize,
+    ) -> Result<Vec<Post>, Error>;
     /// Retrieve the user's tag cloud
     async fn get_tag_cloud(&self, user: &User) -> Result<HashMap<Tagname, usize>, Error>;
     /// Update the `first_update` and `last_update` for the given user

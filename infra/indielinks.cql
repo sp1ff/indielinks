@@ -92,7 +92,7 @@ create index tags_idx on posts (tags);
 
 create materialized view posts_by_posted as
   select * from posts where url is not null and posted is not null
-  primary key (user_id, posted, url)
+  primary key (user_id, posted, url) -- user_id is the partition key
   with clustering order by (posted desc);
 
 create materialized view posts_by_day as

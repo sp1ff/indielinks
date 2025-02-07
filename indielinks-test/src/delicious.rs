@@ -14,8 +14,8 @@
 // see <http://www.gnu.org/licenses/>.
 
 use indielinks::{
-    delicious::{GenericRsp, PostsDatesRsp, PostsGetRsp, TagsGetRsp, UpdateRsp},
-    entities::{Tagname, Username},
+    delicious::{GenericRsp, PostsDatesRsp, PostsGetRsp, PostsRecentRsp, TagsGetRsp, UpdateRsp},
+    entities::{Post, Tagname, Username},
 };
 
 use chrono::Utc;
@@ -25,6 +25,8 @@ use reqwest::{
 };
 
 /// Exercise the delicious API in a few simple ways (i.e. a "smoke test"); panic on failure.
+///
+/// Assumes a clean fixture!
 pub fn delicious_smoke_test(url: &Url, username: &Username, api_key: &str) {
     // Hit `/posts/update` with no posts
     let rsp = reqwest::blocking::get(
@@ -231,4 +233,72 @@ pub fn delicious_smoke_test(url: &Url, username: &Username, api_key: &str) {
         .json::<PostsDatesRsp>()
         .expect("unexpected /posts/dates response body");
     assert!(body.dates.len() == 1);
+}
+
+/// Test `/posts/recent`
+pub fn posts_recent(url: &Url, username: &Username, api_key: &str) {
+    // OK, the game is to make a bunch of posts and then read 'em back
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}:{}", username, api_key)).unwrap(/* Known good */),
+    );
+
+    let client = reqwest::blocking::Client::builder().default_headers(headers).build().unwrap(/* Known good */);
+    // Add our first post...
+    let rsp = client.get(url.join("/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&tags=blog,daily,glenn-reynolds")
+                         .unwrap())
+        .send();
+    let rsp = rsp.expect("request to /posts/add failed");
+    assert!(StatusCode::CREATED == rsp.status());
+
+    let rsp = client.get(url.join("/api/v1/posts/add?url=https://thefp.com&description=The%20Free%20Press&tags=news,daily,bari-weiss")
+                         .unwrap())
+        .send();
+    let rsp = rsp.expect("request to /posts/add failed");
+    assert!(StatusCode::CREATED == rsp.status());
+
+    // and add a third:
+    let rsp = client.get(url.join("/api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy")
+                         .unwrap())
+        .send();
+    let rsp = rsp.expect("request to /posts/add failed");
+    assert!(StatusCode::CREATED == rsp.status());
+
+    // OK, no matter what, those should be our most recent three posts
+    let rsp_prime = client
+        .get(url.join("/api/v1/posts/recent?count=3").unwrap())
+        .send();
+    let mut rsp = rsp_prime.expect("request to /posts/add failed");
+
+    // WORKAROUND: there appears to be a bug in ScyllaDB's Alternator implementation. The first time
+    // I query by the `posts_by_posted` secondary local index, specifying a reverse scan, the query
+    // fails with an internal error. The second time, however, it will succeed.
+    //
+    // You can replicate the bug by running `scylla-up`, then executing:
+    //
+    //     aws --endpoint-url=http://localhost:8042 dynamodb query \
+    //     --table-name posts \
+    //     --index-name posts_by_posted \
+    //     --key-condition-expression "user_id=:id" \
+    //     --expression-attribute-values '{":id":{"S":"9a1df092-cd69-4c64-91f7-b8fb4022ea49"}}' \
+    //     --no-scan-index-forward
+    //
+    // The first time it will fail; the second it will succeed.
+
+    if StatusCode::INTERNAL_SERVER_ERROR == rsp.status() {
+        let rsp_prime = client
+            .get(url.join("/api/v1/posts/recent?count=3").unwrap())
+            .send();
+        rsp = rsp_prime.expect("request to /posts/add failed");
+    }
+    assert!(StatusCode::OK == rsp.status());
+
+    let body = rsp
+        .json::<PostsRecentRsp>()
+        .expect("unexpected /posts/recent response body");
+    assert!(body.posts.len() == 3);
+
+    let post0: Post = body.posts[0].clone();
+    assert!(&post0.url().to_string() == "https://wsj.com/");
 }
