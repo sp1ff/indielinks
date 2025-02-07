@@ -423,7 +423,7 @@ impl storage::Backend for Session {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetPostsByDay0],
-                        (user.id().to_raw_string(),),
+                        (user.id(),),
                     )
                     .await
             }
@@ -431,7 +431,7 @@ impl storage::Backend for Session {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetPostsByDay1],
-                        (user.id().to_raw_string(), tag),
+                        (user.id(), tag),
                     )
                     .await
             }
@@ -439,7 +439,7 @@ impl storage::Backend for Session {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetPostsByDay2],
-                        (user.id().to_raw_string(), tag0, tag1),
+                        (user.id(), tag0, tag1),
                     )
                     .await
             }
@@ -447,7 +447,7 @@ impl storage::Backend for Session {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetPostsByDay3],
-                        (user.id().to_raw_string(), tag0, tag1, tag2),
+                        (user.id(), tag0, tag1, tag2),
                     )
                     .await
             }

@@ -962,7 +962,7 @@ pub struct PostsDate {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PostsDatesRsp {
     pub user: Username,
-    // pub tag: UpToThree<Tagname>,
+    pub tag: String,
     pub dates: Vec<PostsDate>,
 }
 
@@ -981,6 +981,7 @@ async fn posts_dates(
             .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsDatesRsp {
             user: user.username(),
+            tag: posts_dates_req.tag.unwrap_or("".to_string()),
             dates: storage
                 .get_posts_by_day(user, &tags)
                 .await

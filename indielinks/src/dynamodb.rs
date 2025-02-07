@@ -208,7 +208,11 @@ use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
 use aws_sdk_dynamodb::operation::query::QueryError;
 use aws_smithy_runtime_api::client::result::SdkError;
 
-// Use this if you don't want to attach any context to a failed DeleteItem request
+// Use these if you don't want to attach any context to a failed DeleteItem request; the `StorError`
+// will have a backtrace, so the operator should be able to figure-out where the error occurred. I
+// should probably wrap this boilerplate up in a macro, but I want to be sure this is the way I
+// want to go, first.
+
 impl std::convert::From<SdkError<DeleteItemError, HttpResponse>> for StorError {
     fn from(value: SdkError<DeleteItemError, HttpResponse>) -> Self {
         StorError::new(value)
@@ -225,6 +229,14 @@ impl std::convert::From<serde_dynamo::Error> for StorError {
     fn from(value: serde_dynamo::Error) -> Self {
         StorError::new(value)
     }
+}
+
+// These are used with queries involving projections (i.e. selecting only certain attributes).
+// Again, should probably wrap them up in a macro.
+
+#[derive(Debug, serde::Deserialize)]
+struct Days {
+    pub day: PostDay,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -350,8 +362,9 @@ impl storage::Backend for Client {
             .await?
             .items()
             .to_vec()
-            .pipe(from_items::<PostDay>)?
+            .pipe(from_items::<Days>)?
             .into_iter()
+            .map(|x| x.day)
             .counts()
             .into_iter()
             .sorted_by_key(|(d, _n)| d.clone())

@@ -14,7 +14,7 @@
 // see <http://www.gnu.org/licenses/>.
 
 use indielinks::{
-    delicious::{GenericRsp, PostsGetRsp, TagsGetRsp, UpdateRsp},
+    delicious::{GenericRsp, PostsDatesRsp, PostsGetRsp, TagsGetRsp, UpdateRsp},
     entities::{Tagname, Username},
 };
 
@@ -221,4 +221,14 @@ pub fn delicious_smoke_test(url: &Url, username: &Username, api_key: &str) {
         .json::<PostsGetRsp>()
         .expect("unexpected /posts/get response body");
     assert!(body.posts.is_empty());
+
+    // Alright-- finally, get `/posts/dates`
+    let rsp = client.get(url.join("/api/v1/posts/dates").unwrap()).send();
+    let rsp = rsp.expect("/posts/dates request failed");
+    assert!(StatusCode::OK == rsp.status(), "status={}", rsp.status());
+
+    let body = rsp
+        .json::<PostsDatesRsp>()
+        .expect("unexpected /posts/dates response body");
+    assert!(body.dates.len() == 1);
 }
