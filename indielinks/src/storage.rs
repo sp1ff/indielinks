@@ -52,6 +52,24 @@ impl Error {
     }
 }
 
+pub enum DateRange {
+    None,
+    Begins(DateTime<Utc>),
+    Ends(DateTime<Utc>),
+    Both(DateTime<Utc>, DateTime<Utc>),
+}
+
+impl DateRange {
+    pub fn new(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> DateRange {
+        match (from, to) {
+            (None, None) => DateRange::None,
+            (None, Some(d)) => DateRange::Ends(d),
+            (Some(d), None) => DateRange::Begins(d),
+            (Some(b), Some(e)) => DateRange::Both(b, e),
+        }
+    }
+}
+
 #[async_trait]
 pub trait Backend {
     /// Add a Post for `user`; return true if a new post was actually created, false if the post
@@ -83,6 +101,14 @@ pub trait Backend {
         tags: &UpToThree<Tagname>,
         day: &PostDay,
         uri: &Option<PostUri>,
+    ) -> Result<Vec<Post>, Error>;
+    /// Retrieve all of a user's posts, optionally filtering by time & tags. The implementation shall
+    /// return the tags in reverse chronological order.
+    async fn get_all_posts(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+        dates: &DateRange,
     ) -> Result<Vec<Post>, Error>;
     /// Retrieve recent posts
     async fn get_recent_posts(

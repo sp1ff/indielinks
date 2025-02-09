@@ -35,7 +35,7 @@ use tap::Pipe;
 
 use crate::{
     entities::{Post, PostDay, PostUri, Tagname, User, UserId},
-    storage,
+    storage::{self, DateRange},
     util::UpToThree,
 };
 
@@ -226,6 +226,22 @@ enum PreparedStatements {
     RecentPosts1,
     RecentPosts2,
     RecentPosts3,
+    GetAllPosts0,
+    GetAllPosts1,
+    GetAllPosts2,
+    GetAllPosts3,
+    GetAllPosts4,
+    GetAllPosts5,
+    GetAllPosts6,
+    GetAllPosts7,
+    GetAllPosts8,
+    GetAllPosts9,
+    GetAllPosts10,
+    GetAllPosts11,
+    GetAllPosts12,
+    GetAllPosts13,
+    GetAllPosts14,
+    GetAllPosts15,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -292,6 +308,22 @@ impl Session {
             "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? limit ? allow filtering",
             "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? limit ? allow filtering",
             "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? limit ? allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? order by posted desc",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? order by posted desc",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? order by posted desc",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? order by posted desc",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -308,7 +340,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 21] = prepared_statements
+        let prepared_statements: [PreparedStatement; 37] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -517,6 +549,148 @@ impl storage::Backend for Session {
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetPosts1],
                         (user.id(), uri),
+                    )
+                    .await
+            }
+        }?
+        .into_rows_result()?
+        .rows::<Post>()?
+        .collect::<StdResult<Vec<Post>, _>>()?
+        .pipe(Ok)
+    }
+
+    async fn get_all_posts(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+        dates: &DateRange,
+    ) -> StdResult<Vec<Post>, StorError> {
+        match (tags, dates) {
+            (UpToThree::None, DateRange::None) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts0],
+                        (user.id(),),
+                    )
+                    .await
+            }
+            (UpToThree::None, DateRange::Begins(dt)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts1],
+                        (user.id(), dt),
+                    )
+                    .await
+            }
+            (UpToThree::None, DateRange::Ends(dt)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts2],
+                        (user.id(), dt),
+                    )
+                    .await
+            }
+            (UpToThree::None, DateRange::Both(b, e)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts3],
+                        (user.id(), b, e),
+                    )
+                    .await
+            }
+            (UpToThree::One(tag), DateRange::None) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts4],
+                        (user.id(), tag),
+                    )
+                    .await
+            }
+            (UpToThree::One(tag), DateRange::Begins(dt)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts5],
+                        (user.id(), dt, tag),
+                    )
+                    .await
+            }
+            (UpToThree::One(tag), DateRange::Ends(dt)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts6],
+                        (user.id(), dt, tag),
+                    )
+                    .await
+            }
+            (UpToThree::One(tag), DateRange::Both(b, e)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts7],
+                        (user.id(), b, e, tag),
+                    )
+                    .await
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::None) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts8],
+                        (user.id(), tag0, tag1),
+                    )
+                    .await
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Begins(dt)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts9],
+                        (user.id(), dt, tag0, tag1),
+                    )
+                    .await
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Ends(dt)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts10],
+                        (user.id(), dt, tag0, tag1),
+                    )
+                    .await
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Both(b, e)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts11],
+                        (user.id(), b, e, tag0, tag1),
+                    )
+                    .await
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::None) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts12],
+                        (user.id(), tag0, tag1, tag2),
+                    )
+                    .await
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(dt)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts13],
+                        (user.id(), dt, tag0, tag1, tag2),
+                    )
+                    .await
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(dt)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts14],
+                        (user.id(), dt, tag0, tag1, tag2),
+                    )
+                    .await
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e)) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts15],
+                        (user.id(), b, e, tag0, tag1, tag2),
                     )
                     .await
             }

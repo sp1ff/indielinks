@@ -13,18 +13,30 @@
 // You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
 // see <http://www.gnu.org/licenses/>.
 
+/// # delicious-alternator
+///
+/// Synchronous integration tests run against the Dynamo storage back-end.
+use common::{run, Configuration, Test};
+use indielinks::entities::{Post, User, UserId, Username};
 use indielinks_test::{
-    delicious::{delicious_smoke_test, posts_recent},
-    test_healthcheck,
+    delicious::{delicious_smoke_test, posts_all, posts_recent},
+    test_healthcheck, Helper,
 };
 
-use common::{run, Configuration, Test};
-
+use async_trait::async_trait;
+use aws_config::{meta::region::RegionProviderChain, BehaviorVersion, Region};
+use aws_sdk_dynamodb::{
+    config::Credentials,
+    types::{AttributeValue, DeleteRequest, Select, WriteRequest},
+};
+use either::Either;
 use itertools::Itertools;
-use libtest_mimic::{Arguments, Trial};
-use snafu::{prelude::*, Snafu};
+use libtest_mimic::{Arguments, Failed, Trial};
+use serde_dynamo::aws_sdk_dynamodb_1::from_items;
+use snafu::{prelude::*, Backtrace, Snafu};
+use tap::Pipe;
 
-use std::fmt::Display;
+use std::{cmp::min, fmt::Display, sync::Arc};
 
 mod common;
 
@@ -34,6 +46,28 @@ enum Error {
     Command { cmd: String, source: common::Error },
     #[snafu(display("Error obtaining test configuration: {source}"))]
     Configuration { source: common::Error },
+    #[snafu(display("Failed to deserialize a Post: {source}"))]
+    DePost {
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize a User: {source}"))]
+    DeUser {
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Expected exactly one"))]
+    ExactlyOne { backtrace: Backtrace },
+    #[snafu(display("No endpoint URLs specified"))]
+    NoEndpoints { backtrace: Backtrace },
+    #[snafu(display("DynamoDB query failed: {source}"))]
+    Query {
+        source: aws_smithy_runtime_api::client::result::SdkError<
+            aws_sdk_dynamodb::operation::query::QueryError,
+            aws_sdk_dynamodb::config::http::HttpResponse,
+        >,
+        backtrace: Backtrace,
+    },
 }
 
 impl std::fmt::Debug for Error {
@@ -48,6 +82,8 @@ impl std::fmt::Debug for Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
+
+type StdResult<T, E> = std::result::Result<T, E>;
 
 fn setup() -> Result<()> {
     teardown()?;
@@ -69,37 +105,164 @@ fn teardown() -> Result<()> {
     })
 }
 
+/// Application state shared across all tests
+struct State {
+    client: ::aws_sdk_dynamodb::Client,
+}
+
+impl State {
+    pub async fn new(cfg: &Configuration) -> Result<State> {
+        let creds = cfg
+            .dynamo
+            .credentials
+            .as_ref()
+            .map(|(id, secret)| Credentials::new(id, secret, None, None, "indielinks"));
+
+        let config = match cfg.dynamo.location.as_ref() {
+            Either::Left(region) => {
+                let region_provider =
+                    RegionProviderChain::first_try(Some(Region::new(region.clone())))
+                        .or_default_provider()
+                        .or_else(Region::new("us-west-2"));
+                let mut loader = aws_config::from_env().region(region_provider);
+                if let Some(creds) = creds {
+                    loader = loader.credentials_provider(creds);
+                }
+                loader.load().await
+            }
+            Either::Right(endpoints) => {
+                let ep_url = *endpoints
+                    .iter()
+                    .peekable()
+                    .peek()
+                    .ok_or(NoEndpointsSnafu {}.build())?;
+                let mut loader = aws_config::defaults(BehaviorVersion::latest())
+                    .endpoint_url((*ep_url).as_str());
+                if let Some(creds) = creds {
+                    loader = loader.credentials_provider(creds);
+                }
+                loader.load().await
+            }
+        };
+        Ok(State {
+            client: ::aws_sdk_dynamodb::Client::new(&config),
+        })
+    }
+    async fn id_for_username(&self, username: &Username) -> Result<UserId> {
+        Ok(self
+            .client
+            .query()
+            .table_name("users")
+            .index_name("users_by_username")
+            .key_condition_expression("username=:u")
+            .expression_attribute_values(":u", AttributeValue::S(username.to_string()))
+            .send()
+            .await
+            .context(QuerySnafu)?
+            .items()
+            .to_vec()
+            .pipe(from_items::<User>)
+            .context(DeUserSnafu)?
+            .into_iter()
+            .exactly_one()
+            .map_err(|_| ExactlyOneSnafu.build())?
+            .id())
+    }
+}
+
+#[async_trait]
+impl Helper for State {
+    async fn clear_posts(&self, username: &Username) -> std::result::Result<(), Failed> {
+        let user_id = self.id_for_username(username).await?;
+        // Arrrrrgghhhhh... DDB provides no "truncate" operation. We need to `BatchWrite` (or drop &
+        // recreate the table). Hopefully, no test will create so many posts that we can't do this
+        // in-memory:
+        let mut posts = self
+            .client
+            .query()
+            .table_name("posts")
+            .select(Select::AllAttributes)
+            .key_condition_expression("user_id=:id")
+            .expression_attribute_values(":id", AttributeValue::S(user_id.to_string()))
+            .send()
+            .await
+            .context(QuerySnafu)?
+            .items()
+            .to_vec()
+            .pipe(from_items::<Post>)
+            .context(DePostSnafu)?
+            .into_iter()
+            .map(|post| {
+                DeleteRequest::builder()
+                    .key("user_id", AttributeValue::S(post.user_id().to_string()))
+                    .key("url", AttributeValue::S(post.url().to_string()))
+                    .build()
+            })
+            .collect::<StdResult<Vec<DeleteRequest>, _>>()?
+            .into_iter()
+            .map(|dreq| WriteRequest::builder().delete_request(dreq).build())
+            .collect::<Vec<WriteRequest>>();
+
+        while !posts.is_empty() {
+            let this_batch: Vec<_> = posts.drain(..min(posts.len(), 25)).collect();
+            self.client
+                .batch_write_item()
+                .request_items("posts", this_batch)
+                .send()
+                .await?;
+        }
+
+        self.client
+            .update_item()
+            .table_name("users")
+            .key("id", AttributeValue::S(user_id.to_string()))
+            .update_expression("set first_update=:F, last_update=:L")
+            .expression_attribute_values(":F", AttributeValue::Null(true))
+            .expression_attribute_values(":L", AttributeValue::Null(true))
+            .send()
+            .await?;
+
+        Ok(())
+    }
+}
+
 inventory::submit!(Test {
     name: "000test_healthcheck",
-    test_fn: |cfg| {
-        test_healthcheck(&cfg.url);
-        Ok(())
-    },
+    test_fn: |cfg, _helper| { Box::pin(test_healthcheck(cfg.url)) },
 });
 
 inventory::submit!(Test {
     name: "001delicious_smoke_test",
-    test_fn: |cfg| {
-        delicious_smoke_test(&cfg.url, &cfg.username, &cfg.api_key);
-        Ok(())
+    test_fn: |cfg, helper| {
+        Box::pin(delicious_smoke_test(
+            cfg.url,
+            cfg.username,
+            cfg.api_key,
+            helper,
+        ))
     },
 });
 
 inventory::submit!(Test {
     name: "010delicious_posts_recent",
-    test_fn: |cfg| {
-        posts_recent(&cfg.url, &cfg.username, &cfg.api_key);
-        Ok(())
-    },
+    test_fn: |cfg, helper| { Box::pin(posts_recent(cfg.url, cfg.username, cfg.api_key, helper)) },
 });
 
-fn main() -> Result<()> {
+inventory::submit!(Test {
+    name: "011delicious_posts_all",
+    test_fn: |cfg, helper| { Box::pin(posts_all(cfg.url, cfg.username, cfg.api_key, helper)) }
+});
+
+#[tokio::main]
+async fn main() -> Result<()> {
     let config = Configuration::new().context(ConfigurationSnafu)?;
     let mut args = Arguments::from_args();
 
     if !config.no_setup {
         setup()?;
     }
+
+    let state = Arc::new(State::new(&config).await?);
 
     // Nb. this program is always run from the root directory of the owning crate.
     // This, together with prefixing my function names with numbers, is a hopefully temporary
@@ -114,10 +277,12 @@ fn main() -> Result<()> {
         inventory::iter::<common::Test>
             .into_iter()
             .sorted_by_key(|t| t.name)
-            .map(|trial| {
-                Trial::test(trial.name, {
+            .map(|test| {
+                // See delicious-scylla.rs for detailed remarks on this:
+                Trial::test(test.name, {
                     let cfg = config.clone();
-                    move || (trial.test_fn)(cfg)
+                    let state = state.clone();
+                    move || futures::executor::block_on((test.test_fn)(cfg, state))
                 })
             })
             .collect(),

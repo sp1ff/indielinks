@@ -13,18 +13,26 @@
 // You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
 // see <http://www.gnu.org/licenses/>.
 
+/// # delicious-scylla
+///
+/// Synchronous integration tests run against the Scylla storage back-end.
+use common::{run, Configuration, Test};
+use indielinks::entities::{UserId, Username};
 use indielinks_test::{
-    delicious::{delicious_smoke_test, posts_recent},
-    test_healthcheck,
+    delicious::{delicious_smoke_test, posts_all, posts_recent},
+    test_healthcheck, Helper,
 };
 
-use common::{run, Configuration, Test};
-
+use async_trait::async_trait;
 use itertools::Itertools;
-use libtest_mimic::{Arguments, Trial};
-use snafu::{prelude::*, Snafu};
+use libtest_mimic::{Arguments, Failed, Trial};
+use scylla::{
+    transport::{errors::QueryError, query_result::IntoRowsResultError},
+    SessionBuilder,
+};
+use snafu::{prelude::*, Backtrace, Snafu};
 
-use std::fmt::Display;
+use std::{fmt::Display, sync::Arc};
 
 mod common;
 
@@ -34,6 +42,38 @@ enum Error {
     Command { cmd: String, source: common::Error },
     #[snafu(display("Error obtaining test configuration: {source}"))]
     Configuration { source: common::Error },
+    #[snafu(display("Failed to deserialize a UserId: {source}"))]
+    DeUserId {
+        source: scylla::deserialize::DeserializationError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Expected exactly one"))]
+    ExactlyOne { backtrace: Backtrace },
+    #[snafu(display("Failed to set keyspace: {source}"))]
+    Keyspace {
+        source: scylla::transport::errors::QueryError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to create a ScyllaDB session: {source}"))]
+    NewSession {
+        source: scylla::transport::errors::NewSessionError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("ScyllaDB query failed: {source}"))]
+    Query {
+        source: QueryError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to get typed rows: {source}"))]
+    Rows {
+        source: scylla::transport::query_result::RowsError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to get a rows result: {source}"))]
+    RowsResult {
+        source: IntoRowsResultError,
+        backtrace: Backtrace,
+    },
 }
 
 impl std::fmt::Debug for Error {
@@ -48,6 +88,8 @@ impl std::fmt::Debug for Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
+
+type StdResult<T, E> = std::result::Result<T, E>;
 
 fn setup() -> Result<()> {
     teardown()?;
@@ -69,37 +111,99 @@ fn teardown() -> Result<()> {
     })
 }
 
+/// Application state shared across all tests
+struct State {
+    session: ::scylla::Session,
+}
+
+impl State {
+    pub async fn new(cfg: &Configuration) -> Result<State> {
+        let mut builder = SessionBuilder::new().known_nodes(&cfg.scylla.hosts);
+        if let Some((user, pass)) = &cfg.scylla.credentials {
+            builder = builder.user(user, pass);
+        }
+        let session = builder.build().await.context(NewSessionSnafu)?;
+        session
+            .use_keyspace("indielinks", false)
+            .await
+            .context(KeyspaceSnafu)?;
+        Ok(State { session })
+    }
+    async fn id_for_username(&self, username: &Username) -> Result<UserId> {
+        Ok(self
+            .session
+            .query_unpaged("select id from users where username=?", (username,))
+            .await
+            .context(QuerySnafu)?
+            .into_rows_result()
+            .context(RowsResultSnafu)?
+            .rows::<(UserId,)>()
+            .context(RowsSnafu)?
+            .collect::<StdResult<Vec<(UserId,)>, _>>()
+            .context(DeUserIdSnafu)?
+            .into_iter()
+            .exactly_one()
+            .map_err(|_| ExactlyOneSnafu.build())?
+            .0)
+    }
+}
+
+#[async_trait]
+impl Helper for State {
+    async fn clear_posts(&self, username: &Username) -> std::result::Result<(), Failed> {
+        let userid = self.id_for_username(username).await?;
+        self.session.query_unpaged("truncate posts", ()).await?;
+        self.session
+            .query_unpaged(
+                "update users set first_update=null, last_update=null where id=?",
+                (userid,),
+            )
+            .await?;
+        Ok(())
+    }
+}
+
 inventory::submit!(Test {
     name: "000test_healthcheck",
-    test_fn: |cfg| {
-        test_healthcheck(&cfg.url);
-        Ok(())
-    },
+    test_fn: |cfg, _helper| { Box::pin(test_healthcheck(cfg.url)) },
 });
 
 inventory::submit!(Test {
     name: "001delicious_smoke_test",
-    test_fn: |cfg| {
-        delicious_smoke_test(&cfg.url, &cfg.username, &cfg.api_key);
-        Ok(())
+    test_fn: |cfg, helper| {
+        Box::pin(delicious_smoke_test(
+            cfg.url,
+            cfg.username,
+            cfg.api_key,
+            helper,
+        ))
     },
 });
 
 inventory::submit!(Test {
-    name: "002delicious_posts_recent",
-    test_fn: |cfg| {
-        posts_recent(&cfg.url, &cfg.username, &cfg.api_key);
-        Ok(())
+    name: "010delicious_posts_recent",
+    test_fn: |cfg, helper| { Box::pin(posts_recent(cfg.url, cfg.username, cfg.api_key, helper)) },
+});
+
+inventory::submit!(Test {
+    name: "011delicious_posts_all",
+    test_fn: |cfg: Configuration, helper| {
+        Box::pin(posts_all(cfg.url, cfg.username, cfg.api_key, helper))
     },
 });
 
-fn main() -> Result<()> {
+// Regrettably, the Scylla API has forced us to use async Rust. I guess the simplest thing to do is
+// just start the Tokio runtime as per usual...
+#[tokio::main]
+async fn main() -> Result<()> {
     let config = Configuration::new().context(ConfigurationSnafu)?;
     let mut args = Arguments::from_args();
 
     if !config.no_setup {
         setup()?;
     }
+
+    let state = Arc::new(State::new(&config).await?);
 
     // This, together with prefixing my function names with numbers, is a hopefully temporary
     // workaround to the fact that my tests can't be run out-of-order or simultaneously.
@@ -114,11 +218,30 @@ fn main() -> Result<()> {
         inventory::iter::<common::Test>
             .into_iter()
             .sorted_by_key(|t| t.name)
-            .map(|trial| {
-                Trial::test(trial.name, {
-                    let cfg = config.clone();
-                    move || (trial.test_fn)(cfg)
-                })
+            .map(|test| {
+                // `Trial::test` takes two parameters, something that implements `Into<String>`, and
+                // something that implements:
+                //
+                //     FnOnce() -> Result<(), Failed> + Send + 'static
+                //
+                // The first is easy,
+                Trial::test(
+                    test.name,
+                    // the second is more complex. What I'm doing here is opening a block, setting
+                    // up a thing that meets that trait bound, and yielding that thing at the end of
+                    // the block.
+                    {
+                        // The scheme is to invoke each `Test` function with everything a test might
+                        // need-- the application configuration as well as a suite of utility
+                        // functions (well, there's only one ATM, but I see this growing). Each
+                        // test's `test_fn` can unpack the bits that particular test needs.
+                        let cfg = config.clone();
+                        let state = state.clone();
+                        // Yield a closure that's moved `cfg` & `state` into it, that can be invoked
+                        // once, and that yields a `Result<(), Failed>`.
+                        move || futures::executor::block_on((test.test_fn)(cfg, state))
+                    },
+                )
             })
             .collect(),
     );

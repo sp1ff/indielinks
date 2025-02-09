@@ -35,7 +35,7 @@ use crate::{
     entities::{self, Post, PostDay, PostUri, TagId, Tagname, User, UserApiKey, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
-    storage::{self, Backend as StorageBackend},
+    storage::{self, Backend as StorageBackend, DateRange},
     util::{exactly_two, UpToThree},
 };
 
@@ -68,6 +68,8 @@ use std::{
 /// del.icio.us module error type
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("/posts/all failed; {source}"))]
+    AllPosts { source: storage::Error },
     #[snafu(display("/posts/add failed: {source}"))]
     AddPost {
         source: crate::storage::Error,
@@ -266,6 +268,10 @@ impl Error {
             ////////////////////////////////////////////////////////////////////////////////////////
             // Internal failure-- own up to it:
             ////////////////////////////////////////////////////////////////////////////////////////
+            Error::AllPosts { source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("/posts/all failed: {source}"),
+            ),
             Error::AddPost { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to add post: {}", source),
@@ -1089,6 +1095,131 @@ async fn posts_dates(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          `posts/all`                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("delicious.posts.all", Sort::IntegralCounter) }
+
+#[derive(Debug, Deserialize)]
+struct PostsAllReq {
+    tag: Option<String>,
+    start: Option<usize>,
+    results: Option<usize>,
+    fromdt: Option<DateTime<Utc>>,
+    todt: Option<DateTime<Utc>>,
+    #[serde(rename = "meta")]
+    _meta: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PostsAllRsp {
+    pub user: Username,
+    pub tag: String,
+    pub posts: Vec<Post>,
+}
+
+fn apply_pagination(posts: Vec<Post>, start: Option<usize>, size: Option<usize>) -> Vec<Post> {
+    match (start, size) {
+        (None, None) => posts,
+        (None, Some(n)) => {
+            if n < posts.len() {
+                posts[posts.len() - n..].to_vec()
+            } else {
+                posts
+            }
+        }
+        (Some(s), None) => {
+            if s < posts.len() {
+                posts[..posts.len() - s].to_vec()
+            } else {
+                Vec::new()
+            }
+        }
+        (Some(s), Some(n)) => {
+            if s >= posts.len() {
+                Vec::new()
+            } else if n < posts.len() - s {
+                posts[posts.len() - s - n..posts.len() - s].to_vec()
+            } else {
+                posts[..posts.len() - s].to_vec()
+            }
+        }
+    }
+}
+
+/// Retrieve all of a user's posts.
+///
+/// The user may filter in a few ways:
+///
+/// - tag: up to three tags by which to filter; returned tags must match all of the tags listed in
+///   this argument
+/// - fromdt: only return [Post]s posted at or after this time
+/// - todt: only return [Post]s posted before this time
+/// - start: zero-based index at which to begin returning results (zero corresponds to the earliest
+///   [Post] matching `tag`, `fromdt`, and/or `todt`)
+/// - results: the number of results to be returned
+///
+/// Both the [del.icio.us] and Pinboard [docs] are quite vague on how these parameters interact.
+/// Pinboard seems to not respect `start` and `results` parameters at all, so I was unable to deduce
+/// this manually. This implementation queries the complete set of the user's [Post]s (i.e. a full
+/// partition scan), filtering by tags & timestamps if supplied. It then applies pagination to the
+/// resulting list. This is risky, since it could result in pulling a large dataset from the
+/// back-end, only to throw most of it away before returning it to the caller. I figure that if this
+/// application sees that much use, that's a good problem to have, and I'll deal with it when the
+/// time comes.
+///
+/// [del.icio.us]: https://web.archive.org/web/20080908014047/http://delicious.com/help/api#posts_all
+/// [docs]: https://pinboard.in/api/
+async fn all_posts(
+    State(state): State<Arc<Indielinks>>,
+    Query(posts_all_req): Query<PostsAllReq>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    async fn all_posts1(
+        storage: &(dyn StorageBackend + Send + Sync),
+        posts_all_req: PostsAllReq,
+        request: axum::extract::Request,
+    ) -> Result<PostsAllRsp> {
+        let user = user_for_request(&request, "/posts/all")?;
+        let tags = UpToThree::new(parse_tag_parameter(&posts_all_req.tag)?.into_iter())
+            .context(NoMoreThanThreeTagsSnafu)?;
+        Ok(PostsAllRsp {
+            user: user.username(),
+            tag: posts_all_req.tag.unwrap_or("".to_string()),
+            posts: apply_pagination(
+                storage
+                    .get_all_posts(
+                        user,
+                        &tags,
+                        &DateRange::new(posts_all_req.fromdt, posts_all_req.todt),
+                    )
+                    .await
+                    .context(AllPostsSnafu)?,
+                posts_all_req.start,
+                posts_all_req.results,
+            ),
+        })
+    }
+
+    match all_posts1(state.storage.as_ref(), posts_all_req, request).await {
+        Ok(rsp) => {
+            counter_add!(
+                state.instruments,
+                "delicious.posts.all",
+                rsp.posts.len() as u64,
+                &[]
+            );
+            (StatusCode::OK, Json(rsp)).into_response()
+        }
+        Err(err) => {
+            error!("{:#?}", err);
+            let (status, msg) = err.as_status_and_msg();
+            (status, Json(GenericRsp { result_code: msg })).into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           `tags/get`                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1159,6 +1290,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route("/posts/get", get(get_posts))
         .route("/posts/recent", get(get_recent))
         .route("/posts/dates", get(posts_dates))
+        .route("/posts/all", get(all_posts))
         .route("/tags/get", get(tags_get))
         // Not sure if I should push this up the stack; as is, if a request is not authorized, the CORS
         // & Content-Ty1pe headers would be added already.

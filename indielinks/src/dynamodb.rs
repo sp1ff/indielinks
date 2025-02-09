@@ -21,7 +21,7 @@
 
 use crate::{
     entities::{Post, PostDay, PostUri, Tagname, User, UserId},
-    storage,
+    storage::{self, DateRange},
     util::UpToThree,
 };
 
@@ -417,6 +417,140 @@ impl storage::Backend for Client {
                 query = query
                     .key_condition_expression("url=:url")
                     .expression_attribute_values(":url", AttributeValue::S(uri.to_string()))
+            }
+        }
+
+        query
+            .send()
+            .await?
+            .items()
+            .to_vec()
+            .pipe(from_items::<Post>)?
+            .pipe(Ok)
+    }
+
+    async fn get_all_posts(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+        dates: &DateRange,
+    ) -> StdResult<Vec<Post>, StorError> {
+        let mut query = self
+            .client
+            .query()
+            .table_name("posts")
+            .index_name("posts_by_posted")
+            .key_condition_expression("user_id=:id")
+            .expression_attribute_values(":id", AttributeValue::S(user.id().to_string()))
+            .scan_index_forward(false);
+
+        match (tags, dates) {
+            (UpToThree::None, DateRange::None) => {}
+            (UpToThree::None, DateRange::Begins(b)) => {
+                query = query
+                    .filter_expression("posted>=:b")
+                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()));
+            }
+            (UpToThree::None, DateRange::Ends(e)) => {
+                query = query
+                    .filter_expression("posted<:e")
+                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()));
+            }
+            (UpToThree::None, DateRange::Both(b, e)) => {
+                query = query
+                    .filter_expression("posted>:b and posted<:e")
+                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
+                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()));
+            }
+            (UpToThree::One(tag), DateRange::None) => {
+                query = query
+                    .filter_expression("contains(tags,:t0)")
+                    .expression_attribute_values(":t0", AttributeValue::S(tag.to_string()));
+            }
+            (UpToThree::One(tag), DateRange::Begins(b)) => {
+                query = query
+                    .filter_expression("posted>=:b and contains(tags,:t0)")
+                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
+                    .expression_attribute_values(":t0", AttributeValue::S(tag.to_string()));
+            }
+            (UpToThree::One(tag), DateRange::Ends(e)) => {
+                query = query
+                    .filter_expression("posted<:e and contains(tags,:t0)")
+                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
+                    .expression_attribute_values(":t0", AttributeValue::S(tag.to_string()));
+            }
+            (UpToThree::One(tag), DateRange::Both(b, e)) => {
+                query = query
+                    .filter_expression("posted>:b and posted<:e and contains(tags,:t0)")
+                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
+                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
+                    .expression_attribute_values(":t0", AttributeValue::S(tag.to_string()));
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::None) => {
+                query = query
+                    .filter_expression("contains(tags,:t0) and contains(tags,:t1)")
+                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()));
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Begins(b)) => {
+                query = query
+                    .filter_expression("posted>=:b and contains(tags,:t0) and contains(tags,:t1)")
+                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
+                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()));
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Ends(e)) => {
+                query = query
+                    .filter_expression("posted<:e and contains(tags,:t0) and contains(tags,:t1)")
+                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
+                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()));
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Both(b, e)) => {
+                query = query
+                    .filter_expression(
+                        "posted>:b and posted<:e and contains(tags,:t0) and contains(tags,:t1)",
+                    )
+                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
+                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
+                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()));
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::None) => {
+                query = query
+                    .filter_expression(
+                        "contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
+                    )
+                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()))
+                    .expression_attribute_values(":t2", AttributeValue::S(tag2.to_string()));
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(b)) => {
+                query = query
+                    .filter_expression("posted>=:b and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)")
+                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
+                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()))
+                    .expression_attribute_values(":t2", AttributeValue::S(tag2.to_string()));
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(e)) => {
+                query = query
+                    .filter_expression("posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)")
+                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
+                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()))
+                    .expression_attribute_values(":t2", AttributeValue::S(tag2.to_string()));
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e)) => {
+                query = query
+                    .filter_expression(
+                        "posted>:b and posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
+                    )
+                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
+                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
+                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()))
+                    .expression_attribute_values(":t2", AttributeValue::S(tag2.to_string()));
             }
         }
 
