@@ -29,7 +29,8 @@ use async_trait::async_trait;
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion, Region};
 use aws_sdk_dynamodb::{
     config::Credentials,
-    types::{AttributeValue, ReturnValue},
+    operation::batch_write_item::BatchWriteItemError,
+    types::{AttributeValue, PutRequest, ReturnValue, WriteRequest},
 };
 use chrono::{DateTime, Utc};
 use either::Either;
@@ -40,7 +41,10 @@ use snafu::{Backtrace, IntoError, Snafu};
 use tap::Pipe;
 use url::Url;
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    cmp::min,
+    collections::{HashMap, HashSet},
+};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -225,8 +229,20 @@ impl std::convert::From<SdkError<QueryError, HttpResponse>> for StorError {
     }
 }
 
+impl std::convert::From<SdkError<BatchWriteItemError, HttpResponse>> for StorError {
+    fn from(value: SdkError<BatchWriteItemError, HttpResponse>) -> Self {
+        StorError::new(value)
+    }
+}
+
 impl std::convert::From<serde_dynamo::Error> for StorError {
     fn from(value: serde_dynamo::Error) -> Self {
+        StorError::new(value)
+    }
+}
+
+impl std::convert::From<aws_sdk_dynamodb::error::BuildError> for StorError {
+    fn from(value: aws_sdk_dynamodb::error::BuildError) -> Self {
         StorError::new(value)
     }
 }
@@ -320,6 +336,49 @@ impl storage::Backend for Client {
             .attributes()
             .is_some()
             .pipe(Ok)
+    }
+
+    async fn delete_tag(&self, user: &User, tag: &Tagname) -> StdResult<(), StorError> {
+        // This logic is awfully similar to that in `rename_tag`-- consider re-factoring?
+        let mut write_reqs = self
+            .client
+            .query()
+            .table_name("posts")
+            .key_condition_expression("user_id=:id")
+            .expression_attribute_values(":id", AttributeValue::S(user.id().to_string()))
+            .send()
+            .await?
+            .items()
+            .to_vec()
+            .pipe(from_items::<Post>)?
+            .into_iter()
+            // We now have an iterator over `Post`s; map over that to get a collection of
+            // `StdResult<HashMap<String,AttributeValue>,_>`...
+            .map(|mut post| {
+                post.delete_tag(tag);
+                to_item(post)
+            })
+            .collect::<StdResult<Vec<HashMap<String, AttributeValue>>, _>>()?
+            // Now map over *that* to convert the `HashMap`s into `Result<PutRequest,_>`s
+            .into_iter()
+            .map(|item| PutRequest::builder().set_item(Some(item)).build())
+            .collect::<StdResult<Vec<PutRequest>, _>>()?
+            // Arrrgghhhh... map once again to turn 'm into `WriteRequest`s!
+            .into_iter()
+            .map(|put_req| WriteRequest::builder().put_request(put_req).build())
+            .collect::<Vec<WriteRequest>>();
+
+        // `BatchWrite` can only handle 25 items at a tiem.
+        while !write_reqs.is_empty() {
+            let this_batch: Vec<_> = write_reqs.drain(..min(write_reqs.len(), 25)).collect();
+            self.client
+                .batch_write_item()
+                .request_items("posts", this_batch)
+                .send()
+                .await?;
+        }
+
+        Ok(())
     }
 
     async fn get_posts_by_day(
@@ -627,6 +686,59 @@ impl storage::Backend for Client {
             .flat_map(|x| x.tags)
             .counts()
             .pipe(Ok)
+    }
+
+    async fn rename_tag(
+        &self,
+        user: &User,
+        from: &Tagname,
+        to: &Tagname,
+    ) -> StdResult<(), StorError> {
+        // OK: here's the plan. We whack-down the writes needed by first selecting only the posts
+        // containing `from`. Using that we'll construct a `BatchWrite` request. This of course
+        // leaves us open to a `posts/add` for a `Post` with the tag being renamed "sneaking in"
+        // between our two queries, but such is life in the NoSQL world. I can't see a way to detect
+        // that, it's a corner case, and it won't leave the system in an invalid state, so I'm
+        // prepared to live with it.
+        let mut write_reqs = self
+            .client
+            .query()
+            .table_name("posts")
+            .key_condition_expression("user_id=:id")
+            .expression_attribute_values(":id", AttributeValue::S(user.id().to_string()))
+            .send()
+            .await?
+            .items()
+            .to_vec()
+            .pipe(from_items::<Post>)?
+            .into_iter()
+            // We now have an iterator over `Post`s; map over that to get a collection of
+            // `StdResult<HashMap<String,AttributeValue>,_>`...
+            .map(|mut post| {
+                post.rename_tag(from, to);
+                to_item(post)
+            })
+            .collect::<StdResult<Vec<HashMap<String, AttributeValue>>, _>>()?
+            // Now map over *that* to convert the `HashMap`s into `Result<PutRequest,_>`s
+            .into_iter()
+            .map(|item| PutRequest::builder().set_item(Some(item)).build())
+            .collect::<StdResult<Vec<PutRequest>, _>>()?
+            // Arrrgghhhh... map once again to turn 'm into `WriteRequest`s!
+            .into_iter()
+            .map(|put_req| WriteRequest::builder().put_request(put_req).build())
+            .collect::<Vec<WriteRequest>>();
+
+        // `BatchWrite` can only handle 25 items at a tiem.
+        while !write_reqs.is_empty() {
+            let this_batch: Vec<_> = write_reqs.drain(..min(write_reqs.len(), 25)).collect();
+            self.client
+                .batch_write_item()
+                .request_items("posts", this_batch)
+                .send()
+                .await?;
+        }
+
+        Ok(())
     }
 
     async fn update_user_post_times(

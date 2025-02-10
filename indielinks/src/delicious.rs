@@ -114,6 +114,13 @@ pub enum Error {
         source: crate::storage::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to delete tag {tag}: {source}"))]
+    DeleteTag {
+        tag: Tagname,
+        #[snafu(source(from(storage::Error, Box::new)))]
+        source: Box<storage::Error>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to get posts from backend: {source}"))]
     GetPosts {
         source: crate::storage::Error,
@@ -163,6 +170,14 @@ pub enum Error {
     },
     #[snafu(display("Failed to fetch recent posts; {source}"))]
     RecentPosts { source: storage::Error },
+    #[snafu(display("Failed to rename {old} to {new}: {source}"))]
+    RenameTag {
+        old: Tagname,
+        new: Tagname,
+        #[snafu(source(from(storage::Error, Box::new)))]
+        source: Box<storage::Error>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to fetch the tag cloud for {uri}: {source}"))]
     TagCloudForUri {
         uri: PostUri,
@@ -286,6 +301,10 @@ impl Error {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to delete post {:?}: {}", uri, source),
             ),
+            Error::DeleteTag { tag, source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to delete {}: {}", tag, source),
+            ),
             Error::GetPosts { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch posts: {}", source),
@@ -305,6 +324,12 @@ impl Error {
             Error::RecentPosts { source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch recent posts: {}", source),
+            ),
+            Error::RenameTag {
+                old, new, source, ..
+            } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to rename {} to {}: {}", old, new, source),
             ),
             Error::UpdateTagCloudAdd { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1272,6 +1297,106 @@ async fn tags_get(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         `tags/rename`                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("delicious.tags.renames", Sort::IntegralCounter) }
+
+#[derive(Debug, Deserialize)]
+struct TagsRenameReq {
+    old: Tagname,
+    new: Tagname,
+}
+
+async fn tags_rename(
+    State(state): State<Arc<Indielinks>>,
+    Query(tags_rename_req): Query<TagsRenameReq>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    async fn tags_rename1(
+        storage: &(dyn StorageBackend + Send + Sync),
+        tags_rename_req: TagsRenameReq,
+        request: axum::extract::Request,
+    ) -> Result<()> {
+        let user = user_for_request(&request, "/tags/rename")?;
+        storage
+            .rename_tag(user, &tags_rename_req.old, &tags_rename_req.new)
+            .await
+            .context(RenameTagSnafu {
+                old: tags_rename_req.old,
+                new: tags_rename_req.new,
+            })
+    }
+
+    match tags_rename1(state.storage.as_ref(), tags_rename_req, request).await {
+        Ok(_) => {
+            counter_add!(state.instruments, "delicious.tags.renames", 1, &[]);
+            (
+                StatusCode::OK,
+                Json(GenericRsp {
+                    result_code: "done".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!("{:#?}", err);
+            let (status, msg) = err.as_status_and_msg();
+            (status, Json(GenericRsp { result_code: msg })).into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         `tags/delete`                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("delicious.tags.deleted", Sort::IntegralCounter) }
+
+#[derive(Debug, Deserialize)]
+struct TagsDeleteReq {
+    tag: Tagname,
+}
+
+async fn tags_delete(
+    State(state): State<Arc<Indielinks>>,
+    Query(tags_delete_req): Query<TagsDeleteReq>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    async fn tags_delete1(
+        storage: &(dyn StorageBackend + Send + Sync),
+        tags_delete_req: TagsDeleteReq,
+        request: axum::extract::Request,
+    ) -> Result<()> {
+        let user = user_for_request(&request, "/tags/delete")?;
+        storage
+            .delete_tag(user, &tags_delete_req.tag)
+            .await
+            .context(DeleteTagSnafu {
+                tag: tags_delete_req.tag,
+            })
+    }
+
+    match tags_delete1(state.storage.as_ref(), tags_delete_req, request).await {
+        Ok(_) => {
+            counter_add!(state.instruments, "delicious.tags.deleted", 1, &[]);
+            (
+                StatusCode::OK,
+                Json(GenericRsp {
+                    result_code: "done".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!("{:#?}", err);
+            let (status, msg) = err.as_status_and_msg();
+            (status, Json(GenericRsp { result_code: msg })).into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1292,6 +1417,8 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route("/posts/dates", get(posts_dates))
         .route("/posts/all", get(all_posts))
         .route("/tags/get", get(tags_get))
+        .route("/tags/rename", get(tags_rename).merge(post(tags_rename)))
+        .route("/tags/delete", get(tags_delete).merge(post(tags_delete)))
         // Not sure if I should push this up the stack; as is, if a request is not authorized, the CORS
         // & Content-Ty1pe headers would be added already.
         .route_layer(axum::middleware::from_fn_with_state(

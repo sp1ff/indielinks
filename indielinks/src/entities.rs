@@ -874,6 +874,9 @@ pub struct Post {
 }
 
 impl Post {
+    pub fn delete_tag(&mut self, tag: &Tagname) {
+        self.tags.remove(tag);
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         url: &PostUri,
@@ -903,6 +906,11 @@ impl Post {
     }
     pub fn posted(&self) -> DateTime<Utc> {
         self.posted
+    }
+    pub fn rename_tag(&mut self, from: &Tagname, to: &Tagname) {
+        if self.tags.remove(from) {
+            self.tags.insert(to.clone());
+        }
     }
     pub fn tags(&self) -> HashSet<Tagname> {
         self.tags.clone()

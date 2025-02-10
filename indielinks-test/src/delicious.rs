@@ -14,6 +14,8 @@
 // see <http://www.gnu.org/licenses/>.
 
 //! Integration tests for the del.icio.us API.
+//!
+//! Backend-agnostic test logic for the del.icio.us API goes here.
 use std::sync::Arc;
 
 use indielinks::{
@@ -323,8 +325,6 @@ pub async fn posts_all(
         .await?;
     assert!(StatusCode::CREATED == rsp.status());
 
-    // let rsp = client.get(url.join()?).send().await?;
-    // let body = rsp.json::<PostsAllRsp>().await?;
     let body = workaround(&client, url.join("/api/v1/posts/all")?).await?;
     assert!(body.posts.len() == 4);
     assert!(body.posts[0].url().to_string() == "https://foo4.com/");
@@ -350,6 +350,97 @@ pub async fn posts_all(
     let body = workaround(&client, url.join("/api/v1/posts/all?start=3")?).await?;
     assert!(body.posts.len() == 1);
     assert!(body.posts[0].url().to_string() == "https://foo4.com/");
+
+    Ok(())
+}
+
+/// Test `/posts/rename` & `/posts/delete`
+pub async fn tags_rename_and_delete(
+    url: Url,
+    username: Username,
+    api_key: String,
+    utils: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
+    utils.clear_posts(&username).await?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}:{}", username, api_key))?,
+    );
+
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?;
+    let rsp = client
+        .get(url.join("/api/v1/posts/add?url=https://foo1.com&description=Test%20site&tags=a,b,c")?)
+        .send()
+        .await?;
+    assert!(StatusCode::CREATED == rsp.status());
+
+    let rsp = client
+        .get(url.join("/api/v1/posts/add?url=https://foo2.com&description=Test%20site&tags=a,d,e")?)
+        .send()
+        .await?;
+    assert!(StatusCode::CREATED == rsp.status());
+
+    let rsp = client
+        .get(url.join("/api/v1/posts/add?url=https://foo3.com&description=Test%20site&tags=a,e")?)
+        .send()
+        .await?;
+    assert!(StatusCode::CREATED == rsp.status());
+    let rsp = client
+        .get(url.join("/api/v1/posts/add?url=https://foo4.com&description=Test%20site&tags=a")?)
+        .send()
+        .await?;
+    assert!(StatusCode::CREATED == rsp.status());
+
+    // OK-- sanity check: get the tag counts
+    let rsp = client.get(url.join("/api/v1/tags/get")?).send().await?;
+    assert!(StatusCode::OK == rsp.status());
+    let body = rsp.json::<TagsGetRsp>().await?;
+    let mut tags = body.map.into_iter().collect::<Vec<(Tagname, usize)>>();
+    tags.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+    assert!(
+        tags == vec![
+            (Tagname::new("a")?, 4usize),
+            (Tagname::new("b")?, 1usize),
+            (Tagname::new("c")?, 1usize),
+            (Tagname::new("d")?, 1usize),
+            (Tagname::new("e")?, 2usize),
+        ]
+    );
+
+    // Now let's rename "e" to "splat" and delete "b"
+    let rsp = client
+        .get(url.join("/api/v1/tags/rename?old=e&new=splat")?)
+        .send()
+        .await?;
+    assert!(StatusCode::OK == rsp.status());
+    let body = rsp.json::<GenericRsp>().await?;
+    assert_eq!("done", body.result_code);
+
+    let rsp = client
+        .get(url.join("/api/v1/tags/delete?tag=b")?)
+        .send()
+        .await?;
+    assert!(StatusCode::OK == rsp.status());
+    let body = rsp.json::<GenericRsp>().await?;
+    assert_eq!("done", body.result_code);
+
+    let rsp = client.get(url.join("/api/v1/tags/get")?).send().await?;
+    assert!(StatusCode::OK == rsp.status());
+    let body = rsp.json::<TagsGetRsp>().await?;
+    let mut tags = body.map.into_iter().collect::<Vec<(Tagname, usize)>>();
+    tags.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+    assert!(
+        tags == vec![
+            (Tagname::new("a")?, 4usize),
+            (Tagname::new("c")?, 1usize),
+            (Tagname::new("d")?, 1usize),
+            (Tagname::new("splat")?, 2usize),
+        ]
+    );
 
     Ok(())
 }

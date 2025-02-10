@@ -89,6 +89,10 @@ pub trait Backend {
     ) -> Result<bool, Error>;
     /// Remove a post-- return true if a [Post] was actually removed, false else
     async fn delete_post(&self, user: &User, url: &PostUri) -> Result<bool, Error>;
+    /// Delete a tag for a user; since we've denormalized the tags (i.e. we store them along with the
+    /// posts to avoid a join), this is likely to be an inefficient operation. I might want to consider
+    /// special logic here for rate-limiting.
+    async fn delete_tag(&self, user: &User, tag: &Tagname) -> Result<(), Error>;
     async fn get_posts_by_day(
         &self,
         user: &User,
@@ -119,6 +123,10 @@ pub trait Backend {
     ) -> Result<Vec<Post>, Error>;
     /// Retrieve the user's tag cloud
     async fn get_tag_cloud(&self, user: &User) -> Result<HashMap<Tagname, usize>, Error>;
+    /// Rename a tag for a user; since we've denormalized the tags (i.e. we store them along with the
+    /// posts to avoid a join), this is likely to be an inefficient operation. I might want to consider
+    /// special logic here for rate-limiting.
+    async fn rename_tag(&self, user: &User, from: &Tagname, to: &Tagname) -> Result<(), Error>;
     /// Update the `first_update` and `last_update` for the given user
     async fn update_user_post_times(&self, user: &User, dt: &DateTime<Utc>) -> Result<(), Error>;
     /// Retrieve a [User] instance given a textual username. None means there is no user by that

@@ -27,7 +27,8 @@ use enum_map::{Enum, EnumMap};
 use futures::stream;
 use itertools::Itertools;
 use scylla::{
-    prepared_statement::PreparedStatement, transport::errors::QueryError, SessionBuilder,
+    batch::Batch, prepared_statement::PreparedStatement, transport::errors::QueryError,
+    SessionBuilder,
 };
 use secrecy::{ExposeSecret, SecretString};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
@@ -242,6 +243,8 @@ enum PreparedStatements {
     GetAllPosts13,
     GetAllPosts14,
     GetAllPosts15,
+    GetPostsForTag,
+    RenameTag,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -324,6 +327,11 @@ impl Session {
             "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
             "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
             "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and tags contains ? allow filtering",
+            // I hate to add the `if exists` clause here, making this an LWT, but if I don't I
+            // expose myself to the possibility of a post being deleted out from under me while
+            // renaming, which would leave the system in an invalid state.
+            "update posts set tags=? where user_id=? and url=? if exists",
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -340,7 +348,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 37] = prepared_statements
+        let prepared_statements: [PreparedStatement; 39] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -450,6 +458,38 @@ impl storage::Backend for Session {
             )>()?
             .0
             .pipe(Ok)
+    }
+
+    async fn delete_tag(&self, user: &User, tag: &Tagname) -> StdResult<(), StorError> {
+        // OK: here's the plan. We whack-down the writes needed by first selecting only the posts
+        // containing `from`. Using that we'll construct a `Batch` update. This of course leaves us
+        // open to a `posts/add` for a `Post` with the tag being renamed "sneaking in" between our
+        // two queries, but such is life in the NoSQL world. I can't see a way to detect that, it's
+        // a corner case, and it won't leave the system in an invalid state, so I'm prepared to live
+        // with it.
+        let mut batch = Batch::default();
+        let mut batch_values: Vec<(HashSet<Tagname>, UserId, PostUri)> = Vec::new();
+
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::GetPostsForTag],
+                (user.id(), tag),
+            )
+            .await?
+            .into_rows_result()?
+            .rows::<Post>()?
+            .collect::<StdResult<Vec<Post>, _>>()?
+            .into_iter()
+            .for_each(|mut post| {
+                post.delete_tag(tag);
+                batch.append_statement(
+                    self.prepared_statements[PreparedStatements::RenameTag].clone(),
+                );
+                batch_values.push((post.tags(), user.id(), post.url()));
+            });
+
+        self.session.batch(&batch, batch_values).await?;
+        Ok(())
     }
 
     async fn get_posts_by_day(
@@ -763,6 +803,43 @@ impl storage::Backend for Session {
             .flatten()
             .counts()
             .pipe(Ok)
+    }
+
+    async fn rename_tag(
+        &self,
+        user: &User,
+        from: &Tagname,
+        to: &Tagname,
+    ) -> StdResult<(), StorError> {
+        // OK: here's the plan. We whack-down the writes needed by first selecting only the posts
+        // containing `from`. Using that we'll construct a `Batch` update. This of course leaves us
+        // open to a `posts/add` for a `Post` with the tag being renamed "sneaking in" between our
+        // two queries, but such is life in the NoSQL world. I can't see a way to detect that, it's
+        // a corner case, and it won't leave the system in an invalid state, so I'm prepared to live
+        // with it.
+        let mut batch = Batch::default();
+        let mut batch_values: Vec<(HashSet<Tagname>, UserId, PostUri)> = Vec::new();
+
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::GetPostsForTag],
+                (user.id(), from),
+            )
+            .await?
+            .into_rows_result()?
+            .rows::<Post>()?
+            .collect::<StdResult<Vec<Post>, _>>()?
+            .into_iter()
+            .for_each(|mut post| {
+                post.rename_tag(from, to);
+                batch.append_statement(
+                    self.prepared_statements[PreparedStatements::RenameTag].clone(),
+                );
+                batch_values.push((post.tags(), user.id(), post.url()));
+            });
+
+        self.session.batch(&batch, batch_values).await?;
+        Ok(())
     }
 
     async fn update_user_post_times(

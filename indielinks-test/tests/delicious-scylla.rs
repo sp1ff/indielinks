@@ -19,7 +19,7 @@
 use common::{run, Configuration, Test};
 use indielinks::entities::{UserId, Username};
 use indielinks_test::{
-    delicious::{delicious_smoke_test, posts_all, posts_recent},
+    delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     test_healthcheck, Helper,
 };
 
@@ -189,6 +189,18 @@ inventory::submit!(Test {
     name: "011delicious_posts_all",
     test_fn: |cfg: Configuration, helper| {
         Box::pin(posts_all(cfg.url, cfg.username, cfg.api_key, helper))
+    },
+});
+
+inventory::submit!(Test {
+    name: "012delicious_tags_rename_and_delete",
+    test_fn: |cfg: Configuration, helper| {
+        Box::pin(tags_rename_and_delete(
+            cfg.url,
+            cfg.username,
+            cfg.api_key,
+            helper,
+        ))
     },
 });
 
