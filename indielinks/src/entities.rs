@@ -20,12 +20,16 @@
 //! I hate these sort of "catch-all" modules named "models" or "entities", but these types are truly
 //! foundational.
 
-use std::{collections::HashSet, fmt::Display, str::FromStr};
+use std::{collections::HashSet, fmt::Display, ops::Deref, str::FromStr};
 
+use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version};
 use axum::http::Uri;
 use chrono::{DateTime, NaiveDate, Utc};
+use email_address::EmailAddress;
 use lazy_static::lazy_static;
+use password_hash::{rand_core::OsRng, PasswordHashString, SaltString};
 use picky::key::{PrivateKey, PublicKey};
+use pkcs8::{spki, EncodePrivateKey};
 use regex::Regex;
 use scylla::{
     deserialize::{DeserializationError, DeserializeValue, FrameSlice, TypeCheckError},
@@ -37,15 +41,21 @@ use scylla::{
     },
     DeserializeRow,
 };
-use secrecy::SecretSlice;
-use serde::{Deserialize, Serialize};
+use secrecy::{ExposeSecret, SecretSlice, SecretString};
+use serde::{Deserialize, Deserializer, Serialize};
 use snafu::{prelude::*, Backtrace};
 use tap::{conv::Conv, pipe::Pipe};
+use tracing::debug;
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
+use zxcvbn::{feedback::Feedback, zxcvbn, Score};
+
+use crate::peppers::{Pepper, Version as PepperVersion};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("{email} is not a valid e-mail address"))]
+    BadEmail { email: String, backtrace: Backtrace },
     #[snafu(display("{text} is not a valid `day` for a post"))]
     BadPostDay { text: String, backtrace: Backtrace },
     #[snafu(display("{text} is not a valid tag name"))]
@@ -59,8 +69,50 @@ pub enum Error {
         expected: ColumnType<'static>,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to import an RSA key from PKCS8 format: {source}"))]
+    FromPkcs8 {
+        source: picky::key::KeyError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to hash password: {source}"))]
+    HashPassword {
+        source: password_hash::errors::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Bad hash string: {source}"))]
+    HashString {
+        source: password_hash::errors::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to build an Argon2id password hasher: {source}"))]
+    Hasher {
+        source: argon2::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Can't deserialize a {typ} from a null frame slice"))]
     NoFrameSlice { typ: String, backtrace: Backtrace },
+    #[snafu(display("Password doesn't have enough entropy: {feedback}"))]
+    PasswordEntropy {
+        feedback: Feedback,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Passwords may not begin or end in whitespace"))]
+    PasswordWhitespace { backtrace: Backtrace },
+    #[snafu(display("Failed to export an RSA private key to PKCS8 DER format; {source}"))]
+    Pkcs8Der {
+        source: pkcs8::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to export an RSA public key to DER format: {source}"))]
+    PublicKeyDer {
+        source: spki::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to generate an RSA private key: {source}"))]
+    RsaPrivateKeyGen {
+        source: rsa::errors::Error,
+        backtrace: Backtrace,
+    },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -96,8 +148,8 @@ fn mk_ser_err(err: impl std::error::Error + Send + Sync + 'static) -> Serializat
     SerializationError::new(err)
 }
 
-fn mk_serde_de_err<'de, S: serde::Deserializer<'de>>(err: impl std::error::Error) -> S::Error {
-    <S::Error as serde::de::Error>::custom(format!("{:?}", err))
+fn mk_serde_de_err<'de, D: serde::Deserializer<'de>>(err: impl std::error::Error) -> D::Error {
+    <D::Error as serde::de::Error>::custom(format!("{:?}", err))
 }
 
 fn mk_serde_ser_err<S: serde::Serializer>(err: impl std::error::Error) -> S::Error {
@@ -192,29 +244,46 @@ macro_rules! define_id {
 }
 
 define_id!(UserId, "userid");
-define_id!(TagId, "tagid");
-define_id!(PostId, "postid");
+// I had, in the past, defined a few other identifiers, making it worth it to wrap the boilerplate
+// up in a macro. Now that it's just `UserId`, I should probably go back to just implementing it by
+// hand.
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                            Username                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// indielinks usernames must be ASCII, may be from five to sixty-four chacacters in length, and
+// must match the regex "^[a-zA-Z][-_.a-zA-Z0-9]+$".
+const MIN_USERNAME_LENGTH: usize = 5;
+const MAX_USERNAME_LENGTH: usize = 64;
+
+lazy_static! {
+    static ref USERNAME: Regex = Regex::new("^[a-zA-Z][-_.a-zA-Z0-9]+$").unwrap(/* known good */);
+}
+
+fn check_username(s: &str) -> bool {
+    s.is_ascii()
+        && s.len() >= MIN_USERNAME_LENGTH
+        && s.len() <= MAX_USERNAME_LENGTH
+        && USERNAME.is_match(s)
+}
+
 /// A refined type representing an indielinks username
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+// Boy... writing refined types in Rust involves a *lot* of boilerplate. I have to wonder if there
+// isn't a better way...
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct Username(String);
 
-fn username_char(x: u8) -> bool {
-    (x > 47 && x < 58) || (x > 64 && x < 91) || (x > 96 && x < 123) || x == 45 || x == 95 || x == 46
-}
-
 impl Username {
-    /// Indielinks usernamnes consist of alphanumeric characters and '-', '_' & '.'
+    /// Construct a [Username] from a `&str`
+    ///
+    /// indielinks usernames must be ASCII, may be from six to sixty-four chacacters in length, and
+    /// must match the regex "^[a-zA-Z][-_.a-zA-Z0-9]+$". Use this constructor to create a [Username] instance
+    /// by copying from a reference to [str]. To *move* a [String] into a [Username] (with validity checking)
+    /// use [TryFrom::try_from()]
     pub fn new(name: &str) -> Result<Username> {
-        name.as_bytes()
-            .iter()
-            .cloned()
-            .all(username_char)
+        check_username(name)
             .then_some(Username(name.to_owned()))
             .ok_or(
                 BadUsernameSnafu {
@@ -227,21 +296,26 @@ impl Username {
 
 impl AsRef<str> for Username {
     fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
+impl Deref for Username {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl FromStr for Username {
-    type Err = Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Username::new(s)
-    }
-}
-
-impl Display for Username {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+// Implement `Deserialize` by hand to fail if the serialized value isn't a legit `Username`
+impl<'de> Deserialize<'de> for Username {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Username::try_from(s).map_err(mk_serde_de_err::<'de, D>)
     }
 }
 
@@ -253,7 +327,21 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Username {
         typ: &'metadata ColumnType<'metadata>,
         v: Option<FrameSlice<'frame>>,
     ) -> StdResult<Self, DeserializationError> {
-        Ok(Self(<String as DeserializeValue>::deserialize(typ, v)?))
+        Username::try_from(<String as DeserializeValue>::deserialize(typ, v)?).map_err(mk_de_err)
+    }
+}
+
+impl Display for Username {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for Username {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Username::new(s)
     }
 }
 
@@ -267,11 +355,117 @@ impl SerializeValue for Username {
     }
 }
 
+impl TryFrom<String> for Username {
+    type Error = Error;
+
+    fn try_from(name: String) -> std::result::Result<Self, Self::Error> {
+        if check_username(&name) {
+            Ok(Username(name))
+        } else {
+            BadUsernameSnafu { name }.fail()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           UserEmail                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A refiend type representing an e-mail address
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct UserEmail(String);
+
+impl UserEmail {
+    pub fn new(email: &str) -> Result<UserEmail> {
+        EmailAddress::is_valid(email)
+            .then_some(UserEmail(email.to_string()))
+            .context(BadEmailSnafu {
+                email: email.to_string(),
+            })
+    }
+}
+
+impl AsRef<str> for UserEmail {
+    fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
+impl Deref for UserEmail {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+// Implement `Deserialize` by hand to fail if the serialized value isn't a legit `Username`
+impl<'de> Deserialize<'de> for UserEmail {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        UserEmail::try_from(s).map_err(mk_serde_de_err::<'de, D>)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserEmail {
+    fn type_check(typ: &ColumnType) -> std::result::Result<(), TypeCheckError> {
+        String::type_check(typ)
+    }
+
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> std::result::Result<Self, DeserializationError> {
+        UserEmail::try_from(<String as DeserializeValue>::deserialize(typ, v)?).map_err(mk_de_err)
+    }
+}
+
+impl Display for UserEmail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for UserEmail {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        UserEmail::new(s)
+    }
+}
+
+impl SerializeValue for UserEmail {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType,
+        writer: CellWriter<'b>,
+    ) -> std::result::Result<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&self.0, typ, writer)
+    }
+}
+
+impl TryFrom<String> for UserEmail {
+    type Error = Error;
+
+    fn try_from(email: String) -> std::result::Result<Self, Self::Error> {
+        if EmailAddress::is_valid(&email) {
+            Ok(UserEmail(email))
+        } else {
+            BadEmailSnafu { email }.fail()
+        }
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         UserPublicKey                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Newtype idiom to work around Rust's orphaned trait rule
+// `UserPublicKey` isn't a refined type; it's just a wrapper on which to hang trait implementations
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct UserPublicKey(#[serde(with = "serde_publickey")] PublicKey);
@@ -348,6 +542,7 @@ mod serde_publickey {
 /// Newtype idiom to work around Rust's orphaned trait rule
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(transparent)]
+// `UserPrivateKey` isn't a refined type; it's just a wrapper on which to hang trait implementations
 pub struct UserPrivateKey(#[serde(with = "serde_privatekey")] PrivateKey);
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserPrivateKey {
@@ -424,21 +619,6 @@ mod serde_privatekey {
 #[serde(transparent)]
 pub struct UserApiKey(#[serde(with = "serde_apikey")] SecretSlice<u8>);
 
-impl From<Vec<u8>> for UserApiKey {
-    fn from(value: Vec<u8>) -> Self {
-        UserApiKey(value.into())
-    }
-}
-
-impl secrecy::SerializableSecret for UserApiKey {}
-
-impl PartialEq for UserApiKey {
-    fn eq(&self, other: &Self) -> bool {
-        use secrecy::ExposeSecret;
-        self.0.expose_secret().eq(other.0.expose_secret())
-    }
-}
-
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserApiKey {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
         type_check!(typ, Blob, TypeCheckError, "ApiKey")
@@ -503,12 +683,98 @@ mod serde_apikey {
     }
 }
 
+// I had originally intended to just implement serde for this time, but wound-up needing a few more
+// traits
+impl From<Vec<u8>> for UserApiKey {
+    fn from(value: Vec<u8>) -> Self {
+        UserApiKey(value.into())
+    }
+}
+
+impl PartialEq for UserApiKey {
+    fn eq(&self, other: &Self) -> bool {
+        use secrecy::ExposeSecret;
+        self.0.expose_secret().eq(other.0.expose_secret())
+    }
+}
+
+impl secrecy::SerializableSecret for UserApiKey {}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         UserHashString                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Newtype idiom to work around Rust's orphaned trait rule
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct UserHashString(
+    #[serde(serialize_with = "serde_hash_string::serialize")] PasswordHashString,
+);
+
+// Implement `Deserialize` by hand to fail if the serialized value isn't a legit hash string
+impl<'de> Deserialize<'de> for UserHashString {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        UserHashString::try_from(s).map_err(mk_serde_de_err::<'de, D>)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserHashString {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        String::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        UserHashString::try_from(<String as DeserializeValue>::deserialize(typ, v)?)
+            .map_err(mk_de_err)
+    }
+}
+
+impl SerializeValue for UserHashString {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&self.0.as_str(), typ, writer)
+    }
+}
+
+impl TryFrom<String> for UserHashString {
+    type Error = Error;
+
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        Ok(UserHashString(
+            PasswordHashString::new(&s).context(HashStringSnafu)?,
+        ))
+    }
+}
+
+mod serde_hash_string {
+    use super::*;
+    use serde::Serializer;
+
+    pub fn serialize<S: Serializer>(
+        hash_string: &PasswordHashString,
+        ser: S,
+    ) -> StdResult<S::Ok, S::Error> {
+        hash_string
+            .as_str()
+            .pipe(|s| <str as serde::Serialize>::serialize(s, ser))
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                              User                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Represents an indielinks user
-#[derive(Clone, Debug, Deserialize, DeserializeRow, PartialEq)]
+#[derive(Clone, Debug, Deserialize, DeserializeRow, PartialEq, Serialize)]
 pub struct User {
     id: UserId,
     username: Username,
@@ -517,29 +783,186 @@ pub struct User {
     summary: String,
     pub_key_pem: UserPublicKey,
     priv_key_pem: UserPrivateKey,
-    api_key: UserApiKey,
+    api_key: Option<UserApiKey>,
     // Will be null until the first post
     first_update: Option<DateTime<Utc>>,
     // Will be null until the first post
     last_update: Option<DateTime<Utc>>,
+    password_hash: UserHashString,
+    pepper_version: PepperVersion,
+}
+
+/// Apply password validation rules
+///
+/// At this time, I don't have a lot of rules on passwords; I will reject them if they begin or end
+/// with whitespace since that's likely to be a mistake on the caller's part that will drive them
+/// bonkers when they try to login. I delegate most of the work to [zxcvbn] and simply reject
+/// passwords that are too weak (score of less than three on a scale of zero-to-four).
+fn validate_password(password: &SecretString, user_inputs: &[&str]) -> Result<()> {
+    if password
+        .expose_secret()
+        .starts_with(|c: char| c.is_whitespace())
+        || password
+            .expose_secret()
+            .ends_with(|c: char| c.is_whitespace())
+    {
+        return PasswordWhitespaceSnafu.fail();
+    }
+
+    let entropy = zxcvbn(password.expose_secret(), user_inputs);
+    if entropy.score() < Score::Three {
+        return PasswordEntropySnafu {
+            // Feedback is set "when score <= 2", so the `unwrap()` below is safe.
+            feedback: entropy.feedback().unwrap().clone(),
+        }
+        .fail();
+    }
+
+    debug!(
+        "Password check: this password would take O({}) guesses",
+        entropy.guesses_log10()
+    );
+    Ok(())
+}
+
+/// Generate a 2048-bit RSA keypair
+fn generate_rsa_keypair() -> Result<(UserPublicKey, UserPrivateKey)> {
+    use pkcs8::EncodePublicKey;
+
+    let mut rng = rand::thread_rng();
+    let rsa_priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).context(RsaPrivateKeyGenSnafu)?;
+    let rsa_pub_key = rsa::RsaPublicKey::from(&rsa_priv_key);
+
+    Ok((
+        UserPublicKey(
+            PublicKey::from_der(
+                rsa_pub_key
+                    .to_public_key_der()
+                    .context(PublicKeyDerSnafu)?
+                    .as_bytes(),
+            )
+            .context(FromPkcs8Snafu)?,
+        ),
+        UserPrivateKey(
+            PrivateKey::from_pkcs8(
+                rsa_priv_key
+                    .to_pkcs8_der()
+                    .context(Pkcs8DerSnafu)?
+                    .as_bytes(),
+            )
+            .context(FromPkcs8Snafu)?,
+        ),
+    ))
+}
+
+/// Hash a password
+///
+/// This function will first salt the password, then hash it using Argon2id with the default version
+/// (19 at the time of this writing) & parameters (m=19, t=2, m=1 at the time of this writing). Note
+/// that the parameters, as of February 12, 2025, comport with the OWASP [recommendations].
+///
+/// [recomendations]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#password-hashing-algorithms
+///
+/// Per [this] Github issue comment, the pepper is supplied via the `secret` field in the
+/// `new_with_secret()` constructor.
+///
+/// [this]: https://github.com/RustCrypto/traits/pull/699#issuecomment-891105093
+fn hash_password(pepper: &Pepper, password: &SecretString) -> Result<PasswordHashString> {
+    let hasher = Argon2::new_with_secret(
+        pepper.as_ref().expose_secret(),
+        Algorithm::Argon2id,
+        Version::default(),
+        Params::default(),
+    )
+    .context(HasherSnafu)?;
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = hasher
+        .hash_password(password.expose_secret().as_bytes(), &salt)
+        .context(HashPasswordSnafu)?
+        .serialize();
+    debug!("password hash: {}", password_hash);
+    Ok(password_hash)
 }
 
 impl User {
     pub fn check_key(&self, key: &UserApiKey) -> bool {
         use secrecy::ExposeSecret;
-        self.api_key.0.expose_secret() == key.0.expose_secret()
+        self.api_key
+            .as_ref()
+            .map(|k| k.0.expose_secret() == key.0.expose_secret())
+            .unwrap_or(false)
     }
     pub fn date_of_last_post(&self) -> Option<DateTime<Utc>> {
         self.last_update
     }
+    pub fn discoverable(&self) -> bool {
+        self.discoverable
+    }
+    pub fn display_name(&self) -> String {
+        self.display_name.clone()
+    }
     pub fn first_update(&self) -> Option<DateTime<Utc>> {
         self.first_update
+    }
+    pub fn hash(&self) -> UserHashString {
+        self.password_hash.clone()
     }
     pub fn id(&self) -> UserId {
         self.id
     }
     pub fn last_update(&self) -> Option<DateTime<Utc>> {
         self.last_update
+    }
+    /// Create a new [User]
+    ///
+    /// This constructor will create a new [User] instance without validating uniqueness of the
+    /// username. Otherwise, it will:
+    ///
+    /// - validate the password, rejecting it if it's too weak
+    ///
+    /// - create a 2048 bit RSA keypair; I should probably make the length configurable but 2048
+    ///   seems like a good compromise between general support & acceptable security
+    ///
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        pepper_version: &PepperVersion,
+        pepper_key: &Pepper,
+        username: &Username,
+        password: &SecretString,
+        email: &UserEmail,
+        discoverable: &Option<bool>,
+        display_name: &Option<String>,
+        summary: &Option<String>,
+    ) -> Result<User> {
+        validate_password(password, &[username.as_ref(), email.as_ref()])?;
+        let (pub_key, priv_key) = generate_rsa_keypair()?;
+        let password_hash = hash_password(pepper_key, password)?;
+        Ok(User {
+            id: UserId::new(),
+            username: username.clone(),
+            discoverable: discoverable.unwrap_or(true),
+            display_name: display_name.clone().unwrap_or(username.to_string()),
+            summary: summary.clone().unwrap_or("".to_string()),
+            pub_key_pem: pub_key,
+            priv_key_pem: priv_key,
+            api_key: None,
+            first_update: None,
+            last_update: None,
+            password_hash: UserHashString(password_hash),
+            pepper_version: pepper_version.clone(),
+        })
+    }
+    pub fn pepper_version(&self) -> PepperVersion {
+        self.pepper_version.clone()
+    }
+    pub fn priv_key(&self) -> UserPrivateKey {
+        self.priv_key_pem.clone()
+    }
+    pub fn pub_key(&self) -> UserPublicKey {
+        self.pub_key_pem.clone()
+    }
+    pub fn summary(&self) -> String {
+        self.summary.clone()
     }
     pub fn username(&self) -> Username {
         self.username.clone()
@@ -549,6 +972,20 @@ impl User {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                            TagName                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const MAX_TAGNAME_LENGTH: usize = 255;
+
+fn check_tagname(s: &str) -> bool {
+    [
+        !s.is_empty(),
+        UnicodeSegmentation::graphemes(s, true).count() <= MAX_TAGNAME_LENGTH,
+        !s.contains(char::is_whitespace),
+        !s.contains(','),
+    ]
+    .into_iter()
+    // Ack! Does Rust really not offer the identity operator?
+    .all(|x| x)
+}
 
 /// Following Pinboard conventions, tags may be up to 255 characters in length; the Pinboard [docs]
 /// say "All entities are encoded as UTF-8. In the length limits below, 'characters' means logical
@@ -561,50 +998,48 @@ impl User {
 /// Pinboard also provides a feature of "private tags": if the tag begins with an ASCII period, it
 /// is considered private. I model that here, although I haven't decided how to deal with it more
 /// generally.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct Tagname(String);
-
-impl std::cmp::PartialOrd for Tagname {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for Tagname {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
-impl std::fmt::Display for Tagname {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
 
 impl Tagname {
     /// Correct-by-construction [Tagname] constructor
     pub fn new(text: &str) -> Result<Tagname> {
-        [
-            !text.is_empty(),
-            UnicodeSegmentation::graphemes(text, true).count() < 256,
-            !text.contains(char::is_whitespace),
-            !text.contains(','),
-        ]
-        .into_iter()
-        // Ack! Does Rust really not offer the identity operator?
-        .all(|x| x)
-        .then_some(Tagname(text.to_string()))
-        .ok_or(
-            BadTagnameSnafu {
-                text: text.to_string(),
-            }
-            .build(),
-        )
+        check_tagname(text)
+            .then_some(Tagname(text.to_string()))
+            .ok_or(
+                BadTagnameSnafu {
+                    text: text.to_string(),
+                }
+                .build(),
+            )
     }
     pub fn private(&self) -> bool {
         self.0.as_bytes()[0] == b'.' // Index is safe
+    }
+}
+impl AsRef<str> for Tagname {
+    fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
+impl Deref for Tagname {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+// Implement `Deserialize` by hand to fail if the serialized value isn't a legit `Tagname`
+impl<'de> Deserialize<'de> for Tagname {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Tagname::try_from(s).map_err(mk_serde_de_err::<'de, D>)
     }
 }
 
@@ -616,7 +1051,21 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Tagname {
         typ: &'metadata ColumnType<'metadata>,
         v: Option<FrameSlice<'frame>>,
     ) -> StdResult<Self, DeserializationError> {
-        Ok(Self(<String as DeserializeValue>::deserialize(typ, v)?))
+        Tagname::try_from(<String as DeserializeValue>::deserialize(typ, v)?).map_err(mk_de_err)
+    }
+}
+
+impl std::fmt::Display for Tagname {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for Tagname {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Tagname::new(s)
     }
 }
 
@@ -627,6 +1076,18 @@ impl SerializeValue for Tagname {
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
         SerializeValue::serialize(&self.0, typ, writer)
+    }
+}
+
+impl TryFrom<String> for Tagname {
+    type Error = Error;
+
+    fn try_from(name: String) -> std::result::Result<Self, Self::Error> {
+        if check_tagname(&name) {
+            Ok(Tagname(name))
+        } else {
+            BadTagnameSnafu { text: name }.fail()
+        }
     }
 }
 
@@ -642,27 +1103,6 @@ mod test {
         assert!(Tagname::new("foo,bar").is_err());
         assert!(Tagname::new("aws").is_ok());
         assert!(Tagname::new("我不知道怕在哪里").is_ok());
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                               Tag                                              //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Clone, Debug, Deserialize, DeserializeRow, Hash, PartialEq)]
-pub struct Tag {
-    id: TagId,
-    user_id: UserId,
-    name: Tagname,
-    count: i32,
-}
-
-impl Tag {
-    pub fn name(&self) -> Tagname {
-        self.name.clone()
-    }
-    pub fn count(&self) -> usize {
-        self.count as usize
     }
 }
 
@@ -752,7 +1192,7 @@ impl SerializeValue for PostUri {
 // have to wrap the refined type in a newtype. That might be fine, but for now I'd prefer to do that
 // in a separate patch.
 
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct PostDay(String);
 
@@ -760,9 +1200,13 @@ lazy_static! {
     static ref POST_DAY: Regex = Regex::new("^[0-9]{4}-[0-9]{2}-[0-9]{2}$").unwrap(/* known good */);
 }
 
+fn check_postday(s: &str) -> bool {
+    POST_DAY.is_match(s)
+}
+
 impl PostDay {
     pub fn new(s: &str) -> Result<PostDay> {
-        if POST_DAY.is_match(s) {
+        if check_postday(s) {
             Ok(PostDay(s.to_string()))
         } else {
             Err(BadPostDaySnafu {
@@ -770,6 +1214,55 @@ impl PostDay {
             }
             .build())
         }
+    }
+}
+
+impl AsRef<str> for PostDay {
+    fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
+impl Deref for PostDay {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+// Implement `Deserialize` by hand to fail if the serialized value isn't a legit `PostDay`
+impl<'de> Deserialize<'de> for PostDay {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        PostDay::try_from(s).map_err(mk_serde_de_err::<'de, D>)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for PostDay {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        type_check!(typ, Ascii, TypeCheckError, "PostDay")
+    }
+    fn deserialize(
+        _: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        v.ok_or(
+            NoFrameSliceSnafu {
+                typ: "PostDay".to_owned(),
+            }
+            .build(),
+        )
+        .map_err(mk_de_err)?
+        .as_slice()
+        .pipe(std::str::from_utf8)
+        .map_err(mk_de_err)?
+        .pipe(PostDay::new)
+        .map_err(mk_de_err)?
+        .pipe(Ok)
     }
 }
 
@@ -803,42 +1296,6 @@ impl std::convert::From<&NaiveDate> for PostDay {
     }
 }
 
-impl std::cmp::PartialOrd for PostDay {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for PostDay {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
-impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for PostDay {
-    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        type_check!(typ, Ascii, TypeCheckError, "PostDay")
-    }
-    fn deserialize(
-        _: &'metadata ColumnType<'metadata>,
-        v: Option<FrameSlice<'frame>>,
-    ) -> StdResult<Self, DeserializationError> {
-        v.ok_or(
-            NoFrameSliceSnafu {
-                typ: "PostDay".to_owned(),
-            }
-            .build(),
-        )
-        .map_err(mk_de_err)?
-        .as_slice()
-        .pipe(std::str::from_utf8)
-        .map_err(mk_de_err)?
-        .pipe(PostDay::new)
-        .map_err(mk_de_err)?
-        .pipe(Ok)
-    }
-}
-
 impl SerializeValue for PostDay {
     fn serialize<'b>(
         &self,
@@ -852,6 +1309,18 @@ impl SerializeValue for PostDay {
             .pipe(|x| writer.set_value(x))
             .map_err(mk_ser_err)?
             .pipe(Ok)
+    }
+}
+
+impl TryFrom<String> for PostDay {
+    type Error = Error;
+
+    fn try_from(text: String) -> std::result::Result<Self, Self::Error> {
+        if check_postday(&text) {
+            Ok(PostDay(text))
+        } else {
+            BadPostDaySnafu { text }.fail()
+        }
     }
 }
 

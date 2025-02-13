@@ -32,7 +32,7 @@
 
 use crate::{
     counter_add,
-    entities::{self, Post, PostDay, PostUri, TagId, Tagname, User, UserApiKey, Username},
+    entities::{self, Post, PostDay, PostUri, Tagname, User, UserApiKey, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     storage::{self, Backend as StorageBackend, DateRange},
@@ -193,16 +193,6 @@ pub enum Error {
         scheme: String,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to update tag cloud {tags:?}: {source}"))]
-    UpdateTagCloudAdd {
-        tags: HashSet<Tagname>,
-        source: storage::Error,
-    },
-    #[snafu(display("Failed to update tag cloud {tags:?} on delete: {source}"))]
-    UpdateTagCloudDel {
-        tags: HashMap<TagId, usize>,
-        source: storage::Error,
-    },
     #[snafu(display("Failed to update the user's post counts: {source}"))]
     UpdateUserPostCounts {
         source: storage::Error,
@@ -331,14 +321,6 @@ impl Error {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to rename {} to {}: {}", old, new, source),
             ),
-            Error::UpdateTagCloudAdd { .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to update tag cloud on post add".to_string(),
-            ),
-            Error::UpdateTagCloudDel { .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to update tag cloud on post delete".to_string(),
-            ),
             Error::UpdateUserPostTimes { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to update user post times".to_string(),
@@ -379,7 +361,8 @@ type StdResult<T, E> = std::result::Result<T, E>;
 ///
 /// I loathe putting key material on the wire (let alone passwords), but for legacy reasons we
 /// support both HTTP "basic" authentication (i.e. username & password) as well as "bearer" (i.e.
-/// API key). I'd love to move to something like request signing or true (OAuth) bearer tokens.
+/// API key). I'd love to move to something like request signing or true (OAuth or JWT) bearer
+/// tokens.
 #[derive(Clone, Debug)]
 enum AuthnScheme {
     Bearer((Username, UserApiKey)),

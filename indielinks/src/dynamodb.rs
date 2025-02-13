@@ -20,8 +20,8 @@
 //! [Storage]: crate::storage
 
 use crate::{
-    entities::{Post, PostDay, PostUri, Tagname, User, UserId},
-    storage::{self, DateRange},
+    entities::{Post, PostDay, PostUri, Tagname, User, UserId, Username},
+    storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
 
@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion, Region};
 use aws_sdk_dynamodb::{
     config::Credentials,
-    operation::batch_write_item::BatchWriteItemError,
+    operation::{batch_write_item::BatchWriteItemError, put_item::PutItemError},
     types::{AttributeValue, PutRequest, ReturnValue, WriteRequest},
 };
 use chrono::{DateTime, Utc};
@@ -74,6 +74,11 @@ pub enum Error {
     #[snafu(display("Failed to deserialize a tag: {source}"))]
     DeTag {
         source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{username} is already claimed"))]
+    DuplicateUsername {
+        username: Username,
         backtrace: Backtrace,
     },
     #[snafu(display("Read {in_count} tags in, produced {out_count} TagIds"))]
@@ -247,6 +252,12 @@ impl std::convert::From<aws_sdk_dynamodb::error::BuildError> for StorError {
     }
 }
 
+impl std::convert::From<SdkError<PutItemError, HttpResponse>> for StorError {
+    fn from(value: SdkError<PutItemError, HttpResponse>) -> Self {
+        StorError::new(value)
+    }
+}
+
 // These are used with queries involving projections (i.e. selecting only certain attributes).
 // Again, should probably wrap them up in a macro.
 
@@ -320,6 +331,48 @@ impl storage::Backend for Client {
                 }
             }
         }
+    }
+
+    async fn add_user(&self, user: &User) -> StdResult<(), StorError> {
+        use aws_sdk_dynamodb::{
+            error::SdkError, operation::put_item::PutItemError::ConditionalCheckFailedException,
+        };
+        let claimed = match self
+            .client
+            .put_item()
+            .table_name("unique_usernames")
+            .item("username", AttributeValue::S(user.username().to_string()))
+            .item("id", AttributeValue::S(user.id().to_string()))
+            .condition_expression("attribute_not_exists(username)")
+            .send()
+            .await
+        {
+            Ok(_) => false,
+            Err(err) => {
+                if matches!(err, SdkError::ServiceError(ref inner) if matches!(inner.err(), ConditionalCheckFailedException(_)))
+                {
+                    true
+                } else {
+                    return UsernameClaimedSnafu {
+                        username: user.username(),
+                    }
+                    .fail();
+                }
+            }
+        };
+        if claimed {
+            return UsernameClaimedSnafu {
+                username: user.username(),
+            }
+            .fail();
+        }
+        self.client
+            .put_item()
+            .table_name("users")
+            .set_item(Some(serde_dynamo::to_item(user.clone())?))
+            .send()
+            .await?;
+        Ok(())
     }
 
     async fn delete_post(&self, user: &User, url: &PostUri) -> StdResult<bool, StorError> {

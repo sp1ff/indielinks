@@ -18,34 +18,34 @@
 //! Abstractions for the indielinks storage layer.
 
 use crate::{
-    entities::{Post, PostDay, PostUri, Tagname, User},
+    entities::{Post, PostDay, PostUri, Tagname, User, Username},
     util::UpToThree,
 };
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use snafu::Backtrace;
+use snafu::{prelude::*, Backtrace};
 
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug)]
-#[allow(dead_code)] // `backtrace` is never read (?)
-pub struct Error {
-    source: Box<dyn std::error::Error + Send + Sync + 'static>,
-    backtrace: Backtrace,
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub))]
+pub enum Error {
+    #[snafu(display("{source}"))]
+    Storage {
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Username {username} is already claimed"))]
+    UsernameClaimed {
+        username: Username,
+        backtrace: Backtrace,
+    },
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.source)
-    }
-}
-
-impl std::error::Error for Error {}
 
 impl Error {
     pub fn new(err: impl std::error::Error + Send + Sync + 'static) -> Error {
-        Error {
+        Error::Storage {
             source: Box::new(err),
             backtrace: Backtrace::capture(),
         }
@@ -87,6 +87,8 @@ pub trait Backend {
         to_read: bool,
         tags: &HashSet<Tagname>,
     ) -> Result<bool, Error>;
+    /// Add a new user
+    async fn add_user(&self, user: &User) -> Result<(), Error>;
     /// Remove a post-- return true if a [Post] was actually removed, false else
     async fn delete_post(&self, user: &User, url: &PostUri) -> Result<bool, Error>;
     /// Delete a tag for a user; since we've denormalized the tags (i.e. we store them along with the

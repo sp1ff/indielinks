@@ -35,8 +35,8 @@ use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
 
 use crate::{
-    entities::{Post, PostDay, PostUri, Tagname, User, UserId},
-    storage::{self, DateRange},
+    entities::{Post, PostDay, PostUri, Tagname, User, UserId, Username},
+    storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
 
@@ -57,6 +57,11 @@ pub enum Error {
     CountOOR {
         count: usize,
         source: <i32 as TryInto<usize>>::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{username} is already claimed"))]
+    DuplicateUsername {
+        username: Username,
         backtrace: Backtrace,
     },
     #[snafu(display("The query succeeded, but returned zero rows"))]
@@ -108,6 +113,11 @@ pub enum Error {
         current: usize,
         delta: usize,
         tag: Tagname,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Mutliple hits for {username}"))]
+    MultipleUsernames {
+        username: Username,
         backtrace: Backtrace,
     },
     #[snafu(display("{userid}'s post count has gone negative ({count})"))]
@@ -207,6 +217,8 @@ type StdResult<T, E> = std::result::Result<T, E>;
 #[derive(Clone, Debug, Enum, Eq, PartialEq)]
 enum PreparedStatements {
     SelectUser,
+    ClaimUsername,
+    InsertUser,
     UpdateFirstPost,
     UpdateLastPost,
     TagCloud,
@@ -290,7 +302,9 @@ impl Session {
         let prepared_statements = stream::iter(vec![
             // Ho-kay: here's the deal. We list here all the prepared statements we want to use, in
             // the same order as [PreparedStatements].
-            "select id,username,discoverable,display_name,summary,pub_key_pem,priv_key_pem,api_key,first_update,last_update from users where username=?",
+            "select * from users where username=?",
+            "insert into unique_usernames (username, id) values (?, ?) if not exists",
+            "insert into users (id, username, discoverable, display_name, summary, pub_key_pem, priv_key_pem, api_key, first_update, last_update, password_hash, pepper_version) values (?, ?, ?, ?, ?, ?, ?, null, null, null, ?, ?)",
             "update users set first_update=? where id=?",
             "update users set last_update=? where id=?", // UpdateLoastPost
             "select tags from posts where user_id=?", // TagCloud
@@ -348,7 +362,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 39] = prepared_statements
+        let prepared_statements: [PreparedStatement; 41] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -434,6 +448,51 @@ impl storage::Backend for Session {
             .await?;
         // If the insert happened, the resulting `QueryResult` will have no rows (if it did not, it will):
         Ok(!result.is_rows())
+    }
+
+    async fn add_user(&self, user: &User) -> StdResult<(), StorError> {
+        let claimed = !self
+            .session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::ClaimUsername],
+                (user.username(), user.id()),
+            )
+            .await?
+            .into_rows_result()?
+            .rows::<(bool, Option<Username>, Option<UserId>)>()?
+            .exactly_one()
+            .map_err(|_| {
+                StorError::new(
+                    MultipleUsernamesSnafu {
+                        username: user.username(),
+                    }
+                    .build(),
+                )
+            })??
+            .pipe(|tup| tup.0);
+        if claimed {
+            return UsernameClaimedSnafu {
+                username: user.username(),
+            }
+            .fail();
+        }
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::InsertUser],
+                (
+                    user.id(),
+                    user.username(),
+                    user.discoverable(),
+                    user.display_name(),
+                    user.summary(),
+                    user.pub_key(),
+                    user.priv_key(),
+                    user.hash(),
+                    user.pepper_version(),
+                ),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn delete_post(&self, user: &User, url: &PostUri) -> StdResult<bool, StorError> {

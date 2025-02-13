@@ -37,10 +37,17 @@ create table users (
   priv_key_pem ascii,
   api_key blob,
   first_update timestamp,
-  last_update timestamp
+  last_update timestamp,
+  password_hash ascii,
+  pepper_version ascii
 );
 
 create index users_by_username on users (username);
+
+create table unique_usernames (
+  username ascii PRIMARY KEY,
+  id uuid
+);
 
 /* I've gone through a good deal of churn on representing posts. Given
    that I'm always accessing posts by user, `user_id` needs to be

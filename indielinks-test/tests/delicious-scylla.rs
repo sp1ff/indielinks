@@ -20,7 +20,9 @@ use common::{run, Configuration, Test};
 use indielinks::entities::{UserId, Username};
 use indielinks_test::{
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
-    test_healthcheck, Helper,
+    test_healthcheck,
+    user::test_signup,
+    Helper,
 };
 
 use async_trait::async_trait;
@@ -202,6 +204,11 @@ inventory::submit!(Test {
             helper,
         ))
     },
+});
+
+inventory::submit!(Test {
+    name: "020user_test_signup",
+    test_fn: |cfg: Configuration, _helper| { Box::pin(test_signup(cfg.url,)) },
 });
 
 // Regrettably, the Scylla API has forced us to use async Rust. I guess the simplest thing to do is

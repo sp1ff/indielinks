@@ -4,6 +4,7 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
+argon2 = { version = "0.5.3", features = ["password-hash", "std"] }
 async-trait = "0.1.83"
 aws-config = { version = "1.5.12", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1.57.0"
@@ -14,6 +15,7 @@ base64 = "0.22.1"
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["cargo", "env"] }
 either = { version = "1.13.0", features = ["serde"] }
+email_address = "0.2.9"
 enum-map = "2.7.3"
 errno = "0.3.10"
 futures = "0.3.31"
@@ -26,9 +28,13 @@ libc = "0.2.169"
 opentelemetry = "0.27.1"
 opentelemetry-prometheus = "0.27.0"
 opentelemetry_sdk = "0.27.1"
+password-hash = "0.5.0"
 picky = "6.3.0"
+pkcs8 = "0.10.2"
 prometheus = "0.13.4"
+rand = "0.8.0"
 regex = "1.11.1"
+rsa = "0.9.7"
 scylla = { version = "0.15.1", features = ["chrono-04"] }
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.216", features = ["derive"] }
@@ -44,3 +50,4 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 unicode-segmentation = "1.12.0"
 url = { version = "2.5.4", features = ["serde"] }
 uuid = { version = "1.11.0", features = ["serde"] }
+zxcvbn = "3.1.0"

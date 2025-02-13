@@ -26,9 +26,16 @@
 //! Right now, the library crate has the same name as the binary, meaning that `rustdoc` will
 //! ignore the binary create. I should probably rename this file.
 
-use indielinks::{
-    delicious::make_router, http::Indielinks, metrics::Instruments,
-    storage::Backend as StorageBackend, webfinger::webfinger,
+use std::{
+    env,
+    ffi::CString,
+    fmt::Display,
+    fs::OpenOptions,
+    future::IntoFuture,
+    io,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use axum::{
@@ -61,16 +68,10 @@ use tracing_subscriber::{
 };
 use url::Url;
 
-use std::{
-    env,
-    ffi::CString,
-    fmt::Display,
-    fs::OpenOptions,
-    future::IntoFuture,
-    io,
-    path::{Path, PathBuf},
-    str::FromStr,
-    sync::{Arc, Mutex, MutexGuard},
+use indielinks::{
+    delicious::make_router as make_delicious_router, http::Indielinks, metrics::Instruments,
+    peppers::Peppers, storage::Backend as StorageBackend, user::make_router as make_user_router,
+    webfinger::webfinger,
 };
 
 /// The indielinks application error type
@@ -285,6 +286,7 @@ struct ConfigV1 {
     private_address: String,
     storage_config: StorageConfig,
     domain: String,
+    pepper: Peppers,
 }
 
 impl ConfigV1 {
@@ -304,6 +306,7 @@ impl Default for ConfigV1 {
             private_address: String::from("127.0.0.1:48351"),
             storage_config: StorageConfig::default(),
             domain: String::from("indiemark.sh"),
+            pepper: Peppers::default(),
         }
     }
 }
@@ -531,7 +534,8 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
         .route("/healthcheck", get(healthcheck))
         .route("/metrics", get(metrics))
         .route("/.well-known/webfinger", get(webfinger))
-        .nest("/api/v1", make_router(state.clone()))
+        .nest("/api/v1", make_delicious_router(state.clone()))
+        .nest("/api/v1", make_user_router(state.clone()))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -598,6 +602,7 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
             registry: registry.clone(),
             storage,
             instruments: Instruments::new("indielinks"),
+            pepper: cfg.pepper.clone(),
         });
 
         let world_nfy = Arc::new(Notify::new());
