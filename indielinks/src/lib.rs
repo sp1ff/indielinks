@@ -30,6 +30,6 @@ pub mod scylla;
 pub mod signing_keys;
 pub mod storage;
 pub mod token;
-pub mod user;
+pub mod users;
 pub mod util;
 pub mod webfinger;

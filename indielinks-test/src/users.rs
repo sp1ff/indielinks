@@ -17,7 +17,7 @@
 //!
 //! Backend-agnostic test logic for the user API goes here.
 
-use indielinks::{http::ErrorResponseBody, user::SignupRsp};
+use indielinks::{http::ErrorResponseBody, users::SignupRsp};
 use libtest_mimic::Failed;
 use reqwest::{Client, StatusCode, Url};
 use serde_json::json;

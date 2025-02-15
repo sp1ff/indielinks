@@ -21,7 +21,7 @@ use indielinks::entities::{Post, User, UserId, Username};
 use indielinks_test::{
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     test_healthcheck,
-    user::test_signup,
+    users::test_signup,
     Helper,
 };
 

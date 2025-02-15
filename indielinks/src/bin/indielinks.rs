@@ -72,7 +72,7 @@ use url::Url;
 use indielinks::{
     delicious::make_router as make_delicious_router, http::Indielinks, metrics::Instruments,
     peppers::Peppers, signing_keys::SigningKeys, storage::Backend as StorageBackend,
-    user::make_router as make_user_router, webfinger::webfinger,
+    users::make_router as make_user_router, webfinger::webfinger,
 };
 
 /// The indielinks application error type

@@ -76,7 +76,7 @@ use libtest_mimic::Failed;
 use reqwest::Url;
 
 pub mod delicious;
-pub mod user;
+pub mod users;
 
 /// Hit the `indielinks` healthcheck endpoint; panic on anything other than success.
 ///
