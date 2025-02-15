@@ -23,10 +23,12 @@ use axum::{
     extract::{Query, State},
     http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
     response::IntoResponse,
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
+use chrono::Duration;
 use itertools::Itertools;
+use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
@@ -39,8 +41,12 @@ use crate::{
     entities::{self, User, UserApiKey, UserEmail, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
-    peppers,
+    peppers::{self, Peppers},
+    signing_keys,
+    signing_keys::SigningKeys,
     storage::{self, Backend as StorageBackend},
+    token,
+    token::mint_token,
     util::exactly_two,
 };
 
@@ -57,6 +63,11 @@ pub enum Error {
     #[snafu(display("An Authorization header had a value that couldn't be parsed."))]
     BadAuthHeaderParse {
         value: HeaderValue,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Incorrect password for {username}"))]
+    BadPassword {
+        username: Username,
         backtrace: Backtrace,
     },
     #[snafu(display("{username} is not a valid username"))]
@@ -79,8 +90,24 @@ pub enum Error {
     MultipleAuthnHeaders,
     #[snafu(display("No authorization token found in the query string"))]
     NoAuthToken { backtrace: Backtrace },
+    #[snafu(display("No signing keys available: {source}"))]
+    NoKeys {
+        source: signing_keys::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("{source}"))]
     NoPepper { source: peppers::Error },
+    #[snafu(display("Couldn't validate password for user {username}: {source}"))]
+    Password {
+        username: Username,
+        source: entities::Error,
+    },
+    #[snafu(display("Failed to mint a token for user {username}: {source}"))]
+    Token {
+        username: Username,
+        #[snafu(source(from(token::Error, Box::new)))]
+        source: Box<token::Error>,
+    },
     #[snafu(display("Unknown username {username}"))]
     UnknownUser { username: Username },
     #[snafu(display("Authorization scheme {scheme} not supported"))]
@@ -124,10 +151,18 @@ impl Error {
             ////////////////////////////////////////////////////////////////////////////////////////
             Error::BadApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::BadUsername { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            Error::BadPassword { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::InvalidApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::NoAuthToken { .. } => (
                 StatusCode::UNAUTHORIZED,
                 "No Authorization header or auth_token".to_string(),
+            ),
+            Error::NoKeys { source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "No signing keys found ({}); did you configure the program?",
+                    source
+                ),
             ),
             Error::UnknownUser { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::UnsupportedAuthScheme { .. } => {
@@ -143,6 +178,18 @@ impl Error {
             Error::NoPepper { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "No pepper available".to_string(),
+            ),
+            Error::Password {
+                username, source, ..
+            } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Couldn't validate password for {}: {}", username, source),
+            ),
+            Error::Token {
+                username, source, ..
+            } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to mint a token for {}: {}", username, source),
             ),
             Error::User { username, source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -492,6 +539,121 @@ async fn signup(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         `/user/login``                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("user.logins.successful", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("user.logins.failures", Sort::IntegralCounter) }
+
+#[derive(Clone, Debug, Deserialize)]
+struct LoginReq {
+    username: Username,
+    password: SecretString,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LoginRsp {
+    token: String,
+}
+
+/// Login as an existing user
+///
+/// This endpoint will vend a time-limited JWT that can be supplied in the Authorization header
+/// (with the bearer scheme) in subsequent requests.
+async fn login(
+    State(state): State<Arc<Indielinks>>,
+    Json(login_req): Json<LoginReq>,
+) -> axum::response::Response {
+    async fn login1(
+        storage: &(dyn StorageBackend + Send + Sync),
+        peppers: &Peppers,
+        token_lifetime: &Duration,
+        signing_keys: &SigningKeys,
+        domain: &str,
+        username: &Username,
+        password: SecretString,
+    ) -> Result<LoginRsp> {
+        let user = storage
+            .user_for_name(username.as_ref())
+            .await
+            .context(UserSnafu {
+                username: username.clone(),
+            })?
+            .context(UnknownUserSnafu {
+                username: username.clone(),
+            })?;
+        if user
+            .check_password(peppers, password)
+            .context(PasswordSnafu {
+                username: username.clone(),
+            })?
+        {
+            let (keyid, signing_key) = signing_keys.current().context(NoKeysSnafu)?;
+            let token = mint_token(username, &keyid, &signing_key, domain, token_lifetime)
+                .context(TokenSnafu {
+                    username: username.clone(),
+                })?;
+            Ok(LoginRsp { token })
+        } else {
+            BadPasswordSnafu {
+                username: username.clone(),
+            }
+            .fail()
+        }
+    }
+
+    match login1(
+        state.storage.as_ref(),
+        &state.pepper,
+        &state.token_lifetime,
+        &state.signing_keys,
+        &state.domain,
+        &login_req.username,
+        login_req.password,
+    )
+    .await
+    {
+        Ok(rsp) => {
+            info!("Logged-in user {}", login_req.username);
+            counter_add!(
+                state.instruments,
+                "user.logins.successful",
+                1,
+                &[KeyValue::new("username", login_req.username.to_string())]
+            );
+            (StatusCode::OK, Json(rsp)).into_response()
+        }
+        Err(Error::BadPassword { username, .. }) => {
+            error!("Bad password for user {}", username);
+            counter_add!(
+                state.instruments,
+                "user.logins.failures",
+                1,
+                &[KeyValue::new("username", login_req.username.to_string())]
+            );
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponseBody {
+                    error: "Unauthorized".to_owned(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!("{:#?}", err);
+            counter_add!(
+                state.instruments,
+                "user.logins.failures",
+                1,
+                &[KeyValue::new("username", login_req.username.to_string())]
+            );
+            let (status, msg) = err.as_status_and_msg();
+            (status, Json(ErrorResponseBody { error: msg })).into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -505,6 +667,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         // `user/users/:username`), but that model doesn't really map to the set of things one can
         // do via this API (how would we model minting a new API key, for instance? Or loggig-in?)
         .route("/users/signup", post(signup))
+        .route("/users/login", get(login))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             authenticate,

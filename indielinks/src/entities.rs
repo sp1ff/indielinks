@@ -22,7 +22,7 @@
 
 use std::{collections::HashSet, fmt::Display, ops::Deref, str::FromStr};
 
-use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use axum::http::Uri;
 use chrono::{DateTime, NaiveDate, Utc};
 use email_address::EmailAddress;
@@ -43,14 +43,14 @@ use scylla::{
 };
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Deserializer, Serialize};
-use snafu::{prelude::*, Backtrace};
+use snafu::{prelude::*, Backtrace, IntoError};
 use tap::{conv::Conv, pipe::Pipe};
 use tracing::debug;
 use unicode_segmentation::UnicodeSegmentation;
 use uuid::Uuid;
 use zxcvbn::{feedback::Feedback, zxcvbn, Score};
 
-use crate::peppers::{Pepper, Version as PepperVersion};
+use crate::peppers::{self, Pepper, Peppers, Version as PepperVersion};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -62,6 +62,11 @@ pub enum Error {
     BadTagname { text: String, backtrace: Backtrace },
     #[snafu(display("{name} is not a valid indielinks username"))]
     BadUsername { name: String },
+    CheckPassword {
+        username: Username,
+        source: password_hash::errors::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("{col_name} expected type {expected:?}; got {actual:?}"))]
     ColumnTypeMismatch {
         col_name: String,
@@ -91,6 +96,12 @@ pub enum Error {
     },
     #[snafu(display("Can't deserialize a {typ} from a null frame slice"))]
     NoFrameSlice { typ: String, backtrace: Backtrace },
+    #[snafu(display("No pepper found for user {username}: {source}"))]
+    NoPepper {
+        username: Username,
+        source: peppers::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Password doesn't have enough entropy: {feedback}"))]
     PasswordEntropy {
         feedback: Feedback,
@@ -705,11 +716,20 @@ impl secrecy::SerializableSecret for UserApiKey {}
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Newtype idiom to work around Rust's orphaned trait rule
+///
+/// I've chosen to serialize the hash string as a [PasswordHashString], rather than a
+/// [PasswordHash], since the latter doesn't support serde.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct UserHashString(
     #[serde(serialize_with = "serde_hash_string::serialize")] PasswordHashString,
 );
+
+impl UserHashString {
+    pub fn password_hash(&self) -> PasswordHash<'_> {
+        self.0.password_hash()
+    }
+}
 
 // Implement `Deserialize` by hand to fail if the serialized value isn't a legit hash string
 impl<'de> Deserialize<'de> for UserHashString {
@@ -855,35 +875,6 @@ fn generate_rsa_keypair() -> Result<(UserPublicKey, UserPrivateKey)> {
     ))
 }
 
-/// Hash a password
-///
-/// This function will first salt the password, then hash it using Argon2id with the default version
-/// (19 at the time of this writing) & parameters (m=19, t=2, m=1 at the time of this writing). Note
-/// that the parameters, as of February 12, 2025, comport with the OWASP [recommendations].
-///
-/// [recomendations]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#password-hashing-algorithms
-///
-/// Per [this] Github issue comment, the pepper is supplied via the `secret` field in the
-/// `new_with_secret()` constructor.
-///
-/// [this]: https://github.com/RustCrypto/traits/pull/699#issuecomment-891105093
-fn hash_password(pepper: &Pepper, password: &SecretString) -> Result<PasswordHashString> {
-    let hasher = Argon2::new_with_secret(
-        pepper.as_ref().expose_secret(),
-        Algorithm::Argon2id,
-        Version::default(),
-        Params::default(),
-    )
-    .context(HasherSnafu)?;
-    let salt = SaltString::generate(&mut OsRng);
-    let password_hash = hasher
-        .hash_password(password.expose_secret().as_bytes(), &salt)
-        .context(HashPasswordSnafu)?
-        .serialize();
-    debug!("password hash: {}", password_hash);
-    Ok(password_hash)
-}
-
 impl User {
     pub fn check_key(&self, key: &UserApiKey) -> bool {
         use secrecy::ExposeSecret;
@@ -891,6 +882,29 @@ impl User {
             .as_ref()
             .map(|k| k.0.expose_secret() == key.0.expose_secret())
             .unwrap_or(false)
+    }
+    /// Validate a password
+    ///
+    /// The caller will have to lookup the [Pepper] from configuration based on this user's pepper
+    /// version.
+    pub fn check_password(&self, peppers: &Peppers, password: SecretString) -> Result<bool> {
+        let pepper = peppers
+            .find_by_version(&self.pepper_version)
+            .context(NoPepperSnafu {
+                username: self.username.clone(),
+            })?;
+        let hasher = User::create_password_hasher(&pepper)?;
+        match hasher.verify_password(
+            password.expose_secret().as_bytes(),
+            &self.password_hash.password_hash(),
+        ) {
+            Ok(_) => Ok(true),
+            Err(password_hash::errors::Error::Password) => Ok(false),
+            Err(err) => Err(CheckPasswordSnafu {
+                username: self.username.clone(),
+            }
+            .into_error(err)),
+        }
     }
     pub fn date_of_last_post(&self) -> Option<DateTime<Utc>> {
         self.last_update
@@ -936,7 +950,7 @@ impl User {
     ) -> Result<User> {
         validate_password(password, &[username.as_ref(), email.as_ref()])?;
         let (pub_key, priv_key) = generate_rsa_keypair()?;
-        let password_hash = hash_password(pepper_key, password)?;
+        let password_hash = User::hash_password(pepper_key, password)?;
         Ok(User {
             id: UserId::new(),
             username: username.clone(),
@@ -966,6 +980,43 @@ impl User {
     }
     pub fn username(&self) -> Username {
         self.username.clone()
+    }
+    /// Create an indielinks user password hasher
+    ///
+    /// This function returns a [PasswordHasher] employing the Argon2id algorithm (with pepper) with
+    /// parameters m=19456 (19 MiB), t=2, p=1 (Do not use with Argon2i) Per the OWASP Password
+    /// Storage [Cheat Sheet], Argon2id is the first algorithm which should be considered, and those
+    /// are one of the recommended configurations for this algorithm.
+    ///
+    /// [Cheat Sheet]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#password-hashing-algorithms
+    fn create_password_hasher(pepper: &Pepper) -> Result<Argon2> {
+        Argon2::new_with_secret(
+            pepper.as_ref().expose_secret(),
+            Algorithm::Argon2id,
+            Version::default(),
+            Params::default(),
+        )
+        .context(HasherSnafu)
+    }
+    /// Hash a password
+    ///
+    /// This function will first salt the password, then hash it using Argon2id with the default version
+    /// (19 at the time of this writing) & parameters (m=19, t=2, m=1 at the time of this writing). Note
+    /// that the parameters, as of February 12, 2025, comport with the OWASP [recommendations].
+    ///
+    /// [recomendations]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#password-hashing-algorithms
+    ///
+    /// Per [this] Github issue comment, the pepper is supplied via the `secret` field in the
+    /// `new_with_secret()` constructor.
+    ///
+    /// [this]: https://github.com/RustCrypto/traits/pull/699#issuecomment-891105093
+    fn hash_password(pepper: &Pepper, password: &SecretString) -> Result<PasswordHashString> {
+        let salt = SaltString::generate(&mut OsRng);
+        let hasher = User::create_password_hasher(pepper)?;
+        Ok(hasher
+            .hash_password(password.expose_secret().as_bytes(), &salt)
+            .context(HashPasswordSnafu)?
+            .serialize())
     }
 }
 

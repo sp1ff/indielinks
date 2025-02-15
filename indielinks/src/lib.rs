@@ -26,7 +26,10 @@ pub mod http;
 pub mod metrics;
 pub mod peppers;
 pub mod scylla;
+#[path = "signing-keys.rs"]
+pub mod signing_keys;
 pub mod storage;
+pub mod token;
 pub mod user;
 pub mod util;
 pub mod webfinger;

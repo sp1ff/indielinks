@@ -43,6 +43,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use chrono::Duration;
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use either::Either;
 use libc::{
@@ -70,8 +71,8 @@ use url::Url;
 
 use indielinks::{
     delicious::make_router as make_delicious_router, http::Indielinks, metrics::Instruments,
-    peppers::Peppers, storage::Backend as StorageBackend, user::make_router as make_user_router,
-    webfinger::webfinger,
+    peppers::Peppers, signing_keys::SigningKeys, storage::Backend as StorageBackend,
+    user::make_router as make_user_router, webfinger::webfinger,
 };
 
 /// The indielinks application error type
@@ -268,6 +269,23 @@ impl Default for StorageConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct SigningKeysConfig {
+    #[serde(rename = "token-lifetime")]
+    token_lifetime: Duration,
+    #[serde(rename = "signing-keys")]
+    signing_keys: SigningKeys,
+}
+
+impl Default for SigningKeysConfig {
+    fn default() -> Self {
+        SigningKeysConfig {
+            token_lifetime: Duration::hours(1),
+            signing_keys: SigningKeys::default(),
+        }
+    }
+}
+
 /// Indielinks configuration, version one
 #[derive(Clone, Debug, Deserialize)]
 struct ConfigV1 {
@@ -287,6 +305,8 @@ struct ConfigV1 {
     storage_config: StorageConfig,
     domain: String,
     pepper: Peppers,
+    #[serde(rename = "signing-keys")]
+    signing_keys: SigningKeysConfig,
 }
 
 impl ConfigV1 {
@@ -307,6 +327,7 @@ impl Default for ConfigV1 {
             storage_config: StorageConfig::default(),
             domain: String::from("indiemark.sh"),
             pepper: Peppers::default(),
+            signing_keys: SigningKeysConfig::default(),
         }
     }
 }
@@ -603,6 +624,8 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
             storage,
             instruments: Instruments::new("indielinks"),
             pepper: cfg.pepper.clone(),
+            token_lifetime: cfg.signing_keys.token_lifetime,
+            signing_keys: cfg.signing_keys.signing_keys.clone(),
         });
 
         let world_nfy = Arc::new(Notify::new());

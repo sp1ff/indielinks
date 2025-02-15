@@ -50,5 +50,13 @@ pub async fn test_signup(url: Url) -> Result<(), Failed> {
     let body = rsp.json::<ErrorResponseBody>().await?;
     assert_eq!("Username johndoe is already claimed; sorry", body.error);
 
+    // OK-- now attempt to get a token for our new user
+    let rsp = client
+        .get(url.join("/api/v1/users/login")?)
+        .json(&json!({"username": "johndoe", "password": "f00 b@r sp1at"}))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::OK, rsp.status());
+
     Ok(())
 }

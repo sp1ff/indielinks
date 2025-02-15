@@ -18,9 +18,15 @@
 //! Much as I loathe catch-all "utility" modules, I truly don't know where these belong. Hopefully,
 //! as I build-out the project, this will become more clear.
 
-use std::fmt::Display;
+use std::{fmt::Display, marker::PhantomData, ops::Deref};
 
 use either::Either;
+use refined::{Predicate, TypeString, UnsignedBoundable};
+use regex::Regex;
+use secrecy::SecretSlice;
+use serde::{Deserialize, Deserializer};
+use serde_bytes::ByteBuf;
+use tap::{Conv, Pipe};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                          exactly_two                                           //
@@ -106,5 +112,82 @@ impl<T: Clone> UpToThree<T> {
             3 => Ok(UpToThree::Three(v[0].clone(), v[1].clone(), v[2].clone())),
             _ => Err(NoMoreThanThree {}),
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         RegexPredicate                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// I've submitted this as a PR to the `refined` library here:
+// https://github.com/jkaye2012/refined/pull/11
+// remove this once that PR gets merged & a new release of `refined` is cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct RegexPredicate<S: TypeString>(PhantomData<S>);
+
+impl<S: TypeString, T: AsRef<str>> Predicate<T> for RegexPredicate<S> {
+    fn test(s: &T) -> bool {
+        Regex::new(S::VALUE)
+            .expect("Invalid regex")
+            .is_match(s.as_ref())
+    }
+    fn error() -> String {
+        format!("must match regular expression {}", S::VALUE)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                              Key                                               //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A general-purpose encryption key
+///
+/// [Key] is a deserializable, secret, slice of byte.
+#[derive(Clone, Debug)]
+pub struct Key(SecretSlice<u8>);
+
+// And let's implement a few convenience traits for `Key`, mostly designed to make it possible to
+// use a `Key` wherever one might want to use a `SecretSlice<u8>`.
+
+impl AsRef<SecretSlice<u8>> for Key {
+    fn as_ref(&self) -> &SecretSlice<u8> {
+        self.deref()
+    }
+}
+
+impl Deref for Key {
+    type Target = SecretSlice<u8>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+// I *think* I can't just derive `Deserialize` because [u8] doesn't implement `DeserializeOwned`
+impl<'de> Deserialize<'de> for Key {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        <ByteBuf as serde::Deserialize>::deserialize(deserializer)
+            .map_err(|err| <D::Error as serde::de::Error>::custom(format!("{:?}", err)))?
+            .pipe(|x| x.into_vec())
+            .conv::<SecretSlice<u8>>()
+            .pipe(Key)
+            .pipe(Ok)
+    }
+}
+
+impl From<Vec<u8>> for Key {
+    fn from(value: Vec<u8>) -> Self {
+        Key(value.into())
+    }
+}
+
+// Let `Key` play with refined types; return the length of the secret slice
+impl UnsignedBoundable for Key {
+    fn bounding_value(&self) -> usize {
+        use secrecy::ExposeSecret;
+        self.0.expose_secret().len()
     }
 }

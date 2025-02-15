@@ -14,15 +14,18 @@ axum-extra = { version = "0.10.0", features = ["query"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["cargo", "env"] }
+crypto-common = "0.1.6"
 either = { version = "1.13.0", features = ["serde"] }
 email_address = "0.2.9"
 enum-map = "2.7.3"
 errno = "0.3.10"
 futures = "0.3.31"
 hex = "0.4.3"
+hmac = "0.12.1"
 http-serde = "2.1.1"
 inventory = "0.3.19"
 itertools = "0.13.0"
+jwt = "0.16.0"
 lazy_static = "1.5.0"
 libc = "0.2.169"
 opentelemetry = "0.27.1"
@@ -33,6 +36,7 @@ picky = "6.3.0"
 pkcs8 = "0.10.2"
 prometheus = "0.13.4"
 rand = "0.8.0"
+refined = "0.0.3"
 regex = "1.11.1"
 rsa = "0.9.7"
 scylla = { version = "0.15.1", features = ["chrono-04"] }
@@ -40,6 +44,7 @@ secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_bytes = { version = "0.11.15", features = ["alloc"] }
 serde_dynamo = { version = "4.2.14", features = ["aws-sdk-dynamodb+1"] }
+sha2 = "0.10.8"
 snafu = "0.8.5"
 tap = "1.0.1"
 tokio = { version = "1.42.0", features = ["rt-multi-thread", "signal", "sync"] }

@@ -13,10 +13,17 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use crate::{metrics, peppers::Peppers, storage::Backend as StorageBackend};
+use crate::{
+    metrics, peppers::Peppers, signing_keys::SigningKeys, storage::Backend as StorageBackend,
+};
 
 use axum::Json;
+use chrono::Duration;
 use serde::{Deserialize, Serialize};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        Error Responses                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// A serializable struct for use in HTTP error responses
 ///
@@ -42,6 +49,19 @@ impl axum::response::IntoResponse for ErrorResponseBody {
 #[allow(type_alias_bounds)]
 pub type Result<T: axum::response::IntoResponse> = std::result::Result<T, ErrorResponseBody>;
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        JWT Signing Keys                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Not sure these will stay here; I'm still finding my way. I want to be able to rotate keys "live";
+// i.e. add a new signing key to the app config, SIGHUP the program, and from then on all *new* JWTs
+// will be signed with the new key, but JWTs signed by the old one will still be honored. Then, when
+// all the old JWTs have expired, we can remove the old key from the configuration.
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       Application State                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// Application state available to all handlers
 // Not sure this is going to stay here.
 pub struct Indielinks {
@@ -50,4 +70,6 @@ pub struct Indielinks {
     pub registry: prometheus::Registry,
     pub instruments: metrics::Instruments,
     pub pepper: Peppers,
+    pub token_lifetime: Duration,
+    pub signing_keys: SigningKeys,
 }
