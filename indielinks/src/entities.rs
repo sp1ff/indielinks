@@ -54,8 +54,12 @@ use crate::peppers::{self, Pepper, Peppers, Version as PepperVersion};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Invalid API key"))]
+    BadApiKey { backtrace: Backtrace },
     #[snafu(display("{email} is not a valid e-mail address"))]
     BadEmail { email: String, backtrace: Backtrace },
+    #[snafu(display("Incorrect password"))]
+    BadPassword { backtrace: Backtrace },
     #[snafu(display("{text} is not a valid `day` for a post"))]
     BadPostDay { text: String, backtrace: Backtrace },
     #[snafu(display("{text} is not a valid tag name"))]
@@ -876,18 +880,23 @@ fn generate_rsa_keypair() -> Result<(UserPublicKey, UserPrivateKey)> {
 }
 
 impl User {
-    pub fn check_key(&self, key: &UserApiKey) -> bool {
+    /// Validate an API key
+    pub fn check_key(&self, key: &UserApiKey) -> Result<()> {
         use secrecy::ExposeSecret;
-        self.api_key
+        match self
+            .api_key
             .as_ref()
             .map(|k| k.0.expose_secret() == key.0.expose_secret())
-            .unwrap_or(false)
+        {
+            Some(true) => Ok(()),
+            _ => BadApiKeySnafu.fail(),
+        }
     }
     /// Validate a password
     ///
     /// The caller will have to lookup the [Pepper] from configuration based on this user's pepper
     /// version.
-    pub fn check_password(&self, peppers: &Peppers, password: SecretString) -> Result<bool> {
+    pub fn check_password(&self, peppers: &Peppers, password: SecretString) -> Result<()> {
         let pepper = peppers
             .find_by_version(&self.pepper_version)
             .context(NoPepperSnafu {
@@ -898,8 +907,8 @@ impl User {
             password.expose_secret().as_bytes(),
             &self.password_hash.password_hash(),
         ) {
-            Ok(_) => Ok(true),
-            Err(password_hash::errors::Error::Password) => Ok(false),
+            Ok(_) => Ok(()),
+            Err(password_hash::errors::Error::Password) => BadPasswordSnafu.fail(),
             Err(err) => Err(CheckPasswordSnafu {
                 username: self.username.clone(),
             }

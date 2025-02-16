@@ -17,10 +17,10 @@
 //!
 //! API for sign-up, minting API keys, and so forth.
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
-    extract::{Query, State},
+    extract::State,
     http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -32,22 +32,20 @@ use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
-use tap::Pipe;
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 
 use crate::{
+    authn,
+    authn::{check_api_key, check_password, check_token, AuthnScheme},
     counter_add,
     entities::{self, User, UserApiKey, UserEmail, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     peppers::{self, Peppers},
-    signing_keys,
-    signing_keys::SigningKeys,
+    signing_keys::{self, SigningKeys},
     storage::{self, Backend as StorageBackend},
-    token,
-    token::mint_token,
-    util::exactly_two,
+    token::{self, mint_token},
 };
 
 #[derive(Debug, Snafu)]
@@ -81,9 +79,10 @@ pub enum Error {
     #[snafu(display("An Authorization header had a non-textual value: {source}"))]
     InvalidAuthHeaderValue {
         value: HeaderValue,
-        source: axum::http::header::ToStrError,
-        backtrace: Backtrace,
+        source: authn::Error,
     },
+    #[snafu(display("Invalid credentials: {source}"))]
+    InvalidCredentials { source: authn::Error },
     #[snafu(display("Failed to find a colon in '{text}'"))]
     MissingColon { text: String, backtrace: Backtrace },
     #[snafu(display("Multiple Authorization headers were supplied; only one is accepted."))]
@@ -153,6 +152,9 @@ impl Error {
             Error::BadUsername { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::BadPassword { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::InvalidApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            Error::InvalidCredentials { .. } => {
+                (StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
+            }
             Error::NoAuthToken { .. } => (
                 StatusCode::UNAUTHORIZED,
                 "No Authorization header or auth_token".to_string(),
@@ -216,90 +218,9 @@ impl axum::response::IntoResponse for Error {
 }
 type Result<T> = std::result::Result<T, Error>;
 
-type StdResult<T, E> = std::result::Result<T, E>;
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         Authorization                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Authorization schemes
-///
-/// Unlike the [del.icio.us] API, I am here unburdened by legacy concerns; I can authenticate this
-/// API any way I want. I loathe putting key material on the wire (let alone passwords), but at this
-/// point in the development of indielinks I'm not quite ready to force clients to sign requests (I
-/// still spend too much time using cUrl to test), so I'll continue to support "bearer" (i.e. API
-/// key) tokens. I plan to *add* request signing should a particular caller not wish to put their
-/// key on the wire, but I hope to move to JWTs as the primary authentication scheme.
-///
-/// [del.icio.us]: [delicious]
-#[derive(Clone, Debug)]
-enum AuthnScheme {
-    BearerApiKey((Username, UserApiKey)),
-}
-
-impl AuthnScheme {
-    /// Create an AuthnScheme instance from the the plain text "username:key-in-hex"
-    fn from_api_key(payload: &str) -> Result<AuthnScheme> {
-        // `payload` should be the plain text "username:key-in-hex"
-        let (username, key) = payload.split_once(':').context(MissingColonSnafu {
-            text: payload.to_string(),
-        })?;
-        Ok(AuthnScheme::BearerApiKey((
-            Username::from_str(username).context(BadUsernameSnafu {
-                username: username.to_owned(),
-            })?,
-            hex::decode(key.as_bytes())
-                .context(BadApiKeySnafu {
-                    key: key.to_owned(),
-                })?
-                .into(),
-        )))
-    }
-}
-
-impl TryFrom<&HeaderValue> for AuthnScheme {
-    type Error = Error;
-
-    fn try_from(value: &HeaderValue) -> StdResult<Self, Self::Error> {
-        // This seems like a lot of code to parse a `HeaderValue` into a a pair of strings... should
-        // I upgrade to a proper parsing library like `nom`? I guess a regex would do it, once we've
-        // converted the header value to a string.
-        let (scheme, payload) = value
-            .to_str()
-            .context(InvalidAuthHeaderValueSnafu {
-                value: value.clone(),
-            })?
-            .split_ascii_whitespace()
-            .collect::<Vec<&str>>()
-            .into_iter()
-            .pipe(exactly_two)
-            .map_err(|_| {
-                BadAuthHeaderParseSnafu {
-                    value: value.clone(),
-                }
-                .build()
-            })?;
-        match scheme.to_ascii_lowercase().as_str() {
-            "bearer" => AuthnScheme::from_api_key(payload),
-            _ => UnsupportedAuthSchemeSnafu {
-                scheme: scheme.to_owned(),
-            }
-            .fail(),
-        }
-    }
-}
-
-impl PartialEq for AuthnScheme {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                AuthnScheme::BearerApiKey((username1, key1)),
-                AuthnScheme::BearerApiKey((username2, key2)),
-            ) => username1 == username2 && key1 == key2,
-            // Later: (_, _) => false,
-        }
-    }
-}
 
 inventory::submit! { metrics::Registration::new("user.auth.successes", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("user.auth.failures", Sort::IntegralCounter) }
@@ -331,54 +252,58 @@ inventory::submit! { metrics::Registration::new("user.auth.failures", Sort::Inte
 /// [here]: https://docs.rs/axum/latest/axum/middleware/fn.from_fn.html
 async fn authenticate(
     State(state): State<Arc<Indielinks>>,
-    Query(params): Query<HashMap<String, String>>,
     headers: axum::http::HeaderMap,
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     async fn authenticate1(
         headers: axum::http::HeaderMap,
-        params: HashMap<String, String>,
         storage: &(dyn StorageBackend + Send + Sync),
+        peppers: &Peppers,
+        keys: &SigningKeys,
+        domain: &str,
     ) -> Result<User> {
-        // Ahhhh... the joys of HTTP. Ostensibly, we expect authorization credentials in the
-        // Authorization header. Of course, there's nothing stopping a client from including
-        // *multiple* Authorization headers, so we have to handle that eventuality. I think, for
-        // now, I'm going to just reject requests that carry more than one Authorization header
-        // (smells too much like someone trying something fishy).
+        // This logic is esentially duplicated in `delicious`-- if this is a recurring pattern
+        // across APIs, re-factor.
         let scheme = match headers
             .get_all("authorization")
             .into_iter()
             .at_most_one()
             .map_err(|_| Error::MultipleAuthnHeaders)?
         {
-            Some(header_val) => AuthnScheme::try_from(header_val)?,
-            None => AuthnScheme::from_api_key(
-                params.get("auth_token").ok_or(NoAuthTokenSnafu.build())?,
-            )?,
+            Some(header_val) => AuthnScheme::try_from(header_val)
+                .context(InvalidAuthHeaderValueSnafu { value: header_val })?,
+            None => {
+                return NoAuthTokenSnafu.fail();
+            }
         };
 
         match scheme {
-            AuthnScheme::BearerApiKey((username, key)) => {
-                let user = storage
-                    .user_for_name(username.as_ref())
+            AuthnScheme::BearerApiKey((username, key)) => check_api_key(storage, &username, &key)
+                .await
+                .context(InvalidCredentialsSnafu),
+            AuthnScheme::BearerToken(token_string) => {
+                check_token(storage, &token_string, keys, domain)
                     .await
-                    .context(UserSnafu {
-                        username: username.clone(),
-                    })?
-                    .context(UnknownUserSnafu {
-                        username: username.clone(),
-                    })?;
-                if user.check_key(&key) {
-                    Ok(user)
-                } else {
-                    InvalidApiKeySnafu { key }.fail()
-                }
+                    .context(InvalidCredentialsSnafu)
+            }
+            AuthnScheme::Basic((username, password)) => {
+                check_password(storage, peppers, &username, password)
+                    .await
+                    .context(InvalidCredentialsSnafu)
             }
         }
     }
 
-    match authenticate1(headers, params, state.storage.as_ref()).await {
+    match authenticate1(
+        headers,
+        state.storage.as_ref(),
+        &state.pepper,
+        &state.signing_keys,
+        &state.domain,
+    )
+    .await
+    {
         Ok(user) => {
             debug!("indielinks authorized user {}", user.id());
             request.extensions_mut().insert(user);
@@ -582,24 +507,18 @@ async fn login(
             .context(UnknownUserSnafu {
                 username: username.clone(),
             })?;
-        if user
-            .check_password(peppers, password)
+        user.check_password(peppers, password)
             .context(PasswordSnafu {
                 username: username.clone(),
-            })?
-        {
-            let (keyid, signing_key) = signing_keys.current().context(NoKeysSnafu)?;
-            let token = mint_token(username, &keyid, &signing_key, domain, token_lifetime)
-                .context(TokenSnafu {
-                    username: username.clone(),
-                })?;
-            Ok(LoginRsp { token })
-        } else {
-            BadPasswordSnafu {
+            })?;
+
+        let (keyid, signing_key) = signing_keys.current().context(NoKeysSnafu)?;
+        let token = mint_token(username, &keyid, &signing_key, domain, token_lifetime).context(
+            TokenSnafu {
                 username: username.clone(),
-            }
-            .fail()
-        }
+            },
+        )?;
+        Ok(LoginRsp { token })
     }
 
     match login1(

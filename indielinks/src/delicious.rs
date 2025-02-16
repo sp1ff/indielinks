@@ -31,12 +31,15 @@
 //! different structures to represent responses. This has resulted in a little more boilerplate.
 
 use crate::{
+    authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     counter_add,
     entities::{self, Post, PostDay, PostUri, Tagname, User, UserApiKey, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
+    peppers::Peppers,
+    signing_keys::SigningKeys,
     storage::{self, Backend as StorageBackend, DateRange},
-    util::{exactly_two, UpToThree},
+    util::UpToThree,
 };
 
 use axum::{
@@ -47,10 +50,8 @@ use axum::{
     Router,
 };
 use axum_extra::extract::Query;
-use base64::prelude::*;
 use chrono::{DateTime, NaiveDate, Utc};
 use itertools::Itertools;
-use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use snafu::prelude::*;
 use tap::Pipe;
@@ -60,7 +61,6 @@ use tracing::{debug, error};
 use std::{
     backtrace::Backtrace,
     collections::{HashMap, HashSet},
-    str::FromStr,
     string::FromUtf8Error,
     sync::Arc,
 };
@@ -129,11 +129,14 @@ pub enum Error {
     #[snafu(display("An Authorization header had a non-textual value: {source}"))]
     InvalidAuthHeaderValue {
         value: HeaderValue,
-        source: axum::http::header::ToStrError,
-        backtrace: Backtrace,
+        source: authn::Error,
     },
+    #[snafu(display("Invalid credentials: {source}"))]
+    InvalidCredentials { source: authn::Error },
     #[snafu(display("Invalid API key"))]
     InvalidApiKey { key: UserApiKey },
+    #[snafu(display("The token {value} couldn't be interpreted as an API key: {source}"))]
+    InvalidQueryToken { value: String, source: authn::Error },
     #[snafu(display("Failed to find a colon in '{text}'"))]
     MissingColon { text: String, backtrace: Backtrace },
     #[snafu(display("No query parameters: this method has required query parameters"))]
@@ -236,6 +239,10 @@ impl Error {
                 StatusCode::BAD_REQUEST,
                 format!("Bad Authorization header {:?}: {}", value, source),
             ),
+            Error::InvalidQueryToken { value, source, .. } => (
+                StatusCode::BAD_REQUEST,
+                format!("Bad Authorization query token {}: {}", value, source),
+            ),
             Error::MissingColon { text, .. } => (
                 StatusCode::BAD_REQUEST,
                 format!("Missing colon in {}", text),
@@ -261,6 +268,9 @@ impl Error {
             Error::BadApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::BadUsername { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::InvalidApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            Error::InvalidCredentials { .. } => {
+                (StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
+            }
             Error::NoAuthToken { .. } => (
                 StatusCode::UNAUTHORIZED,
                 "No Authorization header or auth_token".to_string(),
@@ -357,141 +367,6 @@ type StdResult<T, E> = std::result::Result<T, E>;
 //                                         Authorization                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Authorization schemes
-///
-/// I loathe putting key material on the wire (let alone passwords), but for legacy reasons we
-/// support both HTTP "basic" authentication (i.e. username & password) as well as "bearer" (i.e.
-/// API key). I'd love to move to something like request signing or true (OAuth or JWT) bearer
-/// tokens.
-#[derive(Clone, Debug)]
-enum AuthnScheme {
-    Bearer((Username, UserApiKey)),
-    Basic((Username, SecretString)),
-}
-
-impl AuthnScheme {
-    /// Create an AuthnScheme instance from the base64 encoding of "username:password"
-    fn from_basic(payload: &str) -> Result<AuthnScheme> {
-        let (username, password) = BASE64_STANDARD
-            .decode(payload)
-            .context(BadBase64EncodingSnafu {
-                text: payload.to_owned(),
-            })?
-            .pipe(String::from_utf8)
-            .context(NotUtf8Snafu)?
-            .split_once(':')
-            .context(MissingColonSnafu {
-                text: payload.to_string(),
-            })?
-            .pipe(|(u, p)| (u.to_string(), p.to_string()));
-
-        Ok(AuthnScheme::Basic((
-            Username::from_str(&username).context(BadUsernameSnafu {
-                username: username.to_owned(),
-            })?,
-            password.into(),
-        )))
-    }
-    /// Create an AuthnScheme instance from the the plain text "username:key-in-hex"
-    fn from_bearer(payload: &str) -> Result<AuthnScheme> {
-        // `payload` should be the plain text "username:key-in-hex"
-        let (username, key) = payload.split_once(':').context(MissingColonSnafu {
-            text: payload.to_string(),
-        })?;
-        Ok(AuthnScheme::Bearer((
-            Username::from_str(username).context(BadUsernameSnafu {
-                username: username.to_owned(),
-            })?,
-            hex::decode(key.as_bytes())
-                .context(BadApiKeySnafu {
-                    key: key.to_owned(),
-                })?
-                .into(),
-        )))
-    }
-}
-
-impl TryFrom<&HeaderValue> for AuthnScheme {
-    type Error = Error;
-
-    fn try_from(value: &HeaderValue) -> StdResult<Self, Self::Error> {
-        // This seems like a lot of code to parse a `HeaderValue` into a a pair of strings... should
-        // I upgrade to a proper parsing library like `nom`? I guess a regex would do it, once we've
-        // converted the header value to a string.
-        let (scheme, payload) = value
-            .to_str()
-            .context(InvalidAuthHeaderValueSnafu {
-                value: value.clone(),
-            })?
-            .split_ascii_whitespace()
-            .collect::<Vec<&str>>()
-            .into_iter()
-            .pipe(exactly_two)
-            .map_err(|_| {
-                BadAuthHeaderParseSnafu {
-                    value: value.clone(),
-                }
-                .build()
-            })?;
-        match scheme.to_ascii_lowercase().as_str() {
-            "basic" => AuthnScheme::from_basic(payload),
-            "bearer" => AuthnScheme::from_bearer(payload),
-            _ => UnsupportedAuthSchemeSnafu {
-                scheme: scheme.to_owned(),
-            }
-            .fail(),
-        }
-    }
-}
-
-impl PartialEq for AuthnScheme {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (AuthnScheme::Bearer((username1, key1)), AuthnScheme::Bearer((username2, key2))) => {
-                username1 == username2 && key1 == key2
-            }
-            (
-                AuthnScheme::Basic((username1, password1)),
-                AuthnScheme::Basic((username2, password2)),
-            ) => username1 == username2 && password1.expose_secret() == password2.expose_secret(),
-            (_, _) => false,
-        }
-    }
-}
-
-#[cfg(test)]
-mod test {
-
-    use super::*;
-
-    #[test]
-    fn test_authn_scheme_try_from() {
-        let x = AuthnScheme::try_from(
-            &HeaderValue::from_str("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==").unwrap(/* known good */),
-        );
-        assert!(x.is_ok());
-        assert!(
-            x.unwrap()
-                == AuthnScheme::Basic((
-                    Username::from_str("Aladdin").unwrap(),
-                    String::from("open sesame").into()
-                ))
-        );
-
-        let x = AuthnScheme::try_from(
-            &HeaderValue::from_str("Bearer sp1ff:010203").unwrap(/* known good */),
-        );
-        assert!(x.is_ok());
-        assert!(
-            x.unwrap()
-                == AuthnScheme::Bearer((
-                    Username::from_str("sp1ff").unwrap(/* known good */),
-                    vec![1, 2, 3].into()
-                ))
-        );
-    }
-}
-
 inventory::submit! { metrics::Registration::new("delicious.auth.successes", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("delicious.auth.failures", Sort::IntegralCounter) }
 
@@ -542,6 +417,9 @@ async fn authenticate(
         headers: axum::http::HeaderMap,
         params: HashMap<String, String>,
         storage: &(dyn StorageBackend + Send + Sync),
+        peppers: &Peppers,
+        keys: &SigningKeys,
+        domain: &str,
     ) -> Result<User> {
         // Ahhhh... the joys of HTTP. Ostensibly, we expect authorization credentials in the
         // Authorization header. Of course, there's nothing stopping a client from including
@@ -554,37 +432,45 @@ async fn authenticate(
             .at_most_one()
             .map_err(|_| Error::MultipleAuthnHeaders)?
         {
-            Some(header_val) => AuthnScheme::try_from(header_val)?,
-            None => {
-                AuthnScheme::from_bearer(params.get("auth_token").ok_or(NoAuthTokenSnafu.build())?)?
-            }
+            Some(header_val) => AuthnScheme::try_from(header_val)
+                .context(InvalidAuthHeaderValueSnafu { value: header_val })?,
+            None => match params.get("auth_token") {
+                Some(value) => {
+                    AuthnScheme::from_api_key(value).context(InvalidQueryTokenSnafu { value })?
+                }
+                None => {
+                    return NoAuthTokenSnafu.fail();
+                }
+            },
         };
 
-        // Another method?
         match scheme {
-            AuthnScheme::Bearer((username, key)) => {
-                let user = storage
-                    .user_for_name(username.as_ref())
+            AuthnScheme::BearerApiKey((username, key)) => check_api_key(storage, &username, &key)
+                .await
+                .context(InvalidCredentialsSnafu),
+            AuthnScheme::BearerToken(token_string) => {
+                check_token(storage, &token_string, keys, domain)
                     .await
-                    .context(UserSnafu {
-                        username: username.clone(),
-                    })?
-                    .context(UnknownUserSnafu {
-                        username: username.clone(),
-                    })?;
-                if user.check_key(&key) {
-                    Ok(user)
-                } else {
-                    InvalidApiKeySnafu { key }.fail()
-                }
+                    .context(InvalidCredentialsSnafu)
             }
-            AuthnScheme::Basic((_username, _password)) => {
-                unimplemented!("Password authentication is not (yet) implemented.")
+            AuthnScheme::Basic((username, password)) => {
+                check_password(storage, peppers, &username, password)
+                    .await
+                    .context(InvalidCredentialsSnafu)
             }
         }
     }
 
-    match authenticate1(headers, params, state.storage.as_ref()).await {
+    match authenticate1(
+        headers,
+        params,
+        state.storage.as_ref(),
+        &state.pepper,
+        &state.signing_keys,
+        &state.domain,
+    )
+    .await
+    {
         Ok(user) => {
             debug!("indielinks authorized user {}", user.id());
             request.extensions_mut().insert(user);
