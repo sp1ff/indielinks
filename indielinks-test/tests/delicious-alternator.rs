@@ -22,6 +22,7 @@ use indielinks_test::{
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     test_healthcheck,
     users::test_signup,
+    webfinger::webfinger_smoke,
     Helper,
 };
 
@@ -270,6 +271,13 @@ inventory::submit!(Test {
 inventory::submit!(Test {
     name: "020user_test_signup",
     test_fn: |cfg: Configuration, _helper| { Box::pin(test_signup(cfg.url,)) },
+});
+
+inventory::submit!(Test {
+    name: "030webfinger_smoke",
+    test_fn: |cfg: Configuration, _helper| {
+        Box::pin(webfinger_smoke(cfg.url, cfg.username, cfg.domain))
+    },
 });
 
 #[tokio::main]

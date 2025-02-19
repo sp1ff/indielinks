@@ -92,7 +92,6 @@ use std::{fmt::Display, str::FromStr};
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use url::Url;
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
@@ -215,10 +214,6 @@ impl Account {
     }
     pub fn user(&self) -> &str {
         &self.user
-    }
-    // Not sure this really belongs here...
-    pub fn home(&self) -> Url {
-        Url::parse(&format!("https://{}/~{}", self.host, self.user)).unwrap(/*known good*/)
     }
 }
 

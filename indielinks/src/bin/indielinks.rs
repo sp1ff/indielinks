@@ -59,7 +59,7 @@ use tokio::{
     signal::unix::{signal, SignalKind},
     sync::{mpsc, Notify},
 };
-use tower_http::trace::TraceLayer;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info, Level};
 use tracing_subscriber::{
     filter::EnvFilter,
@@ -554,7 +554,10 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
     Router::new()
         .route("/healthcheck", get(healthcheck))
         .route("/metrics", get(metrics))
-        .route("/.well-known/webfinger", get(webfinger))
+        .route(
+            "/.well-known/webfinger",
+            get(webfinger).layer(CorsLayer::permissive()),
+        )
         .nest("/api/v1", make_delicious_router(state.clone()))
         .nest("/api/v1", make_user_router(state.clone()))
         .layer(TraceLayer::new_for_http())

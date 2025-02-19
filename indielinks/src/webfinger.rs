@@ -16,27 +16,81 @@
 //! indielinks webfinger implementation
 //!
 //! This is a minimal webfinger implementation; it ignores the `rel` query parameter and just
-//! returns the "application/activity+json" link.
+//! returns the "self" link.
 //!
-//! It also neglects the CORS headers: "servers MUST include the Access-Control-Allow-Origin HTTP
-//! header in responses. Servers SHOULD support the least restrictive setting by allowing any domain
-//! access to the WebFinger resource: Access-Control-Allow-Origin: *"
+//! CORS headers: "servers MUST include the Access-Control-Allow-Origin HTTP header in responses.
+//! Servers SHOULD support the least restrictive setting by allowing any domain access to the
+//! WebFinger resource: Access-Control-Allow-Origin: *" I handle this at the router layer with a
+//! [CorsLayer].
+//!
+//! [CorsLayer]: tower_http::cors::CorsLayer
+//!
+//! Clients can request different formats via the Accept header. That said, we can silently ignore
+//! any incoming "Accept" header value other than "application/jrd+json".
+//!
+//! # The `rel` Parameter
+//!
+//! This lets the caller specify the link relations in which they are interested. Even if specified,
+//! the other attributes, like aliases & properties, are still returned; it's just the "links"
+//! collection that's filtered. Support for this feature is *not* required, and Mastodon does not
+//! implement it. The `rel` parameter may be specified more than once (once for each link type
+//! desired). From the [RFC]:
+//!
+//! [RFC]: https://www.rfc-editor.org/rfc/rfc7033
+//!
+//! "If there are no matching link relation types defined for the resource, the 'links' array in the
+//! JRD will be either absent or empty. All other information present in a resource descriptor
+//! remains present, even when 'rel' is employed."
+//!
+//! I take this to mean that if a caller names a link type I don't know about in a `rel` parameter I
+//! am to return no links at all. Indeed, further down: "Note that if a client requests a particular
+//! link relation type for which the server has no information, the server MAY return a JRD with an
+//! empty 'links' array or no 'links' array."
 
 use std::sync::Arc;
 
 use crate::http::Indielinks;
+use crate::metrics::Sort;
+use crate::storage;
+use crate::storage::Backend as StorageBackend;
 use crate::{acct::Account, http::ErrorResponseBody};
+use crate::{counter_add, metrics};
 
 use axum::extract::{Query, State};
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
-use tracing::error;
+use snafu::{Backtrace, ResultExt, Snafu};
+use tracing::{error, info};
 use url::Url;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module error type                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("Mismatched hostname for webfinger"))]
+    Hostname { backtrace: Backtrace },
+    #[snafu(display("Unknown user for webfinger"))]
+    NoSuchUser { backtrace: Backtrace },
+    #[snafu(display("Storage failure: {source}"))]
+    Storage { source: storage::Error },
+    #[snafu(display("Failed to form an URL: {source}"))]
+    UrlParse {
+        source: url::ParseError,
+        backtrace: Backtrace,
+    },
+}
+
+type Result<T> = std::result::Result<T, Error>;
 
 /// Link Relation Type
 ///
 /// This is a trivial subset of the [registered] link relation types sufficient for indielinks. I'll
-/// build it out, later.
+/// build it out, later. Later, we'll want:
+///
+/// - `http://webfinger.net/rel/profile-page`
+/// - `http://webfinger.net/rel/avatar`
 ///
 /// [registered]: https://www.iana.org/assignments/link-relations/link-relations.xhtml
 #[derive(Debug, Serialize)]
@@ -48,7 +102,7 @@ pub enum LinkRelation {
 /// Media Type
 ///
 /// This is a trivial subset of the [registered] media types sufficient for indielinks. I'll build
-/// it out, later.
+/// it out, later. Later we'll also want `text/html` and `image/jpeg`.
 ///
 /// [registered]: https://www.iana.org/assignments/media-types/media-types.xhtml
 #[derive(Debug, Serialize)]
@@ -65,12 +119,14 @@ pub struct Link {
 }
 
 impl Link {
-    fn from_account(value: &Account) -> Self {
-        Link {
+    /// Create a "self" [Link] from an [Account]
+    fn from_account(acct: &Account) -> Result<Self> {
+        Ok(Link {
             rel: LinkRelation::Myself,
             r#type: MediaType::ActivityPub,
-            href: value.home(),
-        }
+            href: Url::parse(&format!("https://{}/users/{}", &acct.host(), &acct.user()))
+                .context(UrlParseSnafu)?,
+        })
     }
 }
 
@@ -94,12 +150,16 @@ impl Link {
 ///
 /// ```text
 /// {
-///   "subject": "<username>@<domain>"
+///   "subject": "<username>@<domain>",
+///   "aliases": [
+///     "https://<domain>/@<username>",
+///     "https://<domain>/users/<username>",
+///   ],
 ///   "links": [
 ///      {
 ///        "rel": "self",
 ///        "type": "application/activity+json",
-///        "href": "https://<domain>/~<username>"
+///        "href": "https://<domain>/users/<username>"
 ///      }
 ///    ]
 /// }
@@ -110,15 +170,22 @@ impl Link {
 #[derive(Serialize)]
 pub struct ResponseBody {
     subject: Account,
+    aliases: Vec<Url>,
     links: Vec<Link>,
 }
 
-impl std::convert::From<Account> for ResponseBody {
-    fn from(value: Account) -> Self {
-        ResponseBody {
-            links: vec![Link::from_account(&value)],
-            subject: value,
-        }
+impl ResponseBody {
+    pub fn new(acct: &Account) -> Result<ResponseBody> {
+        Ok(ResponseBody {
+            links: vec![Link::from_account(acct)?],
+            aliases: vec![
+                Url::parse(&format!("https://{}/@{}", acct.host(), acct.user()))
+                    .context(UrlParseSnafu)?,
+                Url::parse(&format!("https://{}/users/{}", acct.host(), acct.user()))
+                    .context(UrlParseSnafu)?,
+            ],
+            subject: acct.clone(),
+        })
     }
 }
 
@@ -132,10 +199,14 @@ impl axum::response::IntoResponse for ResponseBody {
 //                                       webfinger handler                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+inventory::submit! { metrics::Registration::new("webfinger.served", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("webfinger.not_found", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("webfinger.errors", Sort::IntegralCounter) }
+
 #[derive(Debug, Deserialize)]
 pub struct WebFingerQueryParams {
     pub resource: Account,
-    #[serde(default)]
+    #[serde(default, rename = "rel")]
     _rel: Vec<Url>,
 }
 
@@ -148,34 +219,61 @@ pub async fn webfinger(
     State(state): State<Arc<Indielinks>>,
     params: Query<WebFingerQueryParams>,
 ) -> axum::response::Response {
-    // An inelegant implementation, but I'm going to wait for the full implementation to optimize.
-    // One thing to note: Mastodon does not send back an error message on failure (just an empty
-    // response).
-    if params.resource.host() != state.domain {
-        return (
-            StatusCode::NOT_FOUND,
-            ErrorResponseBody {
-                error: "Hostname mismatch".to_string(),
-            },
-        )
-            .into_response();
+    async fn webfinger1(
+        account: &Account,
+        domain: &str,
+        storage: &(dyn StorageBackend + Send + Sync),
+    ) -> Result<ResponseBody> {
+        if account.host() != domain {
+            return HostnameSnafu.fail();
+        }
+
+        match storage
+            .user_for_name(account.user())
+            .await
+            .context(StorageSnafu)?
+        {
+            Some(_) => Ok(ResponseBody::new(account)?),
+            None => NoSuchUserSnafu.fail(),
+        }
     }
 
-    match state.storage.user_for_name(params.resource.user()).await {
-        Ok(Some(_user)) => {
-            let rsp: ResponseBody = params.resource.clone().into();
-            (StatusCode::OK, rsp).into_response()
+    match webfinger1(&params.resource, &state.domain, state.storage.as_ref()).await {
+        Ok(rsp) => {
+            counter_add!(state.instruments, "webfinger.served", 1, &[]);
+            (StatusCode::OK, Json(rsp)).into_response()
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            ErrorResponseBody {
-                error: "No such user".to_string(),
-            },
-        )
-            .into_response(),
+        Err(Error::Hostname { .. }) => {
+            counter_add!(state.instruments, "webfinger.not_found", 1, &[]);
+            info!("Mismatched hostname");
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponseBody {
+                    error: "Mismatched host name".to_owned(),
+                }),
+            )
+                .into_response()
+        }
+        Err(Error::NoSuchUser { .. }) => {
+            counter_add!(state.instruments, "webfinger.not_found", 1, &[]);
+            info!("No such user");
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponseBody {
+                    error: "No such user here".to_owned(),
+                }),
+            )
+                .into_response()
+        }
         Err(err) => {
             error!("{:?}", err);
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponseBody {
+                    error: "Internal server error".to_owned(),
+                }),
+            )
+                .into_response()
         }
     }
 }

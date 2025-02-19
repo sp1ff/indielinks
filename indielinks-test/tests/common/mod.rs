@@ -142,6 +142,7 @@ pub struct Configuration {
     #[serde(rename = "no-teardown")]
     pub no_teardown: bool,
     pub url: Url,
+    pub domain: String,
     pub username: Username,
     pub api_key: String,
     pub scylla: ScyllaConfig,
@@ -172,7 +173,8 @@ impl Default for Configuration {
             no_teardown: false,
             url: Url::parse("http://localhost:20673").unwrap(/* known good */),
             username: Username::new("sp1ff").unwrap(/* known good */),
-            api_key: "6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873".to_string(),
+            domain: "indiemark.sh".to_owned(),
+            api_key: "6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873".to_owned(),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
         }

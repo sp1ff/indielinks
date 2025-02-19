@@ -274,6 +274,7 @@ const MAX_USERNAME_LENGTH: usize = 64;
 
 lazy_static! {
     static ref USERNAME: Regex = Regex::new("^[a-zA-Z][-_.a-zA-Z0-9]+$").unwrap(/* known good */);
+    static ref BANNED_USERNAMES: HashSet<&'static str> = HashSet::from(["login", "signup", "mint-key"]);
 }
 
 fn check_username(s: &str) -> bool {
@@ -281,6 +282,7 @@ fn check_username(s: &str) -> bool {
         && s.len() >= MIN_USERNAME_LENGTH
         && s.len() <= MAX_USERNAME_LENGTH
         && USERNAME.is_match(s)
+        && (!BANNED_USERNAMES.contains(s))
 }
 
 /// A refined type representing an indielinks username

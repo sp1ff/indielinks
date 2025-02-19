@@ -77,6 +77,7 @@ use reqwest::Url;
 
 pub mod delicious;
 pub mod users;
+pub mod webfinger;
 
 /// Hit the `indielinks` healthcheck endpoint; panic on anything other than success.
 ///
