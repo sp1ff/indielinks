@@ -70,9 +70,10 @@ use tracing_subscriber::{
 use url::Url;
 
 use indielinks::{
-    delicious::make_router as make_delicious_router, http::Indielinks, metrics::Instruments,
-    peppers::Peppers, signing_keys::SigningKeys, storage::Backend as StorageBackend,
-    users::make_router as make_user_router, webfinger::webfinger,
+    actor::actor, delicious::make_router as make_delicious_router, http::Indielinks,
+    metrics::Instruments, peppers::Peppers, signing_keys::SigningKeys,
+    storage::Backend as StorageBackend, users::make_router as make_user_router,
+    webfinger::webfinger,
 };
 
 /// The indielinks application error type
@@ -558,6 +559,7 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
             "/.well-known/webfinger",
             get(webfinger).layer(CorsLayer::permissive()),
         )
+        .route("/users/{username}", get(actor)) // Will need to accept POSTs, as well.
         .nest("/api/v1", make_delicious_router(state.clone()))
         .nest("/api/v1", make_user_router(state.clone()))
         .layer(TraceLayer::new_for_http())

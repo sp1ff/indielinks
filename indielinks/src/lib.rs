@@ -19,6 +19,7 @@
 //! ignore the binary create.
 pub mod _docs;
 pub mod acct;
+pub mod actor;
 pub mod authn;
 pub mod delicious;
 pub mod dynamodb;

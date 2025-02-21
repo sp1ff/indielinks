@@ -113,6 +113,11 @@ pub enum Error {
     },
     #[snafu(display("Passwords may not begin or end in whitespace"))]
     PasswordWhitespace { backtrace: Backtrace },
+    #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
+    Pem {
+        source: picky::key::KeyError,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to export an RSA private key to PKCS8 DER format; {source}"))]
     Pkcs8Der {
         source: pkcs8::Error,
@@ -486,6 +491,12 @@ impl TryFrom<String> for UserEmail {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct UserPublicKey(#[serde(with = "serde_publickey")] PublicKey);
+
+impl UserPublicKey {
+    pub fn to_pem(&self) -> Result<String> {
+        self.0.to_pem().context(PemSnafu)
+    }
+}
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserPublicKey {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
