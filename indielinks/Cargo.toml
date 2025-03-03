@@ -12,6 +12,7 @@ aws-smithy-runtime-api = { version = "1.7.3", features = ["client"] }
 axum = { version = "0.8.1", features = ["macros", "tracing"] }
 axum-extra = { version = "0.10.0", features = ["query"] }
 base64 = "0.22.1"
+bytes = "1.10.0"
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["cargo", "env"] }
 crypto-common = "0.1.6"
@@ -22,6 +23,7 @@ errno = "0.3.10"
 futures = "0.3.31"
 hex = "0.4.3"
 hmac = "0.12.1"
+http = "1.2.0"
 http-serde = "2.1.1"
 inventory = "0.3.19"
 itertools = "0.13.0"
@@ -32,24 +34,26 @@ opentelemetry = "0.27.1"
 opentelemetry-prometheus = "0.27.0"
 opentelemetry_sdk = "0.27.1"
 password-hash = "0.5.0"
-picky = "6.3.0"
+picky = "7.0.0-rc.12"
 pkcs8 = "0.10.2"
 prometheus = "0.13.4"
 rand = "0.8.0"
 refined = "0.0.3"
 regex = "1.11.1"
+reqwest = { version = "0.12.12", features = ["json"] }
 rsa = "0.9.7"
 scylla = { version = "0.15.1", features = ["chrono-04"] }
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_bytes = { version = "0.11.15", features = ["alloc"] }
 serde_dynamo = { version = "4.2.14", features = ["aws-sdk-dynamodb+1"] }
+serde_json = "1.0.139"
 sha2 = "0.10.8"
 snafu = "0.8.5"
 tap = "1.0.1"
 tokio = { version = "1.42.0", features = ["rt-multi-thread", "signal", "sync"] }
 toml = "0.8.19"
-tower-http = { version = "0.6.2", features = ["auth", "cors", "set-header", "trace"] }
+tower-http = { version = "0.6.2", features = ["auth", "cors", "request-id", "set-header", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 unicode-segmentation = "1.12.0"

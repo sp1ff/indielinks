@@ -20,6 +20,8 @@ use crate::{
 use axum::Json;
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
+use snafu::{Backtrace, ResultExt, Snafu};
+use tap::Pipe;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        Error Responses                                         //
@@ -50,13 +52,69 @@ impl axum::response::IntoResponse for ErrorResponseBody {
 pub type Result<T: axum::response::IntoResponse> = std::result::Result<T, ErrorResponseBody>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                        JWT Signing Keys                                        //
+//                                       module Error type                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Not sure these will stay here; I'm still finding my way. I want to be able to rotate keys "live";
-// i.e. add a new signing key to the app config, SIGHUP the program, and from then on all *new* JWTs
-// will be signed with the new key, but JWTs signed by the old one will still be honored. Then, when
-// all the old JWTs have expired, we can remove the old key from the configuration.
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("Failed to interpret a header value as a UTF-8 string: {source}"))]
+    HeaderValue {
+        source: http::header::ToStrError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{value} is not supported as an Accept header value"))]
+    UnsupportedAccept { value: String, backtrace: Backtrace },
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                modelling "Accept" header values                                //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Supported values for the request Accept header
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum Accept {
+    ActivityPub,
+    Html,
+}
+
+impl std::fmt::Display for Accept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Accept::Html => write!(f, "text/html"),
+            Accept::ActivityPub => write!(f, "application/activity+json"),
+        }
+    }
+}
+
+impl Accept {
+    /// Lookup the header value corresponding to the "Accept" header in a [HeaderMap], defaulting to
+    /// [Accept::Html]. If there are more than one "Accept" headers, only the first will be
+    /// examined. If the value specifies a a MIME type not supported by indielinks, fail.
+    ///
+    /// [HeaderMap]: https://docs.rs/http/latest/http/header/struct.HeaderMap.html
+    pub fn lookup_from_header_map(headers: &http::HeaderMap) -> std::result::Result<Accept, Error> {
+        headers
+            .get(http::header::ACCEPT)
+            .map(http::HeaderValue::to_str)
+            .transpose()
+            .context(HeaderValueSnafu)?
+            .map(|s| {
+                if s.contains("application/ld+json") || s.contains("application/activity+json") {
+                    Ok(Accept::ActivityPub)
+                } else if s == "text/hml" {
+                    Ok(Accept::Html)
+                } else {
+                    UnsupportedAcceptSnafu {
+                        value: s.to_owned(),
+                    }
+                    .fail()
+                }
+            })
+            .transpose()?
+            .unwrap_or(Accept::Html)
+            .pipe(Ok)
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       Application State                                        //
@@ -72,4 +130,5 @@ pub struct Indielinks {
     pub pepper: Peppers,
     pub token_lifetime: Duration,
     pub signing_keys: SigningKeys,
+    pub client: reqwest::Client,
 }

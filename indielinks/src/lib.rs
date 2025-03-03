@@ -20,6 +20,8 @@
 pub mod _docs;
 pub mod acct;
 pub mod actor;
+#[path = "ap-entities.rs"]
+pub mod ap_entities;
 pub mod authn;
 pub mod delicious;
 pub mod dynamodb;

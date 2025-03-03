@@ -17,13 +17,20 @@
 //!
 //! Backend-agnostic test logic for the user API goes here.
 
-use indielinks::{http::ErrorResponseBody, users::SignupRsp};
+use std::sync::Arc;
+
+use indielinks::{entities::Username, http::ErrorResponseBody, users::SignupRsp};
 use libtest_mimic::Failed;
 use reqwest::{Client, StatusCode, Url};
 use serde_json::json;
 
+use crate::Helper;
+
 /// Test `/user/signup`
-pub async fn test_signup(url: Url) -> Result<(), Failed> {
+pub async fn test_signup(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Result<(), Failed> {
+    // Cleanup the test user we'll create if he's around from a previous test
+    let _ = utils.remove_user(&Username::new("johndoe").unwrap()).await;
+
     let client = Client::new();
 
     let rsp = client

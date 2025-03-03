@@ -395,6 +395,25 @@ async fn charge_tables(client: &Client) -> Result<()> {
         .await
         .context(ChargeTableSnafu { name: "users".to_string()})?;
     debug!("{:#?}", out);
+    let out = client
+        .put_item()
+        .table_name("unique_usernames")
+        .set_item(Some(HashMap::from([
+            (
+                "username".to_string(),
+                AttributeValue::S("sp1ff".to_string()),
+            ),
+            (
+                "id".to_string(),
+                AttributeValue::S("9a1df092-cd69-4c64-91f7-b8fb4022ea49".to_string()),
+            ),
+        ])))
+        .send()
+        .await
+        .context(ChargeTableSnafu {
+            name: "unique_usernames".to_string(),
+        })?;
+    debug!("{:#?}", out);
     Ok(())
 }
 

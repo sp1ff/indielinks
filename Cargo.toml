@@ -1,3 +1,6 @@
 [workspace]
 members = ["indielinks", "indielinks-test"]
 resolver = "2"
+
+[patch.crates-io]
+picky = { path = "../picky-rs-sp1ff/picky" }

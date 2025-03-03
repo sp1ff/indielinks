@@ -494,7 +494,7 @@ pub struct UserPublicKey(#[serde(with = "serde_publickey")] PublicKey);
 
 impl UserPublicKey {
     pub fn to_pem(&self) -> Result<String> {
-        self.0.to_pem().context(PemSnafu)
+        self.0.to_pem_str().context(PemSnafu)
     }
 }
 
@@ -531,7 +531,7 @@ impl SerializeValue for UserPublicKey {
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
         type_check!(typ, Ascii, SerializationError, "PublicKey")?;
         self.0
-            .to_pem()
+            .to_pem_str()
             .map_err(mk_ser_err)?
             .as_bytes()
             .pipe(|x| writer.set_value(x))
@@ -546,7 +546,7 @@ mod serde_publickey {
 
     pub fn serialize<S: Serializer>(pub_key: &PublicKey, ser: S) -> StdResult<S::Ok, S::Error> {
         pub_key
-            .to_pem()
+            .to_pem_str()
             .map_err(mk_serde_ser_err::<S>)?
             .pipe(|s| <String as serde::Serialize>::serialize(&s, ser))
     }
@@ -572,6 +572,12 @@ mod serde_publickey {
 #[serde(transparent)]
 // `UserPrivateKey` isn't a refined type; it's just a wrapper on which to hang trait implementations
 pub struct UserPrivateKey(#[serde(with = "serde_privatekey")] PrivateKey);
+
+impl AsRef<PrivateKey> for UserPrivateKey {
+    fn as_ref(&self) -> &PrivateKey {
+        &self.0
+    }
+}
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserPrivateKey {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
@@ -606,7 +612,7 @@ impl SerializeValue for UserPrivateKey {
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
         type_check!(typ, Ascii, SerializationError, "PrivateKey")?;
         self.0
-            .to_pem()
+            .to_pem_str()
             .map_err(mk_ser_err)?
             .as_bytes()
             .pipe(|x| writer.set_value(x))
@@ -621,7 +627,7 @@ mod serde_privatekey {
 
     pub fn serialize<S: Serializer>(pub_key: &PrivateKey, ser: S) -> StdResult<S::Ok, S::Error> {
         pub_key
-            .to_pem()
+            .to_pem_str()
             .map_err(mk_serde_ser_err::<S>)?
             .pipe(|s| <String as serde::Serialize>::serialize(&s, ser))
     }

@@ -1,8 +1,9 @@
 version = "1"
-log-file = "indielinks.log"
+log-file = "/tmp/indielinks.log"
 public-address = "0.0.0.0:20673"
 private-address = "127.0.0.1:48351"
-domain = "indiemark.sh"
+domain = "indiemark.local"
+user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
 
 [storage_config.Scylla]
 hosts = ["127.0.0.1:9042"]

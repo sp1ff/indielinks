@@ -147,6 +147,8 @@ pub struct Configuration {
     pub api_key: String,
     pub scylla: ScyllaConfig,
     pub dynamo: DynamoConfig,
+    /// Port on which any local server needed by a test can listen
+    pub local_port: u16,
 }
 
 impl Configuration {
@@ -167,16 +169,21 @@ impl Configuration {
 }
 
 impl Default for Configuration {
+    /// Default configuration
+    ///
+    /// When invoked with a bare `cargo test` (i.e. without `INDIELINKS_TEST_CONFIG` set), this is
+    /// the configuration that will be used, so be sure the tests will pass with it.
     fn default() -> Self {
         Configuration {
             no_setup: false,
             no_teardown: false,
             url: Url::parse("http://localhost:20673").unwrap(/* known good */),
             username: Username::new("sp1ff").unwrap(/* known good */),
-            domain: "indiemark.sh".to_owned(),
+            domain: "indiemark.local".to_owned(),
             api_key: "6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873".to_owned(),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
+            local_port: 32768,
         }
     }
 }

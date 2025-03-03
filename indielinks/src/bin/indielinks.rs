@@ -35,7 +35,8 @@ use std::{
     io,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::atomic::Ordering,
+    sync::{atomic::AtomicU64, Arc, Mutex, MutexGuard},
 };
 
 use axum::{
@@ -46,6 +47,7 @@ use axum::{
 use chrono::Duration;
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use either::Either;
+use http::{HeaderName, HeaderValue};
 use libc::{
     close, dup, exit, fork, getdtablesize, getpid, lockf, open, setsid, umask, write, F_TLOCK,
 };
@@ -54,12 +56,17 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use secrecy::SecretString;
 use serde::Deserialize;
 use snafu::prelude::*;
+use tap::Pipe;
 use tokio::{
     net::TcpListener,
     signal::unix::{signal, SignalKind},
     sync::{mpsc, Notify},
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{
+    cors::CorsLayer,
+    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
+};
 use tracing::{error, info, Level};
 use tracing_subscriber::{
     filter::EnvFilter,
@@ -70,8 +77,8 @@ use tracing_subscriber::{
 use url::Url;
 
 use indielinks::{
-    actor::actor, delicious::make_router as make_delicious_router, http::Indielinks,
-    metrics::Instruments, peppers::Peppers, signing_keys::SigningKeys,
+    actor::make_router as make_actor_router, delicious::make_router as make_delicious_router,
+    http::Indielinks, metrics::Instruments, peppers::Peppers, signing_keys::SigningKeys,
     storage::Backend as StorageBackend, users::make_router as make_user_router,
     webfinger::webfinger,
 };
@@ -149,6 +156,8 @@ pub enum Error {
     PrometheusExporter {
         source: opentelemetry_sdk::metrics::MetricError,
     },
+    #[snafu(display("Failed to create an HTTP client: {source}"))]
+    ReqwestClient { source: reqwest::Error },
     #[snafu(display("Failed to connect to SycllaDB: {source}"))]
     Syclla { source: indielinks::scylla::Error },
     #[snafu(display("Failed to fork the indielinks process a second time: errno={errno}"))]
@@ -308,6 +317,8 @@ struct ConfigV1 {
     pepper: Peppers,
     #[serde(rename = "signing-keys")]
     signing_keys: SigningKeysConfig,
+    #[serde(rename = "user-agent")]
+    user_agent: String,
 }
 
 impl ConfigV1 {
@@ -329,6 +340,7 @@ impl Default for ConfigV1 {
             domain: String::from("indiemark.sh"),
             pepper: Peppers::default(),
             signing_keys: SigningKeysConfig::default(),
+            user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
         }
     }
 }
@@ -550,6 +562,24 @@ async fn dev(State(state): State<Arc<Indielinks>>) -> String {
     format!("{:#?}", state.storage.user_for_name("sp1ff").await)
 }
 
+/// Counter for generating request IDs; I realize that a u64 gives me a lot less information than a
+/// UUID (the traditional type for request IDs), but I judge it to be enough, as well as more easily
+/// readable, and a useful guage of how long the server's been up.
+#[derive(Clone, Debug, Default)]
+struct RequestIdGenerator {
+    counter: Arc<AtomicU64>,
+}
+
+impl MakeRequestId for RequestIdGenerator {
+    fn make_request_id<B>(&mut self, _request: &axum::extract::Request<B>) -> Option<RequestId> {
+        self.counter
+            .fetch_add(1, Ordering::SeqCst)
+            .to_string()
+            .pipe(|s| RequestId::new(HeaderValue::from_str(&s).unwrap(/* known good */)))
+            .pipe(Some)
+    }
+}
+
 /// Make the [Router] that will be accessible to the world
 fn make_world_router(state: Arc<Indielinks>) -> Router {
     Router::new()
@@ -559,13 +589,47 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
             "/.well-known/webfinger",
             get(webfinger).layer(CorsLayer::permissive()),
         )
-        .route("/users/{username}", get(actor)) // Will need to accept POSTs, as well.
+        .merge(make_actor_router(state.clone()))
         .nest("/api/v1", make_delicious_router(state.clone()))
         .nest("/api/v1", make_user_router(state.clone()))
-        .layer(TraceLayer::new_for_http())
+        // Reproducing this diagram from <https://docs.rs/axum/latest/axum/middleware/index.html>
+        // because the towwer_http docs
+        // <https://docs.rs/tower-http/0.6.2/tower_http/request_id/index.html> are incorrect: we
+        // want incoming requests to hit the `SetRequestIdLayer` *first*, so we need to make that
+        // the last/outer layer which we apply:
+        //
+        //                 requests
+        //                    |
+        //                    v
+        // +---------  SetRequestIdLayer      ---------+
+        // | +-------      OTEL layer         -------+ |
+        // | | +-----      TraceLayer         -----+ | |
+        // | | | +--- PropagateRequestIdLayer ---+ | | |
+        // | | | |                               | | | |
+        // | | | |          handler              | | | |
+        // | | | |                               | | | |
+        // | | | +--- PropagateRequestIdLayer ---+ | | |
+        // | | +-----      TraceLayer         -----+ | |
+        // | +-------      OTEL Layer         -------+ |
+        // +---------   SetRequestIdLayer     ---------+
+        //                    |
+        //                    v
+        //                responses
+        .layer(PropagateRequestIdLayer::new(
+            HeaderName::from_str("x-request-id").unwrap(/* known good */),
+        ))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().include_headers(true))
+                .on_response(DefaultOnResponse::new().include_headers(true)),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             otel_middleware,
+        ))
+        .layer(SetRequestIdLayer::new(
+            HeaderName::from_str("x-request-id").unwrap(/* known good */),
+            RequestIdGenerator::default(),
         ))
         .with_state(state)
 }
@@ -631,6 +695,10 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
             pepper: cfg.pepper.clone(),
             token_lifetime: cfg.signing_keys.token_lifetime,
             signing_keys: cfg.signing_keys.signing_keys.clone(),
+            client: reqwest::ClientBuilder::new()
+                .user_agent(&cfg.user_agent)
+                .build()
+                .context(ReqwestClientSnafu)?,
         });
 
         let world_nfy = Arc::new(Notify::new());

@@ -15,11 +15,12 @@
 
 /// # delicious-alternator
 ///
-/// Synchronous integration tests run against the Dynamo storage back-end.
+/// Integration tests run against an indielinks configured with the Dynamo storage back-end.
 use common::{run, Configuration, Test};
 use indielinks::entities::{Post, User, UserId, Username};
 use indielinks_test::{
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
+    follow::accept_follow_smoke,
     test_healthcheck,
     users::test_signup,
     webfinger::webfinger_smoke,
@@ -38,6 +39,7 @@ use libtest_mimic::{Arguments, Failed, Trial};
 use serde_dynamo::aws_sdk_dynamodb_1::from_items;
 use snafu::{prelude::*, Backtrace, Snafu};
 use tap::Pipe;
+use tokio::runtime::Runtime;
 
 use std::{cmp::min, fmt::Display, sync::Arc};
 
@@ -227,6 +229,22 @@ impl Helper for State {
 
         Ok(())
     }
+    async fn remove_user(&self, username: &Username) -> std::result::Result<(), Failed> {
+        let user_id = self.id_for_username(username).await?;
+        self.client
+            .delete_item()
+            .table_name("users")
+            .key("id", AttributeValue::S(user_id.to_string()))
+            .send()
+            .await?;
+        self.client
+            .delete_item()
+            .table_name("unique_usernames")
+            .key("username", AttributeValue::S(username.to_string()))
+            .send()
+            .await?;
+        Ok(())
+    }
 }
 
 inventory::submit!(Test {
@@ -270,7 +288,7 @@ inventory::submit!(Test {
 
 inventory::submit!(Test {
     name: "020user_test_signup",
-    test_fn: |cfg: Configuration, _helper| { Box::pin(test_signup(cfg.url,)) },
+    test_fn: |cfg: Configuration, helper| { Box::pin(test_signup(cfg.url, helper)) },
 });
 
 inventory::submit!(Test {
@@ -280,16 +298,31 @@ inventory::submit!(Test {
     },
 });
 
-#[tokio::main]
-async fn main() -> Result<()> {
+inventory::submit!(Test {
+    name: "040follow_smoke",
+    test_fn: |cfg: Configuration, _helper| {
+        Box::pin(accept_follow_smoke(cfg.url, cfg.username, cfg.local_port))
+    },
+});
+
+fn main() -> Result<()> {
+    // Regrettably, the Scylla API has forced us to use async Rust. This is inconvenient as the
+    // libtest-mimic crate expects *synchronous* test functions. Using `#[tokio::main]` leaves us
+    // with no way to get a reference, or a "handle" to the Tokio runtime in which we're running, so
+    // I eschew that here and create it myself:
+    let rt = Arc::new(Runtime::new().expect("Failed to build a tokio multi-threaded runtime"));
+
+    // We have no way to augment the set of command-line arguments this program will accept, so
+    // we'll examine an environment variable to determine where to get our configuration:
     let config = Configuration::new().context(ConfigurationSnafu)?;
+
     let mut args = Arguments::from_args();
 
     if !config.no_setup {
         setup()?;
     }
 
-    let state = Arc::new(State::new(&config).await?);
+    let state = Arc::new(rt.block_on(async { State::new(&config).await })?);
 
     // Nb. this program is always run from the root directory of the owning crate.
     // This, together with prefixing my function names with numbers, is a hopefully temporary
@@ -307,9 +340,10 @@ async fn main() -> Result<()> {
             .map(|test| {
                 // See delicious-scylla.rs for detailed remarks on this:
                 Trial::test(test.name, {
+                    let rt = rt.clone();
                     let cfg = config.clone();
                     let state = state.clone();
-                    move || futures::executor::block_on((test.test_fn)(cfg, state))
+                    move || rt.block_on(async { (test.test_fn)(cfg, state).await })
                 })
             })
             .collect(),

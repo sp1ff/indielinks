@@ -76,6 +76,7 @@ use libtest_mimic::Failed;
 use reqwest::Url;
 
 pub mod delicious;
+pub mod follow;
 pub mod users;
 pub mod webfinger;
 
@@ -99,13 +100,11 @@ pub mod webfinger;
 ///
 /// [libtest-mimic]: https://docs.rs/libtest-mimic/latest/libtest_mimic/index.html
 pub async fn test_healthcheck(url: Url) -> Result<(), Failed> {
-    assert!(
-        "GOOD"
-            == reqwest::get(url.join("/healthcheck")?)
-                .await?
-                .text()
-                .await?
-    );
+    let request_text = reqwest::get(url.join("/healthcheck")?)
+        .await?
+        .text()
+        .await?;
+    assert!("GOOD" == request_text);
     Ok(())
 }
 
@@ -115,4 +114,6 @@ pub async fn test_healthcheck(url: Url) -> Result<(), Failed> {
 #[async_trait]
 pub trait Helper {
     async fn clear_posts(&self, username: &Username) -> Result<(), Failed>;
+    /// Remove a user
+    async fn remove_user(&self, username: &Username) -> Result<(), Failed>;
 }

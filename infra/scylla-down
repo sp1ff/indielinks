@@ -3,3 +3,15 @@ set -ex
 here=$(dirname $(realpath $0))
 cd $here
 docker compose -f compose.local.yaml down
+ntries=1
+nnodes=$(docker ps|grep 'scylla-node-*'|wc -l)
+while [ ${nnodes} -ne 0 ]; do
+    sleep 0.5
+    nnodes=$(docker ps|grep 'scylla-node-*'|wc -l)
+    ntries=$(($ntries+1))
+    # Give it ten seconds
+    if [ ${ntries} -gt 20 ]; then
+        echo "ScyllaDB failed to shut down" >&2
+        exit 1
+    fi
+done

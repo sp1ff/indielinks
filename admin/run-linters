@@ -8,5 +8,5 @@ fi
 
 set -e
 cargo clippy -- --no-deps -Dwarnings
-RUSTDOCFLAGS=-Dwarnings cargo doc
+RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps
 

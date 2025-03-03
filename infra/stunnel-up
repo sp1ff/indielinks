@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+# Start `stunnel` to terminate TLS in front of `indielinks`. Requires the
+# invoker to have sudo privileges
+set -ex
+here=$(dirname $(realpath $0))
+cd $here
+sudo stunnel stunnel.conf
+
