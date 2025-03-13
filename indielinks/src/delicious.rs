@@ -547,7 +547,7 @@ async fn update(
     async fn update1(request: axum::extract::Request) -> Result<UpdateRsp> {
         let user = user_for_request(&request, "/posts/update")?;
         let update_time = user.last_update().context(NoPostsSnafu {
-            username: user.username(),
+            username: user.username().clone(),
         })?;
 
         Ok(UpdateRsp { update_time })
@@ -801,7 +801,7 @@ async fn get_posts(
         // If the user has never made any posts, we're done:
         let last_dt = user.last_update().ok_or(
             NoPostsSnafu {
-                username: user.username(),
+                username: user.username().clone(),
             }
             .build(),
         )?;
@@ -809,7 +809,7 @@ async fn get_posts(
         match posts_get_req.dt {
             None => Ok(PostsGetRsp {
                 date: last_dt,
-                user: user.username(),
+                user: user.username().clone(),
                 posts: Vec::new(),
             }),
             Some(dt) => {
@@ -821,7 +821,7 @@ async fn get_posts(
                     .context(GetPostsSnafu)?;
                 Ok(PostsGetRsp {
                     date: last_dt,
-                    user: user.username(),
+                    user: user.username().clone(),
                     posts,
                 })
             }
@@ -887,11 +887,11 @@ async fn get_recent(
             .context(NoMoreThanThreeTagsSnafu)?;
         let count = posts_recent_req.count.unwrap_or(10);
         let update_time = user.last_update().context(NoPostsSnafu {
-            username: user.username(),
+            username: user.username().clone(),
         })?;
         Ok(PostsRecentRsp {
             date: update_time,
-            user: user.username(),
+            user: user.username().clone(),
             posts: storage
                 .get_recent_posts(user, &tags, count)
                 .await
@@ -955,7 +955,7 @@ async fn posts_dates(
         let tags = UpToThree::new(parse_tag_parameter(&posts_dates_req.tag)?.into_iter())
             .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsDatesRsp {
-            user: user.username(),
+            user: user.username().clone(),
             tag: posts_dates_req.tag.unwrap_or("".to_string()),
             dates: storage
                 .get_posts_by_day(user, &tags)
@@ -1078,7 +1078,7 @@ async fn all_posts(
         let tags = UpToThree::new(parse_tag_parameter(&posts_all_req.tag)?.into_iter())
             .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsAllRsp {
-            user: user.username(),
+            user: user.username().clone(),
             tag: posts_all_req.tag.unwrap_or("".to_string()),
             posts: apply_pagination(
                 storage
@@ -1142,7 +1142,7 @@ async fn tags_get(
                 .get_tag_cloud(user)
                 .await
                 .context(BadTagCloudSnafu {
-                    username: user.username(),
+                    username: user.username().clone(),
                 })?,
         })
     }

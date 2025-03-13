@@ -29,7 +29,9 @@ use async_trait::async_trait;
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion, Region};
 use aws_sdk_dynamodb::{
     config::Credentials,
-    operation::{batch_write_item::BatchWriteItemError, put_item::PutItemError},
+    operation::{
+        batch_write_item::BatchWriteItemError, put_item::PutItemError, update_item::UpdateItemError,
+    },
     types::{AttributeValue, PutRequest, ReturnValue, WriteRequest},
 };
 use chrono::{DateTime, Utc};
@@ -258,6 +260,12 @@ impl std::convert::From<SdkError<PutItemError, HttpResponse>> for StorError {
     }
 }
 
+impl std::convert::From<SdkError<UpdateItemError, HttpResponse>> for StorError {
+    fn from(value: SdkError<UpdateItemError, HttpResponse>) -> Self {
+        StorError::new(value)
+    }
+}
+
 // These are used with queries involving projections (i.e. selecting only certain attributes).
 // Again, should probably wrap them up in a macro.
 
@@ -273,6 +281,20 @@ struct Tags {
 
 #[async_trait]
 impl storage::Backend for Client {
+    async fn add_follower(&self, user: &User, follower: &url::Url) -> StdResult<(), StorError> {
+        self.client
+            .update_item()
+            .table_name("users")
+            .key("id", AttributeValue::S(user.id().to_string()))
+            .update_expression("add followers :u")
+            .expression_attribute_values(
+                ":u",
+                AttributeValue::Ss(vec![follower.as_str().to_owned()]),
+            )
+            .send()
+            .await?;
+        Ok(())
+    }
     // Return true if an insert/upsert occurred, false if the insert/upsert failed because the post
     // already existed and `replace` was false, Err otherwise.
     async fn add_post(
@@ -354,7 +376,7 @@ impl storage::Backend for Client {
                     true
                 } else {
                     return UsernameClaimedSnafu {
-                        username: user.username(),
+                        username: user.username().clone(),
                     }
                     .fail();
                 }
@@ -362,7 +384,7 @@ impl storage::Backend for Client {
         };
         if claimed {
             return UsernameClaimedSnafu {
-                username: user.username(),
+                username: user.username().clone(),
             }
             .fail();
         }

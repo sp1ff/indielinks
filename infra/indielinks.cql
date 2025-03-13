@@ -39,7 +39,8 @@ create table users (
   first_update timestamp,
   last_update timestamp,
   password_hash ascii,
-  pepper_version ascii
+  pepper_version ascii,
+  followers set<ascii>
 );
 
 create index users_by_username on users (username);

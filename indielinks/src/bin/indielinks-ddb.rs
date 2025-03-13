@@ -61,7 +61,7 @@ use std::{collections::HashMap, fmt::Display, io};
 /// Application error type
 #[derive(Snafu)]
 pub enum Error {
-    #[snafu(display("Failed to charge table {name}: {source}"))]
+    #[snafu(display("Failed to charge table {name}: {source:#?}"))]
     ChargeTable {
         name: String,
         source: SdkError<PutItemError, aws_sdk_dynamodb::config::http::HttpResponse>,

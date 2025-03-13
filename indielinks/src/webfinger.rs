@@ -49,6 +49,8 @@
 
 use std::sync::Arc;
 
+use crate::ap_entities::make_user_id;
+use crate::entities::Username;
 use crate::http::Indielinks;
 use crate::metrics::Sort;
 use crate::storage;
@@ -69,6 +71,11 @@ use url::Url;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("The account name {name} is not a valid username: {source}"))]
+    BadUsername {
+        name: String,
+        source: crate::entities::Error,
+    },
     #[snafu(display("Mismatched hostname for webfinger"))]
     Hostname { backtrace: Backtrace },
     #[snafu(display("Unknown user for webfinger"))]
@@ -79,6 +86,11 @@ pub enum Error {
     UrlParse {
         source: url::ParseError,
         backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to create an AP user ID from the account {name}: {source}"))]
+    UserId {
+        name: String,
+        source: crate::ap_entities::Error,
     },
 }
 
@@ -124,8 +136,16 @@ impl Link {
         Ok(Link {
             rel: LinkRelation::Myself,
             r#type: MediaType::ActivityPub,
-            href: Url::parse(&format!("https://{}/users/{}", &acct.host(), &acct.user()))
-                .context(UrlParseSnafu)?,
+            href: make_user_id(
+                &Username::new(acct.user()).context(BadUsernameSnafu {
+                    name: acct.user().to_owned(),
+                })?,
+                acct.host(),
+                None,
+            )
+            .context(UserIdSnafu {
+                name: acct.user().to_owned(),
+            })?,
         })
     }
 }
@@ -181,8 +201,16 @@ impl ResponseBody {
             aliases: vec![
                 Url::parse(&format!("https://{}/@{}", acct.host(), acct.user()))
                     .context(UrlParseSnafu)?,
-                Url::parse(&format!("https://{}/users/{}", acct.host(), acct.user()))
-                    .context(UrlParseSnafu)?,
+                make_user_id(
+                    &Username::new(acct.user()).context(BadUsernameSnafu {
+                        name: acct.user().to_owned(),
+                    })?,
+                    acct.host(),
+                    None,
+                )
+                .context(UserIdSnafu {
+                    name: acct.user().to_owned(),
+                })?,
             ],
             subject: acct.clone(),
         })

@@ -15,32 +15,103 @@
 
 //! Integration tests for ActivityPub follows
 //!
-//! I'm collecting integration tests for sending & receiving ActivityPub [Follow]s.
+//! I'm collecting integration tests for sending & receiving ActivityPub [Follow]s here.
 //!
 //! [Follow]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-follow
 
+use std::sync::{Arc, Mutex};
+
 use axum::{
+    extract::State,
     response::IntoResponse,
     routing::{get, post},
     Router,
 };
 use chrono::Utc;
-use indielinks::{ap_entities, authn::sign_request, entities::Username};
+use indielinks::{
+    actor::CollectionPage,
+    ap_entities::{self, to_jrd},
+    authn::sign_request,
+    entities::Username,
+};
 use libtest_mimic::Failed;
+use picky::key::PrivateKey;
 use reqwest::{Client, Url};
+use tap::Pipe;
 use uuid::Uuid;
+
+/// Take an HTTP verb/method, URL and an axum [Body]. Return a signed reqwest Request. The signature
+/// uses a key ID of "http://localhost:{}/users/test-user".
+async fn make_request(
+    method: axum::http::Method,
+    url: Url,
+    body: axum::body::Body,
+    local_port: u16,
+    priv_key: &PrivateKey,
+) -> Result<reqwest::Request, Failed> {
+    axum::http::Request::builder()
+        .method(method)
+        .uri(url.as_ref())
+        .header(reqwest::header::CONTENT_TYPE, "application/activity+json")
+        .header(
+            reqwest::header::DATE,
+            Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+        )
+        .header(reqwest::header::HOST, "localhost")
+        .body(body)?
+        .pipe(|request| async move {
+            sign_request(
+                request,
+                &format!("http://localhost:{}/users/test-user", local_port),
+                priv_key,
+            )
+            // drive this future to completion before key_id goes out of scope
+            .await
+        })
+        .await?
+        .pipe(Ok)
+}
+
+struct TestState {
+    pub accepted: Arc<Mutex<usize>>,
+}
+
+async fn inbox_taking_accept(
+    State(state): State<Arc<TestState>>,
+    axum::extract::Json(_accept): axum::extract::Json<ap_entities::Accept>,
+) -> axum::response::Response {
+    // We need to validate the signature on `accept`!
+    let mut data = state.accepted.lock().expect("Failed to lock the mutex");
+    *data += 1;
+    (http::status::StatusCode::ACCEPTED, ()).into_response()
+}
 
 /// First integration test for ActivityPub [Follow]s.
 ///
 /// [Follow]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-follow
+///
+/// Very simple: send a follow, validate that we receive an [Accept], then hit the followers
+/// endpoint & make sure we show-up.
+///
+/// [Accept]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-accept
 pub async fn accept_follow_smoke(
     url: Url,
     username: Username,
+    domain: String,
     local_port: u16,
 ) -> Result<(), Failed> {
     // This test takes the form of a conversation between a mock ActivityPub server implemented in
-    // this test, and indielinks. We'll begin by forming a `Follow` request for the test indielinks
-    // user:
+    // this test, and indielinks. We need a keypair for our "test user". We start by generating a
+    // 2048 bit RSA private key...
+    let priv_key = picky::key::PrivateKey::generate_rsa(2048)?;
+
+    // We'll also need a client:
+    let client = Client::builder()
+        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
+        .build()?;
+
+    // We'll begin by forming a `Follow` request for the test indielinks
+    // user.
     let follow = ap_entities::Follow::new(
         url.join("/users/sp1ff/inbox")?,
         Url::parse(&format!(
@@ -50,38 +121,26 @@ pub async fn accept_follow_smoke(
         ))?,
         Url::parse(&format!("http://localhost:{}/users/test-user", local_port))?,
     );
-    // Serialize that to JSON-LD, and coerce *that* into an axum `Body`:
-    let body: axum::body::Body =
-        ap_entities::to_jrd(follow, ap_entities::Type::Follow, None)?.into();
-    // Now, finally, build an axum `Request` containing the `Follow`:
-    let request = axum::http::Request::builder()
-        .method(axum::http::Method::POST)
-        .uri(url.join(&format!("/users/{}/inbox", &username))?.as_str())
-        .header(reqwest::header::CONTENT_TYPE, "application/activity+json")
-        .header(
-            reqwest::header::DATE,
-            Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
-        )
-        .header(reqwest::header::HOST, "localhost")
-        .body(body)?;
-    // We need a keypair for our "test user". We start by generating a 2048 bit RSA private key...
-    let priv_key = picky::key::PrivateKey::generate_rsa(2048)?;
-    // and using that to sign the request.
-    let request = sign_request(
-        request,
-        &format!("http://localhost:{}/users/test-user", local_port),
+    // Nb. that `request` is now a *reqwest* `Request`, not an axum `Request`!
+    let request = make_request(
+        axum::http::Method::POST,
+        url.join(&format!("/users/{}/inbox", &username))?,
+        to_jrd(&follow, ap_entities::Type::Follow, None)?.into(),
+        local_port,
         &priv_key,
     )
     .await?;
-    // `request` is now a *reqwest* `Request`, not an axum `Request`!
 
-    // Now: spin-up a local web server...
+    // OK-- that's our Follow request. Now spin-up a local web server...
     let listener = tokio::net::TcpListener::bind(&format!("localhost:{}", local_port)).await?;
     // which will require the corresponding public key.
     let pub_key = priv_key.to_public_key()?;
-    let and_port = format!(":{}", local_port);
+    let hostname = format!("localhost:{}", local_port);
+    let state = Arc::new(TestState {
+        accepted: Arc::new(Mutex::new(0)),
+    });
     // Our server will serve two endpoints...
-    let app = Router::<()>::new()
+    let app = Router::<Arc<TestState>>::new()
         .route(
             // the endpoint corresponding to the above "key ID"; it will return an `Actor`
             // representing our "test user", which will include the public key (so indielinks can
@@ -94,8 +153,7 @@ pub async fn accept_follow_smoke(
                         ap_entities::Actor::from_username_and_key(
                             &Username::new("test-user").unwrap(),
                             "http",
-                            "localhost",
-                            &and_port,
+                            &hostname,
                             &pub_key,
                         )
                         .unwrap(),
@@ -110,13 +168,9 @@ pub async fn accept_follow_smoke(
         .route(
             // and the endpoint corresponding to our test user's public inbox.
             "/users/test-user/inbox",
-            post(
-                |axum::extract::Json(_accept): axum::extract::Json<ap_entities::Accept>| async {
-                    // We need to validate the signature on `accept`!
-                    (http::status::StatusCode::ACCEPTED, ()).into_response()
-                },
-            ),
-        );
+            post(inbox_taking_accept),
+        )
+        .with_state(state.clone());
     // It will use a "one shot" channel to handle graceful shutdown.
     let (shutdown_sender, shutdown_reader) = tokio::sync::oneshot::channel::<()>();
     // Alright-- spawn the server on a Tokio task...
@@ -128,15 +182,58 @@ pub async fn accept_follow_smoke(
             .await
             .expect("Failed to serve requests");
     });
-    // send our Follow request to indielinks...
-    let client = Client::builder()
-        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
-        .build()?;
+
+    // That's it-- we're ready to follow the test user:
     let rsp = client.execute(request).await?;
 
     assert!(rsp.status() == reqwest::StatusCode::CREATED);
+    assert_eq!(*state.accepted.lock().expect("Failed to lock mutex"), 1);
 
-    // We need to check that our follow was acepted!
+    // Let's at least check that the follower now shows-up!
+    let request = make_request(
+        axum::http::Method::GET,
+        url.join(&format!("/users/{}/followers", &username))?,
+        axum::body::Body::default(),
+        local_port,
+        &priv_key,
+    )
+    .await?;
+
+    let rsp = client.execute(request).await?;
+    assert_eq!(rsp.status(), http::StatusCode::OK);
+
+    let page = rsp.json::<CollectionPage>().await?;
+    assert_eq!(page.total_items, 1);
+
+    let first = page.first.unwrap();
+
+    let request = make_request(
+        axum::http::Method::GET,
+        first,
+        axum::body::Body::default(),
+        local_port,
+        &priv_key,
+    )
+    .await?;
+
+    let rsp = client.execute(request).await?;
+    assert_eq!(rsp.status(), http::StatusCode::OK);
+    let page = rsp.json::<CollectionPage>().await?;
+    assert_eq!(
+        page.first.unwrap(),
+        Url::parse(&format!("https://{}/users/sp1ff/followers?page=0", domain))?
+    );
+    assert!(page.next.is_none());
+    assert_eq!(
+        page.part_of.unwrap(),
+        Url::parse(&format!("https://{}/users/sp1ff/followers", domain))?
+    );
+    let items = page.ordered_items.unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].as_ref(),
+        &format!("http://localhost:{}/users/test-user", local_port)
+    );
 
     // Shut-down the server...
     shutdown_sender

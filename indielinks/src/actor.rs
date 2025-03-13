@@ -28,15 +28,20 @@ use chrono::Utc;
 use http::{header, Method};
 use itertools::Itertools;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
+use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
+use tap::{Conv, Pipe};
 use tracing::{debug, error, info};
 use url::Url;
 
 use crate::{
-    ap_entities::{self, Announce, BoostFollowOrLike, Follow, Like, Undo},
+    ap_entities::{
+        self, make_key_id, make_user_followers, to_jrd, Accept, Announce, BoostFollowOrLike,
+        Follow, Like, Undo,
+    },
     authn::{self, check_sha_256_content_digest, sign_request},
     counter_add,
-    entities::{User, Username},
+    entities::{User, UserUrl, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     storage::{self, Backend as StorageBackend},
@@ -50,10 +55,16 @@ use crate::{
 pub enum Error {
     #[snafu(display("Failed to send an Accept: {source}"))]
     Accept { source: reqwest::Error },
+    #[snafu(display("Failed to form an Accept response: {source}"))]
+    AcceptResponse { source: crate::ap_entities::Error },
     #[snafu(display("Failed to lookup the Accept header: {source}"))]
     AcceptLookup { source: crate::http::Error },
+    #[snafu(display("Our Accept response was rejected by the server"))]
+    AcceptRejected,
     #[snafu(display("Failed to produce an AP Actor: {source}"))]
     Actor { source: ap_entities::Error },
+    #[snafu(display("Failed to create an ActivityPub ID: {source}"))]
+    ApId { source: crate::ap_entities::Error },
     #[snafu(display("Failed to parse the key ID as an URL: {source}"))]
     BadKeyId {
         source: url::ParseError,
@@ -68,8 +79,21 @@ pub enum Error {
     Cavage2323 { source: crate::authn::Error },
     #[snafu(display("Mismatch in the content digest: {source}"))]
     ContentDigest { source: crate::authn::Error },
+    #[snafu(display("Failed to append a query parameter to an URL: {source}"))]
+    Join {
+        source: url::ParseError,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Error converting to JLD: {source}"))]
     Jrd { source: crate::ap_entities::Error },
+    #[snafu(display("Failed to form Key ID: {source}"))]
+    KeyId { source: crate::ap_entities::Error },
+    #[snafu(display("The Actor ID parsed from the request signature ({signature}) doesn't match that in the request body ({request})"))]
+    MismatchedActorId {
+        signature: String,
+        request: String,
+        backtrace: Backtrace,
+    },
     #[snafu(display("The signature does not cover the Digest with a non-trivial request body"))]
     MissingContentDigest,
     NoUser {
@@ -107,17 +131,20 @@ impl Error {
     /// Convert this error into an HTTP status code & message suitable for the response body
     pub fn as_status_and_msg(&self) -> (StatusCode, String) {
         match self {
-            Error::Accept { .. } => (StatusCode::SERVICE_UNAVAILABLE, format!("{}", self)),
+            Error::Accept { .. } => (StatusCode::BAD_GATEWAY, format!("{}", self)),
             Error::AcceptLookup { source } => (
                 StatusCode::BAD_REQUEST,
                 format!("Unsupported Accept header value: {}", source),
             ),
+            Error::AcceptResponse { .. } => (StatusCode::BAD_GATEWAY, format!("{}", self)),
             Error::Actor { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
             Error::BadKeyId { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
             Error::BadSignature { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
             Error::Cavage2323 { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
             Error::ContentDigest { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
             Error::Jrd { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
+            Error::KeyId { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
+            Error::MismatchedActorId { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
             Error::MissingContentDigest => (StatusCode::UNAUTHORIZED, format!("{}", self)),
             Error::NoUser { username, .. } => {
                 (StatusCode::NOT_FOUND, format!("Unknown user {}", username))
@@ -127,9 +154,7 @@ impl Error {
             Error::PublicKey { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
             Error::ResolveKeyId { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
             Error::SignatureParse { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
-            Error::Signing { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
-            Error::Storage { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
-            Error::ToBytes { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
         }
     }
 }
@@ -305,6 +330,38 @@ async fn verify_signature(
     }
 }
 
+/// Utility function for handling an error in this module's handlers
+///
+/// Take an [Error], log it at level [ERROR], increment `metric`, and return a response with status
+/// code [INTERNAL_SERVER_ERROR] and an [ErrorResponseBody] based on the error.
+// This should probably be generalized further, moving the status code into the parameter list
+fn handle_err<E: std::error::Error>(
+    err: E,
+    instruments: &metrics::Instruments,
+    metric: &str,
+) -> axum::response::Response {
+    error!("{:#?}", err);
+    counter_add!(instruments, metric, 1, &[]);
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponseBody {
+            error: format!("{}", err),
+        }),
+    )
+        .into_response()
+}
+
+/// Set the ContentType header to "application/activity+json", overwriting the previous value, if
+/// any
+fn patch_content_type(mut rsp: axum::response::Response) -> axum::response::Response {
+    rsp.headers_mut().remove(CONTENT_TYPE);
+    rsp.headers_mut().insert(
+        CONTENT_TYPE,
+        "application/activity+json".parse().unwrap(/* known good */),
+    );
+    rsp
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                  `/users/{username}` handler                                   //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -369,40 +426,19 @@ async fn actor(
         Ok((user, accept))
     }
 
-    fn handle_err(err: Error, instruments: &metrics::Instruments) -> axum::response::Response {
-        error!("{:#?}", err);
-        counter_add!(instruments, "actor.errors", 1, &[]);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponseBody {
-                error: format!("{}", err),
-            }),
-        )
-            .into_response()
-    }
-
-    fn patch_content_type(mut rsp: axum::response::Response) -> axum::response::Response {
-        rsp.headers_mut().remove(CONTENT_TYPE);
-        rsp.headers_mut().insert(
-            CONTENT_TYPE,
-            "application/activity+json".parse().unwrap(/* known good */),
-        );
-        rsp
-    }
-
     match actor1(state.storage.as_ref(), &username, &headers).await {
         Ok((user, crate::http::Accept::ActivityPub)) => match user.as_jrd(&state.domain) {
             Ok(jrd) => {
                 counter_add!(state.instruments, "actor.retrieved", 1, &[]);
                 patch_content_type((StatusCode::OK, jrd).into_response())
             }
-            Err(err) => handle_err(err, &state.instruments),
+            Err(err) => handle_err(err, &state.instruments, "actor.errors"),
         },
         Ok((user, crate::http::Accept::Html)) => {
             counter_add!(state.instruments, "actor.retrieved", 1, &[]);
             (StatusCode::OK, Html(user.as_html())).into_response()
         }
-        Err(err) => handle_err(err, &state.instruments),
+        Err(err) => handle_err(err, &state.instruments, "actor.errors"),
     }
 }
 
@@ -422,27 +458,44 @@ async fn accept_boost(boost: &Announce) -> Result<()> {
     Ok(())
 }
 
-/// Accept a `Follow` request
-// This is very much a work in progress; just trying to get the ActivityPub protocol up & running,
-// right now. This implementation doesn't even persist the fact that the subject has a new follower.
+/// Accept a follow request
+///
+/// `user` is the [User] being followed. `follow` is the [Follow] request as received on the wire,
+/// `actor` is the follow request sender as authenticated from the request signature.
+///
+/// Post an [Accept] response to the `actor` inbox and, on success, update `user` to have the new
+/// follower.
 async fn accept_follow(
     user: &User,
     follow: &Follow,
     actor: &ap_entities::Actor,
+    storage: &(dyn StorageBackend + Send + Sync),
     domain: &str,
     client: &reqwest::Client,
 ) -> Result<()> {
-    info!(
+    debug!(
         "Accepting a Follow request for {}; request follows: {:?}",
         user.username(),
         follow
     );
 
+    // `actor` is read off the Signature header to the request (i.e. this is authenticated); let's
+    // check to be sure that the actor in the request matches-up-- it would be weird if Alice was
+    // sending a follow request on behalf of Bob.
+    if follow.actor_id() != actor.id() {
+        return MismatchedActorIdSnafu {
+            signature: actor.id().as_str().to_owned(),
+            request: follow.actor_id().as_str().to_owned(),
+        }
+        .fail();
+    }
+
     // We need to respond to Follows with an Accept; this is largely a stub implementation.
-    let accept = ap_entities::Accept::for_follow(&user.username(), follow, domain);
-    let accept = ap_entities::to_jrd(accept, ap_entities::Type::Accept, None).unwrap();
-    debug!("Accept body: {:#?}", accept);
-    let accept: axum::body::Body = accept.into();
+    let accept = Accept::for_follow(user.username(), follow, domain)
+        .context(AcceptResponseSnafu)?
+        .pipe(|accept| to_jrd(accept, ap_entities::Type::Accept, None))
+        .context(JrdSnafu)?
+        .conv::<axum::body::Body>();
 
     // It feels a little weird to me to send the Accept "inline" with handling the Follow; in
     // general, our peer will "see" the Accept before they've finished reading our response to their
@@ -466,15 +519,23 @@ async fn accept_follow(
         .body(accept)
         .unwrap();
 
-    let key_id = format!("https://{}/users/{}", domain, user.username());
-    let request = sign_request(request, &key_id, user.priv_key().as_ref())
+    let key_id = make_key_id(user.username(), domain, None).context(KeyIdSnafu)?;
+    let request = sign_request(request, key_id.as_ref(), user.priv_key().as_ref())
         .await
         .context(SigningSnafu)?;
     let rsp = client.execute(request).await.context(AcceptSnafu)?;
     debug!("Accept reponse: {:#?}", rsp);
-    debug!("Accept reponse: {:#?}", &rsp.text().await);
 
-    Ok(())
+    // We expect no response body, and we don't concern ourselves with the precise status code, so
+    // long as it denotes success.
+    if !rsp.status().is_success() {
+        return AcceptRejectedSnafu.fail();
+    }
+
+    storage
+        .add_follower(user, &actor.id())
+        .await
+        .context(StorageSnafu)
 }
 
 // This is a stub.
@@ -494,7 +555,6 @@ async fn accept_undo(undo: &Undo) -> Result<()> {
 /// This is still work in progress. In order to accept a `Follow`, I need to send an `Accept` back.
 /// A `Like` or a `Boost` doesn't need any particular response (tho of course we'll send back an
 /// HTTP response, it'll just have an empty body).
-#[axum::debug_handler]
 async fn inbox(
     State(state): State<Arc<Indielinks>>,
     axum::extract::Path(username): axum::extract::Path<Username>,
@@ -524,10 +584,10 @@ async fn inbox(
             }
             BoostFollowOrLike::Follow(follow) => {
                 counter_add!(instruments, "inbox.follows", 1, &[]);
-                accept_follow(&user, follow, actor, domain, client).await
+                accept_follow(&user, follow, actor, storage, domain, client).await
             }
             BoostFollowOrLike::Like(like) => {
-                counter_add!(instruments, "inbox.likes", 1, &[]);
+                counter_add!(instruments, "inbox.follows", 1, &[]);
                 accept_like(like).await
             }
             BoostFollowOrLike::Undo(undo) => {
@@ -566,6 +626,127 @@ async fn inbox(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           Followers                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("followers.pages", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("followers.errors", Sort::IntegralCounter) }
+
+// No query params => None, "?page=1" => Some(1)
+#[derive(Clone, Debug, Deserialize)]
+struct CollectionPagination {
+    page: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionPage {
+    pub id: Url,
+    pub total_items: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first: Option<Url>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<Url>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_of: Option<Url>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordered_items: Option<Vec<UserUrl>>,
+}
+
+/// Retrieve a user's followers collection
+async fn followers(
+    State(state): State<Arc<Indielinks>>,
+    axum::extract::Path(username): axum::extract::Path<Username>,
+    axum::extract::Query(pagination): axum::extract::Query<CollectionPagination>,
+) -> axum::response::Response {
+    async fn followers1(
+        username: &Username,
+        storage: &(dyn StorageBackend + Send + Sync),
+        domain: &str,
+        page: Option<usize>,
+        page_size: usize,
+    ) -> Result<CollectionPage> {
+        // Lookup the User by username...
+        let user = storage
+            .user_for_name(username)
+            .await
+            .map_err(|err| StorageSnafu.into_error(err))?
+            .ok_or(
+                NoUserSnafu {
+                    username: username.clone(),
+                }
+                .build(),
+            )?;
+        // and extract their followers:
+        let followers = user.followers();
+        let followers_id = make_user_followers(username, domain, None).context(ApIdSnafu)?;
+        let first = followers_id.join("?page=0").context(JoinSnafu)?;
+        // What we do now depends on `page`; if...
+        match page {
+            Some(page_num) => {
+                // we have a page, we need to extract the corresponding chunk from `followers`...
+                let items = match followers.iter().chunks(page_size).into_iter().nth(page_num) {
+                    Some(chunk) => chunk.into_iter().cloned().collect::<Vec<UserUrl>>(),
+                    None => vec![],
+                };
+                // conditionally compute the `next` attribute...
+                let next = ((page_num + 1) * page_size < followers.len()).then_some(
+                    followers_id
+                        .join(&format!("?page={}", page_num + 1))
+                        .context(JoinSnafu)?,
+                );
+                // and finally construct our page:
+                CollectionPage {
+                    id: followers_id.clone(),
+                    total_items: followers.len(),
+                    first: Some(first),
+                    next,
+                    part_of: Some(followers_id),
+                    ordered_items: Some(items),
+                }
+            }
+            // Otherwise, we just return the "top" of the OrderedCollection, which will contain an
+            // attribute (`first`) that tells our caller how to begin the pagination:
+            None => CollectionPage {
+                id: followers_id,
+                total_items: followers.len(),
+                first: Some(first),
+                next: None,
+                part_of: None,
+                ordered_items: None,
+            },
+        }
+        .pipe(Ok)
+    }
+
+    match followers1(
+        &username,
+        state.storage.as_ref(),
+        &state.domain,
+        pagination.page,
+        state.collection_page_size,
+    )
+    .await
+    {
+        Ok(ref page) => match to_jrd(
+            page,
+            match page.part_of {
+                Some(_) => ap_entities::Type::CollectionPage,
+                None => ap_entities::Type::OrderedCollection,
+            },
+            None,
+        ) {
+            Ok(jrd) => {
+                counter_add!(state.instruments, "followers.pages", 1, &[]);
+                patch_content_type((StatusCode::OK, jrd).into_response())
+            }
+            Err(err) => handle_err(err, &state.instruments, "followers.errors"),
+        },
+        Err(err) => handle_err(err, &state.instruments, "followers.errors"),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -579,5 +760,6 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
                 verify_signature,
             )),
         )
+        .route("/users/{username}/followers", get(followers))
         .with_state(state)
 }

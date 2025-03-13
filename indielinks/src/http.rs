@@ -131,4 +131,5 @@ pub struct Indielinks {
     pub token_lifetime: Duration,
     pub signing_keys: SigningKeys,
     pub client: reqwest::Client,
+    pub collection_page_size: usize,
 }

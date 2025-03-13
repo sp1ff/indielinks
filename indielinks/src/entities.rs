@@ -47,6 +47,7 @@ use snafu::{prelude::*, Backtrace, IntoError};
 use tap::{conv::Conv, pipe::Pipe};
 use tracing::debug;
 use unicode_segmentation::UnicodeSegmentation;
+use url::Url;
 use uuid::Uuid;
 use zxcvbn::{feedback::Feedback, zxcvbn, Score};
 
@@ -131,6 +132,12 @@ pub enum Error {
     #[snafu(display("Failed to generate an RSA private key: {source}"))]
     RsaPrivateKeyGen {
         source: rsa::errors::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to parse {text} as an URL: {source}"))]
+    UserUrl {
+        text: String,
+        source: url::ParseError,
         backtrace: Backtrace,
     },
 }
@@ -813,6 +820,81 @@ mod serde_hash_string {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            UserUrl                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Newtype to work around Rust's orphaned traits rule
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct UserUrl(Url);
+
+// Implement `Deserialize` by hand to fail if the serialized value isn't a legit URL
+impl<'de> Deserialize<'de> for UserUrl {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        UserUrl::try_from(s).map_err(mk_serde_de_err::<'de, D>)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserUrl {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        String::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        UserUrl::try_from(<String as DeserializeValue>::deserialize(typ, v)?).map_err(mk_de_err)
+    }
+}
+
+impl SerializeValue for UserUrl {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&self.0.as_str(), typ, writer)
+    }
+}
+
+impl Deref for UserUrl {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl AsRef<str> for UserUrl {
+    fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
+impl From<Url> for UserUrl {
+    fn from(value: Url) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&Url> for UserUrl {
+    fn from(value: &Url) -> Self {
+        Self(value.clone())
+    }
+}
+
+impl TryFrom<String> for UserUrl {
+    type Error = Error;
+
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        Ok(UserUrl(Url::parse(&s).context(UserUrlSnafu { text: s })?))
+    }
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                              User                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -833,6 +915,8 @@ pub struct User {
     last_update: Option<DateTime<Utc>>,
     password_hash: UserHashString,
     pepper_version: PepperVersion,
+    #[serde(default)]
+    followers: HashSet<UserUrl>,
 }
 
 /// Apply password validation rules
@@ -946,6 +1030,9 @@ impl User {
     pub fn first_update(&self) -> Option<DateTime<Utc>> {
         self.first_update
     }
+    pub fn followers(&self) -> &HashSet<UserUrl> {
+        &self.followers
+    }
     pub fn hash(&self) -> UserHashString {
         self.password_hash.clone()
     }
@@ -992,6 +1079,7 @@ impl User {
             last_update: None,
             password_hash: UserHashString(password_hash),
             pepper_version: pepper_version.clone(),
+            followers: HashSet::new(),
         })
     }
     pub fn pepper_version(&self) -> PepperVersion {
@@ -1006,8 +1094,8 @@ impl User {
     pub fn summary(&self) -> String {
         self.summary.clone()
     }
-    pub fn username(&self) -> Username {
-        self.username.clone()
+    pub fn username(&self) -> &Username {
+        &self.username
     }
     /// Create an indielinks user password hasher
     ///

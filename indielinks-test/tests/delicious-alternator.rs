@@ -301,7 +301,12 @@ inventory::submit!(Test {
 inventory::submit!(Test {
     name: "040follow_smoke",
     test_fn: |cfg: Configuration, _helper| {
-        Box::pin(accept_follow_smoke(cfg.url, cfg.username, cfg.local_port))
+        Box::pin(accept_follow_smoke(
+            cfg.url,
+            cfg.username,
+            cfg.domain,
+            cfg.local_port,
+        ))
     },
 });
 

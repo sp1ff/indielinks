@@ -319,6 +319,8 @@ struct ConfigV1 {
     signing_keys: SigningKeysConfig,
     #[serde(rename = "user-agent")]
     user_agent: String,
+    #[serde(rename = "collection-page-size")]
+    collection_page_size: usize,
 }
 
 impl ConfigV1 {
@@ -341,6 +343,7 @@ impl Default for ConfigV1 {
             pepper: Peppers::default(),
             signing_keys: SigningKeysConfig::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
+            collection_page_size: 12, // Copied from Mastodon
         }
     }
 }
@@ -699,6 +702,7 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
                 .user_agent(&cfg.user_agent)
                 .build()
                 .context(ReqwestClientSnafu)?,
+            collection_page_size: cfg.collection_page_size,
         });
 
         let world_nfy = Arc::new(Notify::new());

@@ -72,6 +72,8 @@ impl DateRange {
 
 #[async_trait]
 pub trait Backend {
+    /// Add a follower to a user's collection
+    async fn add_follower(&self, user: &User, follower: &url::Url) -> Result<(), Error>;
     /// Add a Post for `user`; return true if a new post was actually created, false if the post
     /// already existed and `replace` was set to false.
     #[allow(clippy::too_many_arguments)]

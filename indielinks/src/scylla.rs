@@ -35,7 +35,7 @@ use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
 
 use crate::{
-    entities::{Post, PostDay, PostUri, Tagname, User, UserId, Username},
+    entities::{Post, PostDay, PostUri, Tagname, User, UserId, UserUrl, Username},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
@@ -257,6 +257,7 @@ enum PreparedStatements {
     GetAllPosts15,
     GetPostsForTag,
     RenameTag,
+    AddFollower,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -346,6 +347,7 @@ impl Session {
             // expose myself to the possibility of a post being deleted out from under me while
             // renaming, which would leave the system in an invalid state.
             "update posts set tags=? where user_id=? and url=? if exists",
+            "update users set followers = followers + { ? } where id = ?",
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -362,7 +364,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 41] = prepared_statements
+        let prepared_statements: [PreparedStatement; 42] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -409,6 +411,17 @@ impl std::convert::From<scylla::transport::query_result::FirstRowError> for Stor
 
 #[async_trait]
 impl storage::Backend for Session {
+    async fn add_follower(&self, user: &User, follower: &url::Url) -> StdResult<(), StorError> {
+        let follower: UserUrl = follower.into();
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::AddFollower],
+                (&follower, &user.id()),
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn add_post(
         &self,
         user: &User,
@@ -464,7 +477,7 @@ impl storage::Backend for Session {
             .map_err(|_| {
                 StorError::new(
                     MultipleUsernamesSnafu {
-                        username: user.username(),
+                        username: user.username().clone(),
                     }
                     .build(),
                 )
@@ -472,7 +485,7 @@ impl storage::Backend for Session {
             .pipe(|tup| tup.0);
         if claimed {
             return UsernameClaimedSnafu {
-                username: user.username(),
+                username: user.username().clone(),
             }
             .fail();
         }
