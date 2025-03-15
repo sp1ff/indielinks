@@ -15,39 +15,74 @@
 
 //! # acct URI
 //!
-//! Support for the [acct] URI scheme as implemented in indielinks. The resource identified by an
-//! [acct] URI "is a user account hosted at a service provider, where the service provider is
-//! typically associated with a DNS domain name." The scheme is intended for identification, not
-//! interaction, and so the protocol in which it used used ([WebFinger], in our case) is responsible
-//! for specifying how it is used.
+//! This module provides an implementation of the [acct] URI scheme: "acct:user@host". The resource
+//! identified by an [acct] URI "is a user account hosted at a service provider, where the service
+//! provider is typically associated with a DNS domain name." The scheme is intended for
+//! identification, not interaction, and so the protocol in which it is used ([WebFinger], in our
+//! case) is responsible for specifying how it is used.
 //!
 //! [acct]: https://datatracker.ietf.org/doc/html/rfc7565
 //! [WebFinger]: https://www.rfc-editor.org/rfc/rfc7033
 //!
-//! # Syntax per the RFC
+//! This implementation attempts to be a full & faithful implementation of the [RFC], independent of
+//! indielinks. For instance, it will happily accept an [RFC]-compliant username that is not a valid
+//! indielinks [Username] (the conditions for which are much more strict). If the username or host
+//! are not legitimate by indielinks' lights, that needs to be detected & handled higher up the call
+//! stack.
 //!
-//! The [RFC] [provides](https://datatracker.ietf.org/doc/html/rfc7565#section-7) a grammer for
-//! `acct` URIs in BNF:
+//! [RFC]: https://datatracker.ietf.org/doc/html/rfc7565
+//! [Username]: crate::entities::Username
+//!
+//! # Syntax
+//!
+//! The [RFC] [provides](https://datatracker.ietf.org/doc/html/rfc7565#section-7) a grammar for
+//! `acct` URIs in ABNF:
 //!
 //! ```text
-//! acctURI     = "acct" ":" userpart "@" host
-//! userpart    = (unreserved | sub-delims) 0*(unreserved | pct-encoded | sub-delims )
-//! unreserved  = ALPHA | DIGIT | "-" | "." | "_" | "~"
-//! sub-delims  = "!" | "$" | "&" | "'" | "(" | ")" | "*" | "+" | "," | ";" | "="
-//! pct-encoded = "%" HEXDIG HEXDIG
-//! host        = IP-literal / IPv4address / reg-name
-//! IP-literal  = "[" ( IPv6address / IPvFuture  ) "]"
-//! IPvFuture   = "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
-//! IPv4address = dec-octet "." dec-octet "." dec-octet "." dec-octet
-//! dec-octet   = DIGIT                 ; 0-9
-//!               | %x31-39 DIGIT       ; 10-99
-//!               | "1" 2DIGIT          ; 100-199
-//!               | "2" %x30-34 DIGIT   ; 200-249
-//!               | "25" %x30-35        ; 250-255
-//! reg-name    = *( unreserved / pct-encoded / sub-delims )
+//! acctURI     := "acct" ":" userpart "@" host
+//! userpart    := (unreserved | sub-delims) *(unreserved | pct-encoded | sub-delims )
+//! unreserved  := ALPHA | DIGIT | "-" | "." | "_" | "~"
+//! sub-delims  := "!" | "$" | "&" | "'" | "(" | ")" | "*" | "+" | "," | ";" | "="
+//! pct-encoded := "%" HEXDIG HEXDIG
+//! host        := IP-literal | IPv4address | reg-name
+//! IP-literal  := "[" ( IPv6address | IPvFuture  ) "]"
+//! IPv6address :=                            6( h16 ":" ) ls32
+//!              |                       "::" 5( h16 ":" ) ls32
+//!              | [               h16 ] "::" 4( h16 ":" ) ls32
+//!              | [ *1( h16 ":" ) h16 ] "::" 3( h16 ":" ) ls32
+//!              | [ *2( h16 ":" ) h16 ] "::" 2( h16 ":" ) ls32
+//!              | [ *3( h16 ":" ) h16 ] "::"    h16 ":"   ls32
+//!              | [ *4( h16 ":" ) h16 ] "::"              ls32
+//!              | [ *5( h16 ":" ) h16 ] "::"              h16
+//!              | [ *6( h16 ":" ) h16 ] "::"
+//! ls32        := ( h16 ":" h16 ) | IPv4address
+//!                ; least-significant 32 bits of address
+//! h16         := 1*4HEXDIG
+//!                ; 16 bits of address represented in hexadecimal
+//! IPvFuture   := "v" 1*HEXDIG "." 1*( unreserved | sub-delims | ":" )
+//! IPv4address := dec-octet "." dec-octet "." dec-octet "." dec-octet
+//! dec-octet   := DIGIT               ; 0-9
+//!              | %x31-39 DIGIT       ; 10-99
+//!              | "1" 2DIGIT          ; 100-199
+//!              | "2" %x30-34 DIGIT   ; 200-249
+//!              | "25" %x30-35        ; 250-255
+//! reg-name    := *( unreserved | pct-encoded | sub-delims )
 //! ```
 //!
 //! [RFC]: https://datatracker.ietf.org/doc/html/rfc7565
+//!
+//! The syntax used in the above augmented Backus-Naur form grammar is specified [here], but a few
+//! notes:
+//!
+//! [here]: https://datatracker.ietf.org/doc/html/rfc2234
+//!
+//! - `n*m` is used before a grammar element to indicate "from `n` to `m` occurrences"; either
+//!   may be omitted (`n` defaulting to 0 and `m` to infinity)
+//! - `;` denotes a comment
+//! - `%xnn` denotes the ASCII character whose encoding is `nn` in hex
+//! - `ALPHA`, `DIGIT` & `HEXDIG` are taken to be understood
+//!
+//! # Discussion
 //!
 //! The reader will note that `acct` URIs generally take the form "acct:user@host", but that the
 //! user portion may include %-encoded octets. This is discussed in [section
@@ -62,89 +97,359 @@
 //!
 //! [RFC3986]: https://datatracker.ietf.org/doc/html/rfc3986
 //!
-//! # Syntax per indielinks
+//! ## indielinks-specific considerations
 //!
-//! In the [WebFinger] protocol, the `acct` URI is used as a query parameter, and hence will
-//! presumably *again* be %-encoded, leading in the case of the example above to an HTTP request of:
+//! indielinks uses the `acct` URI scheme in it's [WebFinger] implementation, where the `acct` URI
+//! is used as a query parameter, and hence will presumably *again* be %-encoded, leading in the
+//! case of the example above to an HTTP request of:
 //!
 //! ```text
 //! GET /.well-known/webfinger?resource=acct%3Ajuliet%2540capulet.example%40shoppingsite.example
 //! ```
 //!
 //! (notice that the '%' character in the %-encoding of '@' has been replaced with "%25").
-//! Presumably, the web service framework in use by the server would carry-out one round of
-//! %-decoding & present the application with a parameter of
+//! Presumably, the web service framework in use by the server (axum, in our case) will carry-out
+//! one round of %-decoding & present the application with a parameter of
 //! "acct:juliet%40capulet.example@shoppingsite.example". This isn't discussed anywhere (that I can
 //! find), but I surmise that it's up to the application to handle the subsequent round of
-//! %-decoding. Presumably in this case the application is aware that it's using e-mail addressess
-//! to identify users and would be prepared for this.
-//!
-//! In the case of indielinks, we side-step this by identifying users with identifiers of the form
-//! [a-z][-_a-z0-9]*, thereby simplifying parsing of the acct URI considerably.
+//! %-decoding.
 
-//! # The acct error type
-//!
-//! Contra the indielinks app itself, I'm swinging back to my preferred approach of a hand-crafted
-//! error enumeration with a few broad failure modes plus context.
-
-use std::{fmt::Display, str::FromStr};
+use std::{
+    collections::HashSet,
+    fmt::Display,
+    net::{Ipv4Addr, Ipv6Addr},
+    ops::Deref,
+    str::FromStr,
+};
 
 use lazy_static::lazy_static;
+use pct_str::{Encoder, PctStr, PctString};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use snafu::{prelude::*, Backtrace};
+
+use crate::util::exactly_two;
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
-#[derive(Debug)]
-pub enum Error {
-    BadUri { text: String },
-    BadUserAndHost { text: String },
-}
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module error type                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::BadUri { text } => write!(f, "Bad URI: {}", text),
-            Error::BadUserAndHost { text } => write!(f, "Bad user-and-host: {}", text),
-        }
-    }
+#[derive(Debug, Snafu)]
+pub enum Error {
+    BadUserAndHost {
+        text: String,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Empty hostnames are not permitted in acct URIs"))]
+    EmptyHost,
+    #[snafu(display("{text} could not be parsed as an acct host"))]
+    Host {
+        text: String,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{text} is not a valid percent-encoded username"))]
+    PctEncodedUsername {
+        text: String,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{text} is not correctly percent-encoded: {source}"))]
+    PctStr {
+        text: String,
+        source: pct_str::InvalidPctString<String>,
+    },
+    #[snafu(display("{text} cannot be interpreted as an acct URI"))]
+    Uri {
+        text: String,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{text} is not a valid username"))]
+    Username {
+        text: String,
+        backtrace: Backtrace,
+    },
 }
 
 type Result<T> = StdResult<T, Error>;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            Username                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+lazy_static! {
+    // Regex matching a percent-encoded username portion of an `acct` URI
+    static ref USER_PCT_ENCODED: Regex = Regex::new("^[-._~a-zA-Z0-9!$&'()*+.;=]([-._~a-zA-Z0-9!$&'()*+.;=]|%[0-9a-fA-F]{2})*$")
+        .unwrap(/* known good */);
+    // Regex matching the username portion of an `acct` URI
+    static ref USER: Regex = Regex::new("^[-._~a-zA-Z0-9!$&'()*+.;=]+$")
+        .unwrap(/* known good */);
+    // The set of char's that are unreserved or sub-delims
+    static ref UNRESERVED_OR_SUB_DELIMS: HashSet<char> = HashSet::from(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l',
+                                                                        'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x',
+                                                                        'y', 'z', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+                                                                        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V',
+                                                                        'W', 'X', 'Y', 'Z', '0', '1', '2', '3', '4', '5', '6', '7',
+                                                                        '8', '9', '-', '.', '_', '~', '!', '$', '&', '\'', '(', ')',
+                                                                        '*', '+', ',', ';', '=',]);
+    static ref REG_NAME_PCT_ENCODED: Regex = Regex::new("^([-._~a-zA-Z0-9!$&'()*+,;=]|%[0-9a-fA-F]{2})+$").unwrap(/* known good */);
+    static ref REG_NAME: Regex = Regex::new("^[-._~a-zA-Z0-9!$&'()*+,;=]+$").unwrap(/* known good */);
+}
+
+struct UnreservedOrSubdelimsEncoder;
+
+impl Encoder for UnreservedOrSubdelimsEncoder {
+    fn encode(&self, c: char) -> bool {
+        !UNRESERVED_OR_SUB_DELIMS.contains(&c)
+    }
+}
+
+/// A refined type representing an [RFC-7565]-compliant username.
+///
+/// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
+#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+pub struct Username(String);
+
+impl Username {
+    /// Validate that `s` complies with [RFC-7565]; percent-decode it if it does & return a
+    /// [Username] instance.
+    ///
+    /// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
+    pub fn from_percent_encoded(s: &str) -> Result<Username> {
+        if USER_PCT_ENCODED.find(s).is_none() {
+            return PctEncodedUsernameSnafu { text: s.to_owned() }.fail();
+        }
+        Ok(Username(
+            PctStr::new(s)
+                .map_err(|err| err.into_owned())
+                .context(PctStrSnafu { text: s.to_owned() })?
+                .decode(),
+        ))
+    }
+    /// Create a new [Username] instance from an arbitrary UTF-8 string encoding. Note that
+    /// [RFC-7565] imposes constraints on the first character of the username, but after that
+    /// non-permitted characters can be percent-encoded.
+    ///
+    /// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
+    pub fn new(s: &str) -> Result<Username> {
+        if USER.find(s).is_none() {
+            return UsernameSnafu { text: s.to_owned() }.fail();
+        }
+        Ok(Username(s.to_owned()))
+    }
+    /// Percent encode this username
+    pub fn encode(&self) -> String {
+        PctString::encode(self.0.chars(), UnreservedOrSubdelimsEncoder).into_string()
+    }
+}
+
+impl AsRef<str> for Username {
+    fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
+impl Deref for Username {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Display for Username {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for Username {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Username::new(s)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                              Host                                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A refined type representing an [RFC-7565]-compliant host. Well, mostly: we don't support
+/// `IpvFuture`.
+///
+/// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
+#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+pub enum Host {
+    IpLiteral(Ipv6Addr),
+    Ipv4Address(Ipv4Addr),
+    RegName(String),
+}
+
+impl Host {
+    fn first_parse(s: &str) -> Result<Option<Host>> {
+        // The ABNF grammar techincally allows for an empty host, but I'm going to disallow that:
+        if s.is_empty() {
+            return Err(Error::EmptyHost);
+        }
+
+        if s.chars().nth(0).unwrap() == '[' {
+            // IpLiteral
+            if let Ok(addr) = s.parse::<Ipv6Addr>() {
+                return Ok(Some(Host::IpLiteral(addr)));
+            }
+        } else if s.chars().nth(0).unwrap().is_ascii_digit() {
+            // Try parsing as an IPv4 address
+            if let Ok(addr) = s.parse::<Ipv4Addr>() {
+                return Ok(Some(Host::Ipv4Address(addr)));
+            }
+        }
+
+        Ok(None)
+    }
+    /// Validate that `s` complies with [RFC-7565]; percent-decode it if it does & return a
+    /// [Host] instance.
+    ///
+    /// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
+    pub fn from_percent_encoded(s: &str) -> Result<Host> {
+        match Host::first_parse(s) {
+            Err(err) => Err(err),
+            Ok(Some(h)) => Ok(h),
+            Ok(None) => {
+                // If we're here, it had better be a reg-name...
+                if REG_NAME_PCT_ENCODED.find(s).is_none() {
+                    return HostSnafu { text: s.to_owned() }.fail();
+                }
+
+                Ok(Host::RegName(
+                    PctStr::new(s)
+                        .map_err(|err| err.into_owned())
+                        .context(PctStrSnafu { text: s.to_owned() })?
+                        .decode(),
+                ))
+            }
+        }
+    }
+    /// Validate that `s` complies with [RFC-7565]; return a [Host] instance it if it does.
+    ///
+    /// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
+    pub fn new(s: &str) -> Result<Host> {
+        match Host::first_parse(s) {
+            Err(err) => Err(err),
+            Ok(Some(h)) => Ok(h),
+            Ok(None) => {
+                // If we're here, it had better be a reg-name...
+                if REG_NAME.find(s).is_none() {
+                    return HostSnafu { text: s.to_owned() }.fail();
+                }
+                Ok(Host::RegName(s.to_owned()))
+            }
+        }
+    }
+    /// Percent encode this host
+    pub fn encode(&self) -> String {
+        match self {
+            Host::IpLiteral(ipv6_addr) => format!("{}", ipv6_addr),
+            Host::Ipv4Address(ipv4_addr) => format!("{}", ipv4_addr),
+            Host::RegName(name) => {
+                PctString::encode(name.chars(), UnreservedOrSubdelimsEncoder).into_string()
+            }
+        }
+    }
+}
+
+impl Display for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Host::IpLiteral(ipv6_addr) => write!(f, "{}", ipv6_addr),
+            Host::Ipv4Address(ipv4_addr) => write!(f, "{}", ipv4_addr),
+            Host::RegName(name) => write!(f, "{}", name),
+        }
+    }
+}
+
+impl FromStr for Host {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Host::new(s)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            Account                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// lazy_static! {
+//     static ref USER_AT_HOST: Regex = Regex::new("^([^@]+)@([^@]+)$").unwrap(/* known good */);
+//     static ref URI_FORMAT: Regex = Regex::new("^acct:([^@]+)@([^@]+)$").unwrap(/* known good */);
+// }
+
+/// An [RFC-7565]-compliant account.
+///
+/// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
+///
+/// In order for this type to work with the axum [Query] extractor, it must deserialize from strings
+/// of the form "acct:{percent-encoded-username}@{host}". Therefore, this type hand- implements both
+/// [Serialize] & [Deserialize] to work in this format. [Display] & [FromStr], while inverses, work
+/// with the more natural "{percent-decoded-username}@{host}" format.
+///
+/// [Query]: axum::extract::Query
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Account {
-    user: String,
-    host: String,
+    user: Username,
+    host: Host,
+}
+
+impl Account {
+    /// Given a string of the form "user@host", derive an [Account]
+    pub fn new(s: &str) -> Result<Account> {
+        let (user, host) = exactly_two(s.split('@')).unwrap();
+        Ok(Self {
+            user: Username::new(user)?,
+            host: Host::new(host)?,
+        })
+    }
+    /// Given an `acct` URI of the form "acct:{user}@{host}", attempt to derive an [Account]
+    pub fn from_uri(s: &str) -> Result<Account> {
+        if !s.starts_with("acct:") {
+            return UriSnafu { text: s.to_owned() }.fail();
+        }
+        let (user, host) = exactly_two(s[5..].split('@')).unwrap();
+        Ok(Self {
+            user: Username::from_percent_encoded(user)?,
+            host: Host::from_percent_encoded(host)?,
+        })
+    }
+    pub fn from_user_and_host(user: &str, host: &str) -> Result<Account> {
+        Ok(Account {
+            user: Username::new(user)?,
+            host: Host::new(host)?,
+        })
+    }
+    pub fn to_uri(&self) -> String {
+        format!("acct:{}@{}", self.user.encode(), self.host.encode())
+    }
+    pub fn host(&self) -> &Host {
+        &self.host
+    }
+    pub fn user(&self) -> &Username {
+        &self.user
+    }
 }
 
 impl Display for Account {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "acct:{}@{}", self.user, self.host)
+        write!(f, "{}@{}", self.user, self.host)
     }
-}
-
-lazy_static! {
-    static ref USER_AT_HOST: Regex = Regex::new("^([a-z][-_a-z0-9]*)@([-_.a-zA-Z0-9]+)$").unwrap(/* known good */);
-    static ref URI_FORMAT: Regex = Regex::new("^acct:([a-z][-_a-z0-9]*)@([-_.a-zA-Z0-9]+)$").unwrap(/* known good */);
 }
 
 impl FromStr for Account {
     type Err = Error;
 
+    /// Given a string in the form "user@host", derive an [Account]
     fn from_str(s: &str) -> Result<Self> {
-        let err = || -> Error {
-            Error::BadUri {
-                text: String::from(s),
-            }
-        };
-        let caps = URI_FORMAT.captures(s).ok_or(err())?;
-        let user = caps.get(1).ok_or(err())?;
-        let host = caps.get(2).ok_or(err())?;
-        Ok(Account {
-            user: String::from(user.as_str()),
-            host: String::from(host.as_str()),
-        })
+        Account::new(s)
     }
 }
 
@@ -168,7 +473,7 @@ impl<'de> Deserialize<'de> for Account {
             where
                 E: Error,
             {
-                Account::from_str(s).map_err(|err| {
+                Account::from_uri(s).map_err(|err| {
                     let err_s = format!("{}", err);
                     Error::invalid_value(Unexpected::Str(s), &err_s.as_str())
                 })
@@ -184,36 +489,7 @@ impl Serialize for Account {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&format!("{}", self))
-    }
-}
-
-impl Account {
-    pub fn from_user_and_host(user: &str, host: &str) -> Account {
-        Account {
-            user: user.to_string(),
-            host: host.to_string(),
-        }
-    }
-    pub fn new(user_and_host: &str) -> Result<Account> {
-        let err = || -> Error {
-            Error::BadUserAndHost {
-                text: String::from(user_and_host),
-            }
-        };
-        let caps = USER_AT_HOST.captures(user_and_host).ok_or(err())?;
-        let user = caps.get(1).ok_or(err())?;
-        let host = caps.get(2).ok_or(err())?;
-        Ok(Account {
-            user: String::from(user.as_str()),
-            host: String::from(host.as_str()),
-        })
-    }
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-    pub fn user(&self) -> &str {
-        &self.user
+        serializer.serialize_str(&self.to_uri())
     }
 }
 
@@ -222,20 +498,27 @@ pub mod test {
     use super::*;
 
     #[test]
-    pub fn smoke() {
+    fn smoke() {
         // OK
         assert!(Account::new("sp1ff@indiemark.sh").is_ok());
-        // Not OK; I mean, it's OK per the RFC, but not for indiemark.
+        // Not OK
         assert!(Account::new("juliet%40capulet.example@shoppingsite.example").is_err());
+        // OK
+        assert!(Account::from_uri("acct:juliet%40capulet.example@shoppingsite.example").is_ok());
         // Test the `Display` implementation:
         assert_eq!(
             format!("{}", Account::new("sp1ff@indiemark.sh").unwrap()),
-            "acct:sp1ff@indiemark.sh"
+            "sp1ff@indiemark.sh"
         );
-        // Test the `FromStr` implementation
-        assert_eq!(
-            Account::new("sp1ff@indiemark.sh").unwrap(),
-            "acct:sp1ff@indiemark.sh".parse::<Account>().unwrap()
-        );
+    }
+
+    #[test]
+    fn account() {
+        let acct = Account::new("sp1ff@indiemark.sh").unwrap();
+        let ser = serde_json::to_string(&acct).unwrap();
+        assert_eq!(ser, "\"acct:sp1ff@indiemark.sh\"");
+        let acct: Account =
+            serde_json::from_str("\"acct:juliet%40capulet.example@shoppingsite.example\"").unwrap();
+        assert_eq!(acct.user().as_ref(), "juliet@capulet.example")
     }
 }

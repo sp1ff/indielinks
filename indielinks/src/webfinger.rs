@@ -49,8 +49,9 @@
 
 use std::sync::Arc;
 
+use crate::acct::Host;
 use crate::ap_entities::make_user_id;
-use crate::entities::Username;
+use crate::entities::User;
 use crate::http::Indielinks;
 use crate::metrics::Sort;
 use crate::storage;
@@ -75,6 +76,11 @@ pub enum Error {
     BadUsername {
         name: String,
         source: crate::entities::Error,
+    },
+    #[snafu(display("Could not interpret {domain} as an acct host: {source}"))]
+    Domain {
+        domain: String,
+        source: crate::acct::Error,
     },
     #[snafu(display("Mismatched hostname for webfinger"))]
     Hostname { backtrace: Backtrace },
@@ -131,20 +137,13 @@ pub struct Link {
 }
 
 impl Link {
-    /// Create a "self" [Link] from an [Account]
-    fn from_account(acct: &Account) -> Result<Self> {
+    /// Create a "self" [Link] from a [User]
+    fn from_user(user: &User, domain: &str) -> Result<Self> {
         Ok(Link {
             rel: LinkRelation::Myself,
             r#type: MediaType::ActivityPub,
-            href: make_user_id(
-                &Username::new(acct.user()).context(BadUsernameSnafu {
-                    name: acct.user().to_owned(),
-                })?,
-                acct.host(),
-                None,
-            )
-            .context(UserIdSnafu {
-                name: acct.user().to_owned(),
+            href: make_user_id(user.username(), domain, None).context(UserIdSnafu {
+                name: user.username().to_string(),
             })?,
         })
     }
@@ -195,21 +194,14 @@ pub struct ResponseBody {
 }
 
 impl ResponseBody {
-    pub fn new(acct: &Account) -> Result<ResponseBody> {
+    pub fn new(user: &User, acct: &Account, domain: &str) -> Result<ResponseBody> {
         Ok(ResponseBody {
-            links: vec![Link::from_account(acct)?],
+            links: vec![Link::from_user(user, domain)?],
             aliases: vec![
-                Url::parse(&format!("https://{}/@{}", acct.host(), acct.user()))
+                Url::parse(&format!("https://{}/@{}", domain, user.username()))
                     .context(UrlParseSnafu)?,
-                make_user_id(
-                    &Username::new(acct.user()).context(BadUsernameSnafu {
-                        name: acct.user().to_owned(),
-                    })?,
-                    acct.host(),
-                    None,
-                )
-                .context(UserIdSnafu {
-                    name: acct.user().to_owned(),
+                make_user_id(user.username(), domain, None).context(UserIdSnafu {
+                    name: user.username().to_string(),
                 })?,
             ],
             subject: acct.clone(),
@@ -252,7 +244,11 @@ pub async fn webfinger(
         domain: &str,
         storage: &(dyn StorageBackend + Send + Sync),
     ) -> Result<ResponseBody> {
-        if account.host() != domain {
+        if *account.host()
+            != Host::new(domain).context(DomainSnafu {
+                domain: domain.to_owned(),
+            })?
+        {
             return HostnameSnafu.fail();
         }
 
@@ -261,7 +257,7 @@ pub async fn webfinger(
             .await
             .context(StorageSnafu)?
         {
-            Some(_) => Ok(ResponseBody::new(account)?),
+            Some(user) => Ok(ResponseBody::new(&user, account, domain)?),
             None => NoSuchUserSnafu.fail(),
         }
     }

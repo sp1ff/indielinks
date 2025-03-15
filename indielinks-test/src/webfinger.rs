@@ -28,17 +28,24 @@ pub async fn webfinger_smoke(url: Url, username: Username, domain: String) -> Re
     assert_eq!(rsp, StatusCode::BAD_REQUEST);
 
     // This is kind of lame; I'm not guaranteed that user "sp1ff2" doesn't actually exist.
-    let acct = Account::from_user_and_host("sp1ff2", &domain);
+    let acct = Account::from_user_and_host("sp1ff2", &domain)?;
 
     // `resource` names someone unknown => 404 Not Found
-    let rsp = reqwest::get(url.join(&format!("/.well-known/webfinger?resource={}", acct))?)
-        .await?
-        .status();
+    let rsp = reqwest::get(url.join(&format!(
+        "/.well-known/webfinger?resource={}",
+        acct.to_uri()
+    ))?)
+    .await?
+    .status();
     assert_eq!(rsp, StatusCode::NOT_FOUND);
 
-    let acct = Account::from_user_and_host(&username, &domain);
+    let acct = Account::from_user_and_host(&username, &domain)?;
 
-    let rsp = reqwest::get(url.join(&format!("/.well-known/webfinger?resource={}", acct))?).await?;
+    let rsp = reqwest::get(url.join(&format!(
+        "/.well-known/webfinger?resource={}",
+        acct.to_uri()
+    ))?)
+    .await?;
 
     assert_eq!(rsp.status(), StatusCode::OK);
 
