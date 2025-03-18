@@ -20,6 +20,7 @@
 //! [Storage]: crate::storage
 
 use crate::{
+    background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{Post, PostDay, PostUri, Tagname, User, UserId, Username},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
@@ -34,7 +35,7 @@ use aws_sdk_dynamodb::{
     },
     types::{AttributeValue, PutRequest, ReturnValue, WriteRequest},
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use either::Either;
 use itertools::Itertools;
 use secrecy::SecretString;
@@ -42,6 +43,7 @@ use serde_dynamo::aws_sdk_dynamodb_1::{from_items, to_item};
 use snafu::{Backtrace, IntoError, Snafu};
 use tap::Pipe;
 use url::Url;
+use uuid::Uuid;
 
 use std::{
     cmp::min,
@@ -217,15 +219,28 @@ impl Client {
 use aws_sdk_dynamodb::config::http::HttpResponse;
 use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
 use aws_sdk_dynamodb::operation::query::QueryError;
+use aws_sdk_dynamodb::operation::scan::ScanError;
 use aws_smithy_runtime_api::client::result::SdkError;
 
-// Use these if you don't want to attach any context to a failed DeleteItem request; the `StorError`
-// will have a backtrace, so the operator should be able to figure-out where the error occurred. I
-// should probably wrap this boilerplate up in a macro, but I want to be sure this is the way I
-// want to go, first.
+// Use these if you don't want to attach any context to a failed request; the `StorError` will have
+// a backtrace, so the operator should be able to figure-out where the error occurred. I should
+// probably wrap this boilerplate up in a macro, but I want to be sure this is the way I want to go,
+// first.
+
+impl std::convert::From<SdkError<BatchWriteItemError, HttpResponse>> for StorError {
+    fn from(value: SdkError<BatchWriteItemError, HttpResponse>) -> Self {
+        StorError::new(value)
+    }
+}
 
 impl std::convert::From<SdkError<DeleteItemError, HttpResponse>> for StorError {
     fn from(value: SdkError<DeleteItemError, HttpResponse>) -> Self {
+        StorError::new(value)
+    }
+}
+
+impl std::convert::From<SdkError<PutItemError, HttpResponse>> for StorError {
+    fn from(value: SdkError<PutItemError, HttpResponse>) -> Self {
         StorError::new(value)
     }
 }
@@ -236,8 +251,8 @@ impl std::convert::From<SdkError<QueryError, HttpResponse>> for StorError {
     }
 }
 
-impl std::convert::From<SdkError<BatchWriteItemError, HttpResponse>> for StorError {
-    fn from(value: SdkError<BatchWriteItemError, HttpResponse>) -> Self {
+impl std::convert::From<SdkError<UpdateItemError, HttpResponse>> for StorError {
+    fn from(value: SdkError<UpdateItemError, HttpResponse>) -> Self {
         StorError::new(value)
     }
 }
@@ -254,15 +269,27 @@ impl std::convert::From<aws_sdk_dynamodb::error::BuildError> for StorError {
     }
 }
 
-impl std::convert::From<SdkError<PutItemError, HttpResponse>> for StorError {
+impl std::convert::From<SdkError<PutItemError, HttpResponse>> for BckError {
     fn from(value: SdkError<PutItemError, HttpResponse>) -> Self {
-        StorError::new(value)
+        BckError::new(value)
     }
 }
 
-impl std::convert::From<SdkError<UpdateItemError, HttpResponse>> for StorError {
+impl std::convert::From<SdkError<ScanError, HttpResponse>> for BckError {
+    fn from(value: SdkError<ScanError, HttpResponse>) -> Self {
+        BckError::new(value)
+    }
+}
+
+impl std::convert::From<SdkError<UpdateItemError, HttpResponse>> for BckError {
     fn from(value: SdkError<UpdateItemError, HttpResponse>) -> Self {
-        StorError::new(value)
+        BckError::new(value)
+    }
+}
+
+impl std::convert::From<serde_dynamo::Error> for BckError {
+    fn from(value: serde_dynamo::Error) -> Self {
+        BckError::new(value)
     }
 }
 
@@ -321,7 +348,7 @@ impl storage::Backend for Client {
             shared,
             to_read,
         );
-        let item = to_item(post).expect("to_item failed");
+        let item = to_item(post).unwrap();
 
         let mut builder = self
             .client
@@ -879,5 +906,93 @@ impl storage::Backend for Client {
                 .pipe(Ok),
             None => Ok(None),
         }
+    }
+}
+
+#[async_trait]
+impl TasksBackend for Client {
+    async fn write_task(&self, tag: &Uuid, buf: &[u8]) -> StdResult<(), BckError> {
+        let task = FlatTask {
+            id: Uuid::new_v4(),
+            created: Utc::now(),
+            task: buf.to_vec(),
+            tag: *tag,
+            lease_expires: chrono::DateTime::UNIX_EPOCH,
+            done: false,
+        };
+        self.client
+            .put_item()
+            .table_name("tasks")
+            .set_item(Some(to_item(task)?))
+            .send()
+            .await?;
+        Ok(())
+    }
+    async fn lease_task(&self) -> StdResult<Option<(Uuid, Uuid, Vec<u8>)>, BckError> {
+        let mut tasks = self
+            .client
+            .scan()
+            .table_name("tasks")
+            .filter_expression("done=:f and lease_expires<:t")
+            .expression_attribute_values(
+                ":t",
+                AttributeValue::S(Utc::now().format("%Y-%m-%dT%H:%M:%S%.fZ").to_string()),
+            )
+            .expression_attribute_values(":f", AttributeValue::Bool(false))
+            .send()
+            .await?
+            .items()
+            .to_vec()
+            .pipe(from_items::<FlatTask>)?;
+        // Next, sort 'em by creation time...
+        tasks.sort_by(|lhs, rhs| lhs.created.cmp(&rhs.created));
+
+        async fn take_lease(client: &::aws_sdk_dynamodb::Client, t: &FlatTask) -> Result<bool> {
+            let new_lease = Utc::now() + Duration::seconds(60);
+            client
+                .update_item()
+                .table_name("tasks")
+                .key("id", AttributeValue::S(t.id.to_string()))
+                .condition_expression("lease_expires = :d")
+                .update_expression("set lease_expires = :e")
+                .expression_attribute_values(
+                    ":d",
+                    AttributeValue::S(t.lease_expires.format("%Y-%m-%dT%H:%M:%S%.fZ").to_string()),
+                )
+                .expression_attribute_values(
+                    ":e",
+                    AttributeValue::S(new_lease.format("%Y-%m-%dT%H:%M:%S%.fZ").to_string()),
+                )
+                .return_values(ReturnValue::AllNew) // UpdatedNew?
+                .send()
+                .await
+                .is_ok()
+                .pipe(Ok)
+        }
+
+        let mut task: Option<FlatTask> = None;
+        for t in tasks {
+            if take_lease(&self.client, &t).await.unwrap_or(false) {
+                task = Some(t);
+                break;
+            }
+        }
+
+        match task {
+            None => Ok(None),
+            Some(task) => Ok(Some((task.tag, task.id, task.task))),
+        }
+    }
+    async fn close_task(&self, uuid: &Uuid) -> StdResult<(), BckError> {
+        let _ = self
+            .client
+            .update_item()
+            .table_name("tasks")
+            .key("id", AttributeValue::S(uuid.to_string()))
+            .update_expression("set done = :t")
+            .expression_attribute_values(":t", AttributeValue::Bool(true))
+            .send()
+            .await?;
+        Ok(())
     }
 }

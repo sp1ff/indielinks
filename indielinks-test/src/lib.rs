@@ -75,6 +75,7 @@ use indielinks::entities::Username;
 use libtest_mimic::Failed;
 use reqwest::Url;
 
+pub mod background;
 pub mod delicious;
 pub mod follow;
 pub mod users;
@@ -113,6 +114,7 @@ pub async fn test_healthcheck(url: Url) -> Result<(), Failed> {
 /// integration test will need to provide an implemetnation.
 #[async_trait]
 pub trait Helper {
+    /// Remove all posts belonging to `username`
     async fn clear_posts(&self, username: &Username) -> Result<(), Failed>;
     /// Remove a user
     async fn remove_user(&self, username: &Username) -> Result<(), Failed>;

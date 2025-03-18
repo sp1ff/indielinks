@@ -91,6 +91,8 @@ pub enum Sort {
     IntegralCounter,
     /// Corresponds to `Gauge<f64>`
     FloatGauge,
+    /// `Gauge<u64>`
+    IntegralGauge,
     // more later?
 }
 
@@ -134,6 +136,7 @@ pub fn check_metric_registrations() {
 enum Instrument {
     CounterU64(Counter<u64>),
     GaugeF64(Gauge<f64>),
+    GaugeU64(Gauge<u64>),
 }
 
 /// Container for OTel instruments
@@ -161,6 +164,7 @@ impl Instruments {
                             Instrument::CounterU64(meter.u64_counter(name).build())
                         }
                         Sort::FloatGauge => Instrument::GaugeF64(meter.f64_gauge(name).build()),
+                        Sort::IntegralGauge => Instrument::GaugeU64(meter.u64_gauge(name).build()),
                     });
                 }
             }
@@ -179,9 +183,17 @@ impl Instruments {
             panic!("{} does not name a counter", name);
         }
     }
-    // panics if `name` doesn't name a counter
-    pub fn record(&self, name: &str, value: f64, attributes: &[KeyValue]) {
+    // This seems really lame, but I'm in the middle of something at the moment and don't want to
+    // dig into it
+    pub fn recordf(&self, name: &str, value: f64, attributes: &[KeyValue]) {
         if let Some(Instrument::GaugeF64(g)) = self.map.get(name) {
+            g.record(value, attributes);
+        } else {
+            panic!("{} does not name a gauge", name);
+        }
+    }
+    pub fn recordu(&self, name: &str, value: u64, attributes: &[KeyValue]) {
+        if let Some(Instrument::GaugeU64(g)) = self.map.get(name) {
             g.record(value, attributes);
         } else {
             panic!("{} does not name a gauge", name);
@@ -193,5 +205,12 @@ impl Instruments {
 macro_rules! counter_add {
     ($instr:expr, $name:expr, $count:expr, $attrs:expr) => {
         $instr.add($name, $count, $attrs);
+    };
+}
+
+#[macro_export]
+macro_rules! gauge_setu {
+    ($instr:expr, $name:expr, $value:expr, $attrs:expr) => {
+        $instr.recordu($name, $value, $attrs);
     };
 }

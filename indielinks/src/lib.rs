@@ -16,13 +16,17 @@
 //! # indielinks
 //!
 //! Right now, the library crate has the same name as the binary, meaning that `rustdoc` will
-//! ignore the binary create.
+//! ignore the binary create. You can find general documentation [here].
+//!
+//! [here]: crate::_docs
 pub mod _docs;
 pub mod acct;
 pub mod actor;
 #[path = "ap-entities.rs"]
 pub mod ap_entities;
 pub mod authn;
+#[path = "background-tasks.rs"]
+pub mod background_tasks;
 pub mod delicious;
 pub mod dynamodb;
 pub mod entities;

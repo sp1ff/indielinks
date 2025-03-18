@@ -77,9 +77,15 @@ use tracing_subscriber::{
 use url::Url;
 
 use indielinks::{
-    actor::make_router as make_actor_router, delicious::make_router as make_delicious_router,
-    http::Indielinks, metrics::Instruments, peppers::Peppers, signing_keys::SigningKeys,
-    storage::Backend as StorageBackend, users::make_router as make_user_router,
+    actor::make_router as make_actor_router,
+    background_tasks::{self, Backend as TasksBackend, BackgroundTasks},
+    delicious::make_router as make_delicious_router,
+    http::Indielinks,
+    metrics::Instruments,
+    peppers::Peppers,
+    signing_keys::SigningKeys,
+    storage::Backend as StorageBackend,
+    users::make_router as make_user_router,
     webfinger::webfinger,
 };
 
@@ -118,6 +124,10 @@ use indielinks::{
 /// type implementing Termination".
 #[derive(Snafu)]
 pub enum Error {
+    #[snafu(display("Failed to shut-down background task processing: {source}"))]
+    BackgroundShutdown { source: background_tasks::Error },
+    #[snafu(display("Failed to setup background task processing: {source}"))]
+    BackgroundTasks { source: background_tasks::Error },
     #[snafu(display("Failed to bind to localhost: {source}"))]
     Bind { source: std::io::Error },
     #[snafu(display("Failed to change directory: {source}"))]
@@ -321,6 +331,8 @@ struct ConfigV1 {
     user_agent: String,
     #[serde(rename = "collection-page-size")]
     collection_page_size: usize,
+    #[serde(rename = "background-tasks")]
+    background_tasks: background_tasks::Config,
 }
 
 impl ConfigV1 {
@@ -329,6 +341,9 @@ impl ConfigV1 {
     }
     pub fn private_address(&self) -> &str {
         &self.private_address
+    }
+    pub fn background_tasks(&self) -> &background_tasks::Config {
+        &self.background_tasks
     }
 }
 
@@ -344,6 +359,7 @@ impl Default for ConfigV1 {
             signing_keys: SigningKeysConfig::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
             collection_page_size: 12, // Copied from Mastodon
+            background_tasks: background_tasks::Config::default(),
         }
     }
 }
@@ -651,21 +667,30 @@ fn make_local_router(state: Arc<Indielinks>) -> Router {
 
 pub async fn select_storage(
     config: &StorageConfig,
-) -> Result<Box<dyn StorageBackend + Send + Sync>> {
+) -> Result<(
+    Arc<dyn StorageBackend + Send + Sync>,
+    Arc<dyn TasksBackend + Send + Sync>,
+)> {
     match config {
-        StorageConfig::Scylla { credentials, hosts } => Ok(Box::new(
-            indielinks::scylla::Session::new(hosts, credentials)
-                .await
-                .context(SycllaSnafu)?,
-        )),
+        StorageConfig::Scylla { credentials, hosts } => {
+            let x = Arc::new(
+                indielinks::scylla::Session::new(hosts, credentials)
+                    .await
+                    .context(SycllaSnafu)?,
+            );
+            Ok((x.clone(), x.clone()))
+        }
         StorageConfig::Dynamo {
             credentials,
             location,
-        } => Ok(Box::new(
-            indielinks::dynamodb::Client::new(location, credentials)
-                .await
-                .context(DynamoSnafu)?,
-        )),
+        } => {
+            let x = Arc::new(
+                indielinks::dynamodb::Client::new(location, credentials)
+                    .await
+                    .context(DynamoSnafu)?,
+            );
+            Ok((x.clone(), x.clone()))
+        }
     }
 }
 
@@ -686,15 +711,32 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
     // At this point we have logging-- huzzah!
     info!("indielinks version {} starting.", crate_version!());
 
+    let instruments = Arc::new(Instruments::new("indielinks"));
+
     // Loop forever, handling SIGHUPs, until asked to terminate.
     loop {
-        let storage = select_storage(&cfg.storage_config).await?;
+        // Re-build our database connections each pass, in case configuration values have changed:
+        let (storage, tasks) = select_storage(&cfg.storage_config).await?;
+        // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`
+        // is a task processing implementation backed by our datastore.
+        let nosql_tasks = Arc::new(BackgroundTasks::new(tasks));
+        // Save a reference to it for use by our web-service:
+        let task_sender = nosql_tasks.clone();
+        // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
+        // processing in an orderly manner:
+        let task_processor = background_tasks::new(
+            nosql_tasks,
+            Some(cfg.background_tasks().clone()),
+            instruments.clone(),
+        )
+        .context(BackgroundTasksSnafu)?;
 
+        // Alright-- setup shared state for the web service itself:
         let state = Arc::new(Indielinks {
             domain: cfg.domain.clone(),
             registry: registry.clone(),
             storage,
-            instruments: Instruments::new("indielinks"),
+            instruments: instruments.clone(),
             pepper: cfg.pepper.clone(),
             token_lifetime: cfg.signing_keys.token_lifetime,
             signing_keys: cfg.signing_keys.signing_keys.clone(),
@@ -703,6 +745,7 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
                 .build()
                 .context(ReqwestClientSnafu)?,
             collection_page_size: cfg.collection_page_size,
+            task_sender,
         });
 
         let world_nfy = Arc::new(Notify::new());
@@ -725,7 +768,7 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
         .with_graceful_shutdown(shutdown_signal(local_nfy.clone()));
 
         tokio::select! {
-            // Inentionally not handling these-- the servers *should* never shutdown on their own.
+            // Intentionally not handling these-- the servers *should* never shutdown on their own.
             // That said, if I don't move `world_server` into a Future, it never gets polled.
             _ = world_server.into_future() => unimplemented!(),
             _ = local_server.into_future() => unimplemented!(),
@@ -756,9 +799,15 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
                 local_nfy.notify_one();
                 // I worry about waiting for both routers to terminate; unfortunately, we've moved
                 // both into `Future`s, above.
+                task_processor.shutdown(std::time::Duration::from_secs(5)).await.context(BackgroundShutdownSnafu)?;
                 break;
             }
         } // End tokio::select!.
+
+        task_processor
+            .shutdown(std::time::Duration::from_secs(5))
+            .await
+            .context(BackgroundShutdownSnafu)?;
     } // End loop.
 
     Ok(())

@@ -107,3 +107,13 @@ create materialized view posts_by_day as
   select * from posts where url is not null and day is not null
   primary key (user_id, day, url);
 
+/* Background tasks */
+create table tasks (
+  id uuid PRIMARY KEY,
+  created timestamp,
+  task blob,
+  tag uuid,
+  lease_expires timestamp,
+  done boolean,  
+);
+

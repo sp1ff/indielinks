@@ -22,12 +22,14 @@
 use either::Either;
 use indielinks::entities::Username;
 
+use indielinks::background_tasks::Backend as TasksBackend;
 use indielinks_test::Helper;
 use libtest_mimic::Failed;
 use reqwest::Url;
 use serde::Deserialize;
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
+use tracing::Level;
 
 use std::{env, fs, process::Command, sync::Arc};
 
@@ -149,6 +151,26 @@ pub struct Configuration {
     pub dynamo: DynamoConfig,
     /// Port on which any local server needed by a test can listen
     pub local_port: u16,
+    pub logging: bool,
+    #[serde(deserialize_with = "de_level::deserialize")]
+    pub log_level: Level,
+}
+
+mod de_level {
+    use std::str::FromStr;
+
+    use serde::{Deserialize, Deserializer};
+    use tracing::Level;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Level, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Level::from_str(&s).map_err(|_| {
+            serde::de::Error::custom(format!("{} cannot be interepreted as a log level", s))
+        })
+    }
 }
 
 impl Configuration {
@@ -184,11 +206,14 @@ impl Default for Configuration {
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
             local_port: 32768,
+            logging: false,
+            log_level: Level::DEBUG,
         }
     }
 }
 
-pub struct Test {
+#[allow(dead_code)] // not used by all test programs
+pub struct IndielinksTest {
     pub name: &'static str,
     /// `test_fn` must be the address of an async function taking a copy of the test's
     /// [Configuration] along with a reference to a [Helper] implementation.
@@ -198,4 +223,15 @@ pub struct Test {
     ) -> futures::future::BoxFuture<'static, std::result::Result<(), Failed>>,
 }
 
-inventory::collect!(Test);
+inventory::collect!(IndielinksTest);
+
+#[allow(dead_code)] // not used by all test programs
+pub struct BackgroundTest {
+    pub name: &'static str,
+    pub test_fn: fn(
+        Configuration,
+        Arc<dyn TasksBackend + Send + Sync>,
+    ) -> futures::future::BoxFuture<'static, std::result::Result<(), Failed>>,
+}
+
+inventory::collect!(BackgroundTest);

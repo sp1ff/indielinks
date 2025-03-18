@@ -22,7 +22,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use enum_map::{Enum, EnumMap};
 use futures::stream;
 use itertools::Itertools;
@@ -33,8 +33,10 @@ use scylla::{
 use secrecy::{ExposeSecret, SecretString};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
+use uuid::Uuid;
 
 use crate::{
+    background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{Post, PostDay, PostUri, Tagname, User, UserId, UserUrl, Username},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
@@ -258,6 +260,10 @@ enum PreparedStatements {
     GetPostsForTag,
     RenameTag,
     AddFollower,
+    InsertTask,
+    ScanTasks,
+    TakeLease,
+    FinishTask,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -348,6 +354,10 @@ impl Session {
             // renaming, which would leave the system in an invalid state.
             "update posts set tags=? where user_id=? and url=? if exists",
             "update users set followers = followers + { ? } where id = ?",
+            "insert into tasks (id, created, task, tag, lease_expires, done) values (?, ?, ?, ?, ?, ?)",
+            "select * from tasks where done=false and lease_expires < ? allow filtering",
+            "update tasks set lease_expires = ? where id = ? if lease_expires = ?",
+            "update tasks set done=true where id=?",
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -364,7 +374,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 42] = prepared_statements
+        let prepared_statements: [PreparedStatement; 46] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -379,6 +389,12 @@ use storage::Error as StorError;
 
 // Use these if you don't want to add any context to a failed query... should probably wrap this up
 // in a macro, but I'm not sure this is the way I want to go, just yet.
+impl std::convert::From<scylla::deserialize::DeserializationError> for StorError {
+    fn from(value: scylla::deserialize::DeserializationError) -> Self {
+        StorError::new(value)
+    }
+}
+
 impl std::convert::From<scylla::transport::errors::QueryError> for StorError {
     fn from(value: scylla::transport::errors::QueryError) -> Self {
         StorError::new(value)
@@ -397,15 +413,39 @@ impl std::convert::From<scylla::transport::query_result::RowsError> for StorErro
     }
 }
 
-impl std::convert::From<scylla::deserialize::DeserializationError> for StorError {
-    fn from(value: scylla::deserialize::DeserializationError) -> Self {
+impl std::convert::From<scylla::transport::query_result::FirstRowError> for StorError {
+    fn from(value: scylla::transport::query_result::FirstRowError) -> Self {
         StorError::new(value)
     }
 }
 
-impl std::convert::From<scylla::transport::query_result::FirstRowError> for StorError {
-    fn from(value: scylla::transport::query_result::FirstRowError) -> Self {
-        StorError::new(value)
+impl std::convert::From<scylla::deserialize::DeserializationError> for BckError {
+    fn from(value: scylla::deserialize::DeserializationError) -> Self {
+        BckError::new(value)
+    }
+}
+
+impl std::convert::From<scylla::transport::errors::QueryError> for BckError {
+    fn from(value: scylla::transport::errors::QueryError) -> Self {
+        BckError::new(value)
+    }
+}
+
+impl std::convert::From<scylla::transport::query_result::RowsError> for BckError {
+    fn from(value: scylla::transport::query_result::RowsError) -> Self {
+        BckError::new(value)
+    }
+}
+
+impl std::convert::From<scylla::transport::query_result::IntoRowsResultError> for BckError {
+    fn from(value: scylla::transport::query_result::IntoRowsResultError) -> Self {
+        BckError::new(value)
+    }
+}
+
+impl std::convert::From<scylla::transport::query_result::SingleRowError> for BckError {
+    fn from(value: scylla::transport::query_result::SingleRowError) -> Self {
+        BckError::new(value)
     }
 }
 
@@ -962,5 +1002,93 @@ impl storage::Backend for Session {
             .transpose()
             .map_err(|err| StorError::new(UserDeSnafu {}.into_error(err)))?
             .pipe(Ok)
+    }
+}
+
+#[async_trait]
+impl TasksBackend for Session {
+    async fn write_task(&self, tag: &Uuid, buf: &[u8]) -> StdResult<(), BckError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::InsertTask],
+                (
+                    Uuid::new_v4(),
+                    Utc::now(),
+                    buf,
+                    tag,
+                    DateTime::<Utc>::UNIX_EPOCH,
+                    false,
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+    // type tag, task id, messagepack-- should probably intro a newtype
+    async fn lease_task(&self) -> StdResult<Option<(Uuid, Uuid, Vec<u8>)>, BckError> {
+        // Start by grabbing all eligible tasks; those that are not done and that either don't have
+        // leases at all, or expired leases.
+        let mut tasks = self
+            .session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::ScanTasks],
+                (Utc::now(),),
+            )
+            .await?
+            .into_rows_result()?
+            .rows::<FlatTask>()?
+            .collect::<StdResult<Vec<FlatTask>, _>>()?;
+        // Next, sort 'em by creation time...
+        tasks.sort_by(|lhs, rhs| lhs.created.cmp(&rhs.created));
+        // and walk the list, trying to get a lease. There may be other writers grabbing leases, as
+        // well, so just keep trying.
+        async fn take_lease(
+            session: &::scylla::Session,
+            statement: &PreparedStatement,
+            t: &FlatTask,
+        ) -> StdResult<bool, BckError> {
+            session
+                .execute_unpaged(
+                    statement,
+                    (Utc::now() + Duration::seconds(60), t.id, t.lease_expires),
+                )
+                .await?
+                .into_rows_result()?
+                .single_row::<(bool, DateTime<Utc>)>()?
+                .0
+                .pipe(Ok)
+        }
+        // I shot part of an afternoon trying to do this more elegantly using streams, to no avail.
+        // If I try to call `filter(...).next()` on a streams iterator (on the understanding that
+        // `filter` is lazy), I get a stern compiler error about the closure passed to `filter()`
+        // being pinned (or something).
+        let mut task: Option<FlatTask> = None;
+        for t in tasks {
+            if take_lease(
+                &self.session,
+                &self.prepared_statements[PreparedStatements::TakeLease],
+                &t,
+            )
+            .await
+            .unwrap_or(false)
+            {
+                task = Some(t);
+                break;
+            }
+        }
+
+        match task {
+            // No task => no task
+            None => Ok(None),
+            Some(task) => Ok(Some((task.tag, task.id, task.task))),
+        }
+    }
+    async fn close_task(&self, uuid: &Uuid) -> StdResult<(), BckError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::FinishTask],
+                (uuid,),
+            )
+            .await?;
+        Ok(())
     }
 }

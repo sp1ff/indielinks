@@ -16,7 +16,7 @@
 /// # delicious-alternator
 ///
 /// Integration tests run against an indielinks configured with the Dynamo storage back-end.
-use common::{run, Configuration, Test};
+use common::{run, Configuration, IndielinksTest};
 use indielinks::entities::{Post, User, UserId, Username};
 use indielinks_test::{
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
@@ -247,12 +247,12 @@ impl Helper for State {
     }
 }
 
-inventory::submit!(Test {
+inventory::submit!(IndielinksTest {
     name: "000test_healthcheck",
     test_fn: |cfg, _helper| { Box::pin(test_healthcheck(cfg.url)) },
 });
 
-inventory::submit!(Test {
+inventory::submit!(IndielinksTest {
     name: "001delicious_smoke_test",
     test_fn: |cfg, helper| {
         Box::pin(delicious_smoke_test(
@@ -264,17 +264,17 @@ inventory::submit!(Test {
     },
 });
 
-inventory::submit!(Test {
+inventory::submit!(IndielinksTest {
     name: "010delicious_posts_recent",
     test_fn: |cfg, helper| { Box::pin(posts_recent(cfg.url, cfg.username, cfg.api_key, helper)) },
 });
 
-inventory::submit!(Test {
+inventory::submit!(IndielinksTest {
     name: "011delicious_posts_all",
     test_fn: |cfg, helper| { Box::pin(posts_all(cfg.url, cfg.username, cfg.api_key, helper)) }
 });
 
-inventory::submit!(Test {
+inventory::submit!(IndielinksTest {
     name: "012delicious_tags_rename_and_delete",
     test_fn: |cfg: Configuration, helper| {
         Box::pin(tags_rename_and_delete(
@@ -286,19 +286,19 @@ inventory::submit!(Test {
     },
 });
 
-inventory::submit!(Test {
+inventory::submit!(IndielinksTest {
     name: "020user_test_signup",
     test_fn: |cfg: Configuration, helper| { Box::pin(test_signup(cfg.url, helper)) },
 });
 
-inventory::submit!(Test {
+inventory::submit!(IndielinksTest {
     name: "030webfinger_smoke",
     test_fn: |cfg: Configuration, _helper| {
         Box::pin(webfinger_smoke(cfg.url, cfg.username, cfg.domain))
     },
 });
 
-inventory::submit!(Test {
+inventory::submit!(IndielinksTest {
     name: "040follow_smoke",
     test_fn: |cfg: Configuration, _helper| {
         Box::pin(accept_follow_smoke(
@@ -339,7 +339,7 @@ fn main() -> Result<()> {
 
     let conclusion = libtest_mimic::run(
         &args,
-        inventory::iter::<common::Test>
+        inventory::iter::<common::IndielinksTest>
             .into_iter()
             .sorted_by_key(|t| t.name)
             .map(|test| {

@@ -42,3 +42,42 @@
 //! ### Metrics
 //!
 //! Indielinks makes Prometheus-style metrics available publicly at the `/metrics` endpoint.
+//!
+//! ## Background Task Processing
+//!
+//! Surprisingly (to me), [axum] makes no provision for compute outside request handlers. There's
+//! nothing like the old [OnIdle] mechanism, back in the day. So, I wrote one. The framework is
+//! documented [here], but, briefly, if you need to carry-out some background processing
+//! "near-line", do the following:
+//!
+//! [OnIdle]: https://stackoverflow.com/questions/8349677/how-cwinthreadonidle-is-used
+//! [here]: crate::background_tasks
+//!
+//! 1. define a struct containing all the information needed to carry-out your background task; the
+//!    struct must implement [Serialize] and [Deserialize]
+//!
+//! [Serialize]: serde::Serialize
+//! [Deserialize]: serde::Deserialize
+//!
+//! 2. implement [TaggedTask] on your struct; in particular, the [exec()] method will actually
+//!    do the task's work
+//!
+//! [TaggedTask]: crate::background_tasks::TaggedTask
+//!
+//! [exec()]: crate::background_tasks::Task::exec
+//!
+//! 3. register the task with the system:
+//!
+//! ```ignore
+//! inventory::submit! {
+//!     BackgroundTask {
+//!         id: /* a UUID identify your task type */,
+//!         de: |buf| { Ok(Box::new(rmp_serde::from_slice::<MyTask>(buf)?)) }
+//!     }
+//! }
+//! ```
+//!
+//! 4. the [indielinks] state instance has a `task_sender` member that can "send" tasks to the
+//!    background processing system; instantiate your struct and invoke `send()`.
+//!
+//! [indielinks]: crate

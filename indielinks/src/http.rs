@@ -13,8 +13,11 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use crate::{
-    metrics, peppers::Peppers, signing_keys::SigningKeys, storage::Backend as StorageBackend,
+    background_tasks::BackgroundTasks, metrics, peppers::Peppers, signing_keys::SigningKeys,
+    storage::Backend as StorageBackend,
 };
 
 use axum::Json;
@@ -124,12 +127,13 @@ impl Accept {
 // Not sure this is going to stay here.
 pub struct Indielinks {
     pub domain: String,
-    pub storage: Box<dyn StorageBackend + Send + Sync>,
+    pub storage: Arc<dyn StorageBackend + Send + Sync>,
     pub registry: prometheus::Registry,
-    pub instruments: metrics::Instruments,
+    pub instruments: Arc<metrics::Instruments>,
     pub pepper: Peppers,
     pub token_lifetime: Duration,
     pub signing_keys: SigningKeys,
     pub client: reqwest::Client,
     pub collection_page_size: usize,
+    pub task_sender: Arc<BackgroundTasks>,
 }

@@ -21,6 +21,7 @@ libtest-mimic = "0.8.1"
 picky = "7.0.0-rc.12"
 regex = "1.11.1"
 reqwest = { version = "0.12.12", features = ["blocking", "json"] }
+rmp-serde = "1.3.0"
 scylla = { version = "0.15.1", features = ["chrono-04"] }
 serde = { version = "1.0.217", features = ["serde_derive"] }
 serde_dynamo = "4.2.14"
@@ -30,6 +31,8 @@ snafu = { version = "0.8.5", features = ["backtrace"] }
 tap = "1.0.1"
 tokio = { version = "1.43.0", features = ["rt"] }
 toml = "0.8.19"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 uuid = "1.15.1"
 
 [[test]]
@@ -38,4 +41,12 @@ harness = false
 
 [[test]]
 name = "delicious-scylla"
+harness = false
+
+[[test]]
+name = "background-scylla"
+harness = false
+
+[[test]]
+name = "background-alternator"
 harness = false

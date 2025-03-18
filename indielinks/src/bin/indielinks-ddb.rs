@@ -369,9 +369,32 @@ async fn create_posts(client: &Client) -> Result<()> {
     Ok(())
 }
 
+async fn create_tasks(client: &Client) -> Result<()> {
+    let out = client
+        .create_table()
+        .table_name("tasks")
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("id", S), // partition key
+        ]))
+        .set_key_schema(Some(vec![KeySchemaElement::builder()
+            .attribute_name("id")
+            .key_type(KeyType::Hash)
+            .build()
+            .context(GenericBuildFailureSnafu {
+                name: "id".to_string(),
+            })?]))
+        .send()
+        .await
+        .context(CreateTableSnafu);
+    debug!("create posts: {:#?}", out);
+    Ok(())
+}
+
 async fn create_tables(client: &Client) -> Result<()> {
     create_users(client).await?;
     create_posts(client).await?;
+    create_tasks(client).await?;
     Ok(())
 }
 

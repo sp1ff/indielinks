@@ -7,10 +7,13 @@ ntries=1
 nnodes=$(docker exec scylla-node-1 nodetool status|grep -F UN|wc -l)
 while [ ${nnodes} -ne 3 ]; do
     sleep 0.5
+    set +e
+    docker exec scylla-node-1 nodetool status
+    set -e
     nnodes=$(docker exec scylla-node-1 nodetool status|grep -F UN|wc -l)
     ntries=$(($ntries+1))
     # Give it ten seconds
-    if [ ${ntries} -gt 20 ]; then
+    if [ ${ntries} -gt 25 ]; then
         echo "ScyllaDB failed to come up" >&2
         exit 1
     fi
