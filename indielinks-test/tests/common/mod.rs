@@ -62,9 +62,12 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+const RUST_LOG: &str = "debug,aws_config=info,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info";
+
 pub fn run(cmd: &str, args: &[&str]) -> Result<()> {
     let output = Command::new(cmd)
         .args(args.into_iter())
+        .env("RUST_LOG", RUST_LOG)
         .output()
         .context(ProcessSnafu {
             command: cmd.to_string(),

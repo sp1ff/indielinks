@@ -161,17 +161,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 // This trait *must* be object-safe in order to allow `process()` (below) to handle tasks in a
 // generic way.
 #[async_trait]
-pub trait Task: Send {
+// The generic type parameter has to be at the trait level; putting it in `exec()` would make
+// the trait non-object-safe.
+pub trait Task<C>: Send {
     /// Consume this task by converting it into a `Future` yielding a `Result<()>`.
     // It's a small pity, I suppose, that I've made the receiver a `Box<Self>`, but there's really
     // not much choice given that this will be invoked by `process()` (below) which *must* deal with
     // tasks in a generic way.
-    async fn exec(self: Box<Self>) -> Result<()>;
+    async fn exec(self: Box<Self>, context: C) -> Result<()>;
     fn timeout(&self) -> Option<Duration>;
 }
 
 /// A [Task] that can return a per-type "tag"; this is useful for deserialization.
-pub trait TaggedTask: Task {
+pub trait TaggedTask<C>: Task<C> {
     type Tag;
     fn get_tag() -> Self::Tag;
 }
@@ -183,7 +185,7 @@ pub trait TaggedTask: Task {
 /// This trait is generic over the [Task] type (rather than making the `send()` method generic) so
 /// that implementors can express additional constraints on the types of [Task]s they can send.
 #[async_trait]
-pub trait Sender<T: Task> {
+pub trait Sender<C, T: Task<C>> {
     async fn send(&self, task: T) -> Result<()>;
 }
 
@@ -193,20 +195,20 @@ pub trait Sender<T: Task> {
 /// along with a "cookie" or "handle" identifying that task, and then, at a later time, mark them as
 /// complete.
 #[async_trait]
-pub trait Receiver {
-    type TaskId: Send;
+pub trait Receiver<C> {
+    type TaskId: Send + 'static;
     async fn mark_complete(&self, cookie: Self::TaskId) -> Result<()>;
-    async fn take_task(&self) -> Result<Option<(Box<dyn Task>, Self::TaskId)>>;
+    async fn take_task(&self) -> Result<Option<(Box<dyn Task<C>>, Self::TaskId)>>;
 }
 
 /// Blanket implementation for [Arc]s; if `T` is a [Receiver], then so is `Arc<T>`.
 #[async_trait]
-impl<T: Receiver + Send + Sync> Receiver for Arc<T> {
+impl<C, T: Receiver<C> + Send + Sync> Receiver<C> for Arc<T> {
     type TaskId = T::TaskId;
     async fn mark_complete(&self, cookie: Self::TaskId) -> Result<()> {
         self.as_ref().mark_complete(cookie).await
     }
-    async fn take_task(&self) -> Result<Option<(Box<dyn Task>, Self::TaskId)>> {
+    async fn take_task(&self) -> Result<Option<(Box<dyn Task<C>>, Self::TaskId)>> {
         self.as_ref().take_task().await
     }
 }
@@ -272,8 +274,9 @@ inventory::submit! { metrics::Registration::new("background.processor.tasks.infl
 /// Process background tasks. `receiver` is a [Receiver] from which we can draw tasks. `config`
 /// holds configuration parameters for the algorithm. `shutdown` is a [Notify] instance the caller
 /// can use to signal this function to exit.
-async fn process<R: Receiver>(
+async fn process<C: Clone + 'static, R: Receiver<C>>(
     receiver: R,
+    context: C,
     config: Config,
     shutdown: Arc<Notify>,
     instruments: Arc<Instruments>,
@@ -293,7 +296,7 @@ async fn process<R: Receiver>(
                 let id = futures
                     .spawn(tokio::time::timeout(
                         task.timeout().unwrap_or(config.default_timeout),
-                        task.exec(),
+                        task.exec(context.clone()),
                     ))
                     .id();
                 tasks.insert(id, cookie);
@@ -355,14 +358,16 @@ async fn process<R: Receiver>(
 }
 
 /// Create a new [Processor] given a [Receiver].
-pub fn new<R: Receiver + Send + 'static>(
+pub fn new<C: Clone + Send + 'static, R: Receiver<C> + Send + 'static>(
     receiver: R,
+    context: C,
     config: Option<Config>,
     instruments: Arc<Instruments>,
 ) -> std::result::Result<Processor, Error> {
     let shutdown = Arc::new(Notify::new());
     let processor = tokio::spawn(process(
         receiver,
+        context,
         config.unwrap_or_default(),
         shutdown.clone(),
         instruments,
@@ -388,8 +393,8 @@ mod mock {
     }
 
     #[async_trait]
-    impl Task for SleepTask {
-        async fn exec(self: Box<Self>) -> Result<()> {
+    impl Task<()> for SleepTask {
+        async fn exec(self: Box<Self>, _: ()) -> Result<()> {
             Ok(tokio::time::sleep(self.duration).await)
         }
         fn timeout(&self) -> Option<Duration> {
@@ -398,19 +403,19 @@ mod mock {
     }
 
     struct InMemory {
-        pub tasks: Mutex<HashMap<Uuid, Box<dyn Task>>>,
+        pub tasks: Mutex<HashMap<Uuid, Box<dyn Task<()>>>>,
         pub checkouts: Mutex<HashSet<Uuid>>,
     }
 
     #[async_trait]
-    impl Receiver for InMemory {
+    impl Receiver<()> for InMemory {
         type TaskId = Uuid;
         async fn mark_complete(&self, cookie: Self::TaskId) -> Result<()> {
             self.checkouts.lock().unwrap().remove(&cookie);
             // Should check for error, here-- what if `cookie` hasn't been checked-out?
             Ok(())
         }
-        async fn take_task(&self) -> Result<Option<(Box<dyn Task>, Self::TaskId)>> {
+        async fn take_task(&self) -> Result<Option<(Box<dyn Task<()>>, Self::TaskId)>> {
             let mut m = self.tasks.lock().unwrap();
             let key = { m.keys().next().cloned() };
             match key {
@@ -427,7 +432,7 @@ mod mock {
     // Exercise the bare bones of the system
     #[tokio::test]
     async fn bare_bones() {
-        let mut m: HashMap<<InMemory as Receiver>::TaskId, Box<dyn Task>> = HashMap::new();
+        let mut m: HashMap<<InMemory as Receiver<()>>::TaskId, Box<dyn Task<()>>> = HashMap::new();
         m.insert(
             Uuid::new_v4(),
             Box::new(SleepTask {
@@ -443,6 +448,7 @@ mod mock {
         // Process will run forever, so spawn it...
         let handle = tokio::task::spawn(process(
             backend,
+            (),
             Config::default(),
             shutdown.clone(),
             Arc::new(Instruments::new("indielinks")),
@@ -459,7 +465,7 @@ mod mock {
     }
 
     #[async_trait]
-    impl<T: Task + 'static> Sender<T> for InMemory {
+    impl<T: Task<()> + 'static> Sender<(), T> for InMemory {
         async fn send(&self, task: T) -> Result<()> {
             self.tasks
                 .lock()
@@ -477,7 +483,7 @@ mod mock {
             checkouts: Mutex::new(HashSet::new()),
         });
         let receiver = sender.clone();
-        let processor = new(receiver, None, Arc::new(Instruments::new("indielinks"))).unwrap();
+        let processor = new(receiver, (), None, Arc::new(Instruments::new("indielinks"))).unwrap();
 
         sender
             .send(SleepTask {
@@ -504,8 +510,16 @@ mod mock {
             .await
             .unwrap();
 
-        assert!(processor.shutdown(Duration::from_secs(5)).await.is_ok());
+        let result = processor.shutdown(Duration::from_secs(5)).await;
+        eprintln!("send_and_receive result: {:#?}", result);
+
+        assert!(result.is_ok());
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct Context {
+    pub client: reqwest::Client,
 }
 
 /// In order to "register" a background task type, you need to assign a tag (just using a [Uuid] for
@@ -518,7 +532,10 @@ mod mock {
 // again.
 pub struct BackgroundTask {
     pub id: Uuid,
-    pub de: fn(&[u8]) -> Result<Box<dyn Task>>,
+    // clippy complains about this type definition & suggests factoring-out type definitions; I
+    // might do that, once I'm clear that this is what I want.
+    #[allow(clippy::type_complexity)]
+    pub de: fn(&[u8]) -> Result<Box<dyn Task<Context>>>,
 }
 
 inventory::collect!(BackgroundTask);
@@ -549,9 +566,9 @@ impl BackgroundTasks {
 }
 
 #[async_trait]
-impl<T> Sender<T> for BackgroundTasks
+impl<T> Sender<Context, T> for BackgroundTasks
 where
-    T: TaggedTask<Tag = Uuid> + Serialize + 'static,
+    T: TaggedTask<Context, Tag = Uuid> + Serialize + 'static,
 {
     /// Task can be serialized; serialize to MessagePack, then write to a dedicated table
     async fn send(&self, task: T) -> Result<()> {
@@ -562,12 +579,12 @@ where
 }
 
 #[async_trait]
-impl Receiver for BackgroundTasks {
+impl Receiver<Context> for BackgroundTasks {
     type TaskId = Uuid;
     async fn mark_complete(&self, cookie: Self::TaskId) -> Result<()> {
         self.storage.close_task(&cookie).await
     }
-    async fn take_task(&self) -> Result<Option<(Box<dyn Task>, Self::TaskId)>> {
+    async fn take_task(&self) -> Result<Option<(Box<dyn Task<Context>>, Self::TaskId)>> {
         match self.storage.lease_task().await {
             Ok(opt) => match opt {
                 Some((tag, id, buf)) => {
@@ -606,8 +623,8 @@ mod test {
     }
 
     #[async_trait]
-    impl Task for SleepTask {
-        async fn exec(self: Box<Self>) -> Result<()> {
+    impl Task<Context> for SleepTask {
+        async fn exec(self: Box<Self>, _context: Context) -> Result<()> {
             tokio::time::sleep(self.sleep).await;
             Ok(())
         }
@@ -623,7 +640,7 @@ mod test {
         &[0xb6, 0xca, 0x43, 0xe6, 0x63, 0x0f, 0xf8, 0x6a],
     );
 
-    impl TaggedTask for SleepTask {
+    impl TaggedTask<Context> for SleepTask {
         type Tag = Uuid;
         fn get_tag() -> Self::Tag {
             SLEEP_TASK

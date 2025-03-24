@@ -78,7 +78,7 @@ use url::Url;
 
 use indielinks::{
     actor::make_router as make_actor_router,
-    background_tasks::{self, Backend as TasksBackend, BackgroundTasks},
+    background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
     delicious::make_router as make_delicious_router,
     http::Indielinks,
     metrics::Instruments,
@@ -715,6 +715,10 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
 
     // Loop forever, handling SIGHUPs, until asked to terminate.
     loop {
+        let client = reqwest::ClientBuilder::new()
+            .user_agent(&cfg.user_agent)
+            .build()
+            .context(ReqwestClientSnafu)?;
         // Re-build our database connections each pass, in case configuration values have changed:
         let (storage, tasks) = select_storage(&cfg.storage_config).await?;
         // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`
@@ -722,15 +726,19 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
         let nosql_tasks = Arc::new(BackgroundTasks::new(tasks));
         // Save a reference to it for use by our web-service:
         let task_sender = nosql_tasks.clone();
+        // Setup the context for our tasks
+        let context = Context {
+            client: client.clone(),
+        };
         // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
         // processing in an orderly manner:
         let task_processor = background_tasks::new(
             nosql_tasks,
+            context,
             Some(cfg.background_tasks().clone()),
             instruments.clone(),
         )
         .context(BackgroundTasksSnafu)?;
-
         // Alright-- setup shared state for the web service itself:
         let state = Arc::new(Indielinks {
             domain: cfg.domain.clone(),
@@ -740,10 +748,7 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
             pepper: cfg.pepper.clone(),
             token_lifetime: cfg.signing_keys.token_lifetime,
             signing_keys: cfg.signing_keys.signing_keys.clone(),
-            client: reqwest::ClientBuilder::new()
-                .user_agent(&cfg.user_agent)
-                .build()
-                .context(ReqwestClientSnafu)?,
+            client,
             collection_page_size: cfg.collection_page_size,
             task_sender,
         });

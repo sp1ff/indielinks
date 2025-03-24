@@ -17,8 +17,8 @@
 
 use indielinks::{
     background_tasks::{
-        self, Backend as TasksBackend, BackgroundTask, BackgroundTasks, Config, Sender, TaggedTask,
-        Task,
+        self, Backend as TasksBackend, BackgroundTask, BackgroundTasks, Config, Context, Sender,
+        TaggedTask, Task,
     },
     metrics::Instruments,
 };
@@ -52,8 +52,11 @@ impl SleepTask1 {
 }
 
 #[async_trait]
-impl Task for SleepTask1 {
-    async fn exec(self: Box<Self>) -> std::result::Result<(), indielinks::background_tasks::Error> {
+impl Task<Context> for SleepTask1 {
+    async fn exec(
+        self: Box<Self>,
+        _context: Context,
+    ) -> std::result::Result<(), indielinks::background_tasks::Error> {
         debug!("SleepTask1 executing...");
         tokio::time::sleep(self.sleep).await;
         DATA1.store(true, Ordering::SeqCst);
@@ -73,7 +76,7 @@ const SLEEP_TASK_1: Uuid = Uuid::from_fields(
     &[0xb9, 0xfa, 0xa7, 0x17, 0xba, 0xd5, 0x27, 0x2a],
 );
 
-impl TaggedTask for SleepTask1 {
+impl TaggedTask<Context> for SleepTask1 {
     type Tag = Uuid;
     fn get_tag() -> Self::Tag {
         SLEEP_TASK_1
@@ -103,8 +106,11 @@ impl SleepTask2 {
 }
 
 #[async_trait]
-impl Task for SleepTask2 {
-    async fn exec(self: Box<Self>) -> std::result::Result<(), indielinks::background_tasks::Error> {
+impl Task<Context> for SleepTask2 {
+    async fn exec(
+        self: Box<Self>,
+        _context: Context,
+    ) -> std::result::Result<(), indielinks::background_tasks::Error> {
         debug!("SleepTask2 executing...");
         tokio::time::sleep(self.sleep).await;
         DATA2.store(self.on_done, Ordering::SeqCst);
@@ -124,7 +130,7 @@ const SLEEP_TASK_2: Uuid = Uuid::from_fields(
     &[0xb1, 0xf8, 0x89, 0x62, 0xcd, 0xed, 0x0e, 0x8e],
 );
 
-impl TaggedTask for SleepTask2 {
+impl TaggedTask<Context> for SleepTask2 {
     type Tag = Uuid;
     fn get_tag() -> Self::Tag {
         SLEEP_TASK_2
@@ -151,6 +157,9 @@ pub async fn first_background(backend: Arc<dyn TasksBackend + Send + Sync>) -> R
     // move it into the processor:
     let processor = background_tasks::new(
         tasks,
+        Context {
+            client: reqwest::Client::new(),
+        },
         Some(Config {
             shutdown_timeout: Duration::from_secs(30),
             ..Default::default()

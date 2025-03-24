@@ -15,8 +15,9 @@
 
 //! The ActivityPub Actor endpoint
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use axum::{
     extract::State,
     http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
@@ -31,8 +32,9 @@ use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgori
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
 use tap::{Conv, Pipe};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use url::Url;
+use uuid::Uuid;
 
 use crate::{
     ap_entities::{
@@ -40,6 +42,7 @@ use crate::{
         Follow, Like, Undo,
     },
     authn::{self, check_sha_256_content_digest, sign_request},
+    background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     counter_add,
     entities::{User, UserUrl, Username},
     http::{ErrorResponseBody, Indielinks},
@@ -109,6 +112,11 @@ pub enum Error {
     OneSignature { backtrace: Backtrace },
     #[snafu(display("Failed to obtain an Actor public key: {source}"))]
     PublicKey { source: ap_entities::Error },
+    #[snafu(display("Failed to buld an http request: {source}"))]
+    Request {
+        source: http::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to resolve a key ID to an Actor: {source}"))]
     ResolveKeyId { source: crate::ap_entities::Error },
     #[snafu(display("Couldn't parse the signature string: {source}"))]
@@ -120,6 +128,11 @@ pub enum Error {
     Signing { source: crate::authn::Error },
     #[snafu(display("Storage backend error: {source}"))]
     Storage { source: storage::Error },
+    #[snafu(display("Failed to send a background task: {source}"))]
+    TaskSend {
+        source: crate::background_tasks::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to read the request body as bytes: {source}"))]
     ToBytes {
         source: axum::Error,
@@ -167,6 +180,8 @@ impl axum::response::IntoResponse for Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
+
+type StdResult<T, E> = std::result::Result<T, E>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        actor utilities                                         //
@@ -458,6 +473,122 @@ async fn accept_boost(boost: &Announce) -> Result<()> {
     Ok(())
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       Accepting a Follow                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A UUID identifying the background task [AcceptFollow]
+// 88aec562-6c5e-4819-8b1d-c05ad683b117
+const ACCEPT_FOLLOW: Uuid = Uuid::from_fields(
+    0x88aec562,
+    0x6c5e,
+    0x4819,
+    &[0x8b, 0x1d, 0xc0, 0x5a, 0xd6, 0x83, 0xb1, 0x17],
+);
+
+/// A background task for sending an [Accept] in response to a [Follow] request.
+#[derive(Debug, Deserialize, Serialize)]
+struct AcceptFollow {
+    user: User,
+    domain: String,
+    actor_inbox: Url,
+    follow: Follow,
+}
+
+impl AcceptFollow {
+    pub fn new(user: &User, domain: &str, actor_inbox: &Url, follow: &Follow) -> AcceptFollow {
+        AcceptFollow {
+            user: user.clone(),
+            domain: domain.to_owned(),
+            actor_inbox: actor_inbox.clone(),
+            follow: follow.clone(),
+        }
+    }
+}
+
+use background_tasks::Error as BckError;
+
+#[async_trait]
+impl Task<Context> for AcceptFollow {
+    async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
+        debug!(
+            "Sending an Accept in the background for {} to {}",
+            self.user.username(),
+            self.actor_inbox
+        );
+
+        // We need to respond to Follows with an Accept; this is largely a stub implementation.
+        let accept = Accept::for_follow(self.user.username(), &self.follow, &self.domain)
+            .map_err(|err| BckError::new(AcceptResponseSnafu.into_error(err)))?
+            .pipe(|accept| to_jrd(accept, ap_entities::Type::Accept, None))
+            .map_err(|err| BckError::new(JrdSnafu.into_error(err)))?
+            .conv::<axum::body::Body>();
+
+        // It feels a little weird to me to send the Accept "inline" with handling the Follow; in
+        // general, our peer will "see" the Accept before they've finished reading our response to their
+        // Follow. It would feel more natural to me to respond to this Follow request and schedule the
+        // Accept to be sent later, but axum doesn't provide any such facility (tho I suppose I could
+        // just build it).
+        //
+        // Still, our peer should be prepared for this; even if I *did* send the accept after writing
+        // our response to this process' socket buffer, there's really no guarantee the response will
+        // arrive there ahead of the subsequent Accept request.
+        let inbox = self.actor_inbox;
+        let request = http::request::Request::builder()
+            .method(Method::POST)
+            .uri(inbox.as_str())
+            .header(header::CONTENT_TYPE, "application/activity+json")
+            .header(
+                header::DATE,
+                Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+            )
+            .header(header::HOST, inbox.host_str().unwrap())
+            .body(accept)
+            .map_err(|err| BckError::new(RequestSnafu.into_error(err)))?;
+
+        let key_id = make_key_id(self.user.username(), &self.domain, None)
+            .map_err(|err| BckError::new(KeyIdSnafu.into_error(err)))?;
+        let request = sign_request(request, key_id.as_ref(), self.user.priv_key().as_ref())
+            .await
+            .map_err(|err| BckError::new(SigningSnafu.into_error(err)))?;
+
+        debug!("Accept HTTP request: {:?}", request);
+
+        let rsp = context
+            .client
+            .execute(request)
+            .await
+            .map_err(|err| BckError::new(AcceptSnafu.into_error(err)))?;
+
+        debug!("Accept HTTP response: {:#?}", rsp);
+
+        // We expect no response body, and we don't concern ourselves with the precise status code, so
+        // long as it denotes success. Later, we could conditionally retry.
+        if !rsp.status().is_success() {
+            warn!("Accept request failed: {:#?}", rsp);
+        }
+
+        Ok(())
+    }
+    fn timeout(&self) -> Option<Duration> {
+        None
+    }
+}
+
+impl TaggedTask<Context> for AcceptFollow {
+    type Tag = Uuid;
+    fn get_tag() -> Self::Tag {
+        ACCEPT_FOLLOW
+    }
+}
+
+inventory::submit! {
+    BackgroundTask {
+        id: ACCEPT_FOLLOW,
+        de: |buf| { Ok(Box::new(rmp_serde::from_slice::<AcceptFollow>(buf).unwrap())) }
+    }
+}
+
 /// Accept a follow request
 ///
 /// `user` is the [User] being followed. `follow` is the [Follow] request as received on the wire,
@@ -470,8 +601,8 @@ async fn accept_follow(
     follow: &Follow,
     actor: &ap_entities::Actor,
     storage: &(dyn StorageBackend + Send + Sync),
+    task_sender: Arc<BackgroundTasks>,
     domain: &str,
-    client: &reqwest::Client,
 ) -> Result<()> {
     debug!(
         "Accepting a Follow request for {}; request follows: {:?}",
@@ -482,7 +613,7 @@ async fn accept_follow(
     // `actor` is read off the Signature header to the request (i.e. this is authenticated); let's
     // check to be sure that the actor in the request matches-up-- it would be weird if Alice was
     // sending a follow request on behalf of Bob.
-    if follow.actor_id() != actor.id() {
+    if follow.actor_id() != *actor.id() {
         return MismatchedActorIdSnafu {
             signature: actor.id().as_str().to_owned(),
             request: follow.actor_id().as_str().to_owned(),
@@ -490,50 +621,15 @@ async fn accept_follow(
         .fail();
     }
 
-    // We need to respond to Follows with an Accept; this is largely a stub implementation.
-    let accept = Accept::for_follow(user.username(), follow, domain)
-        .context(AcceptResponseSnafu)?
-        .pipe(|accept| to_jrd(accept, ap_entities::Type::Accept, None))
-        .context(JrdSnafu)?
-        .conv::<axum::body::Body>();
-
-    // It feels a little weird to me to send the Accept "inline" with handling the Follow; in
-    // general, our peer will "see" the Accept before they've finished reading our response to their
-    // Follow. It would feel more natural to me to respond to this Follow request and schedule the
-    // Accept to be sent later, but axum doesn't provide any such facility (tho I suppose I could
-    // just build it).
-    //
-    // Still, our peer should be prepared for this; even if I *did* send the accept after writing
-    // our response to this process' socket buffer, there's really no guarantee the response will
-    // arrive there ahead of the subsequent Accept request.
-    let inbox = actor.inbox();
-    let request = http::request::Request::builder()
-        .method(Method::POST)
-        .uri(inbox.as_str())
-        .header(header::CONTENT_TYPE, "application/activity+json")
-        .header(
-            header::DATE,
-            Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
-        )
-        .header(header::HOST, inbox.host_str().unwrap())
-        .body(accept)
-        .unwrap();
-
-    let key_id = make_key_id(user.username(), domain, None).context(KeyIdSnafu)?;
-    let request = sign_request(request, key_id.as_ref(), user.priv_key().as_ref())
+    // We need to send an `Accept` in response-- do it in a background task:
+    task_sender
+        .as_ref()
+        .send(AcceptFollow::new(user, domain, actor.inbox(), follow))
         .await
-        .context(SigningSnafu)?;
-    let rsp = client.execute(request).await.context(AcceptSnafu)?;
-    debug!("Accept reponse: {:#?}", rsp);
-
-    // We expect no response body, and we don't concern ourselves with the precise status code, so
-    // long as it denotes success.
-    if !rsp.status().is_success() {
-        return AcceptRejectedSnafu.fail();
-    }
+        .context(TaskSendSnafu)?;
 
     storage
-        .add_follower(user, &actor.id())
+        .add_follower(user, actor.id())
         .await
         .context(StorageSnafu)
 }
@@ -567,7 +663,7 @@ async fn inbox(
         actor: &ap_entities::Actor,
         domain: &str,
         storage: &(dyn StorageBackend + Send + Sync),
-        client: &reqwest::Client,
+        task_sender: Arc<BackgroundTasks>,
         instruments: &metrics::Instruments,
     ) -> Result<()> {
         let user = storage
@@ -584,7 +680,7 @@ async fn inbox(
             }
             BoostFollowOrLike::Follow(follow) => {
                 counter_add!(instruments, "inbox.follows", 1, &[]);
-                accept_follow(&user, follow, actor, storage, domain, client).await
+                accept_follow(&user, follow, actor, storage, task_sender, domain).await
             }
             BoostFollowOrLike::Like(like) => {
                 counter_add!(instruments, "inbox.follows", 1, &[]);
@@ -615,7 +711,7 @@ async fn inbox(
         &actor,
         &state.domain,
         state.storage.as_ref(),
-        &state.client,
+        state.task_sender.clone(),
         &state.instruments,
     )
     .await

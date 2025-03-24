@@ -363,11 +363,11 @@ impl Actor {
             public_key: PublicKey::from_username_and_key(username, proto, hostname, pub_key)?,
         })
     }
-    pub fn id(&self) -> Url {
-        self.id.clone()
+    pub fn id(&self) -> &Url {
+        &self.id
     }
-    pub fn inbox(&self) -> Url {
-        self.inbox.clone()
+    pub fn inbox(&self) -> &Url {
+        &self.inbox
     }
     pub fn public_key(&self) -> Result<PickyPublicKey> {
         PickyPublicKey::from_pem_str(&self.public_key.public_key_pem).context(PickyPemSnafu)

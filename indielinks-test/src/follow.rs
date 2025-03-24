@@ -19,7 +19,10 @@
 //!
 //! [Follow]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-follow
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use axum::{
     extract::State,
@@ -187,6 +190,20 @@ pub async fn accept_follow_smoke(
     let rsp = client.execute(request).await?;
 
     assert!(rsp.status() == reqwest::StatusCode::CREATED);
+
+    // Wait a bit for the Accept to come back to us
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    if *state.accepted.lock().expect("Failed to lock mutex") != 1 {
+        let mut num_attempts = 1;
+        loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            num_attempts += 1;
+            if *state.accepted.lock().expect("Failed to lock mutex") == 1 || num_attempts > 8 {
+                break;
+            }
+        }
+    }
+
     assert_eq!(*state.accepted.lock().expect("Failed to lock mutex"), 1);
 
     // Let's at least check that the follower now shows-up!
