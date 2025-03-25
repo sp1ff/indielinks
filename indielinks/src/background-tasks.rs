@@ -226,6 +226,9 @@ pub struct Processor {
 
 impl Processor {
     /// Consume the instance & return the result of processing background tasks
+    ///
+    /// This method will signal the processing task to shutdown, and wait for time `timeout` for the
+    /// task to exit.
     pub async fn shutdown(self, timeout: Duration) -> Result<()> {
         self.shutdown.notify_one();
         tokio::time::timeout(timeout, self.processor)
@@ -281,8 +284,7 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
     shutdown: Arc<Notify>,
     instruments: Arc<Instruments>,
 ) -> Result<()> {
-    // Not entirely sure what I'm doing here, but the basic outline is to maintain a `JoinSet` of
-    // currently running tasks.
+    // The basic outline of this logic is to maintain a `JoinSet` of currently running tasks,
     let mut tasks: HashMap<Id, R::TaskId> = HashMap::new();
     // with that, we can setup our `JoinSet`:
     let mut futures = JoinSet::new();
@@ -350,6 +352,7 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
         }
     } // End processing loop.
 
+    // Give any in-flight tasks a chance to complete:
     tokio::time::timeout(config.shutdown_timeout, futures.join_all())
         .await
         .context(TimeoutSnafu)?;
@@ -483,7 +486,18 @@ mod mock {
             checkouts: Mutex::new(HashSet::new()),
         });
         let receiver = sender.clone();
-        let processor = new(receiver, (), None, Arc::new(Instruments::new("indielinks"))).unwrap();
+        let processor = new(
+            receiver,
+            (),
+            Some(Config {
+                // Be careful to choose this slightly longer than the longest task, below, in case
+                // that task has just gotten started when the shutdown signal arrives.
+                shutdown_timeout: Duration::from_millis(800),
+                ..Default::default()
+            }),
+            Arc::new(Instruments::new("indielinks")),
+        )
+        .unwrap();
 
         sender
             .send(SleepTask {
