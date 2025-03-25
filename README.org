@@ -2,7 +2,7 @@
 #+DESCRIPTION: Bookmarks in the Fediverse
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-01-02 Thu 16:37>
+#+DATE: <2025-03-24 Mon 17:07>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -21,4 +21,4 @@ At this time, Indielinks is only available as source. Therefore, the Rust [[http
 Coming.
 * Status & Roadmap
 
-I've done some prototyping (see the =prototype= branch), but this is first code. I plan on building-out the documentation quite a bit beyond what's available now, starting here.
+The initial prototyping can be found on branch =prototypes=, but =master= (and its offshoots) contains production code. I've built out the old del.icio.us API, a user management API and am now building-out ActivityPub support. I plan on building-out the documentation quite a bit beyond what's available now, starting here.

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! # indielinks
+//! # General indielinks Documentation
 //!
 //! General (i.e. not documenting a particular struct or a method) documentation goes here. It's
 //! really just a grab bag at this point; I'll polish it after collecting some content.

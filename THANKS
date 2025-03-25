@@ -5,3 +5,8 @@ THANKS                                                           -*- outline -*-
       <https://gopiandcode.uk/logs/log-writing-activitypub.html>
     + Robb Knight for his article "Building an ActivityPub Server"
       <https://rknight.me/blog/building-an-activitypub-server/>
+    + Sebastian Jambor <https://seb.jambor.dev/about/> for his series "Understanding ActivityPub"
+      <https://seb.jambor.dev/posts/understanding-activitypub/>
+  - Thanks to the picky-rs <https://github.com/Devolutions/picky-rs> author(s) for being so responsive to my PR
+    <https://github.com/Devolutions/picky-rs/pull/351>
+  - Thanks to Sebastian Jambor <https://seb.jambor.dev/about/> ActivityPub.academy <https://activitypub.academy/auth/sign_up>

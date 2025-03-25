@@ -16,7 +16,7 @@
 //! # indielinks
 //!
 //! Right now, the library crate has the same name as the binary, meaning that `rustdoc` will
-//! ignore the binary create. You can find general documentation [here].
+//! ignore the binary crate. You can find general documentation [here].
 //!
 //! [here]: crate::_docs
 pub mod _docs;

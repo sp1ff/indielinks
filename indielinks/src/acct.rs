@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! # acct URI
+//! # An Implementation of the `acct` URI
 //!
 //! This module provides an implementation of the [acct] URI scheme: "acct:user@host". The resource
 //! identified by an [acct] URI "is a user account hosted at a service provider, where the service
