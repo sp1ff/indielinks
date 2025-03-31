@@ -63,6 +63,11 @@ create table unique_usernames (
    I believe I can do this with a pair of materialized views: I'll use
    the same partition key (`user_id`), but different sort keys.
 
+   The `id` is really just a convenience (for ActivityPub-related
+   tasks, it would be inconvenient to name a post by user_id & URL).
+   This schema in no way guarantees that `id` is unique-- that's up
+   to the application code.
+
    Prior thoughts on `user_id` as the partition key:
 
    All my queries are by user ID, so I need to incorporate that into
@@ -84,6 +89,7 @@ create table unique_usernames (
 create table posts (
   user_id uuid,
   url ascii,
+  id uuid,
   posted timestamp,
   day ascii,
   title text,
@@ -106,6 +112,8 @@ create materialized view posts_by_posted as
 create materialized view posts_by_day as
   select * from posts where url is not null and day is not null
   primary key (user_id, day, url);
+
+create index post_id_idx on posts (id);
 
 /* Background tasks */
 create table tasks (

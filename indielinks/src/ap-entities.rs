@@ -123,7 +123,10 @@ use serde_json::Value;
 use snafu::{Backtrace, ResultExt, Snafu};
 use url::Url;
 
-use crate::entities::{self, User, Username};
+use crate::{
+    entities::{self, User, Username},
+    origin::Origin,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -170,73 +173,29 @@ type Result<T> = std::result::Result<T, Error>;
 /// Return an URL naming an indielinks user
 ///
 /// `hostname` may be a DNS name, hostname or IP address. It may include a port.
-pub fn make_user_id(username: &Username, hostname: &str, proto: Option<&str>) -> Result<Url> {
-    Url::parse(&format!(
-        "{}://{}/users/{}",
-        proto.unwrap_or("https"),
-        hostname,
-        username
-    ))
-    .context(UrlParseSnafu)
+pub fn make_user_id(username: &Username, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}", origin, username)).context(UrlParseSnafu)
 }
 
 /// Return an URL naming a public key owner
-pub fn make_key_id(username: &Username, hostname: &str, proto: Option<&str>) -> Result<Url> {
-    Url::parse(&format!(
-        "{}://{}/users/{}#main-key",
-        proto.unwrap_or("https"),
-        hostname,
-        username
-    ))
-    .context(UrlParseSnafu)
+pub fn make_key_id(username: &Username, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}#main-key", origin, username)).context(UrlParseSnafu)
 }
 
-pub fn make_user_inbox(username: &Username, hostname: &str, proto: Option<&str>) -> Result<Url> {
-    Url::parse(&format!(
-        "{}://{}/users/{}/inbox",
-        proto.unwrap_or("https"),
-        hostname,
-        username
-    ))
-    .context(UrlParseSnafu)
+pub fn make_user_inbox(username: &Username, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/inbox", origin, username)).context(UrlParseSnafu)
 }
 
-pub fn make_user_outbox(username: &Username, hostname: &str, proto: Option<&str>) -> Result<Url> {
-    Url::parse(&format!(
-        "{}://{}/users/{}/outbox",
-        proto.unwrap_or("https"),
-        hostname,
-        username
-    ))
-    .context(UrlParseSnafu)
+pub fn make_user_outbox(username: &Username, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/outbox", origin, username)).context(UrlParseSnafu)
 }
 
-pub fn make_user_following(
-    username: &Username,
-    hostname: &str,
-    proto: Option<&str>,
-) -> Result<Url> {
-    Url::parse(&format!(
-        "{}://{}/users/{}/following",
-        proto.unwrap_or("https"),
-        hostname,
-        username
-    ))
-    .context(UrlParseSnafu)
+pub fn make_user_following(username: &Username, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/following", origin, username)).context(UrlParseSnafu)
 }
 
-pub fn make_user_followers(
-    username: &Username,
-    hostname: &str,
-    proto: Option<&str>,
-) -> Result<Url> {
-    Url::parse(&format!(
-        "{}://{}/users/{}/followers",
-        proto.unwrap_or("https"),
-        hostname,
-        username
-    ))
-    .context(UrlParseSnafu)
+pub fn make_user_followers(username: &Username, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/followers", origin, username,)).context(UrlParseSnafu)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -274,10 +233,9 @@ struct Endpoints {
 }
 
 impl Endpoints {
-    pub fn new(domain: &str) -> Result<Endpoints> {
+    pub fn new(origin: &Origin) -> Result<Endpoints> {
         Ok(Endpoints {
-            shared_inbox: Url::parse(&format!("https://{}/inbox", domain))
-                .context(UrlParseSnafu)?,
+            shared_inbox: Url::parse(&format!("{}/inbox", origin)).context(UrlParseSnafu)?,
         })
     }
 }
@@ -291,10 +249,10 @@ struct PublicKey {
 }
 
 impl PublicKey {
-    pub fn new(user: &User, hostname: &str) -> Result<PublicKey> {
+    pub fn new(user: &User, origin: &Origin) -> Result<PublicKey> {
         Ok(PublicKey {
-            id: make_key_id(user.username(), hostname, None)?,
-            owner: make_user_id(user.username(), hostname, None)?,
+            id: make_key_id(user.username(), origin)?,
+            owner: make_user_id(user.username(), origin)?,
             public_key_pem: user.pub_key().to_pem().context(PemSnafu)?,
         })
     }
@@ -303,13 +261,12 @@ impl PublicKey {
     // This exists solely for testing purposes-- can I re-factor?
     pub fn from_username_and_key(
         username: &Username,
-        proto: &str,
-        hostname: &str,
+        origin: &Origin,
         pub_key: &picky::key::PublicKey,
     ) -> Result<PublicKey> {
         Ok(PublicKey {
-            id: make_key_id(username, hostname, Some(proto))?,
-            owner: make_user_id(username, hostname, Some(proto))?,
+            id: make_key_id(username, origin)?,
+            owner: make_user_id(username, origin)?,
             public_key_pem: pub_key.to_pem_str().context(PickyPemSnafu)?,
         })
     }
@@ -331,16 +288,16 @@ pub struct Actor {
 
 impl Actor {
     /// Create a new [Actor] instance from a username & hostname; all endpoints will use https
-    pub fn new(user: &User, hostname: &str) -> Result<Actor> {
+    pub fn new(user: &User, origin: &Origin) -> Result<Actor> {
         Ok(Actor {
-            id: make_user_id(user.username(), hostname, None)?,
+            id: make_user_id(user.username(), origin)?,
             preferred_username: user.username().to_string(),
-            inbox: make_user_inbox(user.username(), hostname, None)?,
-            outbox: make_user_outbox(user.username(), hostname, None)?,
-            following: make_user_following(user.username(), hostname, None)?,
-            followers: make_user_followers(user.username(), hostname, None)?,
-            endpoints: Some(Endpoints::new(hostname)?),
-            public_key: PublicKey::new(user, hostname)?,
+            inbox: make_user_inbox(user.username(), origin)?,
+            outbox: make_user_outbox(user.username(), origin)?,
+            following: make_user_following(user.username(), origin)?,
+            followers: make_user_followers(user.username(), origin)?,
+            endpoints: Some(Endpoints::new(origin)?),
+            public_key: PublicKey::new(user, origin)?,
         })
     }
     /// Create a new [Actor] instance from a username & hostname; the endpoints will use http or
@@ -348,19 +305,18 @@ impl Actor {
     // This only exists for testing purposes... can I re-factor?
     pub fn from_username_and_key(
         username: &Username,
-        proto: &str,
-        hostname: &str,
+        origin: &Origin,
         pub_key: &picky::key::PublicKey,
     ) -> Result<Actor> {
         Ok(Actor {
-            id: make_user_id(username, hostname, Some(proto))?,
+            id: make_user_id(username, origin)?,
             preferred_username: username.to_string(),
-            inbox: make_user_inbox(username, hostname, Some(proto))?,
-            outbox: make_user_outbox(username, hostname, Some(proto))?,
-            following: make_user_following(username, hostname, Some(proto))?,
-            followers: make_user_followers(username, hostname, Some(proto))?,
-            endpoints: Some(Endpoints::new(hostname)?),
-            public_key: PublicKey::from_username_and_key(username, proto, hostname, pub_key)?,
+            inbox: make_user_inbox(username, origin)?,
+            outbox: make_user_outbox(username, origin)?,
+            following: make_user_following(username, origin)?,
+            followers: make_user_followers(username, origin)?,
+            endpoints: Some(Endpoints::new(origin)?),
+            public_key: PublicKey::from_username_and_key(username, origin, pub_key)?,
         })
     }
     pub fn id(&self) -> &Url {
@@ -434,10 +390,10 @@ impl Accept {
     ///
     /// [Accept]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-accept
     /// [Follow]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-follow
-    pub fn for_follow(followed: &Username, follow_req: &Follow, domain: &str) -> Result<Accept> {
+    pub fn for_follow(followed: &Username, follow_req: &Follow, origin: &Origin) -> Result<Accept> {
         Ok(Accept {
             object: ObjectField::Inline(follow_req.clone()),
-            actor: ActorField::Iri(make_user_id(followed, domain, None)?),
+            actor: ActorField::Iri(make_user_id(followed, origin)?),
         })
     }
 }

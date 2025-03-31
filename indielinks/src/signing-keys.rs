@@ -45,18 +45,23 @@
 //! point; just terminate their sessions? Coordinate the token TTL with the rotation cadence (so
 //! that any tokens that can now no longer be verified are expired anyway)?
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Display, ops::Deref, str::FromStr};
 
-use refined::{boundable::unsigned::Equals, type_string, Refinement, TypeString};
+use lazy_static::lazy_static;
+use regex::Regex;
 use serde::Deserialize;
 use snafu::{prelude::*, Backtrace, Snafu};
 
-use crate::util::{Key, RegexPredicate};
+use crate::util::Key;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Failed to recognize {text} as a KeyId"))]
+    KeyId { text: String, backtrace: Backtrace },
     #[snafu(display("No pepper available"))]
     NoKey { backtrace: Backtrace },
+    #[snafu(display("Signing keys must be 64 octets in length"))]
+    SigningKey { backtrace: Backtrace },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -65,26 +70,98 @@ type Result<T> = std::result::Result<T, Error>;
 //                                             KeyId                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-type_string!(KeyIdRegex, "^keyid:[-0-9a-zA-Z]+$");
+lazy_static! {
+    static ref KEY_ID : Regex = Regex::new("^keyid:[-0-9a-zA-Z]+$").unwrap(/* known good */);
+}
 
-// We don't write-down `KeyId`s in the database, so no need to implement Scylla tratis on it
-pub type KeyId = Refinement<String, RegexPredicate<KeyIdRegex>>;
+// We don't write-down `KeyId`s in the database, so no need to implement Scylla traits on it
+#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, PartialOrd, Ord)]
+pub struct KeyId(String);
+
+impl KeyId {
+    pub fn new(s: &str) -> Result<KeyId> {
+        if KEY_ID.find(s).is_none() {
+            KeyIdSnafu { text: s.to_owned() }.fail()
+        } else {
+            Ok(KeyId(s.to_owned()))
+        }
+    }
+}
+
+impl Display for KeyId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for KeyId {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        KeyId::new(s)
+    }
+}
+
+impl AsRef<str> for KeyId {
+    fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
+impl Deref for KeyId {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<KeyId> for String {
+    fn from(value: KeyId) -> Self {
+        value.0
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           SigningKey                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// type RefinedKey = Refinement<Key, Equals<64>>;
-
 /// A refined type enforcing a key length (of 64 octets)
-pub type SigningKey = Refinement<Key, Equals<64>>;
+#[derive(Clone, Debug, Deserialize)]
+#[serde(transparent)]
+pub struct SigningKey(Key);
 
-fn default_signing_key() -> SigningKey {
-    use rand::RngCore;
-    let mut bytes: Vec<u8> = vec![0; 64];
-    argon2::password_hash::rand_core::OsRng.fill_bytes(&mut bytes);
-    // SigningKey(RefinedKey::refine(bytes.into()).unwrap())
-    SigningKey::refine(bytes.into()).unwrap()
+impl SigningKey {
+    pub fn new(b: Vec<u8>) -> Result<SigningKey> {
+        if b.len() == 64 {
+            Ok(SigningKey(b.into()))
+        } else {
+            SigningKeySnafu.fail()
+        }
+    }
+}
+
+impl Default for SigningKey {
+    fn default() -> Self {
+        use rand::RngCore;
+        let mut bytes: Vec<u8> = vec![0; 64];
+        argon2::password_hash::rand_core::OsRng.fill_bytes(&mut bytes);
+        SigningKey(bytes.into())
+    }
+}
+
+impl AsRef<Key> for SigningKey {
+    fn as_ref(&self) -> &Key {
+        self.deref()
+    }
+}
+
+impl Deref for SigningKey {
+    type Target = Key;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -112,8 +189,8 @@ impl Default for SigningKeys {
     fn default() -> Self {
         SigningKeys {
             keys: BTreeMap::from_iter(vec![(
-                KeyId::refine(chrono::Local::now().format("keyid:%Y%m%d").to_string()).unwrap(),
-                default_signing_key(),
+                KeyId(chrono::Local::now().format("keyid:%Y%m%d").to_string()),
+                SigningKey::default(),
             )]),
         }
     }

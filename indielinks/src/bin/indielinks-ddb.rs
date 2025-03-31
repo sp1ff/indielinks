@@ -305,6 +305,7 @@ async fn create_posts(client: &Client) -> Result<()> {
             table_attr!("url", S),     // sort key
             table_attr!("posted", S),  // sort key for first LSI
             table_attr!("day", S),     // sort key for second LSI
+            table_attr!("id", S),      // partition key for the GSI
         ]))
         .set_key_schema(Some(vec![
             KeySchemaElement::builder()
@@ -362,10 +363,22 @@ async fn create_posts(client: &Client) -> Result<()> {
                 .build()
                 .unwrap(),
         )
+        .global_secondary_indexes(
+            GlobalSecondaryIndex::builder()
+                .index_name("posts_by_id")
+                .set_key_schema(Some(vec![KeySchemaElement::builder()
+                    .attribute_name("id")
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .unwrap()]))
+                .build()
+                .unwrap(),
+        )
         .send()
         .await
         .context(CreateTableSnafu);
     debug!("create posts: {:#?}", out);
+    out.expect("Failed to create `posts`");
     Ok(())
 }
 

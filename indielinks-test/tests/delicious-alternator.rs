@@ -294,7 +294,11 @@ inventory::submit!(IndielinksTest {
 inventory::submit!(IndielinksTest {
     name: "030webfinger_smoke",
     test_fn: |cfg: Configuration, _helper| {
-        Box::pin(webfinger_smoke(cfg.url, cfg.username, cfg.domain))
+        Box::pin(webfinger_smoke(
+            cfg.url,
+            cfg.username,
+            cfg.indielinks.clone().try_into().unwrap(/* Fail the test if this fails */),
+        ))
     },
 });
 
@@ -304,7 +308,7 @@ inventory::submit!(IndielinksTest {
         Box::pin(accept_follow_smoke(
             cfg.url,
             cfg.username,
-            cfg.domain,
+            cfg.indielinks.clone().try_into().unwrap(/* Fail the test if this fails */),
             cfg.local_port,
         ))
     },

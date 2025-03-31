@@ -114,13 +114,7 @@
 //! find), but I surmise that it's up to the application to handle the subsequent round of
 //! %-decoding.
 
-use std::{
-    collections::HashSet,
-    fmt::Display,
-    net::{Ipv4Addr, Ipv6Addr},
-    ops::Deref,
-    str::FromStr,
-};
+use std::{collections::HashSet, fmt::Display, ops::Deref, str::FromStr};
 
 use lazy_static::lazy_static;
 use pct_str::{Encoder, PctStr, PctString};
@@ -128,7 +122,7 @@ use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use snafu::{prelude::*, Backtrace};
 
-use crate::util::exactly_two;
+use crate::{origin::Host, util::exactly_two};
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
@@ -144,10 +138,10 @@ pub enum Error {
     },
     #[snafu(display("Empty hostnames are not permitted in acct URIs"))]
     EmptyHost,
-    #[snafu(display("{text} could not be parsed as an acct host"))]
+    #[snafu(display("{host} could not be parsed as an acct host: {source}"))]
     Host {
-        text: String,
-        backtrace: Backtrace,
+        host: String,
+        source: crate::origin::Error,
     },
     #[snafu(display("{text} is not a valid percent-encoded username"))]
     PctEncodedUsername {
@@ -192,8 +186,6 @@ lazy_static! {
                                                                         'W', 'X', 'Y', 'Z', '0', '1', '2', '3', '4', '5', '6', '7',
                                                                         '8', '9', '-', '.', '_', '~', '!', '$', '&', '\'', '(', ')',
                                                                         '*', '+', ',', ';', '=',]);
-    static ref REG_NAME_PCT_ENCODED: Regex = Regex::new("^([-._~a-zA-Z0-9!$&'()*+,;=]|%[0-9a-fA-F]{2})+$").unwrap(/* known good */);
-    static ref REG_NAME: Regex = Regex::new("^[-._~a-zA-Z0-9!$&'()*+,;=]+$").unwrap(/* known good */);
 }
 
 struct UnreservedOrSubdelimsEncoder;
@@ -243,20 +235,6 @@ impl Username {
     }
 }
 
-impl AsRef<str> for Username {
-    fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Deref for Username {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 impl Display for Username {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -271,119 +249,25 @@ impl FromStr for Username {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                              Host                                              //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// A refined type representing an [RFC-7565]-compliant host. Well, mostly: we don't support
-/// `IpvFuture`.
-///
-/// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
-#[derive(Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
-pub enum Host {
-    IpLiteral(Ipv6Addr),
-    Ipv4Address(Ipv4Addr),
-    RegName(String),
-}
-
-impl Host {
-    fn first_parse(s: &str) -> Result<Option<Host>> {
-        // The ABNF grammar techincally allows for an empty host, but I'm going to disallow that:
-        if s.is_empty() {
-            return Err(Error::EmptyHost);
-        }
-
-        if s.chars().nth(0).unwrap() == '[' {
-            // IpLiteral
-            if let Ok(addr) = s.parse::<Ipv6Addr>() {
-                return Ok(Some(Host::IpLiteral(addr)));
-            }
-        } else if s.chars().nth(0).unwrap().is_ascii_digit() {
-            // Try parsing as an IPv4 address
-            if let Ok(addr) = s.parse::<Ipv4Addr>() {
-                return Ok(Some(Host::Ipv4Address(addr)));
-            }
-        }
-
-        Ok(None)
-    }
-    /// Validate that `s` complies with [RFC-7565]; percent-decode it if it does & return a
-    /// [Host] instance.
-    ///
-    /// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
-    pub fn from_percent_encoded(s: &str) -> Result<Host> {
-        match Host::first_parse(s) {
-            Err(err) => Err(err),
-            Ok(Some(h)) => Ok(h),
-            Ok(None) => {
-                // If we're here, it had better be a reg-name...
-                if REG_NAME_PCT_ENCODED.find(s).is_none() {
-                    return HostSnafu { text: s.to_owned() }.fail();
-                }
-
-                Ok(Host::RegName(
-                    PctStr::new(s)
-                        .map_err(|err| err.into_owned())
-                        .context(PctStrSnafu { text: s.to_owned() })?
-                        .decode(),
-                ))
-            }
-        }
-    }
-    /// Validate that `s` complies with [RFC-7565]; return a [Host] instance it if it does.
-    ///
-    /// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
-    pub fn new(s: &str) -> Result<Host> {
-        match Host::first_parse(s) {
-            Err(err) => Err(err),
-            Ok(Some(h)) => Ok(h),
-            Ok(None) => {
-                // If we're here, it had better be a reg-name...
-                if REG_NAME.find(s).is_none() {
-                    return HostSnafu { text: s.to_owned() }.fail();
-                }
-                Ok(Host::RegName(s.to_owned()))
-            }
-        }
-    }
-    /// Percent encode this host
-    pub fn encode(&self) -> String {
-        match self {
-            Host::IpLiteral(ipv6_addr) => format!("{}", ipv6_addr),
-            Host::Ipv4Address(ipv4_addr) => format!("{}", ipv4_addr),
-            Host::RegName(name) => {
-                PctString::encode(name.chars(), UnreservedOrSubdelimsEncoder).into_string()
-            }
-        }
+impl AsRef<str> for Username {
+    fn as_ref(&self) -> &str {
+        self.deref()
     }
 }
 
-impl Display for Host {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Host::IpLiteral(ipv6_addr) => write!(f, "{}", ipv6_addr),
-            Host::Ipv4Address(ipv4_addr) => write!(f, "{}", ipv4_addr),
-            Host::RegName(name) => write!(f, "{}", name),
-        }
+impl Deref for Username {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
-impl FromStr for Host {
-    type Err = Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Host::new(s)
+impl From<Username> for String {
+    fn from(value: Username) -> Self {
+        value.0
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                            Account                                             //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// lazy_static! {
-//     static ref USER_AT_HOST: Regex = Regex::new("^([^@]+)@([^@]+)$").unwrap(/* known good */);
-//     static ref URI_FORMAT: Regex = Regex::new("^acct:([^@]+)@([^@]+)$").unwrap(/* known good */);
-// }
 
 /// An [RFC-7565]-compliant account.
 ///
@@ -407,7 +291,9 @@ impl Account {
         let (user, host) = exactly_two(s.split('@')).unwrap();
         Ok(Self {
             user: Username::new(user)?,
-            host: Host::new(host)?,
+            host: host.parse::<Host>().context(HostSnafu {
+                host: host.to_owned(),
+            })?,
         })
     }
     /// Given an `acct` URI of the form "acct:{user}@{host}", attempt to derive an [Account]
@@ -418,17 +304,19 @@ impl Account {
         let (user, host) = exactly_two(s[5..].split('@')).unwrap();
         Ok(Self {
             user: Username::from_percent_encoded(user)?,
-            host: Host::from_percent_encoded(host)?,
+            host: host.parse::<Host>().context(HostSnafu {
+                host: host.to_owned(),
+            })?,
         })
     }
-    pub fn from_user_and_host(user: &str, host: &str) -> Result<Account> {
+    pub fn from_user_and_host(user: &str, host: &Host) -> Result<Account> {
         Ok(Account {
             user: Username::new(user)?,
-            host: Host::new(host)?,
+            host: host.clone(),
         })
     }
     pub fn to_uri(&self) -> String {
-        format!("acct:{}@{}", self.user.encode(), self.host.encode())
+        format!("acct:{}@{}", self.user.encode(), self.host)
     }
     pub fn host(&self) -> &Host {
         &self.host

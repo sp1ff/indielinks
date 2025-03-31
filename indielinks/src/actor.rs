@@ -47,6 +47,7 @@ use crate::{
     entities::{User, UserUrl, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
+    origin::Origin,
     storage::{self, Backend as StorageBackend},
 };
 
@@ -387,14 +388,14 @@ inventory::submit! { metrics::Registration::new("actor.errors", Sort::IntegralCo
 // Not sure this is really how I want to handle this. Leaving it for now, to see if this is a
 // repeating pattern.
 trait Actor {
-    fn as_jrd(&self, domain: &str) -> Result<String>;
+    fn as_jrd(&self, origin: &Origin) -> Result<String>;
     fn as_html(&self) -> String;
 }
 
 impl Actor for User {
-    fn as_jrd(&self, domain: &str) -> Result<String> {
+    fn as_jrd(&self, origin: &Origin) -> Result<String> {
         ap_entities::to_jrd(
-            crate::ap_entities::Actor::new(self, domain).context(ActorSnafu)?,
+            crate::ap_entities::Actor::new(self, origin).context(ActorSnafu)?,
             ap_entities::Type::Person,
             None,
         )
@@ -442,7 +443,7 @@ async fn actor(
     }
 
     match actor1(state.storage.as_ref(), &username, &headers).await {
-        Ok((user, crate::http::Accept::ActivityPub)) => match user.as_jrd(&state.domain) {
+        Ok((user, crate::http::Accept::ActivityPub)) => match user.as_jrd(&state.origin) {
             Ok(jrd) => {
                 counter_add!(state.instruments, "actor.retrieved", 1, &[]);
                 patch_content_type((StatusCode::OK, jrd).into_response())
@@ -490,16 +491,16 @@ const ACCEPT_FOLLOW: Uuid = Uuid::from_fields(
 #[derive(Debug, Deserialize, Serialize)]
 struct AcceptFollow {
     user: User,
-    domain: String,
+    origin: Origin,
     actor_inbox: Url,
     follow: Follow,
 }
 
 impl AcceptFollow {
-    pub fn new(user: &User, domain: &str, actor_inbox: &Url, follow: &Follow) -> AcceptFollow {
+    pub fn new(user: &User, origin: &Origin, actor_inbox: &Url, follow: &Follow) -> AcceptFollow {
         AcceptFollow {
             user: user.clone(),
-            domain: domain.to_owned(),
+            origin: origin.clone(),
             actor_inbox: actor_inbox.clone(),
             follow: follow.clone(),
         }
@@ -518,7 +519,7 @@ impl Task<Context> for AcceptFollow {
         );
 
         // We need to respond to Follows with an Accept; this is largely a stub implementation.
-        let accept = Accept::for_follow(self.user.username(), &self.follow, &self.domain)
+        let accept = Accept::for_follow(self.user.username(), &self.follow, &self.origin)
             .map_err(|err| BckError::new(AcceptResponseSnafu.into_error(err)))?
             .pipe(|accept| to_jrd(accept, ap_entities::Type::Accept, None))
             .map_err(|err| BckError::new(JrdSnafu.into_error(err)))?
@@ -546,7 +547,7 @@ impl Task<Context> for AcceptFollow {
             .body(accept)
             .map_err(|err| BckError::new(RequestSnafu.into_error(err)))?;
 
-        let key_id = make_key_id(self.user.username(), &self.domain, None)
+        let key_id = make_key_id(self.user.username(), &self.origin)
             .map_err(|err| BckError::new(KeyIdSnafu.into_error(err)))?;
         let request = sign_request(request, key_id.as_ref(), self.user.priv_key().as_ref())
             .await
@@ -602,7 +603,7 @@ async fn accept_follow(
     actor: &ap_entities::Actor,
     storage: &(dyn StorageBackend + Send + Sync),
     task_sender: Arc<BackgroundTasks>,
-    domain: &str,
+    origin: &Origin,
 ) -> Result<()> {
     debug!(
         "Accepting a Follow request for {}; request follows: {:?}",
@@ -624,7 +625,7 @@ async fn accept_follow(
     // We need to send an `Accept` in response-- do it in a background task:
     task_sender
         .as_ref()
-        .send(AcceptFollow::new(user, domain, actor.inbox(), follow))
+        .send(AcceptFollow::new(user, origin, actor.inbox(), follow))
         .await
         .context(TaskSendSnafu)?;
 
@@ -661,7 +662,7 @@ async fn inbox(
         body: &BoostFollowOrLike,
         username: &Username,
         actor: &ap_entities::Actor,
-        domain: &str,
+        origin: &Origin,
         storage: &(dyn StorageBackend + Send + Sync),
         task_sender: Arc<BackgroundTasks>,
         instruments: &metrics::Instruments,
@@ -680,7 +681,7 @@ async fn inbox(
             }
             BoostFollowOrLike::Follow(follow) => {
                 counter_add!(instruments, "inbox.follows", 1, &[]);
-                accept_follow(&user, follow, actor, storage, task_sender, domain).await
+                accept_follow(&user, follow, actor, storage, task_sender, origin).await
             }
             BoostFollowOrLike::Like(like) => {
                 counter_add!(instruments, "inbox.follows", 1, &[]);
@@ -709,7 +710,7 @@ async fn inbox(
         &body,
         &username,
         &actor,
-        &state.domain,
+        &state.origin,
         state.storage.as_ref(),
         state.task_sender.clone(),
         &state.instruments,
@@ -758,7 +759,7 @@ async fn followers(
     async fn followers1(
         username: &Username,
         storage: &(dyn StorageBackend + Send + Sync),
-        domain: &str,
+        origin: &Origin,
         page: Option<usize>,
         page_size: usize,
     ) -> Result<CollectionPage> {
@@ -775,7 +776,7 @@ async fn followers(
             )?;
         // and extract their followers:
         let followers = user.followers();
-        let followers_id = make_user_followers(username, domain, None).context(ApIdSnafu)?;
+        let followers_id = make_user_followers(username, origin).context(ApIdSnafu)?;
         let first = followers_id.join("?page=0").context(JoinSnafu)?;
         // What we do now depends on `page`; if...
         match page {
@@ -818,7 +819,7 @@ async fn followers(
     match followers1(
         &username,
         state.storage.as_ref(),
-        &state.domain,
+        &state.origin,
         pagination.page,
         state.collection_page_size,
     )

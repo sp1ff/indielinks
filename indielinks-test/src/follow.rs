@@ -36,6 +36,7 @@ use indielinks::{
     ap_entities::{self, to_jrd},
     authn::sign_request,
     entities::Username,
+    origin::Origin,
 };
 use libtest_mimic::Failed;
 use picky::key::PrivateKey;
@@ -100,7 +101,7 @@ async fn inbox_taking_accept(
 pub async fn accept_follow_smoke(
     url: Url,
     username: Username,
-    domain: String,
+    origin: Origin,
     local_port: u16,
 ) -> Result<(), Failed> {
     // This test takes the form of a conversation between a mock ActivityPub server implemented in
@@ -138,7 +139,8 @@ pub async fn accept_follow_smoke(
     let listener = tokio::net::TcpListener::bind(&format!("localhost:{}", local_port)).await?;
     // which will require the corresponding public key.
     let pub_key = priv_key.to_public_key()?;
-    let hostname = format!("localhost:{}", local_port);
+    let our_origin: Origin =
+        format!("http://localhost:{}", local_port).try_into().unwrap(/* known good */);
     let state = Arc::new(TestState {
         accepted: Arc::new(Mutex::new(0)),
     });
@@ -155,8 +157,7 @@ pub async fn accept_follow_smoke(
                     ap_entities::to_jrd(
                         ap_entities::Actor::from_username_and_key(
                             &Username::new("test-user").unwrap(),
-                            "http",
-                            &hostname,
+                            &our_origin,
                             &pub_key,
                         )
                         .unwrap(),
@@ -238,12 +239,12 @@ pub async fn accept_follow_smoke(
     let page = rsp.json::<CollectionPage>().await?;
     assert_eq!(
         page.first.unwrap(),
-        Url::parse(&format!("https://{}/users/sp1ff/followers?page=0", domain))?
+        Url::parse(&format!("{}/users/sp1ff/followers?page=0", origin))?
     );
     assert!(page.next.is_none());
     assert_eq!(
         page.part_of.unwrap(),
-        Url::parse(&format!("https://{}/users/sp1ff/followers", domain))?
+        Url::parse(&format!("{}/users/sp1ff/followers", origin))?
     );
     let items = page.ordered_items.unwrap();
     assert_eq!(items.len(), 1);

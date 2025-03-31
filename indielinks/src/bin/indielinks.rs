@@ -33,10 +33,13 @@ use std::{
     fs::OpenOptions,
     future::IntoFuture,
     io,
+    net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::atomic::Ordering,
-    sync::{atomic::AtomicU64, Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
 };
 
 use axum::{
@@ -82,6 +85,7 @@ use indielinks::{
     delicious::make_router as make_delicious_router,
     http::Indielinks,
     metrics::Instruments,
+    origin::Origin,
     peppers::Peppers,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
@@ -221,17 +225,17 @@ impl LogOpts {
 }
 
 /// Configuration options read from the CLI (or the environment)
-struct Opts {
+struct CliOpts {
     pub log_opts: LogOpts,
     pub cfg: Option<PathBuf>,
     pub local_statedir: PathBuf,
     pub no_chdir: bool,
 }
 
-impl Opts {
-    fn new(matches: clap::ArgMatches) -> Result<Opts> {
+impl CliOpts {
+    fn new(matches: clap::ArgMatches) -> Result<CliOpts> {
         let here = env::current_dir().context(CurrentDirSnafu)?;
-        Ok(Opts {
+        Ok(CliOpts {
             log_opts: LogOpts::new(&matches),
             cfg: matches
                 .get_one::<PathBuf>("config")
@@ -309,21 +313,22 @@ impl Default for SigningKeysConfig {
 /// Indielinks configuration, version one
 #[derive(Clone, Debug, Deserialize)]
 struct ConfigV1 {
-    /// Log file
+    /// The [indielinks] log file
     #[serde(rename = "log-file")]
     log_file: PathBuf,
-    /// Address at which to listen for public requests; specify as "address:port"
-    // I considered modeling this as an `SocketAddr`, but that's tough because `SocketAddr` carries
-    // only an IP (v4 or v6) address; not a hostname. I'd prefer to allow hostnames here, and
-    // resolve them to IP addresses at bind time rather than deserialization time.
+    /// Local address at which to listen for public requests; specify as "address:port". This
+    /// is the address to which [indielinks] will bind a listening socket for its public API.
     #[serde(rename = "public-address")]
-    public_address: String,
+    public_address: SocketAddr,
     /// Address at which to listen for private requests; specify as "address:port"
     // See note above RE `SocketAddr`.
     #[serde(rename = "private-address")]
-    private_address: String,
+    private_address: SocketAddr,
+    #[serde(rename = "storage-config")]
     storage_config: StorageConfig,
-    domain: String,
+    /// The address at which this [indielinks] instance may be reached from the public internet
+    #[serde(rename = "public-origin")]
+    public_origin: Origin,
     pepper: Peppers,
     #[serde(rename = "signing-keys")]
     signing_keys: SigningKeysConfig,
@@ -336,10 +341,10 @@ struct ConfigV1 {
 }
 
 impl ConfigV1 {
-    pub fn public_address(&self) -> &str {
+    pub fn public_address(&self) -> &SocketAddr {
         &self.public_address
     }
-    pub fn private_address(&self) -> &str {
+    pub fn private_address(&self) -> &SocketAddr {
         &self.private_address
     }
     pub fn background_tasks(&self) -> &background_tasks::Config {
@@ -350,11 +355,11 @@ impl ConfigV1 {
 impl Default for ConfigV1 {
     fn default() -> Self {
         ConfigV1 {
-            log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(),
-            public_address: String::from("0.0.0.0:20673"),
-            private_address: String::from("127.0.0.1:48351"),
+            log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(/* known good */),
+            public_address: "0.0.0.0:20673".parse::<SocketAddr>().unwrap(/* known good */),
+            private_address: "127.0.0.1:48351".parse::<SocketAddr>().unwrap(/* known good */),
             storage_config: StorageConfig::default(),
-            domain: String::from("indiemark.sh"),
+            public_origin: "http://localhost:20673".parse::<Origin>().unwrap(/* known good */),
             pepper: Peppers::default(),
             signing_keys: SigningKeysConfig::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
@@ -695,7 +700,7 @@ pub async fn select_storage(
 }
 
 /// Serve `indielinks` API requests
-async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
+async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
     // Produce a future which can be used to signal graceful shutdown, below.
     async fn shutdown_signal(nfy: Arc<Notify>) {
         nfy.notified().await
@@ -741,7 +746,7 @@ async fn serve(registry: prometheus::Registry, opts: Opts) -> Result<()> {
         .context(BackgroundTasksSnafu)?;
         // Alright-- setup shared state for the web service itself:
         let state = Arc::new(Indielinks {
-            domain: cfg.domain.clone(),
+            origin: cfg.public_origin.clone(),
             registry: registry.clone(),
             storage,
             instruments: instruments.clone(),
@@ -988,7 +993,7 @@ fn daemonize(local_statedir: &Path, no_chdir: bool) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let opts = Opts::new(
+    let opts = CliOpts::new(
         Command::new("indielinks")
             .version(crate_version!())
             .author(crate_authors!())

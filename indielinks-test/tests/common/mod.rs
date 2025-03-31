@@ -146,8 +146,9 @@ pub struct Configuration {
     pub no_setup: bool,
     #[serde(rename = "no-teardown")]
     pub no_teardown: bool,
+    /// The location at which the indielinks instance under test can be reached from this test
     pub url: Url,
-    pub domain: String,
+    pub indielinks: Url,
     pub username: Username,
     pub api_key: String,
     pub scylla: ScyllaConfig,
@@ -204,7 +205,7 @@ impl Default for Configuration {
             no_teardown: false,
             url: Url::parse("http://localhost:20673").unwrap(/* known good */),
             username: Username::new("sp1ff").unwrap(/* known good */),
-            domain: "indiemark.local".to_owned(),
+            indielinks: Url::parse("http://indiemark.local:20673").unwrap(/* known good */),
             api_key: "6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873".to_owned(),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),

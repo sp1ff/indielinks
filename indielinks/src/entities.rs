@@ -105,7 +105,6 @@ pub enum Error {
     NoPepper {
         username: Username,
         source: peppers::Error,
-        backtrace: Backtrace,
     },
     #[snafu(display("Password doesn't have enough entropy: {feedback}"))]
     PasswordEntropy {
@@ -219,10 +218,7 @@ macro_rules! define_id {
         #[serde(transparent)]
         pub struct $type_name(Uuid);
         impl $type_name {
-            pub fn new() -> $type_name {
-                $type_name(Uuid::new_v4())
-            }
-            pub fn from_raw_string(s: &str) -> StdResult<$type_name, uuid::Error> {
+            pub fn new(s: &str) -> StdResult<$type_name, uuid::Error> {
                 Ok($type_name(Uuid::parse_str(s)?))
             }
             // This seems like a landmine; I should probably just store strings in the same way I
@@ -233,7 +229,7 @@ macro_rules! define_id {
         }
         impl Default for $type_name {
             fn default() -> Self {
-                Self::new()
+                $type_name(Uuid::new_v4())
             }
         }
         impl Display for $type_name {
@@ -242,6 +238,30 @@ macro_rules! define_id {
                 // purposes. Thing is, this is the format used by `serde-dynamo`, so I want to be
                 // consistent with that.
                 write!(f, "{}", self.0.as_hyphenated())
+            }
+        }
+        impl FromStr for $type_name {
+            type Err = uuid::Error;
+
+            fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+                $type_name::new(s)
+            }
+        }
+        impl AsRef<Uuid> for $type_name {
+            fn as_ref(&self) -> &Uuid {
+                self.deref()
+            }
+        }
+        impl Deref for $type_name {
+            type Target = Uuid;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+        impl From<$type_name> for Uuid {
+            fn from(value: $type_name) -> Self {
+                value.0
             }
         }
         // Arggghhhh... the derive macro doesn't work with newtype structs.
@@ -271,6 +291,8 @@ macro_rules! define_id {
 }
 
 define_id!(UserId, "userid");
+define_id!(PostId, "postid");
+
 // I had, in the past, defined a few other identifiers, making it worth it to wrap the boilerplate
 // up in a macro. Now that it's just `UserId`, I should probably go back to just implementing it by
 // hand.
@@ -334,6 +356,12 @@ impl Deref for Username {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl From<Username> for String {
+    fn from(value: Username) -> Self {
+        value.0
     }
 }
 
@@ -429,6 +457,11 @@ impl Deref for UserEmail {
     }
 }
 
+impl From<UserEmail> for String {
+    fn from(value: UserEmail) -> Self {
+        value.0
+    }
+}
 // Implement `Deserialize` by hand to fail if the serialized value isn't a legit `Username`
 impl<'de> Deserialize<'de> for UserEmail {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
@@ -875,6 +908,12 @@ impl AsRef<str> for UserUrl {
     }
 }
 
+impl From<UserUrl> for Url {
+    fn from(value: UserUrl) -> Self {
+        value.0
+    }
+}
+
 impl From<Url> for UserUrl {
     fn from(value: Url) -> Self {
         Self(value)
@@ -1067,7 +1106,7 @@ impl User {
         let (pub_key, priv_key) = generate_rsa_keypair()?;
         let password_hash = User::hash_password(pepper_key, password)?;
         Ok(User {
-            id: UserId::new(),
+            id: UserId::default(),
             username: username.clone(),
             discoverable: discoverable.unwrap_or(true),
             display_name: display_name.clone().unwrap_or(username.to_string()),
@@ -1185,6 +1224,7 @@ impl Tagname {
         self.0.as_bytes()[0] == b'.' // Index is safe
     }
 }
+
 impl AsRef<str> for Tagname {
     fn as_ref(&self) -> &str {
         self.deref()
@@ -1196,6 +1236,12 @@ impl Deref for Tagname {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl From<Tagname> for String {
+    fn from(value: Tagname) -> Self {
+        value.0
     }
 }
 
@@ -1398,6 +1444,12 @@ impl Deref for PostDay {
     }
 }
 
+impl From<PostDay> for String {
+    fn from(value: PostDay) -> Self {
+        value.0
+    }
+}
+
 // Implement `Deserialize` by hand to fail if the serialized value isn't a legit `PostDay`
 impl<'de> Deserialize<'de> for PostDay {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
@@ -1500,6 +1552,7 @@ impl TryFrom<String> for PostDay {
 pub struct Post {
     url: PostUri,
     user_id: UserId,
+    id: PostId,
     posted: DateTime<Utc>,
     day: PostDay,
     title: String,
@@ -1516,6 +1569,7 @@ impl Post {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         url: &PostUri,
+        id: &PostId,
         user_id: &UserId,
         posted: &DateTime<Utc>,
         day: &PostDay,
@@ -1528,6 +1582,7 @@ impl Post {
         Post {
             url: url.clone(),
             user_id: *user_id,
+            id: *id,
             posted: *posted,
             day: day.clone(),
             title: title.to_string(),

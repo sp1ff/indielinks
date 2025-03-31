@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
-    entities::{Post, PostDay, PostUri, Tagname, User, UserId, UserUrl, Username},
+    entities::{Post, PostDay, PostId, PostUri, Tagname, User, UserId, UserUrl, Username},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
@@ -315,8 +315,8 @@ impl Session {
             "update users set first_update=? where id=?",
             "update users set last_update=? where id=?", // UpdateLoastPost
             "select tags from posts where user_id=?", // TagCloud
-            "insert into posts (user_id,url,posted,day,title,notes,tags,public,unread) values (?,?,?,?,?,?,?,?,?)",
-            "insert into posts (user_id,url,posted,day,title,notes,tags,public,unread) values (?,?,?,?,?,?,?,?,?) if not exists",
+            "insert into posts (user_id,url,id,posted,day,title,notes,tags,public,unread) values (?,?,?,?,?,?,?,?,?,?)", // InsertPost0
+            "insert into posts (user_id,url,id,posted,day,title,notes,tags,public,unread) values (?,?,?,?,?,?,?,?,?,?) if not exists",
             "delete from posts where user_id=? and url=? if exists", // DeletePost
             "select day from posts where user_id=?",
             "select day from posts where user_id=? and tags contains ? allow filtering",
@@ -324,31 +324,31 @@ impl Session {
             "select day from posts where user_id=? and tags contains ? and tags contains ? and tags contains ? allow filtering",
             "select posted from posts where user_id=? limit 1 allow filtering",
             "select url,day,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and url=?", // GetPosts1
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? allow filtering", // GetPosts5
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? allow filtering", // GetPosts6
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? and tags contains ? allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? and tags contains ? and tags contains ? allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? limit ?",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? limit ? allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? limit ? allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? limit ? allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? order by posted desc",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? order by posted desc",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? order by posted desc",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? order by posted desc",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and tags contains ? allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? allow filtering", // GetPosts5
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? allow filtering", // GetPosts6
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? and tags contains ? allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? and tags contains ? and tags contains ? allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? limit ?",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? limit ? allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? limit ? allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? limit ? allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? order by posted desc",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? order by posted desc",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? order by posted desc",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? order by posted desc",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and tags contains ? allow filtering",
             // I hate to add the `if exists` clause here, making this an LWT, but if I don't I
             // expose myself to the possibility of a post being deleted out from under me while
             // renaming, which would leave the system in an invalid state.
@@ -467,6 +467,7 @@ impl storage::Backend for Session {
         user: &User,
         replace: bool,
         uri: &PostUri,
+        id: &PostId,
         title: &str,
         dt: &DateTime<Utc>,
         notes: &Option<String>,
@@ -489,6 +490,7 @@ impl storage::Backend for Session {
                 (
                     &user.id(),
                     uri,
+                    &id,
                     &dt,
                     &day,
                     title,
@@ -561,6 +563,7 @@ impl storage::Backend for Session {
                 Option<UserId>,
                 Option<PostUri>,
                 Option<PostDay>,
+                Option<PostId>,
                 Option<String>,
                 Option<DateTime<Utc>>,
                 Option<bool>,

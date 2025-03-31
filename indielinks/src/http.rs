@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use crate::{
-    background_tasks::BackgroundTasks, metrics, peppers::Peppers, signing_keys::SigningKeys,
-    storage::Backend as StorageBackend,
+    background_tasks::BackgroundTasks, metrics, origin::Origin, peppers::Peppers,
+    signing_keys::SigningKeys, storage::Backend as StorageBackend,
 };
 
 use axum::Json;
@@ -126,7 +126,7 @@ impl Accept {
 /// Application state available to all handlers
 // Not sure this is going to stay here.
 pub struct Indielinks {
-    pub domain: String,
+    pub origin: Origin,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
     pub registry: prometheus::Registry,
     pub instruments: Arc<metrics::Instruments>,

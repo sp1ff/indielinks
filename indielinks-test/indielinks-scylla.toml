@@ -2,11 +2,17 @@ version = "1"
 log-file = "/tmp/indielinks.log"
 public-address = "0.0.0.0:20673"
 private-address = "127.0.0.1:48351"
-domain = "indiemark.local"
 user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
 collection-page-size = 64
 
-[storage_config.Scylla]
+[public-origin]
+scheme = "http"
+port = 20673
+
+[public-origin.host]
+RegName = "indiemark.local"
+
+[storage-config.Scylla]
 hosts = ["127.0.0.1:9042"]
 
 [pepper.peppers]

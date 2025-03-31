@@ -18,12 +18,10 @@
 //! Much as I loathe catch-all "utility" modules, I truly don't know where these belong. Hopefully,
 //! as I build-out the project, this will become more clear.
 
-use std::{fmt::Display, marker::PhantomData, ops::Deref};
+use std::{fmt::Display, ops::Deref};
 
 use either::Either;
-use refined::{Predicate, TypeString, UnsignedBoundable};
-use regex::Regex;
-use secrecy::SecretSlice;
+use secrecy::{ExposeSecret, SecretSlice};
 use serde::{Deserialize, Deserializer};
 use serde_bytes::ByteBuf;
 use tap::{Conv, Pipe};
@@ -116,27 +114,6 @@ impl<T: Clone> UpToThree<T> {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                         RegexPredicate                                         //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// I've submitted this as a PR to the `refined` library here:
-// https://github.com/jkaye2012/refined/pull/11
-// remove this once that PR gets merged & a new release of `refined` is cut.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct RegexPredicate<S: TypeString>(PhantomData<S>);
-
-impl<S: TypeString, T: AsRef<str>> Predicate<T> for RegexPredicate<S> {
-    fn test(s: &T) -> bool {
-        Regex::new(S::VALUE)
-            .expect("Invalid regex")
-            .is_match(s.as_ref())
-    }
-    fn error() -> String {
-        format!("must match regular expression {}", S::VALUE)
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                              Key                                               //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -145,6 +122,15 @@ impl<S: TypeString, T: AsRef<str>> Predicate<T> for RegexPredicate<S> {
 /// [Key] is a deserializable, secret, slice of byte.
 #[derive(Clone, Debug)]
 pub struct Key(SecretSlice<u8>);
+
+impl Key {
+    pub fn is_empty(&self) -> bool {
+        self.0.expose_secret().is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.0.expose_secret().len()
+    }
+}
 
 // And let's implement a few convenience traits for `Key`, mostly designed to make it possible to
 // use a `Key` wherever one might want to use a `SecretSlice<u8>`.
@@ -181,13 +167,5 @@ impl<'de> Deserialize<'de> for Key {
 impl From<Vec<u8>> for Key {
     fn from(value: Vec<u8>) -> Self {
         Key(value.into())
-    }
-}
-
-// Let `Key` play with refined types; return the length of the secret slice
-impl UnsignedBoundable for Key {
-    fn bounding_value(&self) -> usize {
-        use secrecy::ExposeSecret;
-        self.0.expose_secret().len()
     }
 }

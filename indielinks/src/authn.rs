@@ -35,13 +35,12 @@ use tap::Pipe;
 use tracing::debug;
 
 use crate::{
-    entities,
-    entities::{User, UserApiKey, Username},
+    entities::{self, User, UserApiKey, Username},
+    origin::Host,
     peppers::Peppers,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
-    token,
-    token::verify_token,
+    token::{self, verify_token},
     util::exactly_two,
 };
 
@@ -150,7 +149,10 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to verify token: {source}"))]
-    Token { source: token::Error },
+    Token {
+        #[snafu(source(from(token::Error, Box::new)))]
+        source: Box<token::Error>,
+    },
     #[snafu(display("Unknown username {username}"))]
     UnknownUser { username: Username },
     #[snafu(display("Authorization scheme {scheme} not supported"))]
@@ -309,9 +311,9 @@ pub async fn check_token(
     storage: &(dyn StorageBackend + Send + Sync),
     token_string: &str,
     keys: &SigningKeys,
-    domain: &str,
+    host: &Host,
 ) -> Result<User> {
-    let username = verify_token(token_string, keys, domain).context(TokenSnafu)?;
+    let username = verify_token(token_string, keys, host).context(TokenSnafu)?;
     storage
         .user_for_name(username.as_ref())
         .await

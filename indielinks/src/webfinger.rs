@@ -49,11 +49,11 @@
 
 use std::sync::Arc;
 
-use crate::acct::Host;
 use crate::ap_entities::make_user_id;
 use crate::entities::User;
 use crate::http::Indielinks;
 use crate::metrics::Sort;
+use crate::origin::Origin;
 use crate::storage;
 use crate::storage::Backend as StorageBackend;
 use crate::{acct::Account, http::ErrorResponseBody};
@@ -80,7 +80,7 @@ pub enum Error {
     #[snafu(display("Could not interpret {domain} as an acct host: {source}"))]
     Domain {
         domain: String,
-        source: crate::acct::Error,
+        source: url::ParseError,
     },
     #[snafu(display("Mismatched hostname for webfinger"))]
     Hostname { backtrace: Backtrace },
@@ -138,11 +138,11 @@ pub struct Link {
 
 impl Link {
     /// Create a "self" [Link] from a [User]
-    fn from_user(user: &User, domain: &str) -> Result<Self> {
+    fn from_user(user: &User, origin: &Origin) -> Result<Self> {
         Ok(Link {
             rel: LinkRelation::Myself,
             r#type: MediaType::ActivityPub,
-            href: make_user_id(user.username(), domain, None).context(UserIdSnafu {
+            href: make_user_id(user.username(), origin).context(UserIdSnafu {
                 name: user.username().to_string(),
             })?,
         })
@@ -194,13 +194,12 @@ pub struct ResponseBody {
 }
 
 impl ResponseBody {
-    pub fn new(user: &User, acct: &Account, domain: &str) -> Result<ResponseBody> {
+    pub fn new(user: &User, acct: &Account, origin: &Origin) -> Result<ResponseBody> {
         Ok(ResponseBody {
-            links: vec![Link::from_user(user, domain)?],
+            links: vec![Link::from_user(user, origin)?],
             aliases: vec![
-                Url::parse(&format!("https://{}/@{}", domain, user.username()))
-                    .context(UrlParseSnafu)?,
-                make_user_id(user.username(), domain, None).context(UserIdSnafu {
+                Url::parse(&format!("{}/@{}", origin, user.username())).context(UrlParseSnafu)?,
+                make_user_id(user.username(), origin).context(UserIdSnafu {
                     name: user.username().to_string(),
                 })?,
             ],
@@ -241,14 +240,10 @@ pub async fn webfinger(
 ) -> axum::response::Response {
     async fn webfinger1(
         account: &Account,
-        domain: &str,
+        origin: &Origin,
         storage: &(dyn StorageBackend + Send + Sync),
     ) -> Result<ResponseBody> {
-        if *account.host()
-            != Host::new(domain).context(DomainSnafu {
-                domain: domain.to_owned(),
-            })?
-        {
+        if *account.host() != *origin.host() {
             return HostnameSnafu.fail();
         }
 
@@ -257,12 +252,12 @@ pub async fn webfinger(
             .await
             .context(StorageSnafu)?
         {
-            Some(user) => Ok(ResponseBody::new(&user, account, domain)?),
+            Some(user) => Ok(ResponseBody::new(&user, account, origin)?),
             None => NoSuchUserSnafu.fail(),
         }
     }
 
-    match webfinger1(&params.resource, &state.domain, state.storage.as_ref()).await {
+    match webfinger1(&params.resource, &state.origin, state.storage.as_ref()).await {
         Ok(rsp) => {
             counter_add!(state.instruments, "webfinger.served", 1, &[]);
             (StatusCode::OK, Json(rsp)).into_response()

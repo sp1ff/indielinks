@@ -31,6 +31,7 @@ use snafu::{prelude::*, Backtrace};
 
 use crate::{
     entities::Username,
+    origin::Host,
     signing_keys::{self, KeyId, SigningKey, SigningKeys},
 };
 
@@ -52,7 +53,7 @@ pub enum Error {
     },
     #[snafu(display("Failed to refine a string to a KeyId: {source}"))]
     KeyId {
-        source: refined::RefinementError,
+        source: signing_keys::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("The Key ID was missing from the JWT"))]
@@ -61,7 +62,6 @@ pub enum Error {
     NoKey {
         keyid: KeyId,
         source: signing_keys::Error,
-        backtrace: Backtrace,
     },
     #[snafu(display("Invalid token: not before {not_before}"))]
     NotBefore {
@@ -84,10 +84,7 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("Unknown token issuer {issuer}"))]
-    UnknownIssuer {
-        issuer: String,
-        backtrace: Backtrace,
-    },
+    UnknownIssuer { issuer: Host, backtrace: Backtrace },
     #[snafu(display("Verification failure: {source}"))]
     Verification {
         source: jwt::error::Error,
@@ -103,7 +100,7 @@ struct Claims {
     #[serde(rename = "iat")]
     issued_at: DateTime<Utc>,
     #[serde(rename = "iss")]
-    issuer: String,
+    issuer: Host,
     #[serde(rename = "aud")]
     audience: String,
     #[serde(rename = "nbf")]
@@ -124,7 +121,7 @@ pub fn mint_token(
     username: &Username,
     keyid: &KeyId,
     signing_key: &SigningKey,
-    domain: &str,
+    issuer: &Host,
     lifetime: &Duration,
 ) -> Result<String> {
     let key: Hmac<Sha256> =
@@ -136,8 +133,8 @@ pub fn mint_token(
     let now = Utc::now();
     let claims = Claims {
         issued_at: now,
-        issuer: domain.to_owned(),
-        audience: format!("api.{}", domain),
+        issuer: issuer.clone(),
+        audience: format!("api.{}", issuer),
         not_before: now,
         expires: now + *lifetime,
         subject: username.clone(),
@@ -149,7 +146,7 @@ pub fn mint_token(
         .to_owned())
 }
 
-pub fn verify_token(token_string: &str, keys: &SigningKeys, domain: &str) -> Result<Username> {
+pub fn verify_token(token_string: &str, keys: &SigningKeys, issuer: &Host) -> Result<Username> {
     let token: Token<Header, Claims, _ /* Unverified<'_> */> =
         Token::parse_unverified(token_string).context(ParseSnafu)?;
     let keyid = token
@@ -157,7 +154,7 @@ pub fn verify_token(token_string: &str, keys: &SigningKeys, domain: &str) -> Res
         .key_id
         .clone()
         .ok_or(MissingKeyIdSnafu.build())?;
-    let keyid = KeyId::refine(keyid).context(KeyIdSnafu)?;
+    let keyid = KeyId::new(&keyid).context(KeyIdSnafu)?;
     let signing_key = keys.find_by_version(&keyid).context(NoKeySnafu { keyid })?;
     let key: Hmac<Sha256> =
         Hmac::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
@@ -180,13 +177,13 @@ pub fn verify_token(token_string: &str, keys: &SigningKeys, domain: &str) -> Res
         }
         .fail();
     }
-    if domain != claims.issuer {
+    if *issuer != claims.issuer {
         return UnknownIssuerSnafu {
             issuer: claims.issuer.clone(),
         }
         .fail();
     }
-    if format!("api.{}", domain) != claims.audience {
+    if format!("api.{}", issuer) != claims.audience {
         return UnknownAudienceSnafu {
             audience: claims.audience.clone(),
         }

@@ -18,7 +18,7 @@
 //! Abstractions for the indielinks storage layer.
 
 use crate::{
-    entities::{Post, PostDay, PostUri, Tagname, User, Username},
+    entities::{Post, PostDay, PostId, PostUri, Tagname, User, Username},
     util::UpToThree,
 };
 
@@ -82,6 +82,7 @@ pub trait Backend {
         user: &User,
         replace: bool,
         uri: &PostUri,
+        id: &PostId,
         title: &str,
         dt: &DateTime<Utc>,
         notes: &Option<String>,

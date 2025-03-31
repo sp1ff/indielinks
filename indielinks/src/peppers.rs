@@ -47,9 +47,10 @@
 //!
 //! See also module [signing-keys].
 
-use std::{collections::BTreeMap, ops::Deref};
+use std::{collections::BTreeMap, ops::Deref, str::FromStr};
 
-use refined::{boundable::unsigned::Equals, type_string, Refinement, TypeString};
+use lazy_static::lazy_static;
+use regex::Regex;
 use scylla::{
     deserialize::{DeserializationError, DeserializeValue, FrameSlice, TypeCheckError},
     frame::response::result::ColumnType,
@@ -62,7 +63,7 @@ use scylla::{
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace};
 
-use crate::util::{Key, RegexPredicate};
+use crate::util::Key;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -70,6 +71,10 @@ pub enum Error {
     // BadVersionString { text: String, backtrace: Backtrace },
     #[snafu(display("No pepper available"))]
     NoPepper { backtrace: Backtrace },
+    #[snafu(display("Peppers must be 32 octets in length"))]
+    PepperLength { backtrace: Backtrace },
+    #[snafu(display("Could not parse {text} as a pepper version"))]
+    Pepper { text: String, backtrace: Backtrace },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -80,18 +85,56 @@ type StdResult<T, E> = std::result::Result<T, E>;
 //                                        Pepper Versions                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-type_string!(VersionIdRegex, "^pepper-ver:[-a-zA-Z0-9]+$");
-
-type RefinedString = Refinement<String, RegexPredicate<VersionIdRegex>>;
+lazy_static! {
+    static ref VERSION_ID: Regex = Regex::new("^pepper-ver:[-a-zA-Z0-9]+$").unwrap(/* known good */);
+}
 
 /// Newtype, correct by construction, version string for pepper versions.
 ///
 /// Pepper versions are strings of the form "pepper-ver:[-a-zA-Z0-9]".
 ///
 /// Pepper versions have to be serializable so that we can write them down alongside user password hashes.
-// Arrrghhh... need to make this a newtype in order to implement traits on it...
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct Version(RefinedString);
+#[serde(transparent)]
+pub struct Version(String);
+
+impl Version {
+    pub fn new(s: &str) -> Result<Version> {
+        if VERSION_ID.find(s).is_none() {
+            PepperSnafu { text: s.to_owned() }.fail()
+        } else {
+            Ok(Version(s.to_owned()))
+        }
+    }
+}
+
+impl FromStr for Version {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Version::new(s)
+    }
+}
+
+impl AsRef<str> for Version {
+    fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
+impl Deref for Version {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Version> for String {
+    fn from(value: Version) -> Self {
+        value.0
+    }
+}
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Version {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
@@ -101,10 +144,8 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Version {
         typ: &'metadata ColumnType<'metadata>,
         v: Option<FrameSlice<'frame>>,
     ) -> StdResult<Self, DeserializationError> {
-        Ok(Self(
-            RefinedString::refine(<String as DeserializeValue>::deserialize(typ, v)?)
-                .map_err(DeserializationError::new)?,
-        ))
+        Version::new(&<String as DeserializeValue>::deserialize(typ, v)?)
+            .map_err(DeserializationError::new)
     }
 }
 
@@ -123,13 +164,55 @@ impl SerializeValue for Version {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// A [Pepper] is a 32-octet key
-pub type Pepper = Refinement<Key, Equals<32>>;
+#[derive(Clone, Debug, Deserialize)]
+#[serde(transparent)]
+pub struct Pepper(Key);
 
-fn default_pepper() -> Pepper {
-    use rand::RngCore;
-    let mut bytes: Vec<u8> = vec![0; 32]; // 128 bits
-    argon2::password_hash::rand_core::OsRng.fill_bytes(&mut bytes);
-    Pepper::refine(bytes.into()).unwrap()
+impl Pepper {
+    pub fn new(key: Key) -> Result<Pepper> {
+        if key.len() == 32 {
+            Ok(Pepper(key))
+        } else {
+            PepperLengthSnafu.fail()
+        }
+    }
+}
+
+impl Default for Pepper {
+    fn default() -> Self {
+        use rand::RngCore;
+        let mut bytes: Vec<u8> = vec![0; 32]; // 128 bits
+        argon2::password_hash::rand_core::OsRng.fill_bytes(&mut bytes);
+        Pepper(bytes.into())
+    }
+}
+
+impl TryFrom<Key> for Pepper {
+    type Error = Error;
+
+    fn try_from(value: Key) -> std::result::Result<Self, Self::Error> {
+        Pepper::new(value)
+    }
+}
+
+impl AsRef<Key> for Pepper {
+    fn as_ref(&self) -> &Key {
+        self.deref()
+    }
+}
+
+impl Deref for Pepper {
+    type Target = Key;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Pepper> for Key {
+    fn from(value: Pepper) -> Self {
+        value.0
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -145,13 +228,8 @@ impl Default for Peppers {
     fn default() -> Self {
         Peppers {
             peppers: BTreeMap::from_iter(vec![(
-                Version(
-                    RefinedString::refine(
-                        chrono::Local::now().format("pepper-ver:%Y%m%d").to_string(),
-                    )
-                    .unwrap(),
-                ),
-                default_pepper(),
+                Version(chrono::Local::now().format("pepper-ver:%Y%m%d").to_string()),
+                Pepper::default(),
             )]),
         }
     }

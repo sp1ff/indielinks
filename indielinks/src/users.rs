@@ -36,12 +36,12 @@ use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 
 use crate::{
-    authn,
-    authn::{check_api_key, check_password, check_token, AuthnScheme},
+    authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     counter_add,
     entities::{self, User, UserApiKey, UserEmail, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
+    origin::Origin,
     peppers::{self, Peppers},
     signing_keys::{self, SigningKeys},
     storage::{self, Backend as StorageBackend},
@@ -261,7 +261,7 @@ async fn authenticate(
         storage: &(dyn StorageBackend + Send + Sync),
         peppers: &Peppers,
         keys: &SigningKeys,
-        domain: &str,
+        origin: &Origin,
     ) -> Result<User> {
         // This logic is esentially duplicated in `delicious`-- if this is a recurring pattern
         // across APIs, re-factor.
@@ -283,7 +283,7 @@ async fn authenticate(
                 .await
                 .context(InvalidCredentialsSnafu),
             AuthnScheme::BearerToken(token_string) => {
-                check_token(storage, &token_string, keys, domain)
+                check_token(storage, &token_string, keys, origin.host())
                     .await
                     .context(InvalidCredentialsSnafu)
             }
@@ -300,7 +300,7 @@ async fn authenticate(
         state.storage.as_ref(),
         &state.pepper,
         &state.signing_keys,
-        &state.domain,
+        &state.origin,
     )
     .await
     {
@@ -494,7 +494,7 @@ async fn login(
         peppers: &Peppers,
         token_lifetime: &Duration,
         signing_keys: &SigningKeys,
-        domain: &str,
+        origin: &Origin,
         username: &Username,
         password: SecretString,
     ) -> Result<LoginRsp> {
@@ -513,11 +513,16 @@ async fn login(
             })?;
 
         let (keyid, signing_key) = signing_keys.current().context(NoKeysSnafu)?;
-        let token = mint_token(username, &keyid, &signing_key, domain, token_lifetime).context(
-            TokenSnafu {
-                username: username.clone(),
-            },
-        )?;
+        let token = mint_token(
+            username,
+            &keyid,
+            &signing_key,
+            origin.host(),
+            token_lifetime,
+        )
+        .context(TokenSnafu {
+            username: username.clone(),
+        })?;
         Ok(LoginRsp { token })
     }
 
@@ -526,7 +531,7 @@ async fn login(
         &state.pepper,
         &state.token_lifetime,
         &state.signing_keys,
-        &state.domain,
+        &state.origin,
         &login_req.username,
         login_req.password,
     )

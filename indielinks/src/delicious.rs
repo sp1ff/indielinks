@@ -33,9 +33,10 @@
 use crate::{
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     counter_add,
-    entities::{self, Post, PostDay, PostUri, Tagname, User, UserApiKey, Username},
+    entities::{self, Post, PostDay, PostId, PostUri, Tagname, User, UserApiKey, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
+    origin::Origin,
     peppers::Peppers,
     signing_keys::SigningKeys,
     storage::{self, Backend as StorageBackend, DateRange},
@@ -419,7 +420,7 @@ async fn authenticate(
         storage: &(dyn StorageBackend + Send + Sync),
         peppers: &Peppers,
         keys: &SigningKeys,
-        domain: &str,
+        origin: &Origin,
     ) -> Result<User> {
         // Ahhhh... the joys of HTTP. Ostensibly, we expect authorization credentials in the
         // Authorization header. Of course, there's nothing stopping a client from including
@@ -449,7 +450,7 @@ async fn authenticate(
                 .await
                 .context(InvalidCredentialsSnafu),
             AuthnScheme::BearerToken(token_string) => {
-                check_token(storage, &token_string, keys, domain)
+                check_token(storage, &token_string, keys, origin.host())
                     .await
                     .context(InvalidCredentialsSnafu)
             }
@@ -467,7 +468,7 @@ async fn authenticate(
         state.storage.as_ref(),
         &state.pepper,
         &state.signing_keys,
-        &state.domain,
+        &state.origin,
     )
     .await
     {
@@ -631,6 +632,7 @@ async fn add_post(
                 // Question: should we resolve defaults here, or in the storage backend?
                 req.replace.unwrap_or(true),
                 &req.url,
+                &PostId::default(),
                 &req.title,
                 &dt,
                 &req.notes,

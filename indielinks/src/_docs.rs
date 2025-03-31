@@ -81,3 +81,127 @@
 //!    background processing system; instantiate your struct and invoke `send()`.
 //!
 //! [indielinks]: crate
+//!
+//! ## Refined Types in [indielinks]
+//!
+//! Nb this may turn into a blog post at some point.
+//!
+//! ### What Is a Refinement Type?
+//!
+//! A [Refinement Type] is a sub-type that restricts the parent type in some way. For instance, if
+//! the `string` type contains all valid UTF-8-encoded bytestrings, the type of all such strings
+//! whose byte values are valid *ASCII* encodings (which is more strict) could be termed a *refined
+//! type*.
+//!
+//! [Refinement Type]: https://en.wikipedia.org/wiki/Refinement_type
+//!
+//! In type systems that support dependent types, refinement types can be implemented as a pair
+//! whose first element is of the parent type & whose second is a predicate asserting the additional
+//! condition. In such type systems, one can express "the type of all unsigned ints less than five",
+//! for example. And if one tries to instantiate that type with six, the compiler will complain.
+//!
+//! ### Refinement Types in Rust
+//!
+//! Rust doesn't (fully) support dependent types, but it does at least support
+//! correct-by-construction types. The approach is typically this: create a newtype struct with a
+//! private interior, and provide a fallible constructor or constructors taking the parent type that
+//! will enforce the additional constraint and only return an instance of the newtype if it's
+//! satisfied. For instance:
+//!
+//! ```
+//! use std::result::Result;
+//!
+//! pub struct AsciiString(String);
+//!
+//! impl AsciiString {
+//!     pub fn new(s: &str) -> Result<AsciiString, String> {
+//!         if !s.is_ascii() {
+//!             Err("Not ASCII".to_owned())
+//!         } else {
+//!             Ok(AsciiString(s.to_owned()))
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! Even this, however, brings up some questions:
+//!
+//! - Does the refinement type have a natural implementation of the [Default] trait?
+//!
+//! - Does the refinement type have a natural implementation of the [Display] trait? Nb that
+//!   implementing [Display] will automatically implement [ToString]
+//!
+//!   [Display]: std::fmt::Display
+//!
+//! - Does the refinement type have natural implementations of the following (commonly derived)
+//!   traits?
+//!
+//!   - [Clone]
+//!
+//!   - [Copy]
+//!
+//!   - [Debug]
+//!
+//!   - [Eq]
+//!
+//!   - [Hash]
+//!
+//!   - [Ord]
+//!
+//!   - [PartialEq]
+//!
+//!   - [PartialOrd]
+//!
+//!   - [ToOwned]: generally implemented for !Sized !Clone; i.e. `&str`, `Box<str>` and so on
+//!
+//!   - [Borrow]: not sure about this one, either: "Types express that they can be borrowed as some
+//!     type T by implementing `Borrow<T>`.... A type is free to borrow as several different types."
+//!
+//!     [Borrow]: std::borrow::Borrow
+//!
+//! - Should we dispense with the constructor and implement [TryFrom]? The difference here is that
+//!   [TryFrom] consumes its argument; I suppose we could implement for `&str` (or "reference to
+//!   whatever") If the refined type is [String], then [TryFrom] isn't needed-- just implement
+//!   [FromStr] and have users call `parse()`
+//!
+//!   [FromStr]: std::str::FromStr
+//!
+//! - If the type being refined can naturally be represented as a [String], should [FromStr] be
+//!   implemented? This will allow us to read instances via [str::parse].
+//!
+//! - The refined type should be usable wherever the parent type is required. This is generally done
+//!   by implementing [AsRef] and [Deref] (the former is typically implemented in terms of the
+//!   latter). You'll also likely want to implement [From] on the parent type for the refined type.
+//!   [TryFrom] isn't needed, since the conversion from refined type to parent type is infallible.
+//!
+//!   [Deref]: std::ops::Deref
+//!
+//! - Depending on the application's needs there may be additional traits that need to be
+//!   implemented on the newytpe: [Serialize] and/or [Deserialize], for instance
+//!
+//! Unfortunately, I don't see an obvious way to generalize this. Maybe a proc macro that takes
+//! assorted options?
+//!
+//! ### Attempts to Express Refinement Types at the Type Level in Rust
+//!
+//! - [nutype](https://github.com/greyblake/nutype) "is a proc macro that allows adding extra
+//!   constraints like sanitization and validation to the regular newtype pattern." This is, I
+//!   suppose, the sort of procedural macro I was imagining, except that they express the
+//!   constraints in a DSL rather than free-form code
+//!
+//! - [refined-type](https://github.com/tomoikey/refined_type) takes the approach of requiring
+//!   you to implement a trait for each rule, but uses proc macros to combine them
+//!
+//! - [refined]: the most promising approach I've found; it
+//!   promises no macros as well as composibility. Unfortunately, this crate is young and (perhaps
+//!   understandably) seems to have made a choice to depend on the nightly toolchain rather than
+//!   stable.
+//!
+//! [refined]: https://github.com/jkaye2012/refined
+//!
+//! ### Refined Types in [indielinks]
+//!
+//! At this point, and at the risk of indulging my tendency to "just code it up", I think I'm going
+//! to go with just coding-up my refined types by hand, while both keeping an eye on the [refined]
+//! crate and looking for patterns in my own refined types that might be amenable to abstraction,
+//! even through macros.

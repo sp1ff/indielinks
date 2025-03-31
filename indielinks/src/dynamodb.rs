@@ -21,7 +21,7 @@
 
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
-    entities::{Post, PostDay, PostUri, Tagname, User, UserId, Username},
+    entities::{Post, PostDay, PostId, PostUri, Tagname, User, UserId, Username},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
@@ -329,6 +329,7 @@ impl storage::Backend for Client {
         user: &User,
         replace: bool,
         uri: &PostUri,
+        id: &PostId,
         title: &str,
         dt: &DateTime<Utc>,
         notes: &Option<String>,
@@ -339,6 +340,7 @@ impl storage::Backend for Client {
         let day: PostDay = dt.into();
         let post = Post::new(
             uri,
+            id,
             &user.id(),
             dt,
             &day,

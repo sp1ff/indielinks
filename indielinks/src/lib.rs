@@ -32,6 +32,7 @@ pub mod dynamodb;
 pub mod entities;
 pub mod http;
 pub mod metrics;
+pub mod origin;
 pub mod peppers;
 pub mod scylla;
 #[path = "signing-keys.rs"]

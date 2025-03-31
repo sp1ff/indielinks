@@ -17,7 +17,10 @@
 ///
 /// Integration tests run against an indielinks configured with the Scylla storage back-end.
 use common::{run, Configuration, IndielinksTest};
-use indielinks::entities::{UserId, Username};
+use indielinks::{
+    entities::{UserId, Username},
+    origin::Origin,
+};
 use indielinks_test::{
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
@@ -193,7 +196,7 @@ inventory::submit!(IndielinksTest {
 
 inventory::submit!(IndielinksTest {
     name: "010delicious_posts_recent",
-    test_fn: |cfg, helper| { Box::pin(posts_recent(cfg.url, cfg.username, cfg.api_key, helper)) },
+    test_fn: |cfg, helper| { Box::pin(posts_recent(cfg.url, cfg.username, cfg.api_key, helper,)) },
 });
 
 inventory::submit!(IndielinksTest {
@@ -223,7 +226,11 @@ inventory::submit!(IndielinksTest {
 inventory::submit!(IndielinksTest {
     name: "030webfinger_smoke",
     test_fn: |cfg: Configuration, _helper| {
-        Box::pin(webfinger_smoke(cfg.url, cfg.username, cfg.domain))
+        Box::pin(webfinger_smoke(
+            cfg.url,
+            cfg.username,
+            TryInto::<Origin>::try_into(cfg.indielinks.clone()).unwrap(/* fail the test if this fails */),
+        ))
     },
 });
 
@@ -233,7 +240,7 @@ inventory::submit!(IndielinksTest {
         Box::pin(accept_follow_smoke(
             cfg.url,
             cfg.username,
-            cfg.domain,
+            TryInto::<Origin>::try_into(cfg.indielinks.clone()).unwrap(/* fail the test if this fails */),
             cfg.local_port,
         ))
     },

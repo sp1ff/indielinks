@@ -15,12 +15,12 @@
 
 //! Integration tests for the webfinger endpoint.
 
-use indielinks::{acct::Account, entities::Username};
+use indielinks::{acct::Account, entities::Username, origin::Origin};
 use libtest_mimic::Failed;
 use reqwest::{StatusCode, Url};
 
 /// Exercise webfinger in a few simple ways
-pub async fn webfinger_smoke(url: Url, username: Username, domain: String) -> Result<(), Failed> {
+pub async fn webfinger_smoke(url: Url, username: Username, origin: Origin) -> Result<(), Failed> {
     // No or malformed `resource` query param => 400 Bad Request
     let rsp = reqwest::get(url.join("/.well-known/webfinger")?)
         .await?
@@ -28,7 +28,7 @@ pub async fn webfinger_smoke(url: Url, username: Username, domain: String) -> Re
     assert_eq!(rsp, StatusCode::BAD_REQUEST);
 
     // This is kind of lame; I'm not guaranteed that user "sp1ff2" doesn't actually exist.
-    let acct = Account::from_user_and_host("sp1ff2", &domain)?;
+    let acct = Account::from_user_and_host("sp1ff2", origin.host())?;
 
     // `resource` names someone unknown => 404 Not Found
     let rsp = reqwest::get(url.join(&format!(
@@ -39,7 +39,7 @@ pub async fn webfinger_smoke(url: Url, username: Username, domain: String) -> Re
     .status();
     assert_eq!(rsp, StatusCode::NOT_FOUND);
 
-    let acct = Account::from_user_and_host(&username, &domain)?;
+    let acct = Account::from_user_and_host(&username, origin.host())?;
 
     let rsp = reqwest::get(url.join(&format!(
         "/.well-known/webfinger?resource={}",
