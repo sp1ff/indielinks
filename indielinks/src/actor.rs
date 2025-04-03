@@ -26,22 +26,23 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
-use http::{header, Method};
+use http::Method;
 use itertools::Itertools;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
-use tap::{Conv, Pipe};
-use tracing::{debug, error, info, warn};
+use tap::Pipe;
+use tracing::{debug, error, info};
 use url::Url;
 use uuid::Uuid;
 
 use crate::{
+    activity_pub::send_activity_pub_no_response,
     ap_entities::{
-        self, make_key_id, make_user_followers, to_jrd, Accept, Announce, BoostFollowOrLike,
-        Follow, Like, Undo,
+        self, make_user_followers, Accept, Announce, BoostFollowOrLike, Follow, Jld, Like, ToJld,
+        Undo,
     },
-    authn::{self, check_sha_256_content_digest, sign_request},
+    authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     counter_add,
     entities::{User, UserUrl, Username},
@@ -114,10 +115,7 @@ pub enum Error {
     #[snafu(display("Failed to obtain an Actor public key: {source}"))]
     PublicKey { source: ap_entities::Error },
     #[snafu(display("Failed to buld an http request: {source}"))]
-    Request {
-        source: http::Error,
-        backtrace: Backtrace,
-    },
+    Request { source: crate::activity_pub::Error },
     #[snafu(display("Failed to resolve a key ID to an Actor: {source}"))]
     ResolveKeyId { source: crate::ap_entities::Error },
     #[snafu(display("Couldn't parse the signature string: {source}"))]
@@ -388,15 +386,14 @@ inventory::submit! { metrics::Registration::new("actor.errors", Sort::IntegralCo
 // Not sure this is really how I want to handle this. Leaving it for now, to see if this is a
 // repeating pattern.
 trait Actor {
-    fn as_jrd(&self, origin: &Origin) -> Result<String>;
+    fn as_jrd(&self, origin: &Origin) -> Result<Jld>;
     fn as_html(&self) -> String;
 }
 
 impl Actor for User {
-    fn as_jrd(&self, origin: &Origin) -> Result<String> {
-        ap_entities::to_jrd(
-            crate::ap_entities::Actor::new(self, origin).context(ActorSnafu)?,
-            ap_entities::Type::Person,
+    fn as_jrd(&self, origin: &Origin) -> Result<Jld> {
+        ap_entities::Jld::new(
+            &crate::ap_entities::Actor::new(self, origin).context(ActorSnafu)?,
             None,
         )
         .context(JrdSnafu)
@@ -446,7 +443,7 @@ async fn actor(
         Ok((user, crate::http::Accept::ActivityPub)) => match user.as_jrd(&state.origin) {
             Ok(jrd) => {
                 counter_add!(state.instruments, "actor.retrieved", 1, &[]);
-                patch_content_type((StatusCode::OK, jrd).into_response())
+                patch_content_type((StatusCode::OK, jrd.to_string()).into_response())
             }
             Err(err) => handle_err(err, &state.instruments, "actor.errors"),
         },
@@ -518,58 +515,25 @@ impl Task<Context> for AcceptFollow {
             self.actor_inbox
         );
 
-        // We need to respond to Follows with an Accept; this is largely a stub implementation.
-        let accept = Accept::for_follow(self.user.username(), &self.follow, &self.origin)
-            .map_err(|err| BckError::new(AcceptResponseSnafu.into_error(err)))?
-            .pipe(|accept| to_jrd(accept, ap_entities::Type::Accept, None))
-            .map_err(|err| BckError::new(JrdSnafu.into_error(err)))?
-            .conv::<axum::body::Body>();
-
-        // It feels a little weird to me to send the Accept "inline" with handling the Follow; in
-        // general, our peer will "see" the Accept before they've finished reading our response to their
-        // Follow. It would feel more natural to me to respond to this Follow request and schedule the
-        // Accept to be sent later, but axum doesn't provide any such facility (tho I suppose I could
-        // just build it).
-        //
-        // Still, our peer should be prepared for this; even if I *did* send the accept after writing
-        // our response to this process' socket buffer, there's really no guarantee the response will
-        // arrive there ahead of the subsequent Accept request.
-        let inbox = self.actor_inbox;
-        let request = http::request::Request::builder()
-            .method(Method::POST)
-            .uri(inbox.as_str())
-            .header(header::CONTENT_TYPE, "application/activity+json")
-            .header(
-                header::DATE,
-                Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+        async fn exec1(this: Box<AcceptFollow>, context: Context) -> Result<()> {
+            send_activity_pub_no_response(
+                &this.user,
+                &this.origin,
+                Method::POST,
+                &this.actor_inbox,
+                Some(
+                    &Accept::for_follow(this.user.username(), &this.follow, &this.origin)
+                        .context(AcceptResponseSnafu)?,
+                ),
+                None,
+                &context.client,
+                None,
             )
-            .header(header::HOST, inbox.host_str().unwrap())
-            .body(accept)
-            .map_err(|err| BckError::new(RequestSnafu.into_error(err)))?;
-
-        let key_id = make_key_id(self.user.username(), &self.origin)
-            .map_err(|err| BckError::new(KeyIdSnafu.into_error(err)))?;
-        let request = sign_request(request, key_id.as_ref(), self.user.priv_key().as_ref())
             .await
-            .map_err(|err| BckError::new(SigningSnafu.into_error(err)))?;
-
-        debug!("Accept HTTP request: {:?}", request);
-
-        let rsp = context
-            .client
-            .execute(request)
-            .await
-            .map_err(|err| BckError::new(AcceptSnafu.into_error(err)))?;
-
-        debug!("Accept HTTP response: {:#?}", rsp);
-
-        // We expect no response body, and we don't concern ourselves with the precise status code, so
-        // long as it denotes success. Later, we could conditionally retry.
-        if !rsp.status().is_success() {
-            warn!("Accept request failed: {:#?}", rsp);
+            .context(RequestSnafu)
         }
 
-        Ok(())
+        exec1(self, context).await.map_err(BckError::new)
     }
     fn timeout(&self) -> Option<Duration> {
         None
@@ -750,6 +714,15 @@ pub struct CollectionPage {
     pub ordered_items: Option<Vec<UserUrl>>,
 }
 
+impl ToJld for CollectionPage {
+    fn get_type(&self) -> ap_entities::Type {
+        match self.part_of {
+            Some(_) => ap_entities::Type::CollectionPage,
+            None => ap_entities::Type::OrderedCollection,
+        }
+    }
+}
+
 /// Retrieve a user's followers collection
 async fn followers(
     State(state): State<Arc<Indielinks>>,
@@ -776,18 +749,19 @@ async fn followers(
             )?;
         // and extract their followers:
         let followers = user.followers();
+        let num_followers = user.num_followers();
         let followers_id = make_user_followers(username, origin).context(ApIdSnafu)?;
         let first = followers_id.join("?page=0").context(JoinSnafu)?;
         // What we do now depends on `page`; if...
         match page {
             Some(page_num) => {
                 // we have a page, we need to extract the corresponding chunk from `followers`...
-                let items = match followers.iter().chunks(page_size).into_iter().nth(page_num) {
+                let items = match followers.chunks(page_size).into_iter().nth(page_num) {
                     Some(chunk) => chunk.into_iter().cloned().collect::<Vec<UserUrl>>(),
                     None => vec![],
                 };
                 // conditionally compute the `next` attribute...
-                let next = ((page_num + 1) * page_size < followers.len()).then_some(
+                let next = ((page_num + 1) * page_size < num_followers).then_some(
                     followers_id
                         .join(&format!("?page={}", page_num + 1))
                         .context(JoinSnafu)?,
@@ -795,7 +769,7 @@ async fn followers(
                 // and finally construct our page:
                 CollectionPage {
                     id: followers_id.clone(),
-                    total_items: followers.len(),
+                    total_items: num_followers,
                     first: Some(first),
                     next,
                     part_of: Some(followers_id),
@@ -806,7 +780,7 @@ async fn followers(
             // attribute (`first`) that tells our caller how to begin the pagination:
             None => CollectionPage {
                 id: followers_id,
-                total_items: followers.len(),
+                total_items: num_followers,
                 first: Some(first),
                 next: None,
                 part_of: None,
@@ -825,17 +799,10 @@ async fn followers(
     )
     .await
     {
-        Ok(ref page) => match to_jrd(
-            page,
-            match page.part_of {
-                Some(_) => ap_entities::Type::CollectionPage,
-                None => ap_entities::Type::OrderedCollection,
-            },
-            None,
-        ) {
+        Ok(ref page) => match Jld::new(page, None) {
             Ok(jrd) => {
                 counter_add!(state.instruments, "followers.pages", 1, &[]);
-                patch_content_type((StatusCode::OK, jrd).into_response())
+                patch_content_type((StatusCode::OK, jrd.to_string()).into_response())
             }
             Err(err) => handle_err(err, &state.instruments, "followers.errors"),
         },

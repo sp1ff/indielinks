@@ -86,6 +86,8 @@ use uuid::Uuid;
 use crate::{
     counter_add, gauge_setu,
     metrics::{self, Instruments, Sort},
+    origin::Origin,
+    storage::Backend as StorageBackend,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -531,9 +533,11 @@ mod mock {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Context {
+    pub origin: Origin,
     pub client: reqwest::Client,
+    pub storage: Arc<dyn StorageBackend + Send + Sync>,
 }
 
 /// In order to "register" a background task type, you need to assign a tag (just using a [Uuid] for

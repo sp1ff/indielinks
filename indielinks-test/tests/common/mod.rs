@@ -19,11 +19,13 @@
 //!
 //! Code common to the indielinks integration test framework goes here. See [indielinks_test] for a
 //! full description.
-use either::Either;
-use indielinks::entities::Username;
-
-use indielinks::background_tasks::Backend as TasksBackend;
+use indielinks::{
+    background_tasks::Backend as TasksBackend, entities::Username,
+    storage::Backend as StorageBackend,
+};
 use indielinks_test::Helper;
+
+use either::Either;
 use libtest_mimic::Failed;
 use reqwest::Url;
 use serde::Deserialize;
@@ -235,6 +237,7 @@ pub struct BackgroundTest {
     pub test_fn: fn(
         Configuration,
         Arc<dyn TasksBackend + Send + Sync>,
+        Arc<dyn StorageBackend + Send + Sync>,
     ) -> futures::future::BoxFuture<'static, std::result::Result<(), Failed>>,
 }
 

@@ -31,7 +31,9 @@
 //! different structures to represent responses. This has resulted in a little more boilerplate.
 
 use crate::{
+    activity_pub::SendCreate,
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
+    background_tasks::{BackgroundTasks, Sender},
     counter_add,
     entities::{self, Post, PostDay, PostId, PostUri, Tagname, User, UserApiKey, Username},
     http::{ErrorResponseBody, Indielinks},
@@ -182,6 +184,11 @@ pub enum Error {
         source: Box<storage::Error>,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to send the Create activity for Post {postid}: {source}"))]
+    SendCreate {
+        postid: PostId,
+        source: crate::background_tasks::Error,
+    },
     #[snafu(display("Failed to fetch the tag cloud for {uri}: {source}"))]
     TagCloudForUri {
         uri: PostUri,
@@ -331,6 +338,10 @@ impl Error {
             } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to rename {} to {}: {}", old, new, source),
+            ),
+            Error::SendCreate { postid: _, source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to schedule send of Create activity: {}", source),
             ),
             Error::UpdateUserPostTimes { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -616,6 +627,7 @@ async fn add_post(
         req: PostAddReq,
         request: axum::extract::Request,
         storage: &(dyn StorageBackend + Send + Sync),
+        sender: &Arc<BackgroundTasks>,
     ) -> Result<bool> {
         // I'm torn as to how to handle this; given the API offered by axum, there's no way to
         // enforce this at compile-time. OTOH, it's tough to do anything in this API *without* the
@@ -626,17 +638,20 @@ async fn add_post(
         let tags = parse_tag_parameter(&req.tags)?;
         // Figure-out the post time:
         let dt = req.dt.unwrap_or(Utc::now());
+        // Gin-up a new `PostId`, in case this is a new post:
+        let postid = PostId::default();
+        let shared = req.shared.unwrap_or(false);
         let added = storage
             .add_post(
                 user,
                 // Question: should we resolve defaults here, or in the storage backend?
                 req.replace.unwrap_or(true),
                 &req.url,
-                &PostId::default(),
+                &postid,
                 &req.title,
                 &dt,
                 &req.notes,
-                req.shared.unwrap_or(false),
+                shared,
                 req.to_read.unwrap_or(false),
                 &tags,
             )
@@ -647,6 +662,16 @@ async fn add_post(
                 .update_user_post_times(user, &dt)
                 .await
                 .context(UpdateUserPostTimesSnafu)?;
+            if shared {
+                debug!(
+                    "Scheduling Post {} for communication to all federated servers",
+                    postid
+                );
+                sender
+                    .send(SendCreate::new(&postid, &dt))
+                    .await
+                    .context(SendCreateSnafu { postid })?;
+            }
         }
         Ok(added)
     }
@@ -656,7 +681,13 @@ async fn add_post(
     // <https://gist.github.com/takashi/2967f9c5ec8ebab5f622#file-pydelicious-py-L117>, e.g.) This
     // seems unfortunate, so for now at least, I'm going to break backwards compatibility & actually
     // return an HTTP status code suitable to the result.
-    let (status_code, status) = match add_post1(post_add_req, request, state.storage.as_ref()).await
+    let (status_code, status) = match add_post1(
+        post_add_req,
+        request,
+        state.storage.as_ref(),
+        &state.task_sender,
+    )
+    .await
     {
         Ok(true) => {
             counter_add!(state.instruments, "delicious.posts.added", 1, &[]);

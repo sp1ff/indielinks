@@ -99,7 +99,13 @@ impl State {
 
 inventory::submit!(BackgroundTest {
     name: "010first_background_test",
-    test_fn: |_cfg: Configuration, backend| { Box::pin(first_background(backend)) },
+    test_fn: |cfg: Configuration, backend, storage| {
+        Box::pin(first_background(
+            cfg.indielinks.try_into().unwrap(),
+            backend,
+            storage,
+        ))
+    },
 });
 
 fn main() -> Result<()> {
@@ -153,7 +159,8 @@ fn main() -> Result<()> {
                     let rt = rt.clone();
                     let cfg = config.clone();
                     let session = state.session.clone();
-                    move || rt.block_on(async { (test.test_fn)(cfg, session).await })
+                    let storage = state.session.clone();
+                    move || rt.block_on(async { (test.test_fn)(cfg, session, storage).await })
                 })
             })
             .collect(),

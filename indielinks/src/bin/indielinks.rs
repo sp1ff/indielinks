@@ -733,7 +733,9 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
         let task_sender = nosql_tasks.clone();
         // Setup the context for our tasks
         let context = Context {
+            origin: cfg.public_origin.clone(),
             client: client.clone(),
+            storage: storage.clone(),
         };
         // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
         // processing in an orderly manner:

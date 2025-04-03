@@ -31,7 +31,8 @@ use aws_config::{meta::region::RegionProviderChain, BehaviorVersion, Region};
 use aws_sdk_dynamodb::{
     config::Credentials,
     operation::{
-        batch_write_item::BatchWriteItemError, put_item::PutItemError, update_item::UpdateItemError,
+        batch_write_item::BatchWriteItemError, get_item::GetItemError, put_item::PutItemError,
+        update_item::UpdateItemError,
     },
     types::{AttributeValue, PutRequest, ReturnValue, WriteRequest},
 };
@@ -39,7 +40,10 @@ use chrono::{DateTime, Duration, Utc};
 use either::Either;
 use itertools::Itertools;
 use secrecy::SecretString;
-use serde_dynamo::aws_sdk_dynamodb_1::{from_items, to_item};
+use serde_dynamo::{
+    aws_sdk_dynamodb_1::{from_items, to_item},
+    from_item,
+};
 use snafu::{Backtrace, IntoError, Snafu};
 use tap::Pipe;
 use url::Url;
@@ -235,6 +239,12 @@ impl std::convert::From<SdkError<BatchWriteItemError, HttpResponse>> for StorErr
 
 impl std::convert::From<SdkError<DeleteItemError, HttpResponse>> for StorError {
     fn from(value: SdkError<DeleteItemError, HttpResponse>) -> Self {
+        StorError::new(value)
+    }
+}
+
+impl std::convert::From<SdkError<GetItemError, HttpResponse>> for StorError {
+    fn from(value: SdkError<GetItemError, HttpResponse>) -> Self {
         StorError::new(value)
     }
 }
@@ -485,56 +495,6 @@ impl storage::Backend for Client {
         Ok(())
     }
 
-    async fn get_posts_by_day(
-        &self,
-        user: &User,
-        tags: &UpToThree<Tagname>,
-    ) -> StdResult<Vec<(PostDay, usize)>, StorError> {
-        let mut query = self
-            .client
-            .query()
-            .table_name("posts")
-            .key_condition_expression("user_id=:id")
-            .projection_expression("day")
-            .expression_attribute_values(":id", AttributeValue::S(user.id().to_string()));
-        match tags {
-            UpToThree::None => {}
-            UpToThree::One(tag) => {
-                query = query
-                    .filter_expression("contains(tags,:tag)")
-                    .expression_attribute_values(":tag", AttributeValue::S(tag.to_string()));
-            }
-            UpToThree::Two(tag0, tag1) => {
-                query = query
-                    .filter_expression("contains(tags,:tag0) and contains(tags,:tag1)")
-                    .expression_attribute_values(":tag0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":tag1", AttributeValue::S(tag1.to_string()));
-            }
-            UpToThree::Three(tag0, tag1, tag2) => {
-                query = query
-                    .filter_expression(
-                        "contains(tags,:tag0) and contains(tags,:tag1) and contains(tags,:tag2)",
-                    )
-                    .expression_attribute_values(":tag0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":tag1", AttributeValue::S(tag1.to_string()))
-                    .expression_attribute_values(":tag2", AttributeValue::S(tag2.to_string()));
-            }
-        }
-        query
-            .send()
-            .await?
-            .items()
-            .to_vec()
-            .pipe(from_items::<Days>)?
-            .into_iter()
-            .map(|x| x.day)
-            .counts()
-            .into_iter()
-            .sorted_by_key(|(d, _n)| d.clone())
-            .collect::<Vec<(PostDay, usize)>>()
-            .pipe(Ok)
-    }
-
     async fn get_posts(
         &self,
         user: &User,
@@ -589,6 +549,75 @@ impl storage::Backend for Client {
             .items()
             .to_vec()
             .pipe(from_items::<Post>)?
+            .pipe(Ok)
+    }
+
+    async fn get_post_by_id(&self, id: &PostId) -> StdResult<Option<Post>, StorError> {
+        self.client
+            .query()
+            .table_name("posts")
+            .index_name("posts_by_id")
+            .select(aws_sdk_dynamodb::types::Select::AllAttributes)
+            .key_condition_expression("id=:id")
+            .expression_attribute_values(":id", AttributeValue::S(id.to_string()))
+            .send()
+            .await?
+            .items()
+            .to_vec()
+            .pipe(from_items::<Post>)?
+            .into_iter()
+            .at_most_one()
+            .map_err(StorError::new)?
+            .pipe(Ok)
+    }
+
+    async fn get_posts_by_day(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+    ) -> StdResult<Vec<(PostDay, usize)>, StorError> {
+        let mut query = self
+            .client
+            .query()
+            .table_name("posts")
+            .key_condition_expression("user_id=:id")
+            .projection_expression("day")
+            .expression_attribute_values(":id", AttributeValue::S(user.id().to_string()));
+        match tags {
+            UpToThree::None => {}
+            UpToThree::One(tag) => {
+                query = query
+                    .filter_expression("contains(tags,:tag)")
+                    .expression_attribute_values(":tag", AttributeValue::S(tag.to_string()));
+            }
+            UpToThree::Two(tag0, tag1) => {
+                query = query
+                    .filter_expression("contains(tags,:tag0) and contains(tags,:tag1)")
+                    .expression_attribute_values(":tag0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":tag1", AttributeValue::S(tag1.to_string()));
+            }
+            UpToThree::Three(tag0, tag1, tag2) => {
+                query = query
+                    .filter_expression(
+                        "contains(tags,:tag0) and contains(tags,:tag1) and contains(tags,:tag2)",
+                    )
+                    .expression_attribute_values(":tag0", AttributeValue::S(tag0.to_string()))
+                    .expression_attribute_values(":tag1", AttributeValue::S(tag1.to_string()))
+                    .expression_attribute_values(":tag2", AttributeValue::S(tag2.to_string()));
+            }
+        }
+        query
+            .send()
+            .await?
+            .items()
+            .to_vec()
+            .pipe(from_items::<Days>)?
+            .into_iter()
+            .map(|x| x.day)
+            .counts()
+            .into_iter()
+            .sorted_by_key(|(d, _n)| d.clone())
+            .collect::<Vec<(PostDay, usize)>>()
             .pipe(Ok)
     }
 
@@ -789,6 +818,19 @@ impl storage::Backend for Client {
             .into_iter()
             .flat_map(|x| x.tags)
             .counts()
+            .pipe(Ok)
+    }
+
+    async fn get_user_by_id(&self, id: &UserId) -> StdResult<Option<User>, StorError> {
+        self.client
+            .get_item()
+            .table_name("users")
+            .key("id", AttributeValue::S(id.to_string()))
+            .send()
+            .await?
+            .item
+            .map(from_item)
+            .transpose()?
             .pipe(Ok)
     }
 

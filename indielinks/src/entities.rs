@@ -908,6 +908,12 @@ impl AsRef<str> for UserUrl {
     }
 }
 
+impl AsRef<Url> for UserUrl {
+    fn as_ref(&self) -> &Url {
+        &self.0
+    }
+}
+
 impl From<UserUrl> for Url {
     fn from(value: UserUrl) -> Self {
         value.0
@@ -933,6 +939,7 @@ impl TryFrom<String> for UserUrl {
         Ok(UserUrl(Url::parse(&s).context(UserUrlSnafu { text: s })?))
     }
 }
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                              User                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1069,8 +1076,8 @@ impl User {
     pub fn first_update(&self) -> Option<DateTime<Utc>> {
         self.first_update
     }
-    pub fn followers(&self) -> &HashSet<UserUrl> {
-        &self.followers
+    pub fn followers(&self) -> impl Iterator<Item = &UserUrl> {
+        self.followers.iter()
     }
     pub fn hash(&self) -> UserHashString {
         self.password_hash.clone()
@@ -1120,6 +1127,9 @@ impl User {
             pepper_version: pepper_version.clone(),
             followers: HashSet::new(),
         })
+    }
+    pub fn num_followers(&self) -> usize {
+        self.followers.len()
     }
     pub fn pepper_version(&self) -> PepperVersion {
         self.pepper_version.clone()
@@ -1563,9 +1573,6 @@ pub struct Post {
 }
 
 impl Post {
-    pub fn delete_tag(&mut self, tag: &Tagname) {
-        self.tags.remove(tag);
-    }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         url: &PostUri,
@@ -1595,6 +1602,15 @@ impl Post {
     pub fn day(&self) -> PostDay {
         self.day.clone()
     }
+    pub fn delete_tag(&mut self, tag: &Tagname) {
+        self.tags.remove(tag);
+    }
+    pub fn id(&self) -> PostId {
+        self.id
+    }
+    pub fn notes(&self) -> Option<&str> {
+        self.notes.as_deref()
+    }
     pub fn posted(&self) -> DateTime<Utc> {
         self.posted
     }
@@ -1603,8 +1619,11 @@ impl Post {
             self.tags.insert(to.clone());
         }
     }
-    pub fn tags(&self) -> HashSet<Tagname> {
-        self.tags.clone()
+    pub fn tags(&self) -> impl Iterator<Item = &Tagname> {
+        self.tags.iter()
+    }
+    pub fn title(&self) -> &str {
+        &self.title
     }
     pub fn url(&self) -> PostUri {
         self.url.clone()

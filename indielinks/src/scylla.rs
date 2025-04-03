@@ -258,12 +258,14 @@ enum PreparedStatements {
     GetAllPosts14,
     GetAllPosts15,
     GetPostsForTag,
+    GetPostById,
     RenameTag,
     AddFollower,
     InsertTask,
     ScanTasks,
     TakeLease,
     FinishTask,
+    GetUserById,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -348,7 +350,8 @@ impl Session {
             "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
             "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
             "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and tags contains ? allow filtering",
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and tags contains ? allow filtering", // GetPosts15
+            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where id=?", // GetPostById
             // I hate to add the `if exists` clause here, making this an LWT, but if I don't I
             // expose myself to the possibility of a post being deleted out from under me while
             // renaming, which would leave the system in an invalid state.
@@ -358,6 +361,7 @@ impl Session {
             "select * from tasks where done=false and lease_expires < ? allow filtering",
             "update tasks set lease_expires = ? where id = ? if lease_expires = ?",
             "update tasks set done=true where id=?",
+            "select * from users where id=?",
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -374,7 +378,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 46] = prepared_statements
+        let prepared_statements: [PreparedStatement; 48] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -600,63 +604,15 @@ impl storage::Backend for Session {
                 batch.append_statement(
                     self.prepared_statements[PreparedStatements::RenameTag].clone(),
                 );
-                batch_values.push((post.tags(), user.id(), post.url()));
+                batch_values.push((
+                    post.tags().cloned().collect::<HashSet<Tagname>>(),
+                    user.id(),
+                    post.url(),
+                ));
             });
 
         self.session.batch(&batch, batch_values).await?;
         Ok(())
-    }
-
-    async fn get_posts_by_day(
-        &self,
-        user: &User,
-        tags: &UpToThree<Tagname>,
-    ) -> StdResult<Vec<(PostDay, usize)>, StorError> {
-        // Use `execute_paged`?
-        match tags {
-            UpToThree::None => {
-                self.session
-                    .execute_unpaged(
-                        &self.prepared_statements[PreparedStatements::GetPostsByDay0],
-                        (user.id(),),
-                    )
-                    .await
-            }
-            UpToThree::One(tag) => {
-                self.session
-                    .execute_unpaged(
-                        &self.prepared_statements[PreparedStatements::GetPostsByDay1],
-                        (user.id(), tag),
-                    )
-                    .await
-            }
-            UpToThree::Two(tag0, tag1) => {
-                self.session
-                    .execute_unpaged(
-                        &self.prepared_statements[PreparedStatements::GetPostsByDay2],
-                        (user.id(), tag0, tag1),
-                    )
-                    .await
-            }
-            UpToThree::Three(tag0, tag1, tag2) => {
-                self.session
-                    .execute_unpaged(
-                        &self.prepared_statements[PreparedStatements::GetPostsByDay3],
-                        (user.id(), tag0, tag1, tag2),
-                    )
-                    .await
-            }
-        }?
-        .into_rows_result()?
-        .rows::<(PostDay,)>()?
-        .map(|x| x.map(|y| y.0))
-        .collect::<StdResult<Vec<PostDay>, _>>()?
-        .into_iter()
-        .counts()
-        .into_iter()
-        .sorted_by_key(|(d, _n)| d.clone())
-        .collect::<Vec<(PostDay, usize)>>()
-        .pipe(Ok)
     }
 
     async fn get_posts(
@@ -711,6 +667,73 @@ impl storage::Backend for Session {
         .into_rows_result()?
         .rows::<Post>()?
         .collect::<StdResult<Vec<Post>, _>>()?
+        .pipe(Ok)
+    }
+
+    async fn get_post_by_id(&self, id: &PostId) -> StdResult<Option<Post>, StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::GetPostById],
+                (id,),
+            )
+            .await?
+            .into_rows_result()?
+            .rows::<Post>()?
+            .at_most_one()
+            .map_err(|_| StorError::new(AtMostOneRowSnafu.build()))?
+            .transpose()?
+            .pipe(Ok)
+    }
+
+    async fn get_posts_by_day(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+    ) -> StdResult<Vec<(PostDay, usize)>, StorError> {
+        // Use `execute_paged`?
+        match tags {
+            UpToThree::None => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetPostsByDay0],
+                        (user.id(),),
+                    )
+                    .await
+            }
+            UpToThree::One(tag) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetPostsByDay1],
+                        (user.id(), tag),
+                    )
+                    .await
+            }
+            UpToThree::Two(tag0, tag1) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetPostsByDay2],
+                        (user.id(), tag0, tag1),
+                    )
+                    .await
+            }
+            UpToThree::Three(tag0, tag1, tag2) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetPostsByDay3],
+                        (user.id(), tag0, tag1, tag2),
+                    )
+                    .await
+            }
+        }?
+        .into_rows_result()?
+        .rows::<(PostDay,)>()?
+        .map(|x| x.map(|y| y.0))
+        .collect::<StdResult<Vec<PostDay>, _>>()?
+        .into_iter()
+        .counts()
+        .into_iter()
+        .sorted_by_key(|(d, _n)| d.clone())
+        .collect::<Vec<(PostDay, usize)>>()
         .pipe(Ok)
     }
 
@@ -920,6 +943,21 @@ impl storage::Backend for Session {
             .pipe(Ok)
     }
 
+    async fn get_user_by_id(&self, id: &UserId) -> StdResult<Option<User>, StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::GetUserById],
+                (id,),
+            )
+            .await?
+            .into_rows_result()?
+            .rows::<User>()?
+            .at_most_one()
+            .map_err(|_| StorError::new(AtMostOneRowSnafu.build()))?
+            .transpose()?
+            .pipe(Ok)
+    }
+
     async fn rename_tag(
         &self,
         user: &User,
@@ -950,7 +988,11 @@ impl storage::Backend for Session {
                 batch.append_statement(
                     self.prepared_statements[PreparedStatements::RenameTag].clone(),
                 );
-                batch_values.push((post.tags(), user.id(), post.url()));
+                batch_values.push((
+                    post.tags().cloned().collect::<HashSet<Tagname>>(),
+                    user.id(),
+                    post.url(),
+                ));
             });
 
         self.session.batch(&batch, batch_values).await?;

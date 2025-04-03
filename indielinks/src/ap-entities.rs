@@ -116,7 +116,9 @@
 //! compatibility with as many other apps as possible.
 //!
 
-use chrono::{DateTime, FixedOffset};
+use std::{collections::HashMap, fmt::Display, ops::Deref};
+
+use chrono::{DateTime, FixedOffset, Utc};
 use picky::key::PublicKey as PickyPublicKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -124,7 +126,7 @@ use snafu::{Backtrace, ResultExt, Snafu};
 use url::Url;
 
 use crate::{
-    entities::{self, User, Username},
+    entities::{self, Post, PostId, User, Username},
     origin::Origin,
 };
 
@@ -143,6 +145,11 @@ pub enum Error {
     JsonSer { source: serde_json::Error },
     #[snafu(display("AP entities serialized to unexpected JSON types"))]
     JsonTypeMismatch { backtrace: Backtrace },
+    #[snafu(display("The note {note:?} did not serialize to a map-- this is a bug"))]
+    NoteNotMap {
+        note: Box<Note>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
     Pem { source: entities::Error },
     #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
@@ -157,6 +164,11 @@ pub enum Error {
         source: Box<reqwest::Error>,
         // backtrace not included because it would make the error too large
     },
+    #[snafu(display("Failed serializing to a JSON Value: {source}"))]
+    ToValue {
+        source: serde_json::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to parse an URL: {source}"))]
     UrlParse {
         source: url::ParseError,
@@ -170,16 +182,26 @@ type Result<T> = std::result::Result<T, Error>;
 //                                       Standard Locations                                       //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// Return an URL naming a public key
+pub fn make_key_id(username: &Username, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}#main-key", origin, username)).context(UrlParseSnafu)
+}
+
+/// Return an RUL naming a user's "followers" collection
+pub fn make_user_followers(username: &Username, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/followers", origin, username,)).context(UrlParseSnafu)
+}
+
+/// Return an RUL naming a user's "following" collection
+pub fn make_user_following(username: &Username, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/following", origin, username)).context(UrlParseSnafu)
+}
+
 /// Return an URL naming an indielinks user
 ///
 /// `hostname` may be a DNS name, hostname or IP address. It may include a port.
 pub fn make_user_id(username: &Username, origin: &Origin) -> Result<Url> {
     Url::parse(&format!("{}/users/{}", origin, username)).context(UrlParseSnafu)
-}
-
-/// Return an URL naming a public key owner
-pub fn make_key_id(username: &Username, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}#main-key", origin, username)).context(UrlParseSnafu)
 }
 
 pub fn make_user_inbox(username: &Username, origin: &Origin) -> Result<Url> {
@@ -190,12 +212,20 @@ pub fn make_user_outbox(username: &Username, origin: &Origin) -> Result<Url> {
     Url::parse(&format!("{}/users/{}/outbox", origin, username)).context(UrlParseSnafu)
 }
 
-pub fn make_user_following(username: &Username, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/following", origin, username)).context(UrlParseSnafu)
+pub fn make_user_post_create_id(
+    username: &Username,
+    postid: &PostId,
+    origin: &Origin,
+) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/posts/{}", origin, username, postid)).context(UrlParseSnafu)
 }
 
-pub fn make_user_followers(username: &Username, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/followers", origin, username,)).context(UrlParseSnafu)
+pub fn make_user_post_id(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!(
+        "{}/users/{}/posts/{}/activity",
+        origin, username, postid
+    ))
+    .context(UrlParseSnafu)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -220,6 +250,57 @@ impl Default for Context {
         }
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       Converting to JLD                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Sum type representing the permissible values for the "type" field in a JLD document, as supported
+/// by [indielinks].
+///
+/// [indielinks]: crate
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Serialize)]
+pub enum Type {
+    Accept,
+    Actor,
+    Announce,
+    Create,
+    Follow,
+    Like,
+    Note,
+    Person,
+    OrderedCollection,
+    CollectionPage,
+}
+
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Type::Accept => "Accept",
+                Type::Actor => "Person",
+                Type::Announce => "Announce",
+                Type::Create => "Create",
+                Type::Follow => "Follow",
+                Type::Like => "Like",
+                Type::Note => "Note",
+                Type::Person => "Person",
+                Type::OrderedCollection => "OrderedCollection",
+                Type::CollectionPage => "CollectionPage",
+            }
+        )
+    }
+}
+
+pub trait ToJld: Serialize {
+    fn get_type(&self) -> Type;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             Actor                                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct InlineId {
@@ -328,6 +409,19 @@ impl Actor {
     pub fn public_key(&self) -> Result<PickyPublicKey> {
         PickyPublicKey::from_pem_str(&self.public_key.public_key_pem).context(PickyPemSnafu)
     }
+    pub fn shared_inbox(&self) -> Option<&Url> {
+        // There must be a nicer way to do this
+        match self.endpoints {
+            None => None,
+            Some(ref x) => Some(&x.shared_inbox),
+        }
+    }
+}
+
+impl ToJld for Actor {
+    fn get_type(&self) -> Type {
+        Type::Actor
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -346,6 +440,16 @@ pub struct Announce {
     published: DateTime<FixedOffset>,
     cc: Vec<Url>,
 }
+
+impl ToJld for Announce {
+    fn get_type(&self) -> Type {
+        Type::Announce
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             Follow                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Follow {
@@ -372,6 +476,16 @@ impl Follow {
     }
 }
 
+impl ToJld for Follow {
+    fn get_type(&self) -> Type {
+        Type::Follow
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             Accept                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(untagged)]
 pub enum ObjectField {
@@ -395,6 +509,12 @@ impl Accept {
             object: ObjectField::Inline(follow_req.clone()),
             actor: ActorField::Iri(make_user_id(followed, origin)?),
         })
+    }
+}
+
+impl ToJld for Accept {
+    fn get_type(&self) -> Type {
+        Type::Accept
     }
 }
 
@@ -870,9 +990,169 @@ mod test {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                              Note                                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Note {
+    id: Url,
+    summary: Option<String>,
+    in_reply_to: Option<Url>,
+    published: DateTime<Utc>,
+    url: Url,
+    attributed_to: Url,
+    to: Vec<Url>,
+    cc: Vec<Url>,
+    content: twitter_text::Html,
+    // Should be using crate `isolang`: <https://docs.rs/isolang/latest/isolang/>
+    content_map: HashMap<String, twitter_text::Html>,
+    // Yet to be implemented:
+    // - tag
+    // - replies (Collection)
+    // - likes (Collection)
+    // - shares (Collection)
+}
+
+impl Note {
+    pub fn new(post: &Post, username: &Username, origin: &Origin) -> Result<Note> {
+        let post_html =
+            twitter_text::parse_post(origin, &post.url(), post.title(), post.notes(), post.tags());
+        Ok(Note {
+            id: make_user_post_id(username, &post.id(), origin)?,
+            // Not sure what I want to do with this; Mastodon sets it to null.
+            summary: None,
+            in_reply_to: None,
+            published: post.posted(),
+            // Setting this to the same value as `id` for now, but Mastodon sets them to different
+            // values: `http://indieweb.social/users/sp1ff/statuses/...` versus
+            // `http://indieweb.social/@sp1ff/...`
+            url: make_user_post_id(username, &post.id(), origin)?,
+            attributed_to: make_user_id(username, origin)?,
+            to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
+                .context(UrlParseSnafu)?],
+            cc: vec![make_user_followers(username, origin)?],
+            content: post_html.clone(),
+            content_map: HashMap::from([("en".to_owned(), post_html)]),
+        })
+    }
+}
+
+impl ToJld for Note {
+    fn get_type(&self) -> Type {
+        Type::Note
+    }
+}
+
+// It turns out there's a dark art to parsing URIs, mentions, hashtags &c out of "posts".
+// Conversely, we'll need to pull them out of the `Notes` that we'll be receiving from federated
+// servers. For right now, I'm going to code up the simplest implementation I can and make a "todo"
+// to revisit this. This module is named in homage to the Ruby Gem that appears to be the rosetta
+// stone for this process: `twitter-text`.
+mod twitter_text {
+    use std::fmt::Display;
+
+    use crate::{entities::PostUri, origin::Origin};
+
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+    pub struct Html(String);
+
+    impl Display for Html {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    pub fn parse_post<I: Iterator<Item: AsRef<str>>>(
+        origin: &Origin,
+        url: &PostUri,
+        title: &str,
+        notes: Option<&str>,
+        tags: I,
+    ) -> Html {
+        let untagged = match notes {
+            // Lame-- just include `s` verbatim
+            Some(s) => format!("<a href=\"{}\">{}</a>: {}", url, title, s),
+            None => format!("<a href=\"{}\">{}</a>", url, title),
+        };
+
+        let tagline = tags
+            .map(|t| {
+                format!(
+                    "<a href=\"{}/tags/{}\" class=\"hashtag\">#{}</a>",
+                    origin,
+                    t.as_ref(),
+                    t.as_ref()
+                )
+            })
+            .collect::<Vec<String>>()
+            .join(" ");
+
+        Html(if tagline.is_empty() {
+            untagged
+        } else {
+            format!("{} {}", untagged, tagline)
+        })
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             Create                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Create {
+    id: Url,
+    actor: Url,
+    published: DateTime<Utc>,
+    to: Vec<Url>,
+    cc: Vec<Url>,
+    object: serde_json::Map<String, serde_json::Value>,
+}
+
+impl TryFrom<Note> for Create {
+    type Error = Error;
+
+    fn try_from(note: Note) -> std::result::Result<Self, Self::Error> {
+        let val = serde_json::to_value(&note).context(ToValueSnafu)?;
+        let mut map = match val {
+            Value::Object(map) => map,
+            _ => {
+                // Almost panic-worthy, IMHO.
+                return NoteNotMapSnafu {
+                    note: Box::new(note),
+                }
+                .fail();
+            }
+        };
+        map.insert("type".to_owned(), Value::String("Note".to_owned()));
+        Ok(Create {
+            id: note.id.join("/activity").context(UrlParseSnafu)?,
+            actor: note.attributed_to,
+            published: note.published,
+            to: note.to,
+            cc: note.cc,
+            object: map,
+        })
+    }
+}
+
+impl ToJld for Create {
+    fn get_type(&self) -> Type {
+        Type::Create
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                  ActivityPub Entity Utilities                                  //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// Refactor this in terms of send_activity_pub? Maybe not worth the effort to sign the request
+// (since no-one should check this request of a signature-- it's a prerequisite for being able to
+// *make* a signature!)
 /// Resolve a key ID to a PublicKey
 pub async fn resolve_key_id(key_id: &Url, client: &reqwest::Client) -> Result<Actor> {
     client
@@ -888,52 +1168,46 @@ pub async fn resolve_key_id(key_id: &Url, client: &reqwest::Client) -> Result<Ac
         .context(ActorDeSnafu)
 }
 
-/// Sum type representing the permissible values for the "type" field in a JLD document
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Serialize)]
-pub enum Type {
-    Accept,
-    Actor,
-    Announce,
-    Follow,
-    Like,
-    Person,
-    OrderedCollection,
-    CollectionPage,
-}
+/// Newtype "proving" that the caller produced JSON-LD
+pub struct Jld(String);
 
-impl std::fmt::Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Type::Accept => "Accept",
-                Type::Actor => "Actor",
-                Type::Announce => "Announce",
-                Type::Follow => "Follow",
-                Type::Like => "Like",
-                Type::Person => "Person",
-                Type::OrderedCollection => "OrderedCollection",
-                Type::CollectionPage => "CollectionPage",
+impl Jld {
+    pub fn new<T: ToJld>(value: &T, context: Option<Context>) -> Result<Jld> {
+        let json_value = serde_json::to_value(value).context(JsonSerSnafu)?;
+        let context = context.unwrap_or_default();
+        let ctx = serde_json::to_value(context).context(JsonSerSnafu)?;
+        match (json_value, ctx) {
+            (Value::Object(mut val_map), Value::Object(mut ctx_map)) => {
+                val_map.append(&mut ctx_map);
+                val_map.insert(
+                    "type".to_owned(),
+                    Value::String(format!("{}", value.get_type())),
+                );
+                Ok(Jld(
+                    serde_json::to_string(&Value::Object(val_map)).context(JsonSerSnafu)?
+                ))
             }
-        )
+            _ => JsonTypeMismatchSnafu.fail(),
+        }
     }
 }
 
-/// Serialize an ActivityPub entity to JLD
-pub fn to_jrd<T>(value: T, ty: Type, context: Option<Context>) -> Result<String>
-where
-    T: Serialize,
-{
-    let value = serde_json::to_value(value).context(JsonSerSnafu)?;
-    let context = context.unwrap_or_default();
-    let ctx = serde_json::to_value(context).context(JsonSerSnafu)?;
-    match (value, ctx) {
-        (Value::Object(mut val_map), Value::Object(mut ctx_map)) => {
-            val_map.append(&mut ctx_map);
-            val_map.insert("type".to_owned(), Value::String(format!("{}", ty)));
-            serde_json::to_string(&Value::Object(val_map)).context(JsonSerSnafu)
-        }
-        _ => JsonTypeMismatchSnafu.fail(),
+impl Display for Jld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Deref for Jld {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl AsRef<str> for Jld {
+    fn as_ref(&self) -> &str {
+        self.deref()
     }
 }

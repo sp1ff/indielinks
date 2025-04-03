@@ -18,7 +18,7 @@
 //! Abstractions for the indielinks storage layer.
 
 use crate::{
-    entities::{Post, PostDay, PostId, PostUri, Tagname, User, Username},
+    entities::{Post, PostDay, PostId, PostUri, Tagname, User, UserId, Username},
     util::UpToThree,
 };
 
@@ -98,11 +98,7 @@ pub trait Backend {
     /// posts to avoid a join), this is likely to be an inefficient operation. I might want to consider
     /// special logic here for rate-limiting.
     async fn delete_tag(&self, user: &User, tag: &Tagname) -> Result<(), Error>;
-    async fn get_posts_by_day(
-        &self,
-        user: &User,
-        tags: &UpToThree<Tagname>,
-    ) -> Result<Vec<(PostDay, usize)>, Error>;
+    async fn get_post_by_id(&self, id: &PostId) -> Result<Option<Post>, Error>;
     /// Retrieve full posts with various filtering options
     async fn get_posts(
         &self,
@@ -111,6 +107,11 @@ pub trait Backend {
         day: &PostDay,
         uri: &Option<PostUri>,
     ) -> Result<Vec<Post>, Error>;
+    async fn get_posts_by_day(
+        &self,
+        user: &User,
+        tags: &UpToThree<Tagname>,
+    ) -> Result<Vec<(PostDay, usize)>, Error>;
     /// Retrieve all of a user's posts, optionally filtering by time & tags. The implementation shall
     /// return the tags in reverse chronological order.
     async fn get_all_posts(
@@ -128,6 +129,7 @@ pub trait Backend {
     ) -> Result<Vec<Post>, Error>;
     /// Retrieve the user's tag cloud
     async fn get_tag_cloud(&self, user: &User) -> Result<HashMap<Tagname, usize>, Error>;
+    async fn get_user_by_id(&self, id: &UserId) -> Result<Option<User>, Error>;
     /// Rename a tag for a user; since we've denormalized the tags (i.e. we store them along with the
     /// posts to avoid a join), this is likely to be an inefficient operation. I might want to consider
     /// special logic here for rate-limiting.

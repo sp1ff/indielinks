@@ -13,9 +13,9 @@
 // You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-/// # delicious-alternator
-///
-/// Integration tests run against an indielinks configured with the Dynamo storage back-end.
+//! # delicious-alternator
+//!
+//! Integration tests run against an indielinks configured with the Dynamo storage back-end.
 use common::{run, Configuration, IndielinksTest};
 use indielinks::entities::{Post, User, UserId, Username};
 use indielinks_test::{

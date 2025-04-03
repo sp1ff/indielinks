@@ -33,7 +33,7 @@ use axum::{
 use chrono::Utc;
 use indielinks::{
     actor::CollectionPage,
-    ap_entities::{self, to_jrd},
+    ap_entities::{self, Jld},
     authn::sign_request,
     entities::Username,
     origin::Origin,
@@ -129,7 +129,7 @@ pub async fn accept_follow_smoke(
     let request = make_request(
         axum::http::Method::POST,
         url.join(&format!("/users/{}/inbox", &username))?,
-        to_jrd(&follow, ap_entities::Type::Follow, None)?.into(),
+        Jld::new(&follow, None)?.to_string().into(),
         local_port,
         &priv_key,
     )
@@ -154,17 +154,17 @@ pub async fn accept_follow_smoke(
             get(|| async move {
                 (
                     http::status::StatusCode::OK,
-                    ap_entities::to_jrd(
-                        ap_entities::Actor::from_username_and_key(
+                    ap_entities::Jld::new(
+                        &ap_entities::Actor::from_username_and_key(
                             &Username::new("test-user").unwrap(),
                             &our_origin,
                             &pub_key,
                         )
                         .unwrap(),
-                        ap_entities::Type::Actor,
                         None,
                     )
-                    .unwrap(),
+                    .unwrap()
+                    .to_string(),
                 )
                     .into_response()
             }),
@@ -249,8 +249,8 @@ pub async fn accept_follow_smoke(
     let items = page.ordered_items.unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(
-        items[0].as_ref(),
-        &format!("http://localhost:{}/users/test-user", local_port)
+        items[0].to_string(),
+        format!("http://localhost:{}/users/test-user", local_port)
     );
 
     // Shut-down the server...

@@ -21,6 +21,8 @@ use indielinks::{
         TaggedTask, Task,
     },
     metrics::Instruments,
+    origin::Origin,
+    storage::Backend as StorageBackend,
 };
 
 use async_trait::async_trait;
@@ -144,7 +146,11 @@ inventory::submit! {
     }
 }
 
-pub async fn first_background(backend: Arc<dyn TasksBackend + Send + Sync>) -> Result<(), Failed> {
+pub async fn first_background(
+    origin: Origin,
+    backend: Arc<dyn TasksBackend + Send + Sync>,
+    storage: Arc<dyn StorageBackend + Send + Sync>,
+) -> Result<(), Failed> {
     // Ok: we have a `TasksBackend` instance. We'll use this to construct a `BackgroundTasks`
     // instance. This can both send & process tasks via `backend`.
     let tasks = Arc::new(BackgroundTasks::new(backend));
@@ -158,6 +164,8 @@ pub async fn first_background(backend: Arc<dyn TasksBackend + Send + Sync>) -> R
     let processor = background_tasks::new(
         tasks,
         Context {
+            origin,
+            storage,
             client: reqwest::Client::new(),
         },
         Some(Config {
