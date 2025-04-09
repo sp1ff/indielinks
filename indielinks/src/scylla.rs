@@ -143,6 +143,12 @@ pub enum Error {
         source: scylla::deserialize::DeserializationError,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to retrieve Post {postid}: {source}"))]
+    PostQuery {
+        postid: PostId,
+        source: scylla::transport::errors::QueryError,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to prepare statement: {stmt}: {source}"))]
     Prepare {
         stmt: String,
@@ -607,7 +613,7 @@ impl storage::Backend for Session {
                 batch_values.push((
                     post.tags().cloned().collect::<HashSet<Tagname>>(),
                     user.id(),
-                    post.url(),
+                    post.url().clone(),
                 ));
             });
 
@@ -991,7 +997,7 @@ impl storage::Backend for Session {
                 batch_values.push((
                     post.tags().cloned().collect::<HashSet<Tagname>>(),
                     user.id(),
-                    post.url(),
+                    post.url().clone(),
                 ));
             });
 

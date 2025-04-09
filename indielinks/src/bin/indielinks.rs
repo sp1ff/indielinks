@@ -82,6 +82,7 @@ use url::Url;
 use indielinks::{
     actor::make_router as make_actor_router,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
+    client::make_client,
     delicious::make_router as make_delicious_router,
     http::Indielinks,
     metrics::Instruments,
@@ -136,6 +137,8 @@ pub enum Error {
     Bind { source: std::io::Error },
     #[snafu(display("Failed to change directory: {source}"))]
     Changedir { source: std::io::Error },
+    #[snafu(display("Failed to create an HTTP client: {source}"))]
+    Client { source: indielinks::client::Error },
     #[snafu(display("Unable to read configuration file: {source}"))]
     ConfigNotFound {
         pth: PathBuf,
@@ -170,8 +173,6 @@ pub enum Error {
     PrometheusExporter {
         source: opentelemetry_sdk::metrics::MetricError,
     },
-    #[snafu(display("Failed to create an HTTP client: {source}"))]
-    ReqwestClient { source: reqwest::Error },
     #[snafu(display("Failed to connect to SycllaDB: {source}"))]
     Syclla { source: indielinks::scylla::Error },
     #[snafu(display("Failed to fork the indielinks process a second time: errno={errno}"))]
@@ -720,10 +721,9 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
 
     // Loop forever, handling SIGHUPs, until asked to terminate.
     loop {
-        let client = reqwest::ClientBuilder::new()
-            .user_agent(&cfg.user_agent)
-            .build()
-            .context(ReqwestClientSnafu)?;
+        let client =
+            make_client(&cfg.user_agent, instruments.clone(), None).context(ClientSnafu)?;
+
         // Re-build our database connections each pass, in case configuration values have changed:
         let (storage, tasks) = select_storage(&cfg.storage_config).await?;
         // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`

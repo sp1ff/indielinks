@@ -166,7 +166,7 @@ pub async fn first_background(
         Context {
             origin,
             storage,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::new().into(),
         },
         Some(Config {
             shutdown_timeout: Duration::from_secs(30),

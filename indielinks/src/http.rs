@@ -16,12 +16,17 @@
 use std::sync::Arc;
 
 use crate::{
-    background_tasks::BackgroundTasks, metrics, origin::Origin, peppers::Peppers,
-    signing_keys::SigningKeys, storage::Backend as StorageBackend,
+    background_tasks::BackgroundTasks,
+    metrics::{self},
+    origin::Origin,
+    peppers::Peppers,
+    signing_keys::SigningKeys,
+    storage::Backend as StorageBackend,
 };
 
 use axum::Json;
 use chrono::Duration;
+use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
@@ -102,9 +107,10 @@ impl Accept {
             .transpose()
             .context(HeaderValueSnafu)?
             .map(|s| {
+                tracing::warn!("s is ``{}''", s);
                 if s.contains("application/ld+json") || s.contains("application/activity+json") {
                     Ok(Accept::ActivityPub)
-                } else if s == "text/hml" {
+                } else if s == "text/html" || s == "*/*" {
                     Ok(Accept::Html)
                 } else {
                     UnsupportedAcceptSnafu {
@@ -124,7 +130,6 @@ impl Accept {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Application state available to all handlers
-// Not sure this is going to stay here.
 pub struct Indielinks {
     pub origin: Origin,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
@@ -133,7 +138,7 @@ pub struct Indielinks {
     pub pepper: Peppers,
     pub token_lifetime: Duration,
     pub signing_keys: SigningKeys,
-    pub client: reqwest::Client,
+    pub client: ClientWithMiddleware,
     pub collection_page_size: usize,
     pub task_sender: Arc<BackgroundTasks>,
 }

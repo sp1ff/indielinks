@@ -34,26 +34,25 @@ use chrono::Utc;
 use indielinks::{
     actor::CollectionPage,
     ap_entities::{self, Jld},
-    authn::sign_request,
+    authn::{ensure_sha_256, sign_request},
     entities::Username,
     origin::Origin,
 };
 use libtest_mimic::Failed;
 use picky::key::PrivateKey;
 use reqwest::{Client, Url};
-use tap::Pipe;
 use uuid::Uuid;
 
-/// Take an HTTP verb/method, URL and an axum [Body]. Return a signed reqwest Request. The signature
+/// Take an HTTP verb/method, URL and a reqwest [Body]. Return a signed reqwest Request. The signature
 /// uses a key ID of "http://localhost:{}/users/test-user".
 async fn make_request(
-    method: axum::http::Method,
+    method: http::Method,
     url: Url,
-    body: axum::body::Body,
+    body: reqwest::Body,
     local_port: u16,
     priv_key: &PrivateKey,
 ) -> Result<reqwest::Request, Failed> {
-    axum::http::Request::builder()
+    let req = http::Request::builder()
         .method(method)
         .uri(url.as_ref())
         .header(reqwest::header::CONTENT_TYPE, "application/activity+json")
@@ -62,18 +61,18 @@ async fn make_request(
             Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
         )
         .header(reqwest::header::HOST, "localhost")
-        .body(body)?
-        .pipe(|request| async move {
-            sign_request(
-                request,
-                &format!("http://localhost:{}/users/test-user", local_port),
-                priv_key,
-            )
-            // drive this future to completion before key_id goes out of scope
-            .await
-        })
-        .await?
-        .pipe(Ok)
+        .body(body)?;
+    let req = ensure_sha_256(req)?;
+    let (mut req, sig) = sign_request(
+        req,
+        &format!("http://localhost:{}/users/test-user", local_port),
+        priv_key,
+    )?;
+    req.headers_mut().append(
+        "Signature",
+        http::HeaderValue::from_str(&sig.to_string()[10..])?,
+    );
+    Ok(req.try_into()?)
 }
 
 struct TestState {
@@ -211,7 +210,7 @@ pub async fn accept_follow_smoke(
     let request = make_request(
         axum::http::Method::GET,
         url.join(&format!("/users/{}/followers", &username))?,
-        axum::body::Body::default(),
+        reqwest::Body::default(),
         local_port,
         &priv_key,
     )
@@ -228,7 +227,7 @@ pub async fn accept_follow_smoke(
     let request = make_request(
         axum::http::Method::GET,
         first,
-        axum::body::Body::default(),
+        reqwest::Body::default(),
         local_port,
         &priv_key,
     )

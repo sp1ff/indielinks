@@ -75,6 +75,7 @@ use indielinks::entities::Username;
 use libtest_mimic::Failed;
 use reqwest::Url;
 
+pub mod actor;
 pub mod background;
 pub mod delicious;
 pub mod follow;

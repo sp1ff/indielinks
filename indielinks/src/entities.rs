@@ -1625,8 +1625,8 @@ impl Post {
     pub fn title(&self) -> &str {
         &self.title
     }
-    pub fn url(&self) -> PostUri {
-        self.url.clone()
+    pub fn url(&self) -> &PostUri {
+        &self.url
     }
     pub fn user_id(&self) -> UserId {
         self.user_id

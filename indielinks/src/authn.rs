@@ -26,13 +26,14 @@ use base64::{prelude::BASE64_STANDARD, Engine};
 use http::header;
 use itertools::Itertools;
 use picky::{
-    hash::HashAlgorithm, http::http_signature::HttpSignatureBuilder, signature::SignatureAlgorithm,
+    hash::HashAlgorithm,
+    http::{http_signature::HttpSignatureBuilder, HttpSignature},
+    signature::SignatureAlgorithm,
 };
 use secrecy::SecretString;
 use sha2::Digest;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
-use tracing::debug;
 
 use crate::{
     entities::{self, User, UserApiKey, Username},
@@ -143,6 +144,8 @@ pub enum Error {
     SignatureToString {
         source: http::header::InvalidHeaderValue,
     },
+    #[snafu(display("Attempted to collect a body for a streaming response"))]
+    StreamingBody { backtrace: Backtrace },
     #[snafu(display("Failed to read the request body as bytes: {source}"))]
     ToBytes {
         source: axum::Error,
@@ -473,76 +476,105 @@ pub fn check_sha_256_content_digest(
     Ok(())
 }
 
-/// Maybe add a SHA-256 digest to a request
-///
-/// Take an axum [Request]. If there is already a digest header present, do nothing. If there is no
-/// digest header, compute the SHA-256 digest of the body & add a digest header. If there are more
-/// than one digest headers, fail.
-///
-/// [Request]: https://docs.rs/axum/latest/axum/extract/type.Request.html
-///
-/// In case of success, return the input request decomposed into [Parts] and the body bytes.
-///
-/// [Parts]: https://docs.rs/http/latest/http/request/struct.Parts.html
-pub async fn maybe_add_sha_256(
-    request: axum::extract::Request,
-) -> Result<(http::request::Parts, bytes::Bytes)> {
-    // If the request doesn't already have a Digest, generate one one:
-    let content_digests = request
+// /// Maybe add a SHA-256 digest to a request
+// ///
+// /// Take an axum [Request]. If there is already a digest header present, do nothing. If there is no
+// /// digest header, compute the SHA-256 digest of the body & add a digest header. If there are more
+// /// than one digest headers, fail.
+// ///
+// /// [Request]: https://docs.rs/axum/latest/axum/extract/type.Request.html
+// ///
+// /// In case of success, return the input request decomposed into [Parts] and the body bytes.
+// ///
+// /// [Parts]: https://docs.rs/http/latest/http/request/struct.Parts.html
+// pub async fn maybe_add_sha_256(
+//     request: axum::extract::Request,
+// ) -> Result<(http::request::Parts, bytes::Bytes)> {
+//     // If the request doesn't already have a Digest, generate one one:
+//     let content_digests = request
+//         .headers()
+//         .get_all("digest")
+//         .iter()
+//         .filter_map(|h| match h.to_str() {
+//             Ok(s) => {
+//                 if s.to_lowercase().starts_with("sha-256=") {
+//                     Some(s.to_owned())
+//                 } else {
+//                     None
+//                 }
+//             }
+//             Err(_) => None,
+//         })
+//         .collect::<Vec<String>>();
+
+//     // Break the request up into its parts:
+//     let (mut parts, body) = request.into_parts();
+//     let bytes = axum::body::to_bytes(body, 16384)
+//         .await
+//         .context(ToBytesSnafu)?;
+
+//     if content_digests.is_empty() {
+//         let mut hasher = sha2::Sha256::new();
+//         hasher.update(&bytes);
+//         let sha_256_result = format!(
+//             "sha-256={}",
+//             BASE64_STANDARD.encode(hasher.finalize().as_slice())
+//         );
+//         let digest = HeaderValue::from_str(&sha_256_result).context(DigestToHeaderValueSnafu)?;
+//         parts.headers.append("digest", digest);
+//     } else if 1 != content_digests.len() {
+//         return Err(Error::MultipleContentDigests);
+//     }
+
+//     Ok((parts, bytes))
+// }
+
+pub fn ensure_sha_256(
+    request: http::Request<reqwest::Body>,
+) -> Result<http::Request<reqwest::Body>> {
+    // Seems like a *lot* of work just to check for the presence of a SHA-256 digest... Ah: the joys
+    // of HTTP.
+    match request
         .headers()
         .get_all("digest")
         .iter()
-        .filter_map(|h| match h.to_str() {
-            Ok(s) => {
-                if s.to_lowercase().starts_with("sha-256=") {
-                    Some(s.to_owned())
-                } else {
-                    None
-                }
-            }
-            Err(_) => None,
+        .filter_map(|h| {
+            h.to_str()
+                .map(|s| {
+                    s.to_lowercase()
+                        .starts_with("sha-256=")
+                        .then_some(s.to_owned())
+                })
+                .unwrap_or(None)
         })
-        .collect::<Vec<String>>();
-
-    // Break the request up into its parts:
-    let (mut parts, body) = request.into_parts();
-    let bytes = axum::body::to_bytes(body, 16384)
-        .await
-        .context(ToBytesSnafu)?;
-
-    if content_digests.is_empty() {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&bytes);
-        let sha_256_result = format!(
-            "sha-256={}",
-            BASE64_STANDARD.encode(hasher.finalize().as_slice())
-        );
-        let digest = HeaderValue::from_str(&sha_256_result).context(DigestToHeaderValueSnafu)?;
-        parts.headers.append("digest", digest);
-    } else if 1 != content_digests.len() {
-        return Err(Error::MultipleContentDigests);
+        .at_most_one()
+        .map_err(|_| Error::MultipleContentDigests)?
+    {
+        Some(_) => Ok(request),
+        None => {
+            let (mut parts, body) = request.into_parts();
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(body.as_bytes().context(StreamingBodySnafu)?);
+            let sha_256_result = format!(
+                "sha-256={}",
+                BASE64_STANDARD.encode(hasher.finalize().as_slice())
+            );
+            parts.headers.append(
+                "digest",
+                HeaderValue::from_str(&sha_256_result).context(DigestToHeaderValueSnafu)?,
+            );
+            Ok(http::Request::from_parts(parts, body))
+        }
     }
-
-    Ok((parts, bytes))
 }
 
-/// Sign an outgoing request
-///
-/// Take an axum [Request]. Ensure that the `Date`, `Host`, and `Content-Type` headers are present.
-/// Add a `Digest` header if there isn't one already. Compute a [cavage] HTTP signature and add
-/// a `Signature` header. Return the resulting request as a `reqwest` Request.
-///
-/// [Request]: https://docs.rs/axum/latest/axum/extract/type.Request.html
-/// [cavage]: https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12
-pub async fn sign_request(
-    request: axum::extract::Request,
+pub fn sign_request(
+    request: http::Request<reqwest::Body>,
     key_id: &str,
     private_key: &picky::key::PrivateKey,
-) -> Result<reqwest::Request> {
-    // OK-- start by adding a SHA-256 digest, if it's not there already...
-    let (parts, bytes) = maybe_add_sha_256(request).await?;
+) -> Result<(http::Request<reqwest::Body>, HttpSignature)> {
+    let (parts, body) = request.into_parts();
 
-    // check that the other headers I'm signing are actually there...
     if !parts.headers.contains_key("Date") {
         return Err(Error::NoDateHeader);
     }
@@ -555,15 +587,14 @@ pub async fn sign_request(
         return Err(Error::NoContentTypeHeader);
     }
 
-    // and sign 'em:
     let http_signature = HttpSignatureBuilder::new()
         .key_id(key_id)
         .signature_method(
             private_key,
             SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
         )
-        // `picky::http::http_request::HttpRequest` trait is implemented for `http::request::Parts`
-        // for `http` crate with `http_trait_impl` feature gate
+        // `picky::http::http_request::HttpRequest` trait is implemented for
+        // `http::request::Parts` for `http` crate with `http_trait_impl` feature gate
         .generate_signing_string_using_http_request(&parts)
         .request_target()
         .http_header(header::CONTENT_TYPE.as_str())
@@ -573,22 +604,7 @@ pub async fn sign_request(
         .build()
         .context(SignatureSnafu)?;
 
-    // OK-- reconstitute the `http` request from the parts...
-    let http_req = http::request::Request::<reqwest::Body>::from_parts(parts, bytes.into());
-    // convert it to a `reqwest`, well, request...
-    let mut reqwest_req = reqwest::Request::try_from(http_req).context(RequestConversionSnafu)?;
-
-    // and add the `signature` header:
-    debug!(
-        "Setting a Signature header to: {}",
-        &http_signature.to_string()[10..]
-    );
-    reqwest_req.headers_mut().append(
-        "Signature",
-        HeaderValue::from_str(&http_signature.to_string()[10..]).context(SignatureToStringSnafu)?,
-    );
-
-    Ok(reqwest_req)
+    Ok((http::Request::from_parts(parts, body), http_signature))
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -884,7 +900,7 @@ ZQIDAQAB
     #[tokio::test]
     #[allow(unstable_name_collisions)]
     async fn test_signature_generation() {
-        // Let's build-up a test (axum) request:
+        // Let's build-up a test request:
         let body = "{\"@context\":[\"https://www.w3.org/ns/activitystreams\",\"https://w3id.org/security/v1\"],\"actor\":\"https://indiemark.local/users/sp1ff\",\"id\":\"https://indiemark.local/accepts/84b4ea535fb143dcba6cea35f258d03b\",\"object\":{\"actor\":\"http://localhost:3000/users/admin\",\"id\":\"http://localhost:3000/5480e6c4-66c4-472e-be04-3f2c6863d585\",\"object\":\"https://indiemark.local/users/sp1ff\"},\"type\":\"Accept\"}";
         // base64-encoded SHA-256 hash is: z5IYT+RvuPyi43aFGmvm0R/GpGYo8ItyZapm39loLfA=
         let mut hasher = sha2::Sha256::new();
@@ -894,7 +910,7 @@ ZQIDAQAB
             BASE64_STANDARD.encode(hasher.finalize().as_slice())
         ))
         .unwrap();
-        let body: axum::body::Body = body.into();
+        let body: reqwest::Body = body.into();
         let req = http::request::Request::builder()
             .method(Method::POST)
             .uri("http://localhost/users/admin/inbox".parse::<Uri>().unwrap())
@@ -908,25 +924,13 @@ ZQIDAQAB
         let priv_key = PrivateKey::from_pem_str("-----BEGIN RSA PRIVATE KEY-----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-----END RSA PRIVATE KEY-----").unwrap();
 
         // Now, sign it with my production code.
-        let signed_request = sign_request(req, "https://indiemark.local/users/sp1ff", &priv_key)
-            .await
-            .unwrap();
+        let (request, http_signature) =
+            sign_request(req, "https://indiemark.local/users/sp1ff", &priv_key).unwrap();
 
-        let signed_request_signature = signed_request
-            .headers()
-            .get("Signature")
-            .unwrap()
-            .to_str()
-            .unwrap();
-
-        eprintln!("{}", signed_request_signature);
+        eprintln!("{:#?}", http_signature);
 
         // Now, compute it "by hand"
-        let parsed_http_signature = signed_request_signature
-            .parse::<HttpSignature>()
-            .expect("Failed to parse http_signature");
-
-        let signing_string = parsed_http_signature
+        let signing_string = http_signature
             .headers
             .iter()
             .map(|header| match header {
@@ -934,19 +938,14 @@ ZQIDAQAB
                     format!(
                         "{}: {}",
                         name.to_lowercase(),
-                        signed_request
-                            .headers()
-                            .get(name)
-                            .unwrap()
-                            .to_str()
-                            .unwrap(),
+                        request.headers().get(name).unwrap().to_str().unwrap(),
                     )
                 }
                 picky::http::http_signature::Header::RequestTarget => {
                     format!(
                         "(request-target): {} {}",
-                        signed_request.method().as_str().to_lowercase(),
-                        signed_request.url().path()
+                        request.method().as_str().to_lowercase(),
+                        request.uri().path()
                     )
                 }
                 _ => panic!("Should never be..."),
@@ -1016,6 +1015,6 @@ ZQIDAQAB
             .to_vec();
         let b64 = BASE64_STANDARD.encode(signature.clone());
 
-        assert_eq!(b64, parsed_http_signature.signature);
+        assert_eq!(b64, http_signature.signature);
     }
 }

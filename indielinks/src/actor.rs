@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use axum::{
     extract::State,
     http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
-    response::{Html, IntoResponse},
+    response::IntoResponse,
     routing::{get, post},
     Extension, Json, Router,
 };
@@ -39,13 +39,13 @@ use uuid::Uuid;
 use crate::{
     activity_pub::send_activity_pub_no_response,
     ap_entities::{
-        self, make_user_followers, Accept, Announce, BoostFollowOrLike, Follow, Jld, Like, ToJld,
-        Undo,
+        self, make_user_followers, Accept, Actor, Announce, AsAccept, BoostFollowOrLike, Follow,
+        Jld, Like, Note, ToJld, Undo,
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     counter_add,
-    entities::{User, UserUrl, Username},
+    entities::{PostId, User, UserUrl, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
@@ -101,8 +101,15 @@ pub enum Error {
     },
     #[snafu(display("The signature does not cover the Digest with a non-trivial request body"))]
     MissingContentDigest,
+    #[snafu(display("No user named {username}"))]
     NoUser {
         username: Username,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("User {username} has no post with ID {postid}"))]
+    NoPost {
+        username: Username,
+        postid: PostId,
         backtrace: Backtrace,
     },
     #[snafu(display("Signature header value not UTF-8: {source}"))]
@@ -110,8 +117,20 @@ pub enum Error {
         source: http::header::ToStrError,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to convert Post {postid} to a Note: {source}"))]
+    Note {
+        postid: PostId,
+        source: crate::ap_entities::Error,
+    },
     #[snafu(display("Exactly one Signature header expected"))]
     OneSignature { backtrace: Backtrace },
+    #[snafu(display("No post {postid} for user {requested_username}"))]
+    PostUserMismatch {
+        postid: PostId,
+        requested_username: Username,
+        actual_username: Username,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to obtain an Actor public key: {source}"))]
     PublicKey { source: ap_entities::Error },
     #[snafu(display("Failed to buld an http request: {source}"))]
@@ -162,7 +181,9 @@ impl Error {
                 (StatusCode::NOT_FOUND, format!("Unknown user {}", username))
             }
             Error::NonUtf8Signature { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
+            Error::Note { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
             Error::OneSignature { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
+            Error::PostUserMismatch { .. } => (StatusCode::NOT_FOUND, format!("{}", self)),
             Error::PublicKey { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
             Error::ResolveKeyId { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
             Error::SignatureParse { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
@@ -221,7 +242,7 @@ async fn verify_signature(
     async fn verify_signature1(
         headers: axum::http::HeaderMap,  // := http::header::headerMap
         request: axum::extract::Request, // := http::request::Request
-        client: &reqwest::Client,
+        client: &reqwest_middleware::ClientWithMiddleware,
     ) -> Result<(axum::extract::Request, ap_entities::Actor)> {
         // Huh. Per <https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12>, the
         // signature should be transmitted in an Authorizatoin header, with a scheme of "Signature":
@@ -383,30 +404,6 @@ fn patch_content_type(mut rsp: axum::response::Response) -> axum::response::Resp
 inventory::submit! { metrics::Registration::new("actor.retrieved", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("actor.errors", Sort::IntegralCounter) }
 
-// Not sure this is really how I want to handle this. Leaving it for now, to see if this is a
-// repeating pattern.
-trait Actor {
-    fn as_jrd(&self, origin: &Origin) -> Result<Jld>;
-    fn as_html(&self) -> String;
-}
-
-impl Actor for User {
-    fn as_jrd(&self, origin: &Origin) -> Result<Jld> {
-        ap_entities::Jld::new(
-            &crate::ap_entities::Actor::new(self, origin).context(ActorSnafu)?,
-            None,
-        )
-        .context(JrdSnafu)
-    }
-    fn as_html(&self) -> String {
-        format!(
-            "<html><body>{} ({}@indiemark.sh)</body></html>",
-            self.display_name(),
-            self.username()
-        )
-    }
-}
-
 /// `/users/{username}` handler
 ///
 /// Return the ActivityPub [Person] corresponding to `username`. This can be as JSON-LD (if the
@@ -420,10 +417,11 @@ async fn actor(
     headers: HeaderMap,
 ) -> axum::response::Response {
     async fn actor1(
+        origin: &Origin,
         storage: &(dyn StorageBackend + Send + Sync),
         username: &Username,
         headers: &HeaderMap,
-    ) -> Result<(User, crate::http::Accept)> {
+    ) -> Result<(Actor, crate::http::Accept)> {
         let accept =
             crate::http::Accept::lookup_from_header_map(headers).context(AcceptLookupSnafu)?;
         let user = storage
@@ -436,20 +434,29 @@ async fn actor(
                 }
                 .build(),
             )?;
-        Ok((user, accept))
+        let actor = Actor::new(&user, origin).context(ActorSnafu)?;
+        Ok((actor, accept))
     }
 
-    match actor1(state.storage.as_ref(), &username, &headers).await {
-        Ok((user, crate::http::Accept::ActivityPub)) => match user.as_jrd(&state.origin) {
-            Ok(jrd) => {
+    match actor1(&state.origin, state.storage.as_ref(), &username, &headers).await {
+        Ok((actor, crate::http::Accept::ActivityPub)) => match actor.as_jld(None) {
+            Ok(jld) => {
                 counter_add!(state.instruments, "actor.retrieved", 1, &[]);
-                patch_content_type((StatusCode::OK, jrd.to_string()).into_response())
+                patch_content_type((StatusCode::OK, jld.to_string()).into_response())
             }
             Err(err) => handle_err(err, &state.instruments, "actor.errors"),
         },
-        Ok((user, crate::http::Accept::Html)) => {
-            counter_add!(state.instruments, "actor.retrieved", 1, &[]);
-            (StatusCode::OK, Html(user.as_html())).into_response()
+        Ok((actor, crate::http::Accept::Html)) => match actor.as_html() {
+            Ok(html) => {
+                counter_add!(state.instruments, "actor.retrieved", 1, &[]);
+                (StatusCode::OK, html.to_string()).into_response()
+            }
+            Err(err) => handle_err(err, &state.instruments, "actor.errors"),
+        },
+        Err(err @ Error::NoUser { .. }) => {
+            error!("{}", err);
+            counter_add!(state.instruments, "posts.served", 1, &[]);
+            StatusCode::NOT_FOUND.into_response()
         }
         Err(err) => handle_err(err, &state.instruments, "actor.errors"),
     }
@@ -516,18 +523,17 @@ impl Task<Context> for AcceptFollow {
         );
 
         async fn exec1(this: Box<AcceptFollow>, context: Context) -> Result<()> {
-            send_activity_pub_no_response(
+            send_activity_pub_no_response::<&'_ str, Accept>(
                 &this.user,
                 &this.origin,
                 Method::POST,
-                &this.actor_inbox,
+                this.actor_inbox.as_ref(),
                 Some(
                     &Accept::for_follow(this.user.username(), &this.follow, &this.origin)
                         .context(AcceptResponseSnafu)?,
                 ),
                 None,
                 &context.client,
-                None,
             )
             .await
             .context(RequestSnafu)
@@ -811,6 +817,93 @@ async fn followers(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             Posts                                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("posts.served", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("posts.errors", Sort::IntegralCounter) }
+
+async fn get_post(
+    State(state): State<Arc<Indielinks>>,
+    axum::extract::Path((username, postid)): axum::extract::Path<(Username, PostId)>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    async fn get_post1(
+        origin: &Origin,
+        storage: &(dyn StorageBackend + Send + Sync),
+        username: &Username,
+        postid: &PostId,
+        headers: &HeaderMap,
+    ) -> Result<(Note, crate::http::Accept)> {
+        let accept =
+            crate::http::Accept::lookup_from_header_map(headers).context(AcceptLookupSnafu)?;
+        let user = storage
+            .user_for_name(username)
+            .await
+            .context(StorageSnafu)?
+            .ok_or(
+                NoUserSnafu {
+                    username: username.clone(),
+                }
+                .build(),
+            )?;
+        let post = storage
+            .get_post_by_id(postid)
+            .await
+            .context(StorageSnafu)?
+            .ok_or(
+                NoPostSnafu {
+                    username: username.clone(),
+                    postid: *postid,
+                }
+                .build(),
+            )?;
+        // Check-- username as expected?
+        if user.username() != username {
+            return PostUserMismatchSnafu {
+                postid: *postid,
+                requested_username: username.clone(),
+                actual_username: user.username().clone(),
+            }
+            .fail();
+        }
+        let note = Note::new(&post, username, origin).context(NoteSnafu { postid: *postid })?;
+        Ok((note, accept))
+    }
+
+    match get_post1(
+        &state.origin,
+        state.storage.as_ref(),
+        &username,
+        &postid,
+        &headers,
+    )
+    .await
+    {
+        Ok((note, crate::http::Accept::ActivityPub)) => match note.as_jld(None) {
+            Ok(jld) => {
+                counter_add!(state.instruments, "posts.served", 1, &[]);
+                patch_content_type((StatusCode::OK, jld.to_string()).into_response())
+            }
+            Err(err) => handle_err(err, &state.instruments, "posts.errors"),
+        },
+        Ok((note, crate::http::Accept::Html)) => match note.as_html() {
+            Ok(html) => {
+                counter_add!(state.instruments, "posts.served", 1, &[]);
+                (StatusCode::OK, html.to_string()).into_response()
+            }
+            Err(err) => handle_err(err, &state.instruments, "posts.errors"),
+        },
+        Err(err @ Error::NoPost { .. }) => {
+            error!("{}", err);
+            counter_add!(state.instruments, "posts.served", 1, &[]);
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(err) => handle_err(err, &state.instruments, "posts.errors"),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -825,5 +918,6 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             )),
         )
         .route("/users/{username}/followers", get(followers))
+        .route("/users/{username}/posts/{postid}", get(get_post))
         .with_state(state)
 }

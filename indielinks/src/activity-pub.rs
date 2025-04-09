@@ -33,7 +33,7 @@ use either::Either;
 use futures::{stream, StreamExt};
 use http::{header, Method};
 use itertools::Itertools;
-use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
+use reqwest::IntoUrl;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace};
 use tap::Pipe;
@@ -43,9 +43,9 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    ap_entities::{self, make_key_id, Actor, Create, Jld, Note, ToJld, Type},
-    authn::sign_request,
+    ap_entities::{self, Actor, Create, Jld, Note, ToJld, Type},
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
+    client::request_builder,
     entities::{PostId, User, UserId, UserUrl, Username},
     origin::Origin,
 };
@@ -103,6 +103,11 @@ pub enum Error {
         postid: PostId,
         source: crate::storage::Error,
     },
+    #[snafu(display("Failed to send a request: {source}"))]
+    Request {
+        source: reqwest_middleware::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to deserialize the request body to JSON: {source}"))]
     RspJson {
         source: reqwest::Error,
@@ -117,6 +122,11 @@ pub enum Error {
     Signature {
         keyid: String,
         source: crate::authn::Error,
+    },
+    #[snafu(display("Conversion into an URL failed: {source}"))]
+    Url {
+        source: reqwest::Error,
+        backtrace: Backtrace,
     },
     #[snafu(display("{url} has no host component"))]
     UrlHost { url: Url, backtrace: Backtrace },
@@ -144,28 +154,18 @@ impl ToJld for () {
     }
 }
 
-// Consider a redesign of this API once ActivityPub support is fully implemented
 #[allow(clippy::too_many_arguments)]
-async fn send_activity_pub_core<B: ToJld + std::fmt::Debug>(
+async fn send_activity_pub_core<U: IntoUrl, B: ToJld + std::fmt::Debug>(
     user: &User,
     origin: &Origin,
     method: Method,
-    url: &Url,
+    url: U,
     body: Option<&B>,
     context: Option<ap_entities::Context>,
-    client: &reqwest::Client,
-    max_retries: Option<u32>,
+    client: &reqwest_middleware::ClientWithMiddleware,
 ) -> Result<reqwest::Response> {
-    debug!(
-        "Sending {:?} via {} to {:?} ({:?} retries)",
-        body, method, url, max_retries
-    );
-
-    // Begin building the request-- this stanza will include everything common to all indielinks
-    // ActivityPub requests.
-    let proto_request = http::request::Request::builder()
-        .method(method)
-        .uri(url.as_str())
+    let url = url.into_url().context(UrlSnafu)?;
+    request_builder(client, method, url.clone(), Some((user, origin)))
         .header(header::ACCEPT, "application/activity+json")
         .header(header::CONTENT_TYPE, "application/activity+json")
         .header(
@@ -175,71 +175,30 @@ async fn send_activity_pub_core<B: ToJld + std::fmt::Debug>(
         .header(
             header::HOST,
             url.host_str().context(UrlHostSnafu { url: url.clone() })?,
-        );
-    // The next stanza depends upon the request body:
-    let request = match body {
-        // If there *is* no body, just set the empty axum Body,
-        None => proto_request.body(axum::body::Body::empty()),
-        // but if there *is* a body...
-        Some(body) => {
-            // take our argument & serialize it to JSON-LD...
-            let body: axum::body::Body = Jld::new(body, context)
-                .context(JldSnafu)?
-                // convert that into it's parent type (i.e. `String`)...
-                .to_string()
-                // and convert *that* into an axum `Body`.
-                .into();
-            // Finally, set the body in the request.
-            proto_request.body(body)
-        }
-    }
-    .context(BodySnafu)?;
-
-    // Alright-- we have our request. We now sign it. The requirements around signing are a bit hazy
-    // to me. Some say you only have to sign `POST`s, but Mastodon has rejected even `GET` requests
-    // from me via `curl` with an error message explicitly stating that it was rejected due to the
-    // lack of a signature (!) For now, let's just sign everything.
-    let key_id = make_key_id(user.username(), origin).context(KeyIdSnafu {
-        username: user.username().clone(),
-    })?;
-    let request = sign_request(request, key_id.as_ref(), user.priv_key().as_ref())
+        )
+        .body::<reqwest::Body>(
+            body.map(|b| Jld::new(b, context).context(JldSnafu))
+                .transpose()?
+                .map(|jld| jld.into())
+                .unwrap_or_default(),
+        )
+        .send()
         .await
-        .context(SignatureSnafu { keyid: key_id })?;
-
-    // With that, let's send it. We wrap the provided client with middleware that will...
-    let retrying_client = reqwest_middleware::ClientBuilder::new(client.clone())
-        // retry with exponential backoff up to `max_retries` times.
-        .with(RetryTransientMiddleware::new_with_policy(
-            ExponentialBackoff::builder().build_with_max_retries(max_retries.unwrap_or(3)),
-        ))
-        .build();
-    // DO IT!
-    retrying_client.execute(request).await.context(SendApSnafu)
+        .context(RequestSnafu)
 }
 
 // Consider a redesign of this API once ActivityPub support is fully implemented
 #[allow(clippy::too_many_arguments)]
-pub async fn send_activity_pub_no_response<B: ToJld + std::fmt::Debug>(
+pub async fn send_activity_pub_no_response<U: IntoUrl, B: ToJld + std::fmt::Debug>(
     user: &User,
     origin: &Origin,
     method: Method,
-    url: &Url,
+    url: U,
     body: Option<&B>,
     context: Option<ap_entities::Context>,
-    client: &reqwest::Client,
-    max_retries: Option<u32>,
+    client: &reqwest_middleware::ClientWithMiddleware,
 ) -> Result<()> {
-    let response = send_activity_pub_core(
-        user,
-        origin,
-        method,
-        url,
-        body,
-        context,
-        client,
-        max_retries,
-    )
-    .await?;
+    let response = send_activity_pub_core(user, origin, method, url, body, context, client).await?;
 
     debug!("Got a response of {:?}", response);
 
@@ -253,27 +212,20 @@ pub async fn send_activity_pub_no_response<B: ToJld + std::fmt::Debug>(
 /// Send an ActivityPub entity, return the response as an ActivityPub entity
 // Consider a redesign of this API once ActivityPub support is fully implemented
 #[allow(clippy::too_many_arguments)]
-pub async fn send_activity_pub<B: ToJld + std::fmt::Debug, R: for<'de> Deserialize<'de>>(
+pub async fn send_activity_pub<
+    U: IntoUrl,
+    B: ToJld + std::fmt::Debug,
+    R: for<'de> Deserialize<'de>,
+>(
     user: &User,
     origin: &Origin,
     method: Method,
-    url: &Url,
+    url: U,
     body: Option<&B>,
     context: Option<ap_entities::Context>,
-    client: &reqwest::Client,
-    max_retries: Option<u32>,
+    client: &reqwest_middleware::ClientWithMiddleware,
 ) -> Result<R> {
-    let response = send_activity_pub_core(
-        user,
-        origin,
-        method,
-        url,
-        body,
-        context,
-        client,
-        max_retries,
-    )
-    .await?;
+    let response = send_activity_pub_core(user, origin, method, url, body, context, client).await?;
 
     debug!("Got a response of {:?}", response);
 
@@ -315,11 +267,10 @@ impl SendCreate {
         user: &User,
         origin: &Origin,
         follower: &UserUrl,
-        client: &reqwest::Client,
-        max_retries: Option<u32>,
+        client: &reqwest_middleware::ClientWithMiddleware,
     ) -> Result<Url> {
         debug!("Resolving follower {:?} to a public inbox...", follower);
-        send_activity_pub::<(), Actor>(
+        send_activity_pub::<&'_ str, (), Actor>(
             user,
             origin,
             Method::GET,
@@ -327,7 +278,6 @@ impl SendCreate {
             None,
             None,
             client,
-            max_retries,
         )
         .await?
         .shared_inbox()
@@ -414,13 +364,7 @@ impl Task<Context> for SendCreate {
             // change (since the last such call). I'm going to need to build a cache.
             let (proto_calls, errs): (Vec<_>, Vec<_>) = stream::iter(user.followers())
                 .then(|x| {
-                    SendCreate::follower_to_public_inbox(
-                        &user,
-                        &context.origin,
-                        x,
-                        &context.client,
-                        None,
-                    )
+                    SendCreate::follower_to_public_inbox(&user, &context.origin, x, &context.client)
                 })
                 .collect::<Vec<Result<Url>>>()
                 .await
@@ -456,15 +400,14 @@ impl Task<Context> for SendCreate {
                 // If we're here, it's time-- make the call. Nb. that we're not taking advantage of
                 // the retry facility offered by `send_activity_pub`-- we'll handle that here so as
                 // to interleave the retries.
-                match send_activity_pub_no_response::<Create>(
+                match send_activity_pub_no_response::<&'_ str, Create>(
                     &user,
                     &context.origin,
                     Method::POST,
-                    &this_call.inbox,
+                    this_call.inbox.as_ref(),
                     Some(&create),
                     None,
                     &context.client,
-                    Some(0),
                 )
                 .await
                 {

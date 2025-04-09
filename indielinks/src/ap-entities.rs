@@ -160,8 +160,8 @@ pub enum Error {
     #[snafu(display("Failed to resolve keyid {}: {source}"))]
     ResolveKeyId {
         key_id: Url,
-        #[snafu(source(from(reqwest::Error, Box::new)))]
-        source: Box<reqwest::Error>,
+        #[snafu(source(from(reqwest_middleware::Error, Box::new)))]
+        source: Box<reqwest_middleware::Error>,
         // backtrace not included because it would make the error too large
     },
     #[snafu(display("Failed serializing to a JSON Value: {source}"))]
@@ -221,11 +221,7 @@ pub fn make_user_post_create_id(
 }
 
 pub fn make_user_post_id(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!(
-        "{}/users/{}/posts/{}/activity",
-        origin, username, postid
-    ))
-    .context(UrlParseSnafu)
+    Url::parse(&format!("{}/users/{}/posts/{}", origin, username, postid)).context(UrlParseSnafu)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -405,6 +401,9 @@ impl Actor {
     }
     pub fn inbox(&self) -> &Url {
         &self.inbox
+    }
+    pub fn preferred_username(&self) -> &str {
+        self.preferred_username.as_str()
     }
     pub fn public_key(&self) -> Result<PickyPublicKey> {
         PickyPublicKey::from_pem_str(&self.public_key.public_key_pem).context(PickyPemSnafu)
@@ -1004,9 +1003,9 @@ pub struct Note {
     attributed_to: Url,
     to: Vec<Url>,
     cc: Vec<Url>,
-    content: twitter_text::Html,
+    content: Html,
     // Should be using crate `isolang`: <https://docs.rs/isolang/latest/isolang/>
-    content_map: HashMap<String, twitter_text::Html>,
+    content_map: HashMap<String, Html>,
     // Yet to be implemented:
     // - tag
     // - replies (Collection)
@@ -1017,7 +1016,7 @@ pub struct Note {
 impl Note {
     pub fn new(post: &Post, username: &Username, origin: &Origin) -> Result<Note> {
         let post_html =
-            twitter_text::parse_post(origin, &post.url(), post.title(), post.notes(), post.tags());
+            twitter_text::parse_post(origin, post.url(), post.title(), post.notes(), post.tags());
         Ok(Note {
             id: make_user_post_id(username, &post.id(), origin)?,
             // Not sure what I want to do with this; Mastodon sets it to null.
@@ -1036,11 +1035,23 @@ impl Note {
             content_map: HashMap::from([("en".to_owned(), post_html)]),
         })
     }
+    pub fn content(&self) -> &Html {
+        &self.content
+    }
 }
 
 impl ToJld for Note {
     fn get_type(&self) -> Type {
         Type::Note
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct Html(String);
+
+impl Display for Html {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -1050,20 +1061,10 @@ impl ToJld for Note {
 // to revisit this. This module is named in homage to the Ruby Gem that appears to be the rosetta
 // stone for this process: `twitter-text`.
 mod twitter_text {
-    use std::fmt::Display;
+
+    use super::Html;
 
     use crate::{entities::PostUri, origin::Origin};
-
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-    pub struct Html(String);
-
-    impl Display for Html {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
 
     pub fn parse_post<I: Iterator<Item: AsRef<str>>>(
         origin: &Origin,
@@ -1154,7 +1155,10 @@ impl ToJld for Create {
 // (since no-one should check this request of a signature-- it's a prerequisite for being able to
 // *make* a signature!)
 /// Resolve a key ID to a PublicKey
-pub async fn resolve_key_id(key_id: &Url, client: &reqwest::Client) -> Result<Actor> {
+pub async fn resolve_key_id(
+    key_id: &Url,
+    client: &reqwest_middleware::ClientWithMiddleware,
+) -> Result<Actor> {
     client
         .get(key_id.clone())
         .header(http::header::ACCEPT, "application/activity+json")
@@ -1209,5 +1213,40 @@ impl Deref for Jld {
 impl AsRef<str> for Jld {
     fn as_ref(&self) -> &str {
         self.deref()
+    }
+}
+
+impl From<Jld> for reqwest::Body {
+    fn from(value: Jld) -> Self {
+        value.to_string().into()
+    }
+}
+
+// Not sure this is really how I want to handle this; coding speculatively, here.
+pub trait AsAccept {
+    fn as_jld(&self, context: Option<Context>) -> Result<Jld>;
+    fn as_html(&self) -> Result<Html>;
+}
+
+impl AsAccept for Actor {
+    fn as_jld(&self, context: Option<Context>) -> Result<Jld> {
+        Jld::new(self, context)
+    }
+    fn as_html(&self) -> Result<Html> {
+        Ok(Html(format!(
+            "<html><body>{} ({})</body></html>",
+            self.preferred_username(),
+            self.id()
+        )))
+    }
+}
+
+impl AsAccept for Note {
+    fn as_jld(&self, context: Option<Context>) -> Result<Jld> {
+        Jld::new(self, context)
+    }
+
+    fn as_html(&self) -> Result<Html> {
+        Ok(Html(self.content().to_string()))
     }
 }
