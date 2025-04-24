@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! The ActivityPub Actor endpoint
+//! # ActivityPub endpoints
+//!
+//! This module implements per-user actor endpoints, along with their inboxes, outboxes & so forth.
+//! It also implements the instance shared inbox.
 
 use std::{sync::Arc, time::Duration};
 
@@ -32,20 +35,20 @@ use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgori
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
 use crate::{
     activity_pub::send_activity_pub_no_response,
     ap_entities::{
-        self, make_user_followers, Accept, Actor, Announce, AsAccept, BoostFollowOrLike, Follow,
-        Jld, Like, Note, ToJld, Undo,
+        self, make_user_followers, username_and_postid_from_url, Accept, Actor, Announce,
+        AnnounceOrCreate, AsAccept, Create, Follow, FollowOrLike, Jld, Like, Note, ToJld, Undo,
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     counter_add,
-    entities::{PostId, User, UserUrl, Username},
+    entities::{PostId, Reply, Share, User, UserUrl, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
@@ -68,11 +71,31 @@ pub enum Error {
     AcceptRejected,
     #[snafu(display("Failed to produce an AP Actor: {source}"))]
     Actor { source: ap_entities::Error },
+    #[snafu(display(
+        "An AP request was signed by {bearer}, but the payload indicated an actor of {payload}"
+    ))]
+    ActorMismatch {
+        bearer: Url,
+        payload: Url,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to create an ActivityPub ID: {source}"))]
     ApId { source: crate::ap_entities::Error },
+    #[snafu(display("{url} could not be parsed as an in-reply-to"))]
+    BadInReplyTo {
+        url: Url,
+        source: crate::ap_entities::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to parse the key ID as an URL: {source}"))]
     BadKeyId {
         source: url::ParseError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{url} could not be parsed as an object"))]
+    BadObject {
+        url: Url,
+        source: crate::ap_entities::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Signature validation failure: {source}"))]
@@ -101,20 +124,27 @@ pub enum Error {
     },
     #[snafu(display("The signature does not cover the Digest with a non-trivial request body"))]
     MissingContentDigest,
-    #[snafu(display("No user named {username}"))]
-    NoUser {
-        username: Username,
-        backtrace: Backtrace,
-    },
+    #[snafu(display("An in-reply-to field was expected, but not found"))]
+    NoInReplyTo { backtrace: Backtrace },
     #[snafu(display("User {username} has no post with ID {postid}"))]
     NoPost {
         username: Username,
         postid: PostId,
         backtrace: Backtrace,
     },
+    #[snafu(display("No user named {username}"))]
+    NoUser {
+        username: Username,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Signature header value not UTF-8: {source}"))]
     NonUtf8Signature {
         source: http::header::ToStrError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("A Note was expected in the `object` field: {source}"))]
+    NotNote {
+        source: ap_entities::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to convert Post {postid} to a Note: {source}"))]
@@ -154,6 +184,11 @@ pub enum Error {
     #[snafu(display("Failed to read the request body as bytes: {source}"))]
     ToBytes {
         source: axum::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to determine visibility: {source}"))]
+    Visibility {
+        source: crate::ap_entities::Error,
         backtrace: Backtrace,
     },
 }
@@ -204,7 +239,7 @@ type Result<T> = std::result::Result<T, Error>;
 type StdResult<T, E> = std::result::Result<T, E>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                        actor utilities                                         //
+//                                     assorted utilities                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("actor.verification.successes", Sort::IntegralCounter) }
@@ -398,6 +433,221 @@ fn patch_content_type(mut rsp: axum::response::Response) -> axum::response::Resp
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        the shared inbox                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("shared_inbox.successes", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("shared_inbox.announcements", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("shared_inbox.creates", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("shared_inbox.errors", Sort::IntegralCounter) }
+
+/// Accept a reply to an indielinks user's [Post]
+// Any `Create` AP entity sent to the shared inbox will end here. At the time of this writing, I
+// only anticipate that happening for one reason: a reply has been made to a Post on this instance.
+// I suspect that when I begin coding-up the *follow* side of the protocol, i.e. when indielinks
+// users get the ability to follow users on other instances, we'll start seeing this quite a bit
+// more.
+async fn accept_reply(
+    actor: &ap_entities::Actor,
+    create: &Create,
+    storage: &(dyn StorageBackend + Send + Sync),
+    origin: &Origin,
+) -> Result<()> {
+    // I expect to have a `Create` whose `object` field is a `Note` containing an `inReplyTo` field
+    // naming a post on this instance. Ah... ActivityPub!
+    if actor.id() != create.actor() {
+        warn!(
+            "I have a `Create` signed by {}, while the `Create` itself reports an actor of {}. \
+             This seems weird and I'm not comfortable with it: rejecting this request.",
+            actor.id(), // Url::url
+            create.actor()
+        );
+        return ActorMismatchSnafu {
+            bearer: actor.id().clone(),
+            payload: create.actor().clone(),
+        }
+        .fail();
+    }
+
+    // I'm going to log aggressively here, as I explore the corners of the ActivityPub protocol:
+    debug!("In receipt of a Create: {:?}", create);
+
+    // At this time, we're expecting the `Create` entity's `object` attribute to be a `Note`-- the `Note`
+    // corresponding to a Post made by some user on this instance.
+    let note = create.de_object::<Note>().context(NotNoteSnafu)?;
+
+    debug!("The Create denotes the creation of the note: {:?}", note);
+
+    // Aspects of this `Note` that are of interest:
+    // - note.in_reply_to: extract the User & PostId out of this URL (we'll have to validate them, of course)
+    // - note.id: we want to write-down the id of this Note as a reply to the salient Post
+    // - note.to & .cc: will be Vec<Url>; they determine privacy settings
+    let in_reply_to = note.in_reply_to().context(NoInReplyToSnafu)?;
+    let (username, postid) =
+        username_and_postid_from_url(in_reply_to).context(BadInReplyToSnafu {
+            url: in_reply_to.clone(),
+        })?;
+
+    debug!(
+        "The Note is (allegedly) in response to post {} by user {}.",
+        postid, username
+    );
+
+    let (visibility, local_recipients) =
+        ap_entities::derive_visibility(create.to(), create.cc(), origin)
+            .context(VisibilitySnafu)?;
+
+    debug!("This Create has visibility {:?}", visibility);
+    debug!(
+        "This Create is addressed to the following local users: {:?}",
+        local_recipients
+    );
+
+    let user = storage
+        .user_for_name(&username)
+        .await
+        .map_err(|err| StorageSnafu.into_error(err))?
+        .ok_or(
+            NoUserSnafu {
+                username: username.clone(),
+            }
+            .build(),
+        )?;
+
+    let post = storage
+        .get_post_by_id(&postid)
+        .await
+        .context(StorageSnafu)?
+        .context(NoPostSnafu { username, postid })?;
+
+    storage
+        .add_reply(&user, post.url(), &Reply::new(note.id(), visibility))
+        .await
+        .context(StorageSnafu)
+}
+
+/// Accept a share of an indielinks user's [Post]
+// Any `Announce` AP entity sent to the shared inbox will end here. At the time of this writing, I
+// only anticipate that happening for one reason: a a Post on this instance has been shared. I
+// suspect that when I begin coding-up the *follow* side of the protocol, i.e. when indielinks users
+// get the ability to follow users on other instances, we'll start seeing this quite a bit more.
+async fn accept_share(
+    actor: &ap_entities::Actor,
+    announce: &Announce,
+    storage: &(dyn StorageBackend + Send + Sync),
+    origin: &Origin,
+) -> Result<()> {
+    // I expect to have a `Create` whose `object` field references a `Note` containing the original
+    // post on this instance. Ah... ActivityPub!
+    if actor.id() != announce.actor() {
+        warn!(
+            "I have a `Create` signed by {}, while the `Create` itself reports an actor of {}. \
+               This seems weird and I'm not comfortable with it: rejecting this request.",
+            actor.id(),
+            announce.actor()
+        );
+        return ActorMismatchSnafu {
+            bearer: actor.id().clone(),
+            payload: announce.actor().clone(),
+        }
+        .fail();
+    }
+
+    // I'm going to log aggressively here, as I explore the corners of the ActivityPub protocol:
+    debug!("In receipt of an Announce: {:?}", announce);
+
+    let object = announce.object();
+
+    debug!("This Announce relates to the object {}", object);
+
+    let (username, postid) =
+        username_and_postid_from_url(announce.object()).context(BadObjectSnafu {
+            url: announce.object().clone(),
+        })?;
+
+    let (visibility, local_recipients) =
+        ap_entities::derive_visibility(announce.to(), announce.cc(), origin)
+            .context(VisibilitySnafu)?;
+
+    debug!("This Announce has visibility {:?}", visibility);
+    debug!(
+        "This Announce is addressed to the following local users: {:?}",
+        local_recipients
+    );
+
+    let user = storage
+        .user_for_name(&username)
+        .await
+        .map_err(|err| StorageSnafu.into_error(err))?
+        .ok_or(
+            NoUserSnafu {
+                username: username.clone(),
+            }
+            .build(),
+        )?;
+
+    let post = storage
+        .get_post_by_id(&postid)
+        .await
+        .context(StorageSnafu)?
+        .context(NoPostSnafu { username, postid })?;
+
+    storage
+        .add_share(&user, post.url(), &Share::new(announce.id(), visibility))
+        .await
+        .context(StorageSnafu)
+}
+
+/// `/inbox` handler
+///
+/// This is the indielinks instance shared inbox. Replies & boosts/shares come here; I'm not sure
+/// about mentions, yet, or what else might show-up 🤷. I provide no response body at this time.
+async fn shared_inbox(
+    State(state): State<Arc<Indielinks>>,
+    Extension(actor): Extension<ap_entities::Actor>,
+    axum::extract::Json(body): axum::extract::Json<AnnounceOrCreate>,
+) -> axum::response::Response {
+    async fn shared_inbox1(
+        actor: &ap_entities::Actor,
+        body: &AnnounceOrCreate,
+        storage: &(dyn StorageBackend + Send + Sync),
+        origin: &Origin,
+        instruments: &metrics::Instruments,
+    ) -> Result<()> {
+        match body {
+            AnnounceOrCreate::Announce(announce) => {
+                counter_add!(instruments, "shared_inbox.announcements", 1, &[]);
+                accept_share(actor, announce, storage, origin).await
+            }
+            AnnounceOrCreate::Create(create) => {
+                counter_add!(instruments, "shared_inbox.creates", 1, &[]);
+                accept_reply(actor, create, storage, origin).await
+            }
+        }
+    }
+
+    match shared_inbox1(
+        &actor,
+        &body,
+        state.storage.as_ref(),
+        &state.origin,
+        &state.instruments,
+    )
+    .await
+    {
+        Ok(_) => {
+            counter_add!(state.instruments, "shared_inbox.successes", 1, &[]);
+            (StatusCode::ACCEPTED, ()).into_response()
+        }
+        Err(err) => {
+            error!("{:#?}", err);
+            counter_add!(state.instruments, "shared_inbox.errors", 1, &[]);
+            err.as_status_and_msg().into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                  `/users/{username}` handler                                   //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -466,17 +716,10 @@ async fn actor(
 //                               `/users/{username}/inbox` handler                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("inbox.boosts", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("inbox.follows", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("inbox.likes", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("inbox.undos", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("inbox.errors", Sort::IntegralCounter) }
-
-// This is a stub.
-async fn accept_boost(boost: &Announce) -> Result<()> {
-    info!("Received an Announce: {:?}", boost);
-    Ok(())
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       Accepting a Follow                                       //
@@ -626,10 +869,10 @@ async fn inbox(
     State(state): State<Arc<Indielinks>>,
     axum::extract::Path(username): axum::extract::Path<Username>,
     Extension(actor): Extension<ap_entities::Actor>,
-    axum::extract::Json(body): axum::extract::Json<BoostFollowOrLike>,
+    axum::extract::Json(body): axum::extract::Json<FollowOrLike>,
 ) -> axum::response::Response {
     async fn inbox1(
-        body: &BoostFollowOrLike,
+        body: &FollowOrLike,
         username: &Username,
         actor: &ap_entities::Actor,
         origin: &Origin,
@@ -645,19 +888,15 @@ async fn inbox(
                 username: username.clone(),
             })?;
         match body {
-            BoostFollowOrLike::Announce(announce) => {
-                counter_add!(instruments, "inbox.boosts", 1, &[]);
-                accept_boost(announce).await
-            }
-            BoostFollowOrLike::Follow(follow) => {
+            FollowOrLike::Follow(follow) => {
                 counter_add!(instruments, "inbox.follows", 1, &[]);
                 accept_follow(&user, follow, actor, storage, task_sender, origin).await
             }
-            BoostFollowOrLike::Like(like) => {
+            FollowOrLike::Like(like) => {
                 counter_add!(instruments, "inbox.follows", 1, &[]);
                 accept_like(like).await
             }
-            BoostFollowOrLike::Undo(undo) => {
+            FollowOrLike::Undo(undo) => {
                 counter_add!(instruments, "inbox.undos", 1, &[]);
                 accept_undo(undo).await
             }
@@ -907,8 +1146,16 @@ async fn get_post(
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// Return a [Router] handling all ActivityPub-related activity
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
     Router::new()
+        .route(
+            "/inbox",
+            post(shared_inbox).route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                verify_signature,
+            )),
+        )
         .route("/users/{username}", get(actor))
         .route(
             "/users/{username}/inbox",

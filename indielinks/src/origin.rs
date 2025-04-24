@@ -375,13 +375,21 @@ impl TryFrom<Url> for Origin {
     type Error = Error;
 
     fn try_from(value: Url) -> std::result::Result<Self, Self::Error> {
+        Self::try_from(&value)
+    }
+}
+
+impl TryFrom<&Url> for Origin {
+    type Error = Error;
+
+    fn try_from(value: &Url) -> std::result::Result<Self, Self::Error> {
         match value.origin() {
             url::Origin::Opaque(_) => OpaqueOriginSnafu {
                 text: value.as_str().to_owned(),
             }
             .fail(),
             url::Origin::Tuple(scheme, host, port) => Ok(Origin {
-                scheme: scheme.as_str().parse::<Protocol>().unwrap(),
+                scheme: scheme.as_str().parse::<Protocol>()?,
                 host: host.try_into()?,
                 port: Some(port),
             }),

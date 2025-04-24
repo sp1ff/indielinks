@@ -86,6 +86,16 @@ create table unique_usernames (
    but I decided I was overthinking this.
 */
 
+create type reply (
+  id ascii,
+  visibility tinyint,
+);
+
+create type share (
+  id ascii,
+  visibility tinyint,
+);
+
 create table posts (
   user_id uuid,
   url ascii,
@@ -97,6 +107,9 @@ create table posts (
   tags set<text>,
   public boolean,
   unread boolean,
+  likes set<ascii>,
+  replies set<frozen<reply>>,
+  shares set<frozen<share>>,
   PRIMARY KEY (user_id, url)
 );
 

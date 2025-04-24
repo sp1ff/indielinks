@@ -18,7 +18,7 @@
 //! Abstractions for the indielinks storage layer.
 
 use crate::{
-    entities::{Post, PostDay, PostId, PostUri, Tagname, User, UserId, Username},
+    entities::{Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId, Username},
     util::UpToThree,
 };
 
@@ -90,6 +90,16 @@ pub trait Backend {
         to_read: bool,
         tags: &HashSet<Tagname>,
     ) -> Result<bool, Error>;
+    /// Add a Reply for an existing post-- the backend is responsibile for verifying that [User]
+    /// `user` actually made a post with [PostId] `postid`! This is to preserve the possibility for
+    /// the implementation to optimize that implementation (by doing it a single request with a
+    /// "WHERE" clause, for instance)
+    async fn add_reply(&self, user: &User, url: &PostUri, reply: &Reply) -> Result<(), Error>;
+    /// Add a Share for an existing post-- the backend is responsibile for verifying that [User]
+    /// `user` actually made a post with [PostId] `postid`! This is to preserve the possibility for
+    /// the implementation to optimize that implementation (by doing it a single request with a
+    /// "WHERE" clause, for instance)
+    async fn add_share(&self, user: &User, url: &PostUri, share: &Share) -> Result<(), Error>;
     /// Add a new user
     async fn add_user(&self, user: &User) -> Result<(), Error>;
     /// Remove a post-- return true if a [Post] was actually removed, false else

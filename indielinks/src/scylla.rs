@@ -27,8 +27,8 @@ use enum_map::{Enum, EnumMap};
 use futures::stream;
 use itertools::Itertools;
 use scylla::{
-    batch::Batch, prepared_statement::PreparedStatement, transport::errors::QueryError,
-    SessionBuilder,
+    client::session_builder::SessionBuilder, statement::batch::Batch,
+    statement::prepared::PreparedStatement,
 };
 use secrecy::{ExposeSecret, SecretString};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
@@ -37,18 +37,16 @@ use uuid::Uuid;
 
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
-    entities::{Post, PostDay, PostId, PostUri, Tagname, User, UserId, UserUrl, Username},
+    entities::{
+        Post, PostDay, PostId, PostUri, PostUrl, Reply, Share, Tagname, User, UserId, UserUrl,
+        Username,
+    },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("The add_post query failed: {source}"))]
-    AddPost {
-        source: scylla::transport::errors::QueryError,
-        backtrace: Backtrace,
-    },
     #[snafu(display("A query was expected to prodce at most one row & did not."))]
     AtMostOneRow { backtrace: Backtrace },
     #[snafu(display(
@@ -68,30 +66,24 @@ pub enum Error {
     },
     #[snafu(display("The query succeeded, but returned zero rows"))]
     EmptyQueryResult { backtrace: Backtrace },
+    #[snafu(display("ScyllaDB query failed: {source}"))]
+    Execution {
+        source: scylla::errors::ExecutionError,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to deserialize the first row: {source}"))]
     FirstRow {
-        source: scylla::transport::query_result::FirstRowError,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("Failed to query tag cloud: {source}"))]
-    GetTagCloud {
-        source: scylla::transport::errors::QueryError,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("Failed inserting tag {tag}: {source}"))]
-    InsertTag {
-        tag: String,
-        source: scylla::transport::errors::QueryError,
+        source: scylla::response::query_result::FirstRowError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to convert to a RowsResult: {source}"))]
     IntoRowsResult {
-        source: scylla::transport::query_result::IntoRowsResultError,
+        source: scylla::response::query_result::IntoRowsResultError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to set keyspace: {source}"))]
     Keyspace {
-        source: scylla::transport::errors::QueryError,
+        source: scylla::errors::UseKeyspaceError,
         backtrace: Backtrace,
     },
     #[snafu(display("Read {in_count} tags in, produced {out_count} TagIds"))]
@@ -130,7 +122,7 @@ pub enum Error {
     },
     #[snafu(display("Failed to create a ScyllaDB session: {source}"))]
     NewSession {
-        source: scylla::transport::errors::NewSessionError,
+        source: scylla::errors::NewSessionError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize a post count: {source}"))]
@@ -143,26 +135,15 @@ pub enum Error {
         source: scylla::deserialize::DeserializationError,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to retrieve Post {postid}: {source}"))]
-    PostQuery {
-        postid: PostId,
-        source: scylla::transport::errors::QueryError,
-        backtrace: Backtrace,
-    },
     #[snafu(display("Failed to prepare statement: {stmt}: {source}"))]
     Prepare {
         stmt: String,
-        source: scylla::transport::errors::QueryError,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("ScyllaDB query failed: {source}"))]
-    Query {
-        source: QueryError,
+        source: scylla::errors::PrepareError,
         backtrace: Backtrace,
     },
     #[snafu(display("Expected rows: {source}"))]
     ResultNotRows {
-        source: scylla::transport::query_result::IntoRowsResultError,
+        source: scylla::response::query_result::IntoRowsResultError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize a tag count: {source}"))]
@@ -182,13 +163,7 @@ pub enum Error {
     },
     #[snafu(display("Failed to type a RowResult: {source}"))]
     TypedRows {
-        source: scylla::transport::query_result::RowsError,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("Failed inserting tag {tag}: {source}"))]
-    UpdateTag {
-        tag: String,
-        source: scylla::transport::errors::QueryError,
+        source: scylla::response::query_result::RowsError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize a User: {source}"))]
@@ -199,7 +174,7 @@ pub enum Error {
     #[snafu(display("Failed to lookup user {username}: {source}"))]
     UserQuery {
         username: String,
-        source: scylla::transport::errors::QueryError,
+        source: scylla::errors::ExecutionError,
         backtrace: Backtrace,
     },
 }
@@ -272,6 +247,9 @@ enum PreparedStatements {
     TakeLease,
     FinishTask,
     GetUserById,
+    AddLike,
+    AddReply,
+    AddShare,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -279,7 +257,7 @@ enum PreparedStatements {
 /// Instantiate this via [Session::new] with connection info & credentials if need be, when dropped
 /// the ScyllaDB session will be terminated.
 pub struct Session {
-    session: ::scylla::Session,
+    session: ::scylla::client::session::Session,
     /// An [EnumMap] is a map whose keys are enum values where all values are guaranteed to be
     /// represented. As a result, the index operator is guaranteed to succeed-- no need to unwrap
     /// [Option]s or [Result]s or some such.
@@ -288,7 +266,10 @@ pub struct Session {
 
 impl Session {
     /// Prepare a statement
-    async fn prepare(scylla: &::scylla::Session, stmt: &str) -> Result<PreparedStatement> {
+    async fn prepare(
+        scylla: &::scylla::client::session::Session,
+        stmt: &str,
+    ) -> Result<PreparedStatement> {
         scylla.prepare(stmt).await.context(PrepareSnafu {
             stmt: stmt.to_owned(),
         })
@@ -331,33 +312,33 @@ impl Session {
             "select day from posts where user_id=? and tags contains ? and tags contains ? allow filtering",
             "select day from posts where user_id=? and tags contains ? and tags contains ? and tags contains ? allow filtering",
             "select posted from posts where user_id=? limit 1 allow filtering",
-            "select url,day,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and url=?", // GetPosts1
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? allow filtering", // GetPosts5
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? allow filtering", // GetPosts6
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? and tags contains ? allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and day=? and tags contains ? and tags contains ? and tags contains ? allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? limit ?",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? limit ? allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? limit ? allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? limit ? allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? order by posted desc",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? order by posted desc",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? order by posted desc",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? order by posted desc",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where user_id=? and tags contains ? allow filtering", // GetPosts15
-            "select url,id,title,notes,tags,user_id,posted,day,public,unread from posts where id=?", // GetPostById
+            "select * from posts where user_id=? and url=?", // GetPosts1
+            "select * from posts where user_id=? and day=? allow filtering", // GetPosts5
+            "select * from posts where user_id=? and day=? and tags contains ? allow filtering", // GetPosts6
+            "select * from posts where user_id=? and day=? and tags contains ? and tags contains ? allow filtering",
+            "select * from posts where user_id=? and day=? and tags contains ? and tags contains ? and tags contains ? allow filtering",
+            "select * from posts_by_posted where user_id=? limit ?",
+            "select * from posts_by_posted where user_id=? and tags contains ? limit ? allow filtering",
+            "select * from posts_by_posted where user_id=? and tags contains ? and tags contains ? limit ? allow filtering",
+            "select * from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? limit ? allow filtering",
+            "select * from posts_by_posted where user_id=? order by posted desc",
+            "select * from posts_by_posted where user_id=? and posted >= ? order by posted desc",
+            "select * from posts_by_posted where user_id=? and posted < ? order by posted desc",
+            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? order by posted desc",
+            "select * from posts_by_posted where user_id=? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted < ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts where user_id=? and tags contains ? allow filtering", // GetPosts15
+            "select * from posts where id=?", // GetPostById
             // I hate to add the `if exists` clause here, making this an LWT, but if I don't I
             // expose myself to the possibility of a post being deleted out from under me while
             // renaming, which would leave the system in an invalid state.
@@ -368,6 +349,9 @@ impl Session {
             "update tasks set lease_expires = ? where id = ? if lease_expires = ?",
             "update tasks set done=true where id=?",
             "select * from users where id=?",
+            "update posts set likes = likes + { ? } where user_id = ? and url = ? if exists",
+            "update posts set replies = replies + { ? } where user_id = ? and url = ? if exists",
+            "update posts set shares = shares + { ? } where user_id = ? and url = ? if exists"
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -384,7 +368,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 48] = prepared_statements
+        let prepared_statements: [PreparedStatement; 51] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -405,26 +389,26 @@ impl std::convert::From<scylla::deserialize::DeserializationError> for StorError
     }
 }
 
-impl std::convert::From<scylla::transport::errors::QueryError> for StorError {
-    fn from(value: scylla::transport::errors::QueryError) -> Self {
+impl std::convert::From<scylla::errors::ExecutionError> for StorError {
+    fn from(value: scylla::errors::ExecutionError) -> Self {
         StorError::new(value)
     }
 }
 
-impl std::convert::From<scylla::transport::query_result::IntoRowsResultError> for StorError {
-    fn from(value: scylla::transport::query_result::IntoRowsResultError) -> Self {
+impl std::convert::From<scylla::response::query_result::IntoRowsResultError> for StorError {
+    fn from(value: scylla::response::query_result::IntoRowsResultError) -> Self {
         StorError::new(value)
     }
 }
 
-impl std::convert::From<scylla::transport::query_result::RowsError> for StorError {
-    fn from(value: scylla::transport::query_result::RowsError) -> Self {
+impl std::convert::From<scylla::response::query_result::RowsError> for StorError {
+    fn from(value: scylla::response::query_result::RowsError) -> Self {
         StorError::new(value)
     }
 }
 
-impl std::convert::From<scylla::transport::query_result::FirstRowError> for StorError {
-    fn from(value: scylla::transport::query_result::FirstRowError) -> Self {
+impl std::convert::From<scylla::response::query_result::FirstRowError> for StorError {
+    fn from(value: scylla::response::query_result::FirstRowError) -> Self {
         StorError::new(value)
     }
 }
@@ -435,26 +419,26 @@ impl std::convert::From<scylla::deserialize::DeserializationError> for BckError 
     }
 }
 
-impl std::convert::From<scylla::transport::errors::QueryError> for BckError {
-    fn from(value: scylla::transport::errors::QueryError) -> Self {
+impl std::convert::From<scylla::errors::ExecutionError> for BckError {
+    fn from(value: scylla::errors::ExecutionError) -> Self {
         BckError::new(value)
     }
 }
 
-impl std::convert::From<scylla::transport::query_result::RowsError> for BckError {
-    fn from(value: scylla::transport::query_result::RowsError) -> Self {
+impl std::convert::From<scylla::response::query_result::RowsError> for BckError {
+    fn from(value: scylla::response::query_result::RowsError) -> Self {
         BckError::new(value)
     }
 }
 
-impl std::convert::From<scylla::transport::query_result::IntoRowsResultError> for BckError {
-    fn from(value: scylla::transport::query_result::IntoRowsResultError) -> Self {
+impl std::convert::From<scylla::response::query_result::IntoRowsResultError> for BckError {
+    fn from(value: scylla::response::query_result::IntoRowsResultError) -> Self {
         BckError::new(value)
     }
 }
 
-impl std::convert::From<scylla::transport::query_result::SingleRowError> for BckError {
-    fn from(value: scylla::transport::query_result::SingleRowError) -> Self {
+impl std::convert::From<scylla::response::query_result::SingleRowError> for BckError {
+    fn from(value: scylla::response::query_result::SingleRowError) -> Self {
         BckError::new(value)
     }
 }
@@ -515,6 +499,42 @@ impl storage::Backend for Session {
         Ok(!result.is_rows())
     }
 
+    async fn add_reply(
+        &self,
+        user: &User,
+        url: &PostUri,
+        reply: &Reply,
+    ) -> StdResult<(), StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::AddReply],
+                (reply, user.id(), url),
+            )
+            .await?;
+        // Unfortunately, this implementation gives us no way of knowing whether the statement had
+        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
+        // that.
+        Ok(())
+    }
+
+    async fn add_share(
+        &self,
+        user: &User,
+        url: &PostUri,
+        share: &Share,
+    ) -> StdResult<(), StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::AddShare],
+                (share, user.id(), url),
+            )
+            .await?;
+        // Unfortunately, this implementation gives us no way of knowing whether the statement had
+        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
+        // that.
+        Ok(())
+    }
+
     async fn add_user(&self, user: &User) -> StdResult<(), StorError> {
         let claimed = !self
             .session
@@ -568,18 +588,24 @@ impl storage::Backend for Session {
             )
             .await?
             .into_rows_result()?
+            // This is tedious & breaks everytime the `posts` schema changes. That said, it's nice
+            // to know whether a given statement had any effect (see also `add_reply()` & `add_share()`). Once
+            // the schema stabilizes a bit more, perhaps I can factor this out into one place.
             .first_row::<(
                 bool,
-                Option<UserId>,
-                Option<PostUri>,
-                Option<PostDay>,
-                Option<PostId>,
-                Option<String>,
-                Option<DateTime<Utc>>,
-                Option<bool>,
-                Option<HashSet<Tagname>>,
-                Option<String>,
-                Option<bool>,
+                Option<UserId>,           // user_id
+                Option<PostUri>,          // url
+                Option<PostDay>,          // day
+                Option<PostId>,           // id
+                Option<HashSet<PostUrl>>, // likes
+                Option<String>,           // title
+                Option<DateTime<Utc>>,    // posted
+                Option<bool>,             // public
+                Option<HashSet<Reply>>,   // replies
+                Option<HashSet<Share>>,   // shares
+                Option<HashSet<Tagname>>, // tags
+                Option<String>,           // notes
+                Option<bool>,             // unread
             )>()?
             .0
             .pipe(Ok)
@@ -1019,7 +1045,7 @@ impl storage::Backend for Session {
                     (dt, user.id()),
                 )
                 .await
-                .map_err(|err| StorError::new(QuerySnafu.into_error(err)))?;
+                .map_err(|err| StorError::new(ExecutionSnafu.into_error(err)))?;
         }
         self.session
             .execute_unpaged(
@@ -1027,7 +1053,7 @@ impl storage::Backend for Session {
                 (dt, user.id()),
             )
             .await
-            .map_err(|err| StorError::new(QuerySnafu.into_error(err)))?;
+            .map_err(|err| StorError::new(ExecutionSnafu.into_error(err)))?;
         Ok(())
     }
 
@@ -1093,7 +1119,7 @@ impl TasksBackend for Session {
         // and walk the list, trying to get a lease. There may be other writers grabbing leases, as
         // well, so just keep trying.
         async fn take_lease(
-            session: &::scylla::Session,
+            session: &::scylla::client::session::Session,
             statement: &PreparedStatement,
             t: &FlatTask,
         ) -> StdResult<bool, BckError> {

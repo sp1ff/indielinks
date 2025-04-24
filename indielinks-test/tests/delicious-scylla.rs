@@ -33,10 +33,7 @@ use indielinks_test::{
 use async_trait::async_trait;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Failed, Trial};
-use scylla::{
-    transport::{errors::QueryError, query_result::IntoRowsResultError},
-    SessionBuilder,
-};
+use scylla::client::session_builder::SessionBuilder;
 use snafu::{prelude::*, Backtrace, Snafu};
 use tokio::runtime::Runtime;
 
@@ -59,27 +56,27 @@ enum Error {
     ExactlyOne { backtrace: Backtrace },
     #[snafu(display("Failed to set keyspace: {source}"))]
     Keyspace {
-        source: scylla::transport::errors::QueryError,
+        source: scylla::errors::UseKeyspaceError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to create a ScyllaDB session: {source}"))]
     NewSession {
-        source: scylla::transport::errors::NewSessionError,
+        source: scylla::errors::NewSessionError,
         backtrace: Backtrace,
     },
     #[snafu(display("ScyllaDB query failed: {source}"))]
     Query {
-        source: QueryError,
+        source: scylla::errors::ExecutionError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to get typed rows: {source}"))]
     Rows {
-        source: scylla::transport::query_result::RowsError,
+        source: scylla::response::query_result::RowsError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to get a rows result: {source}"))]
     RowsResult {
-        source: IntoRowsResultError,
+        source: scylla::response::query_result::IntoRowsResultError,
         backtrace: Backtrace,
     },
 }
@@ -121,7 +118,7 @@ fn teardown() -> Result<()> {
 
 /// Application state shared across all tests
 struct State {
-    session: ::scylla::Session,
+    session: ::scylla::client::session::Session,
 }
 
 impl State {

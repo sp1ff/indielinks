@@ -372,16 +372,15 @@ impl Task<Context> for SendCreate {
                 .partition_map(|res| res.map_or_else(Either::Right, Either::Left));
 
             // Let's handle the errors first-- log 'em, then drop 'em (for now):
-            errs.into_iter()
-                .for_each(|err| warn!("Failed to resolve a followr to a shared inbox: {:#?}", err));
+            errs.into_iter().for_each(|err| {
+                warn!("Failed to resolve a follower to a shared inbox: {:#?}", err)
+            });
 
             let mut pending_calls = proto_calls
                 .into_iter()
                 .unique()
                 .map(|inbox| inbox.into())
                 .collect::<VecDeque<PendingCall>>();
-
-            debug!("I have {} pending calls...", pending_calls.len());
 
             // My idea here is to walk the list of URLs in a loop. For each URL, if we succeed in
             // sending the `Create` activity, we remove that URL. If we fail, we note the next time at
@@ -394,8 +393,6 @@ impl Task<Context> for SendCreate {
                 let mut this_call = pending_calls.pop_front().unwrap(/* known good */);
                 // and just hang-out until that call is "due":
                 tokio::time::sleep_until(this_call.next_call).await;
-
-                debug!("sending {:?} to {:?}", create, this_call.inbox);
 
                 // If we're here, it's time-- make the call. Nb. that we're not taking advantage of
                 // the retry facility offered by `send_activity_pub`-- we'll handle that here so as

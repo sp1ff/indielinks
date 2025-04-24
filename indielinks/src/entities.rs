@@ -32,14 +32,15 @@ use picky::key::{PrivateKey, PublicKey};
 use pkcs8::{spki, EncodePrivateKey};
 use regex::Regex;
 use scylla::{
-    deserialize::{DeserializationError, DeserializeValue, FrameSlice, TypeCheckError},
+    cluster::metadata::NativeType,
+    deserialize::{value::DeserializeValue, DeserializationError, FrameSlice, TypeCheckError},
     frame::response::result::ColumnType,
     serialize::{
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
         SerializationError,
     },
-    DeserializeRow,
+    DeserializeRow, DeserializeValue, SerializeValue,
 };
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -139,6 +140,8 @@ pub enum Error {
         source: url::ParseError,
         backtrace: Backtrace,
     },
+    #[snafu(display("Attempted to deserialize an invalid value for Visibility: {n}"))]
+    VisibilityDe { n: i8, backtrace: Backtrace },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -151,15 +154,17 @@ type StdResult<T, E> = std::result::Result<T, E>;
 // `PrivateKey` and so on). It's all boilerplate; nothing terribly complex, but it *is* tedious. I
 // wonder if I'm missing some handy crate that provides macros for this...
 
-macro_rules! type_check {
-    ($var_name:ident, $column_type:ident, $err_type:ty, $column_name:expr) => {
-        ($var_name == &ColumnType::$column_type)
+// This is kind of lame, but I'm in the process of updating the code to version 1.0 of the Scylla
+// crate, and I don't want to get sidetracked handling the new ColumnType altogether.
+macro_rules! native_type_check {
+    ($var_name:ident, $native_type:ident, $err_type:ty, $column_name:expr) => {
+        ($var_name == &ColumnType::Native(NativeType::$native_type))
             .then_some(())
             .ok_or(<$err_type>::new(
                 ColumnTypeMismatchSnafu {
                     col_name: $column_name.to_owned(),
                     actual: $var_name.clone().into_owned(),
-                    expected: ColumnType::$column_type,
+                    expected: ColumnType::Native(NativeType::$native_type),
                 }
                 .build(),
             ))
@@ -540,7 +545,7 @@ impl UserPublicKey {
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserPublicKey {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        type_check!(typ, Ascii, TypeCheckError, "PublicKey")
+        native_type_check!(typ, Ascii, TypeCheckError, "PublicKey")
     }
     fn deserialize(
         _: &'metadata ColumnType<'metadata>,
@@ -569,7 +574,7 @@ impl SerializeValue for UserPublicKey {
         typ: &ColumnType<'_>,
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        type_check!(typ, Ascii, SerializationError, "PublicKey")?;
+        native_type_check!(typ, Ascii, SerializationError, "PublicKey")?;
         self.0
             .to_pem_str()
             .map_err(mk_ser_err)?
@@ -621,7 +626,7 @@ impl AsRef<PrivateKey> for UserPrivateKey {
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserPrivateKey {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        type_check!(typ, Ascii, TypeCheckError, "PrivateKey")
+        native_type_check!(typ, Ascii, TypeCheckError, "PrivateKey")
     }
     fn deserialize(
         _: &'metadata ColumnType<'metadata>,
@@ -650,7 +655,7 @@ impl SerializeValue for UserPrivateKey {
         typ: &ColumnType<'_>,
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        type_check!(typ, Ascii, SerializationError, "PrivateKey")?;
+        native_type_check!(typ, Ascii, SerializationError, "PrivateKey")?;
         self.0
             .to_pem_str()
             .map_err(mk_ser_err)?
@@ -695,7 +700,7 @@ pub struct UserApiKey(#[serde(with = "serde_apikey")] SecretSlice<u8>);
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserApiKey {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        type_check!(typ, Blob, TypeCheckError, "ApiKey")
+        native_type_check!(typ, Blob, TypeCheckError, "ApiKey")
     }
     fn deserialize(
         _: &'metadata ColumnType<'metadata>,
@@ -723,7 +728,7 @@ impl SerializeValue for UserApiKey {
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
         use secrecy::ExposeSecret;
-        type_check!(typ, Blob, SerializationError, "ApiKey")?;
+        native_type_check!(typ, Blob, SerializationError, "ApiKey")?;
         self.0
             .expose_secret()
             .pipe(|x| writer.set_value(x))
@@ -1368,7 +1373,7 @@ pub mod serde_uri {
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for PostUri {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        type_check!(typ, Ascii, TypeCheckError, "PostUri")
+        native_type_check!(typ, Ascii, TypeCheckError, "PostUri")
     }
     fn deserialize(
         _: &'metadata ColumnType<'metadata>,
@@ -1397,12 +1402,63 @@ impl SerializeValue for PostUri {
         typ: &ColumnType<'_>,
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        type_check!(typ, Ascii, SerializationError, "PostUri")?;
+        native_type_check!(typ, Ascii, SerializationError, "PostUri")?;
         format!("{}", self.0)
             .as_bytes()
             .pipe(|x| writer.set_value(x))
             .map_err(mk_ser_err)?
             .pipe(Ok)
+    }
+}
+
+// Alright; I confess I don't remember why I used `axum::Uri`, above, as opposed to `url::Url`
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct PostUrl(Url);
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for PostUrl {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        native_type_check!(typ, Ascii, TypeCheckError, "PostUrl")
+    }
+    fn deserialize(
+        _: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        v.ok_or(
+            NoFrameSliceSnafu {
+                typ: "PostUrl".to_owned(),
+            }
+            .build(),
+        )
+        .map_err(mk_de_err)?
+        .as_slice()
+        .pipe(std::str::from_utf8)
+        .map_err(mk_de_err)?
+        .pipe(Url::parse)
+        .map_err(mk_de_err)?
+        .pipe(PostUrl)
+        .pipe(Ok)
+    }
+}
+
+impl SerializeValue for PostUrl {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        native_type_check!(typ, Ascii, SerializationError, "PostUrl")?;
+        format!("{}", self.0)
+            .as_bytes()
+            .pipe(|x| writer.set_value(x))
+            .map_err(mk_ser_err)?
+            .pipe(Ok)
+    }
+}
+
+impl Display for PostUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -1473,7 +1529,7 @@ impl<'de> Deserialize<'de> for PostDay {
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for PostDay {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        type_check!(typ, Ascii, TypeCheckError, "PostDay")
+        native_type_check!(typ, Ascii, TypeCheckError, "PostDay")
     }
     fn deserialize(
         _: &'metadata ColumnType<'metadata>,
@@ -1531,7 +1587,7 @@ impl SerializeValue for PostDay {
         typ: &ColumnType<'_>,
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        type_check!(typ, Ascii, SerializationError, "PostDay")?;
+        native_type_check!(typ, Ascii, SerializationError, "PostDay")?;
         self.0
             .to_string()
             .as_bytes()
@@ -1554,6 +1610,84 @@ impl TryFrom<String> for PostDay {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Visibility levels for assorted messages
+// I pulled this ontology from <https://seb.jambor.dev/posts/understanding-activitypub/>; I'm not
+// sure if this is a general ActivityPub thing, or Mastodon-specific.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[repr(i8)]
+pub enum Visibility {
+    Public = 0,
+    Unlisted = 1,
+    Followers = 2,
+    DirectMessage = 3,
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Visibility {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        i8::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        match <i8 as DeserializeValue>::deserialize(typ, v)? {
+            0 => Ok(Visibility::Public),
+            1 => Ok(Visibility::Unlisted),
+            2 => Ok(Visibility::Followers),
+            3 => Ok(Visibility::DirectMessage),
+            n => Err(DeserializationError::new(VisibilityDeSnafu { n }.build())),
+        }
+    }
+}
+
+impl SerializeValue for Visibility {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&(*self as i8), typ, writer)
+    }
+}
+
+#[derive(
+    Clone, Debug, Deserialize, DeserializeValue, Eq, Hash, PartialEq, Serialize, SerializeValue,
+)]
+pub struct Reply {
+    id: PostUrl,
+    visibility: Visibility,
+}
+
+impl Reply {
+    pub fn new(id: &Url, visibility: Visibility) -> Reply {
+        Reply {
+            id: PostUrl(id.clone()),
+            visibility,
+        }
+    }
+}
+
+// Yes, yes... this is identical, at the time of this writing, to `Reply`. Perhaps I'll merge
+// them, but I want to see how this develops.
+#[derive(
+    Clone, Debug, Deserialize, DeserializeValue, Eq, Hash, PartialEq, Serialize, SerializeValue,
+)]
+pub struct Share {
+    id: PostUrl,
+    visibility: Visibility,
+}
+
+impl Share {
+    pub fn new(id: &Url, visibility: Visibility) -> Share {
+        Share {
+            id: PostUrl(id.clone()),
+            visibility,
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                              Post                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1570,6 +1704,9 @@ pub struct Post {
     tags: HashSet<Tagname>,
     public: bool,
     unread: bool,
+    likes: HashSet<PostUrl>,
+    replies: HashSet<Reply>,
+    shares: HashSet<Share>,
 }
 
 impl Post {
@@ -1597,6 +1734,9 @@ impl Post {
             tags: tags.clone(),
             public,
             unread,
+            likes: HashSet::new(),
+            replies: HashSet::new(),
+            shares: HashSet::new(),
         }
     }
     pub fn day(&self) -> PostDay {

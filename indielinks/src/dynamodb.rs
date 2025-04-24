@@ -21,7 +21,7 @@
 
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
-    entities::{Post, PostDay, PostId, PostUri, Tagname, User, UserId, Username},
+    entities::{Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId, Username},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
@@ -392,6 +392,55 @@ impl storage::Backend for Client {
                 }
             }
         }
+    }
+
+    async fn add_reply(
+        &self,
+        user: &User,
+        url: &PostUri,
+        reply: &Reply,
+    ) -> StdResult<(), StorError> {
+        // It would be nice to be able to store `Reply`-s in a Set, so as to prevent duplication at
+        // the data layer. Regrettably, DDB Sets can only hold numbers, strings & binary types.
+        let item: HashMap<String, AttributeValue> =
+            serde_dynamo::to_item(reply).map_err(StorError::new)?;
+        let _ = self
+            .client
+            .update_item()
+            .table_name("posts")
+            .key("user_id", AttributeValue::S(user.id().to_string()))
+            .key("url", AttributeValue::S(url.to_string()))
+            .update_expression("set #r = list_append(#r, :val)")
+            .expression_attribute_names("#r", "replies".to_owned())
+            .expression_attribute_values(":val", AttributeValue::L(vec![AttributeValue::M(item)]))
+            .send()
+            .await?;
+        // Nb. Unlike in `delete_post()`, this query will error-out if the key doesn't name an
+        // extant Post ("UpdateExpression: list_append() given a non-list")
+        Ok(())
+    }
+
+    async fn add_share(
+        &self,
+        user: &User,
+        url: &PostUri,
+        share: &Share,
+    ) -> StdResult<(), StorError> {
+        let item = serde_dynamo::to_item(share).map_err(StorError::new)?;
+        let _ = self
+            .client
+            .update_item()
+            .table_name("posts")
+            .key("user_id", AttributeValue::S(user.id().to_string()))
+            .key("url", AttributeValue::S(url.to_string()))
+            .update_expression("set #s = list_append(#s, :val)")
+            .expression_attribute_names("#s", "shares".to_owned())
+            .expression_attribute_values(":val", AttributeValue::L(vec![AttributeValue::M(item)]))
+            .send()
+            .await?;
+        // Nb. Unlike in `delete_post()`, this query will error-out if the key doesn't name an
+        // extant Post ("UpdateExpression: list_append() given a non-list")
+        Ok(())
     }
 
     async fn add_user(&self, user: &User) -> StdResult<(), StorError> {

@@ -22,7 +22,7 @@ picky = "7.0.0-rc.12"
 regex = "1.11.1"
 reqwest = { version = "0.12.12", features = ["blocking", "json"] }
 rmp-serde = "1.3.0"
-scylla = { version = "0.15.1", features = ["chrono-04"] }
+scylla = { version = "1.1.0", features = ["chrono-04"] }
 serde = { version = "1.0.217", features = ["serde_derive"] }
 serde_dynamo = "4.2.14"
 serde_json = "1.0.138"

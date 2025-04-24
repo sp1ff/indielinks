@@ -640,9 +640,9 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
         //                    |
         //                    v
         //                responses
-        .layer(PropagateRequestIdLayer::new(
-            HeaderName::from_str("x-request-id").unwrap(/* known good */),
-        ))
+        .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
+            "x-request-id",
+        )))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().include_headers(true))
@@ -653,7 +653,7 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
             otel_middleware,
         ))
         .layer(SetRequestIdLayer::new(
-            HeaderName::from_str("x-request-id").unwrap(/* known good */),
+            HeaderName::from_static("x-request-id"),
             RequestIdGenerator::default(),
         ))
         .with_state(state)
@@ -711,7 +711,7 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
     let mut sigkill = signal(SignalKind::terminate()).unwrap();
 
     // Failure to parse at this point is fatal; below, we fall back to the last "known-good"
-    // configuration.
+    // configuration & keep going.
     let mut cfg = parse_config(&opts.cfg)?;
     let log_file_hup = configure_logging(&opts.log_opts, &cfg.log_file)?;
     // At this point we have logging-- huzzah!
@@ -779,17 +779,38 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
         )
         .with_graceful_shutdown(shutdown_signal(local_nfy.clone()));
 
+        let (mut processor_join_handle, processor_shutdown) = task_processor.into_parts();
+
+        let mut world_server = world_server.into_future();
+        let mut local_server = local_server.into_future();
+
+        fn log_on_err<T, E>(x: StdResult<T, E>)
+        where
+            E: std::error::Error + std::fmt::Debug,
+        {
+            if let Err(err) = x {
+                error!("{:?}", err);
+            }
+        }
+
         tokio::select! {
             // Intentionally not handling these-- the servers *should* never shutdown on their own.
             // That said, if I don't move `world_server` into a Future, it never gets polled.
-            _ = world_server.into_future() => unimplemented!(),
-            _ = local_server.into_future() => unimplemented!(),
+            _ = &mut world_server => unimplemented!(),
+            _ = &mut local_server => unimplemented!(),
             _ = sighup.recv() => { // Future<Output = Option<()>>
-                info!("Received SIGHUP; closing log file & ScyllaDB connections to re-read configuration.");
+                info!("Received SIGHUP; closing log file & DB connections to re-read configuration.");
+                // Signal our axum servers to shut-down...
                 world_nfy.notify_one();
                 local_nfy.notify_one();
-                // I worry about waiting for both routers to terminate; unfortunately, we've moved
-                // both into `Future`s, above.
+                // & wait for them to complete.
+                log_on_err(world_server.await);
+                log_on_err(local_server.await);
+                // There's not much to be done on failure, nor do we expect a result, but if there
+                // _was_ an error of some kind, I'd like to know about it.
+
+                // Cool! Now re-read our
+                // configuration:
                 cfg = match parse_config(&opts.cfg) {
                     Ok(cfg) => cfg,
                     Err(_) => cfg
@@ -807,19 +828,37 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
             }
             _ = sigkill.recv() => { // Future<Output = Option<()>>
                 info!("Received SIGKILL; terminating.");
+                // That's it-- we're outta here. Signal our axum servers to shut-down...
                 world_nfy.notify_one();
                 local_nfy.notify_one();
-                // I worry about waiting for both routers to terminate; unfortunately, we've moved
-                // both into `Future`s, above.
-                task_processor.shutdown(std::time::Duration::from_secs(5)).await.context(BackgroundShutdownSnafu)?;
+                // wait for our axum servers to complete...
+                log_on_err(world_server.await);
+                log_on_err(local_server.await);
+                // and shut-down our background processor:
+                processor_shutdown.notify_one();
+                // There's not much to be done on failure here, but if there is a problem, I'd like
+                // to at least know:
+                match tokio::time::timeout(std::time::Duration::from_secs(5), processor_join_handle)
+                    .await {
+                        Ok(Err(err)) => error!("Failed to shut-down the event processor: {:?}", err),
+                        Err(err) => error!("Failed waiting to shut-down the event processor: {:?}", err),
+                        _ => ()
+                    };
                 break;
             }
-        } // End tokio::select!.
-
-        task_processor
-            .shutdown(std::time::Duration::from_secs(5))
-            .await
-            .context(BackgroundShutdownSnafu)?;
+            res = &mut processor_join_handle => {
+                // This shouldn't happen!
+                error!("The background task processor exited early with {:?}; shutting-down.", res);
+                // 🤷 OK, well, not much to be done, here, except to signal our axum serverse to shutdown...
+                world_nfy.notify_one();
+                local_nfy.notify_one();
+                // wait for them...
+                log_on_err(world_server.await);
+                log_on_err(local_server.await);
+                // and bail.
+                break;
+            },
+        }; // End tokio::select!.
     } // End loop.
 
     Ok(())

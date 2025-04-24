@@ -69,17 +69,18 @@
 //! Furthermore, it's turned into an interesting little design problem: I'm increasingly impressed
 //! with how Rust's type system allows me to express _just_ what I want, and no more.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, task::Poll, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use pin_project::pin_project;
 use rmp_serde::to_vec;
 use scylla::DeserializeRow;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tokio::{
     sync::Notify,
-    task::{Id, JoinHandle, JoinSet},
+    task::{Id, JoinError, JoinHandle, JoinSet},
 };
 use uuid::Uuid;
 
@@ -220,10 +221,21 @@ impl<C, T: Receiver<C> + Send + Sync> Receiver<C> for Arc<T> {
 /// process (`Result<()>`).
 // `Processor` need not be cheaply clonable; will likely be held in one place & then dropped to
 // signal that it should shut down.
+#[pin_project]
 pub struct Processor {
     // This               👇 must match the return type of `process()`
+    #[pin]
     processor: JoinHandle<Result<()>>,
     shutdown: Arc<Notify>,
+}
+
+impl Future for Processor {
+    type Output = std::result::Result<Result<()>, JoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        this.processor.poll(cx)
+    }
 }
 
 impl Processor {
@@ -237,6 +249,13 @@ impl Processor {
             .await
             .context(ShutdownTimeoutSnafu)?
             .context(JoinSnafu)?
+    }
+    /// Split the instance back into it's parts
+    ///
+    /// This is convenient when waiting on the processor along with other futures (in a
+    /// `tokio::select!` invocation, e.g.)
+    pub fn into_parts(self) -> (JoinHandle<Result<()>>, Arc<Notify>) {
+        (self.processor, self.shutdown)
     }
 }
 

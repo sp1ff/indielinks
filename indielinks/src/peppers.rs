@@ -52,7 +52,7 @@ use std::{collections::BTreeMap, ops::Deref, str::FromStr};
 use lazy_static::lazy_static;
 use regex::Regex;
 use scylla::{
-    deserialize::{DeserializationError, DeserializeValue, FrameSlice, TypeCheckError},
+    deserialize::{value::DeserializeValue, DeserializationError, FrameSlice, TypeCheckError},
     frame::response::result::ColumnType,
     serialize::{
         value::SerializeValue,
