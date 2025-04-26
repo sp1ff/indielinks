@@ -36,11 +36,11 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 uuid = "1.15.1"
 
 [[test]]
-name = "delicious-alternator"
+name = "smoke-alternator"
 harness = false
 
 [[test]]
-name = "delicious-scylla"
+name = "smoke-scylla"
 harness = false
 
 [[test]]
