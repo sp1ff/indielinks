@@ -40,8 +40,9 @@ use serde_dynamo::aws_sdk_dynamodb_1::from_items;
 use snafu::{prelude::*, Backtrace, Snafu};
 use tap::Pipe;
 use tokio::runtime::Runtime;
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
-use std::{cmp::min, fmt::Display, sync::Arc};
+use std::{cmp::min, fmt::Display, io, sync::Arc};
 
 mod common;
 
@@ -72,6 +73,14 @@ enum Error {
             aws_sdk_dynamodb::config::http::HttpResponse,
         >,
         backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to parse RUST_LOG: {source}"))]
+    Filter {
+        source: tracing_subscriber::filter::FromEnvError,
+    },
+    #[snafu(display("Failed to set the global tracing subscriber: {source}"))]
+    SetGlobalDefault {
+        source: tracing::subscriber::SetGlobalDefaultError,
     },
 }
 
@@ -326,6 +335,19 @@ fn main() -> Result<()> {
     let config = Configuration::new().context(ConfigurationSnafu)?;
 
     let mut args = Arguments::from_args();
+
+    if config.logging {
+        let filter = EnvFilter::builder()
+            .with_default_directive(config.log_level.into())
+            .from_env()
+            .context(FilterSnafu)?;
+        tracing::subscriber::set_global_default(
+            Registry::default()
+                .with(fmt::Layer::default().compact().with_writer(io::stdout))
+                .with(filter),
+        )
+        .context(SetGlobalDefaultSnafu)?;
+    }
 
     if !config.no_setup {
         setup()?;
