@@ -21,7 +21,9 @@
 
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
-    entities::{Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId, Username},
+    entities::{
+        Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId, UserUrl, Username,
+    },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
@@ -44,7 +46,7 @@ use serde_dynamo::{
     aws_sdk_dynamodb_1::{from_items, to_item},
     from_item,
 };
-use snafu::{Backtrace, IntoError, Snafu};
+use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
 use url::Url;
 use uuid::Uuid;
@@ -56,6 +58,12 @@ use std::{
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Failed to add followers {followers:?}: {source}"))]
+    AddFollower {
+        followers: HashSet<UserUrl>,
+        source: SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("A query was expected to prodce at most one row & did not."))]
     AtMostOneRow { backtrace: Backtrace },
     #[snafu(display("Bad TagId {raw_tagid} read from DDB: {source}"))]
@@ -132,6 +140,11 @@ pub enum Error {
         >,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to serialize to an AttributeValue: {source}"))]
+    TAV {
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to update post counts: {source}"))]
     UpdatePostCounts {
         source: aws_smithy_runtime_api::client::result::SdkError<
@@ -155,6 +168,22 @@ pub enum Error {
             aws_sdk_dynamodb::config::http::HttpResponse,
         >,
         backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to write user {user:?} to the database: {source}"))]
+    User {
+        user: User,
+        source: SdkError<PutItemError, HttpResponse>,
+    },
+    #[snafu(display("Failed to serialize user {user:?}: {source}"))]
+    UserSer {
+        user: User,
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to check whether the username was claimed: {source}"))]
+    Username {
+        username: Username,
+        source: SdkError<PutItemError, HttpResponse>,
     },
 }
 
@@ -316,21 +345,127 @@ struct Tags {
     pub tags: Vec<Tagname>,
 }
 
+/// Write a user into the database
+///
+/// This logic has been factored out because the integration tests make use of it, as well. Returns
+/// true on success, false if the username was already claimed.
+pub async fn add_user(client: &::aws_sdk_dynamodb::Client, user: &User) -> Result<bool> {
+    use aws_sdk_dynamodb::{
+        error::SdkError, operation::put_item::PutItemError::ConditionalCheckFailedException,
+    };
+    let claimed = match client
+        .put_item()
+        .table_name("unique_usernames")
+        .item("username", AttributeValue::S(user.username().to_string()))
+        .item("id", AttributeValue::S(user.id().to_string()))
+        .condition_expression("attribute_not_exists(username)")
+        .send()
+        .await
+    {
+        Ok(_) => false,
+        Err(err) => {
+            if matches!(err, SdkError::ServiceError(ref inner) if matches!(inner.err(), ConditionalCheckFailedException(_)))
+            {
+                true
+            } else {
+                return Err(UsernameSnafu {
+                    username: user.username().clone(),
+                }
+                .into_error(err));
+            }
+        }
+    };
+    if claimed {
+        return Ok(false);
+    }
+
+    // I first thought to serialize the `User` via `serde_dynamo::to_item`, but serde_dynamo makes
+    // some... odd choices (serializing an empty `HashSet<String>` to `L: []`, for instance). I want
+    // to use `to_attribute_value()` wherever I can to avoid exposing implementation details and
+    // duplicating serialization logic.
+
+    use serde_dynamo::to_attribute_value as tav;
+    let item = HashMap::from([
+        ("id".to_string(), tav(user.id()).context(TAVSnafu)?),
+        (
+            "username".to_string(),
+            tav(user.username()).context(TAVSnafu)?,
+        ),
+        (
+            "discoverable".to_string(),
+            tav(user.discoverable()).context(TAVSnafu)?,
+        ),
+        (
+            "display_name".to_string(),
+            tav(user.display_name()).context(TAVSnafu)?,
+        ),
+        (
+            "summary".to_string(),
+            tav(user.summary()).context(TAVSnafu)?,
+        ),
+        (
+            "pub_key_pem".to_string(),
+            tav(user.pub_key()).context(TAVSnafu)?,
+        ),
+        (
+            "priv_key_pem".to_string(),
+            tav(user.priv_key()).context(TAVSnafu)?,
+        ),
+        (
+            "api_key".to_string(),
+            tav(user.api_key()).context(TAVSnafu)?,
+        ),
+        (
+            "password_hash".to_string(),
+            tav(user.password_hash()).context(TAVSnafu)?,
+        ),
+        (
+            "pepper_version".to_string(),
+            tav(user.pepper_version()).context(TAVSnafu)?,
+        ),
+    ]);
+
+    client
+        .put_item()
+        .table_name("users")
+        .set_item(Some(item))
+        .send()
+        .await
+        .context(UserSnafu { user: user.clone() })?;
+    Ok(true)
+}
+
+/// Add a follower to the database
+///
+/// This logic has been factored out because the integration tests make use of it, as well.
+pub async fn add_followers(
+    client: &::aws_sdk_dynamodb::Client,
+    user: &User,
+    followers: &HashSet<UserUrl>,
+) -> Result<()> {
+    client
+        .update_item()
+        .table_name("users")
+        .key("id", AttributeValue::S(user.id().to_string()))
+        .update_expression("add followers :u")
+        .expression_attribute_values(
+            ":u",
+            AttributeValue::Ss(followers.iter().map(|u| u.to_string()).collect()),
+        )
+        .send()
+        .await
+        .context(AddFollowerSnafu {
+            followers: followers.clone(),
+        })?;
+    Ok(())
+}
+
 #[async_trait]
 impl storage::Backend for Client {
     async fn add_follower(&self, user: &User, follower: &url::Url) -> StdResult<(), StorError> {
-        self.client
-            .update_item()
-            .table_name("users")
-            .key("id", AttributeValue::S(user.id().to_string()))
-            .update_expression("add followers :u")
-            .expression_attribute_values(
-                ":u",
-                AttributeValue::Ss(vec![follower.as_str().to_owned()]),
-            )
-            .send()
-            .await?;
-        Ok(())
+        add_followers(&self.client, user, &HashSet::from([follower.into()]))
+            .await
+            .map_err(StorError::new)
     }
     // Return true if an insert/upsert occurred, false if the insert/upsert failed because the post
     // already existed and `replace` was false, Err otherwise.
@@ -351,7 +486,7 @@ impl storage::Backend for Client {
         let post = Post::new(
             uri,
             id,
-            &user.id(),
+            user.id(),
             dt,
             &day,
             title,
@@ -444,45 +579,14 @@ impl storage::Backend for Client {
     }
 
     async fn add_user(&self, user: &User) -> StdResult<(), StorError> {
-        use aws_sdk_dynamodb::{
-            error::SdkError, operation::put_item::PutItemError::ConditionalCheckFailedException,
-        };
-        let claimed = match self
-            .client
-            .put_item()
-            .table_name("unique_usernames")
-            .item("username", AttributeValue::S(user.username().to_string()))
-            .item("id", AttributeValue::S(user.id().to_string()))
-            .condition_expression("attribute_not_exists(username)")
-            .send()
-            .await
-        {
-            Ok(_) => false,
-            Err(err) => {
-                if matches!(err, SdkError::ServiceError(ref inner) if matches!(inner.err(), ConditionalCheckFailedException(_)))
-                {
-                    true
-                } else {
-                    return UsernameClaimedSnafu {
-                        username: user.username().clone(),
-                    }
-                    .fail();
-                }
-            }
-        };
-        if claimed {
-            return UsernameClaimedSnafu {
+        if add_user(&self.client, user).await.map_err(StorError::new)? {
+            Ok(())
+        } else {
+            UsernameClaimedSnafu {
                 username: user.username().clone(),
             }
-            .fail();
+            .fail()
         }
-        self.client
-            .put_item()
-            .table_name("users")
-            .set_item(Some(serde_dynamo::to_item(user.clone())?))
-            .send()
-            .await?;
-        Ok(())
     }
 
     async fn delete_post(&self, user: &User, url: &PostUri) -> StdResult<bool, StorError> {

@@ -562,7 +562,9 @@ async fn update(
             username: user.username().clone(),
         })?;
 
-        Ok(UpdateRsp { update_time })
+        Ok(UpdateRsp {
+            update_time: *update_time,
+        })
     }
 
     match update1(request).await {
@@ -841,7 +843,7 @@ async fn get_posts(
 
         match posts_get_req.dt {
             None => Ok(PostsGetRsp {
-                date: last_dt,
+                date: *last_dt,
                 user: user.username().clone(),
                 posts: Vec::new(),
             }),
@@ -853,7 +855,7 @@ async fn get_posts(
                     .await
                     .context(GetPostsSnafu)?;
                 Ok(PostsGetRsp {
-                    date: last_dt,
+                    date: *last_dt,
                     user: user.username().clone(),
                     posts,
                 })
@@ -923,7 +925,7 @@ async fn get_recent(
             username: user.username().clone(),
         })?;
         Ok(PostsRecentRsp {
-            date: update_time,
+            date: *update_time,
             user: user.username().clone(),
             posts: storage
                 .get_recent_posts(user, &tags, count)

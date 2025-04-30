@@ -53,6 +53,14 @@ pub enum Error {
         "The number of prepared statements isn't consistent; this is a bug & should be reported!"
     ))]
     BadPreparedStatementCount { backtrace: Backtrace },
+    #[snafu(display(
+        "Failed to deserialize a username claim query response for {username}: {source}"
+    ))]
+    ClaimDe {
+        username: Username,
+        source: scylla::deserialize::DeserializationError,
+        backtrace: Backtrace,
+    },
     #[snafu(display("On conversion, {count} was too large to be converted to an i32: {source}"))]
     CountOOR {
         count: usize,
@@ -241,7 +249,7 @@ enum PreparedStatements {
     GetPostsForTag,
     GetPostById,
     RenameTag,
-    AddFollower,
+    AddFollowers,
     InsertTask,
     ScanTasks,
     TakeLease,
@@ -300,7 +308,7 @@ impl Session {
             // the same order as [PreparedStatements].
             "select * from users where username=?",
             "insert into unique_usernames (username, id) values (?, ?) if not exists",
-            "insert into users (id, username, discoverable, display_name, summary, pub_key_pem, priv_key_pem, api_key, first_update, last_update, password_hash, pepper_version) values (?, ?, ?, ?, ?, ?, ?, null, null, null, ?, ?)",
+            "insert into users (id, username, discoverable, display_name, summary, pub_key_pem, priv_key_pem, api_key, first_update, last_update, password_hash, pepper_version) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)",
             "update users set first_update=? where id=?",
             "update users set last_update=? where id=?", // UpdateLoastPost
             "select tags from posts where user_id=?", // TagCloud
@@ -343,7 +351,7 @@ impl Session {
             // expose myself to the possibility of a post being deleted out from under me while
             // renaming, which would leave the system in an invalid state.
             "update posts set tags=? where user_id=? and url=? if exists",
-            "update users set followers = followers + { ? } where id = ?",
+            "update users set followers = followers + ? where id = ?", // AddFollowers
             "insert into tasks (id, created, task, tag, lease_expires, done) values (?, ?, ?, ?, ?, ?)",
             "select * from tasks where done=false and lease_expires < ? allow filtering",
             "update tasks set lease_expires = ? where id = ? if lease_expires = ?",
@@ -443,17 +451,115 @@ impl std::convert::From<scylla::response::query_result::SingleRowError> for BckE
     }
 }
 
+/// Add a [User] to the database
+///
+/// This logic has been factored out because it's used by the integration tests, as well.
+pub async fn add_user(
+    session: &::scylla::client::session::Session,
+    prep_claim: Option<&PreparedStatement>,
+    prep_insert: Option<&PreparedStatement>,
+    user: &User,
+) -> Result<bool> {
+    let claimed = !match prep_claim {
+        Some(prep) => session
+            .execute_unpaged(prep, (user.username(), user.id()))
+            .await
+            .context(ExecutionSnafu)?,
+        None => session
+            .query_unpaged(
+                "insert into unique_usernames (username, id) values (?, ?) if not exists",
+                (user.username(), user.id()),
+            )
+            .await
+            .context(ExecutionSnafu)?,
+    }
+    .into_rows_result()
+    .context(IntoRowsResultSnafu)?
+    .rows::<(bool, Option<Username>, Option<UserId>)>()
+    .context(TypedRowsSnafu)?
+    .exactly_one()
+    .map_err(|_| {
+        MultipleUsernamesSnafu {
+            username: user.username().clone(),
+        }
+        .build()
+    })?
+    .context(ClaimDeSnafu {
+        username: user.username().clone(),
+    })?
+    .pipe(|tup| tup.0);
+
+    if claimed {
+        return Ok(false);
+    }
+
+    let params = (
+        user.id(),
+        user.username(),
+        user.discoverable(),
+        user.display_name(),
+        user.summary(),
+        user.pub_key(),
+        user.priv_key(),
+        user.api_key(),
+        user.hash(),
+        user.pepper_version(),
+    );
+    match prep_insert {
+        Some(prep) => session.execute_unpaged(prep, params).await,
+        None => {
+            session
+                .query_unpaged(
+                    "insert into users (id, username, discoverable, display_name, \
+                                       summary, pub_key_pem, priv_key_pem, api_key, first_update, \
+                                       last_update, password_hash, pepper_version) values \
+                                       (?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)",
+                    params,
+                )
+                .await
+        }
+    }
+    .context(ExecutionSnafu)?;
+
+    Ok(true)
+}
+
+/// Add a follower to the database
+///
+/// This logic has been factored out because the integration tests make use of it, as well.
+pub async fn add_followers(
+    session: &::scylla::client::session::Session,
+    prep: Option<&PreparedStatement>,
+    user: &User,
+    followers: &HashSet<UserUrl>,
+) -> Result<()> {
+    let tuple = (followers, &user.id());
+    match prep {
+        Some(prep) => session.execute_unpaged(prep, tuple).await,
+        None => {
+            session
+                .query_unpaged(
+                    "update users set followers = followers + ? where id = ?",
+                    tuple,
+                )
+                .await
+        }
+    }
+    .context(ExecutionSnafu)?;
+    Ok(())
+}
+
 #[async_trait]
 impl storage::Backend for Session {
     async fn add_follower(&self, user: &User, follower: &url::Url) -> StdResult<(), StorError> {
-        let follower: UserUrl = follower.into();
-        self.session
-            .execute_unpaged(
-                &self.prepared_statements[PreparedStatements::AddFollower],
-                (&follower, &user.id()),
-            )
-            .await?;
-        Ok(())
+        add_followers(
+            &self.session,
+            Some(&self.prepared_statements[PreparedStatements::AddFollowers]),
+            user,
+            &HashSet::from([follower.into()]),
+        )
+        .await
+        .map_err(StorError::new)
     }
 
     async fn add_post(
@@ -536,48 +642,22 @@ impl storage::Backend for Session {
     }
 
     async fn add_user(&self, user: &User) -> StdResult<(), StorError> {
-        let claimed = !self
-            .session
-            .execute_unpaged(
-                &self.prepared_statements[PreparedStatements::ClaimUsername],
-                (user.username(), user.id()),
-            )
-            .await?
-            .into_rows_result()?
-            .rows::<(bool, Option<Username>, Option<UserId>)>()?
-            .exactly_one()
-            .map_err(|_| {
-                StorError::new(
-                    MultipleUsernamesSnafu {
-                        username: user.username().clone(),
-                    }
-                    .build(),
-                )
-            })??
-            .pipe(|tup| tup.0);
-        if claimed {
-            return UsernameClaimedSnafu {
+        if add_user(
+            &self.session,
+            Some(&self.prepared_statements[PreparedStatements::ClaimUsername]),
+            Some(&self.prepared_statements[PreparedStatements::InsertUser]),
+            user,
+        )
+        .await
+        .map_err(StorError::new)?
+        {
+            Ok(())
+        } else {
+            UsernameClaimedSnafu {
                 username: user.username().clone(),
             }
-            .fail();
+            .fail()
         }
-        self.session
-            .execute_unpaged(
-                &self.prepared_statements[PreparedStatements::InsertUser],
-                (
-                    user.id(),
-                    user.username(),
-                    user.discoverable(),
-                    user.display_name(),
-                    user.summary(),
-                    user.pub_key(),
-                    user.priv_key(),
-                    user.hash(),
-                    user.pepper_version(),
-                ),
-            )
-            .await?;
-        Ok(())
     }
 
     async fn delete_post(&self, user: &User, url: &PostUri) -> StdResult<bool, StorError> {
@@ -638,7 +718,7 @@ impl storage::Backend for Session {
                 );
                 batch_values.push((
                     post.tags().cloned().collect::<HashSet<Tagname>>(),
-                    user.id(),
+                    *user.id(),
                     post.url().clone(),
                 ));
             });
@@ -1022,7 +1102,7 @@ impl storage::Backend for Session {
                 );
                 batch_values.push((
                     post.tags().cloned().collect::<HashSet<Tagname>>(),
-                    user.id(),
+                    *user.id(),
                     post.url().clone(),
                 ));
             });

@@ -307,6 +307,9 @@ impl Origin {
     pub fn host(&self) -> &Host {
         &self.host
     }
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
 }
 
 impl Display for Origin {

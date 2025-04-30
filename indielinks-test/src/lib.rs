@@ -54,6 +54,11 @@
 //! [libtest-mimic]: https://docs.rs/libtest-mimic/latest/libtest_mimic/index.html
 //!
 //! For all that guidance, I'm still feeling my way, and already this implementation has grown
+use std::{
+    collections::HashSet,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
 /// far beyond what I'd envisioned when I started down this path. My general idea is to build a set of
 /// integration test programs, each exercising some aspect of indielinks. For now, I'm going to
 /// treat each integration test program as a fixture unto itself. I don't really see a lot of
@@ -71,10 +76,27 @@
 /// Code relating to the test framework itself (e.g. the `Test` struct) belongs in `tests/common`.
 /// Integration test programs themselves go in `tests`.
 use async_trait::async_trait;
-use indielinks::entities::Username;
 use libtest_mimic::Failed;
+use once_cell::sync::Lazy;
+use picky::key::{PrivateKey, PublicKey};
 use reqwest::Url;
+use secrecy::SecretString;
+use wiremock::{
+    matchers::{method, path},
+    Mock, ResponseTemplate,
+};
 
+use indielinks::{
+    ap_entities::{self, make_user_id},
+    entities::{UserUrl, Username},
+    origin::Origin,
+    peppers::{Pepper, Version as PepperVersion},
+};
+
+pub static TEST_USER_AGENT: &str = "indielinks integration tests/0.0.1; +sp1ff@pobox.com";
+
+#[path = "activity-pub.rs"]
+pub mod activity_pub;
 pub mod actor;
 pub mod background;
 pub mod delicious;
@@ -117,6 +139,70 @@ pub async fn test_healthcheck(url: Url) -> Result<(), Failed> {
 pub trait Helper {
     /// Remove all posts belonging to `username`
     async fn clear_posts(&self, username: &Username) -> Result<(), Failed>;
+    /// Create an indielinks user with given followers on federated servers
+    async fn create_user(
+        &self,
+        pepper_version: &PepperVersion,
+        pepper_key: &Pepper,
+        username: &Username,
+        password: &SecretString,
+        followers: &HashSet<UserUrl>,
+    ) -> Result<String, Failed>;
     /// Remove a user
     async fn remove_user(&self, username: &Username) -> Result<(), Failed>;
+}
+
+/// A mocked-up user on a peer ActivityPub server
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeerUser {
+    name: Username,
+    priv_key: PrivateKey,
+}
+
+static PEER_USER_COUNTER: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
+
+impl PeerUser {
+    pub fn new() -> Result<PeerUser, Failed> {
+        Ok(PeerUser {
+            name: Username::new(
+                &format!("mock-user-{}", PEER_USER_COUNTER.fetch_add(1, Ordering::Relaxed)),
+            ).unwrap(/* known good */),
+            priv_key: picky::key::PrivateKey::generate_rsa(2048)?,
+        })
+    }
+    pub fn id(&self, origin: &Origin) -> Result<Url, Failed> {
+        Ok(make_user_id(&self.name, origin)?)
+    }
+    pub fn name(&self) -> &Username {
+        &self.name
+    }
+    pub fn priv_key(&self) -> &PrivateKey {
+        &self.priv_key
+    }
+    pub fn pub_key(&self) -> Result<PublicKey, Failed> {
+        Ok(self.priv_key.to_public_key()?)
+    }
+}
+
+/// Return a [Mock] for a [PeerUser]'s inbox that will match on GET requests
+/// to `/users/{username}`.
+pub async fn peer_actor(user: &PeerUser, origin: &Origin) -> Result<Mock, Failed> {
+    Ok(Mock::given(method("GET"))
+        .and(path(format!("/users/{}", user.name())))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                ap_entities::Jld::new(
+                    &ap_entities::Actor::from_username_and_key(
+                        user.name(),
+                        origin,
+                        &user.pub_key()?,
+                    )
+                    .unwrap(),
+                    None,
+                )
+                .unwrap()
+                .to_string(),
+                "application/activity+json",
+            ),
+        ))
 }

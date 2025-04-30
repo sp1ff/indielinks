@@ -381,9 +381,10 @@ async fn signup(
             &signup_req.username,
             &signup_req.password,
             &signup_req.email,
-            &signup_req.discoverable,
-            &signup_req.display_name,
-            &signup_req.summary,
+            None,
+            signup_req.discoverable,
+            signup_req.display_name.as_deref(),
+            signup_req.summary.as_deref(),
         )
         .context(UserSignupSnafu)?;
         let storage: &(dyn StorageBackend + Send + Sync) = state.storage.as_ref();

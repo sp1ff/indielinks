@@ -20,7 +20,7 @@
 //! Code common to the indielinks integration test framework goes here. See [indielinks_test] for a
 //! full description.
 use indielinks::{
-    background_tasks::Backend as TasksBackend, entities::Username,
+    background_tasks::Backend as TasksBackend, entities::Username, peppers::Peppers,
     storage::Backend as StorageBackend,
 };
 use indielinks_test::Helper;
@@ -64,7 +64,8 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-const RUST_LOG: &str = "debug,aws_config=info,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info";
+const RUST_LOG: &str = "debug,aws_config=info,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,\
+                        aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info";
 
 pub fn run(cmd: &str, args: &[&str]) -> Result<()> {
     let output = Command::new(cmd)
@@ -149,14 +150,16 @@ pub struct Configuration {
     #[serde(rename = "no-teardown")]
     pub no_teardown: bool,
     /// The location at which the indielinks instance under test can be reached from this test
-    pub url: Url,
     pub indielinks: Url,
+    /// The username of the test user that comes "pre-configured" with our integration tests
+    // I think I'd like to get rid of this altogether & just have tests create their own test users
     pub username: Username,
+    /// The API key of test user that comes "pre-configured" with our integration tests
+    // I think I'd like to get rid of this altogether & just have tests create their own test users
     pub api_key: String,
+    pub pepper: Peppers,
     pub scylla: ScyllaConfig,
     pub dynamo: DynamoConfig,
-    /// Port on which any local server needed by a test can listen
-    pub local_port: u16,
     pub logging: bool,
     #[serde(deserialize_with = "de_level::deserialize")]
     pub log_level: Level,
@@ -205,13 +208,12 @@ impl Default for Configuration {
         Configuration {
             no_setup: false,
             no_teardown: false,
-            url: Url::parse("http://localhost:20673").unwrap(/* known good */),
             username: Username::new("sp1ff").unwrap(/* known good */),
             indielinks: Url::parse("http://indiemark.local:20673").unwrap(/* known good */),
             api_key: "6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873".to_owned(),
+            pepper: Peppers::default(),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
-            local_port: 32768,
             logging: false,
             log_level: Level::DEBUG,
         }

@@ -394,6 +394,8 @@ impl Task<Context> for SendCreate {
                 // and just hang-out until that call is "due":
                 tokio::time::sleep_until(this_call.next_call).await;
 
+                debug!("Sending a Create to {}", this_call.inbox);
+
                 // If we're here, it's time-- make the call. Nb. that we're not taking advantage of
                 // the retry facility offered by `send_activity_pub`-- we'll handle that here so as
                 // to interleave the retries.

@@ -19,17 +19,8 @@
 //!
 //! [Follow]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-follow
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::time::Duration;
 
-use axum::{
-    extract::State,
-    response::IntoResponse,
-    routing::{get, post},
-    Router,
-};
 use chrono::Utc;
 use indielinks::{
     actor::CollectionPage,
@@ -42,6 +33,12 @@ use libtest_mimic::Failed;
 use picky::key::PrivateKey;
 use reqwest::{Client, Url};
 use uuid::Uuid;
+use wiremock::{
+    matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
+};
+
+use crate::{peer_actor, PeerUser, TEST_USER_AGENT};
 
 /// Take an HTTP verb/method, URL and a reqwest [Body]. Return a signed reqwest Request. The signature
 /// uses a key ID of "http://localhost:{}/users/test-user".
@@ -49,8 +46,9 @@ async fn make_request(
     method: http::Method,
     url: Url,
     body: reqwest::Body,
-    local_port: u16,
+    origin: &Origin,
     priv_key: &PrivateKey,
+    username: &Username,
 ) -> Result<reqwest::Request, Failed> {
     let req = http::Request::builder()
         .method(method)
@@ -63,30 +61,12 @@ async fn make_request(
         .header(reqwest::header::HOST, "localhost")
         .body(body)?;
     let req = ensure_sha_256(req)?;
-    let (mut req, sig) = sign_request(
-        req,
-        &format!("http://localhost:{}/users/test-user", local_port),
-        priv_key,
-    )?;
+    let (mut req, sig) = sign_request(req, &format!("{}/users/{}", origin, username), priv_key)?;
     req.headers_mut().append(
         "Signature",
         http::HeaderValue::from_str(&sig.to_string()[10..])?,
     );
     Ok(req.try_into()?)
-}
-
-struct TestState {
-    pub accepted: Arc<Mutex<usize>>,
-}
-
-async fn inbox_taking_accept(
-    State(state): State<Arc<TestState>>,
-    axum::extract::Json(_accept): axum::extract::Json<ap_entities::Accept>,
-) -> axum::response::Response {
-    // We need to validate the signature on `accept`!
-    let mut data = state.accepted.lock().expect("Failed to lock the mutex");
-    *data += 1;
-    (http::status::StatusCode::ACCEPTED, ()).into_response()
 }
 
 /// First integration test for ActivityPub [Follow]s.
@@ -101,118 +81,58 @@ pub async fn accept_follow_smoke(
     url: Url,
     username: Username,
     origin: Origin,
-    local_port: u16,
 ) -> Result<(), Failed> {
     // This test takes the form of a conversation between a mock ActivityPub server implemented in
-    // this test, and indielinks. We need a keypair for our "test user". We start by generating a
-    // 2048 bit RSA private key...
-    let priv_key = picky::key::PrivateKey::generate_rsa(2048)?;
+    // this test, and indielinks.
+    // along with a mock user on that peer:
+    let mock_user = PeerUser::new()?;
 
     // We'll also need a client:
-    let client = Client::builder()
-        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
-        .build()?;
+    let client = Client::builder().user_agent(TEST_USER_AGENT).build()?;
 
-    // We'll begin by forming a `Follow` request for the test indielinks
-    // user.
+    let mock_server = MockServer::start().await;
+
+    let mock_origin: Origin = mock_server.uri().try_into()?;
+    peer_actor(&mock_user, &mock_origin)
+        .await?
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path(format!("/users/{}/inbox", mock_user.name())))
+        .respond_with(ResponseTemplate::new(202))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    // That's it-- our server is up & running. Now let's build ourselves a `Follow` request:
     let follow = ap_entities::Follow::new(
         url.join("/users/sp1ff/inbox")?,
-        Url::parse(&format!(
-            "http://localhost:{}/{}",
-            local_port,
-            Uuid::new_v4().hyphenated()
-        ))?,
-        Url::parse(&format!("http://localhost:{}/users/test-user", local_port))?,
+        Url::parse(&format!("{}/{}", mock_origin, Uuid::new_v4().hyphenated()))?,
+        Url::parse(&format!("{}/users/{}", mock_origin, mock_user.name()))?,
     );
-    // Nb. that `request` is now a *reqwest* `Request`, not an axum `Request`!
+    // Nb. that `request` is now a *reqwest* `Request`, not an axum `Request`. Sign it:
     let request = make_request(
         axum::http::Method::POST,
         url.join(&format!("/users/{}/inbox", &username))?,
         Jld::new(&follow, None)?.to_string().into(),
-        local_port,
-        &priv_key,
+        &mock_origin,
+        mock_user.priv_key(),
+        mock_user.name(),
     )
     .await?;
 
-    // OK-- that's our Follow request. Now spin-up a local web server...
-    let listener = tokio::net::TcpListener::bind(&format!("localhost:{}", local_port)).await?;
-    // which will require the corresponding public key.
-    let pub_key = priv_key.to_public_key()?;
-    let our_origin: Origin =
-        format!("http://localhost:{}", local_port).try_into().unwrap(/* known good */);
-    let state = Arc::new(TestState {
-        accepted: Arc::new(Mutex::new(0)),
-    });
-    // Our server will serve two endpoints...
-    let app = Router::<Arc<TestState>>::new()
-        .route(
-            // the endpoint corresponding to the above "key ID"; it will return an `Actor`
-            // representing our "test user", which will include the public key (so indielinks can
-            // validate our signatures)...
-            "/users/test-user",
-            get(|| async move {
-                (
-                    http::status::StatusCode::OK,
-                    ap_entities::Jld::new(
-                        &ap_entities::Actor::from_username_and_key(
-                            &Username::new("test-user").unwrap(),
-                            &our_origin,
-                            &pub_key,
-                        )
-                        .unwrap(),
-                        None,
-                    )
-                    .unwrap()
-                    .to_string(),
-                )
-                    .into_response()
-            }),
-        )
-        .route(
-            // and the endpoint corresponding to our test user's public inbox.
-            "/users/test-user/inbox",
-            post(inbox_taking_accept),
-        )
-        .with_state(state.clone());
-    // It will use a "one shot" channel to handle graceful shutdown.
-    let (shutdown_sender, shutdown_reader) = tokio::sync::oneshot::channel::<()>();
-    // Alright-- spawn the server on a Tokio task...
-    let handle = tokio::task::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_reader.await;
-            })
-            .await
-            .expect("Failed to serve requests");
-    });
-
-    // That's it-- we're ready to follow the test user:
     let rsp = client.execute(request).await?;
-
     assert!(rsp.status() == reqwest::StatusCode::CREATED);
-
-    // Wait a bit for the Accept to come back to us
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    if *state.accepted.lock().expect("Failed to lock mutex") != 1 {
-        let mut num_attempts = 1;
-        loop {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            num_attempts += 1;
-            if *state.accepted.lock().expect("Failed to lock mutex") == 1 || num_attempts > 8 {
-                break;
-            }
-        }
-    }
-
-    assert_eq!(*state.accepted.lock().expect("Failed to lock mutex"), 1);
 
     // Let's at least check that the follower now shows-up!
     let request = make_request(
         axum::http::Method::GET,
         url.join(&format!("/users/{}/followers", &username))?,
         reqwest::Body::default(),
-        local_port,
-        &priv_key,
+        &mock_origin,
+        mock_user.priv_key(),
+        mock_user.name(),
     )
     .await?;
 
@@ -222,14 +142,14 @@ pub async fn accept_follow_smoke(
     let page = rsp.json::<CollectionPage>().await?;
     assert_eq!(page.total_items, 1);
 
-    let first = page.first.unwrap();
-
+    let first = page.first.unwrap(/* known good */);
     let request = make_request(
         axum::http::Method::GET,
         first,
         reqwest::Body::default(),
-        local_port,
-        &priv_key,
+        &mock_origin,
+        mock_user.priv_key(),
+        mock_user.name(),
     )
     .await?;
 
@@ -249,15 +169,31 @@ pub async fn accept_follow_smoke(
     assert_eq!(items.len(), 1);
     assert_eq!(
         items[0].to_string(),
-        format!("http://localhost:{}/users/test-user", local_port)
+        format!("{}/users/{}", mock_origin, mock_user.name())
     );
 
-    // Shut-down the server...
-    shutdown_sender
-        .send(())
-        .expect("Failed to send shutdown signal");
-    // and wait to be sure it's done.
-    handle.await.expect("Spawned server panic'd");
+    // So this is tricky-- I want to test that my mock server received the expected number of
+    // requests, but indielinks will send them asynchronously. Let's wait a bit to be sure they
+    // show-up. We expect two: a hit on the actor (to get the public key), and an `Accept` to the
+    // test users's inbox (for the `Accept`).
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mut num_requests = mock_server
+        .received_requests()
+        .await
+        .map(|x| x.len())
+        .unwrap_or(0);
+    let mut n = 0;
+    while num_requests < 2 && n < 8 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        num_requests = mock_server
+            .received_requests()
+            .await
+            .map(|x| x.len())
+            .unwrap_or(0);
+        n += 1;
+    }
+
+    assert_eq!(2, num_requests);
 
     Ok(())
 }

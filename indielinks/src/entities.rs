@@ -618,6 +618,12 @@ mod serde_publickey {
 // `UserPrivateKey` isn't a refined type; it's just a wrapper on which to hang trait implementations
 pub struct UserPrivateKey(#[serde(with = "serde_privatekey")] PrivateKey);
 
+impl UserPrivateKey {
+    pub fn to_pem(&self) -> Result<String> {
+        self.0.to_pem_str().context(PemSnafu)
+    }
+}
+
 impl AsRef<PrivateKey> for UserPrivateKey {
     fn as_ref(&self) -> &PrivateKey {
         &self.0
@@ -796,6 +802,12 @@ pub struct UserHashString(
 impl UserHashString {
     pub fn password_hash(&self) -> PasswordHash<'_> {
         self.0.password_hash()
+    }
+}
+
+impl Display for UserHashString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -1034,6 +1046,9 @@ fn generate_rsa_keypair() -> Result<(UserPublicKey, UserPrivateKey)> {
 }
 
 impl User {
+    pub fn api_key(&self) -> Option<&UserApiKey> {
+        self.api_key.as_ref()
+    }
     /// Validate an API key
     pub fn check_key(&self, key: &UserApiKey) -> Result<()> {
         use secrecy::ExposeSecret;
@@ -1069,14 +1084,14 @@ impl User {
             .into_error(err)),
         }
     }
-    pub fn date_of_last_post(&self) -> Option<DateTime<Utc>> {
-        self.last_update
+    pub fn date_of_last_post(&self) -> Option<&DateTime<Utc>> {
+        self.last_update.as_ref()
     }
     pub fn discoverable(&self) -> bool {
         self.discoverable
     }
-    pub fn display_name(&self) -> String {
-        self.display_name.clone()
+    pub fn display_name(&self) -> &str {
+        &self.display_name
     }
     pub fn first_update(&self) -> Option<DateTime<Utc>> {
         self.first_update
@@ -1084,14 +1099,14 @@ impl User {
     pub fn followers(&self) -> impl Iterator<Item = &UserUrl> {
         self.followers.iter()
     }
-    pub fn hash(&self) -> UserHashString {
-        self.password_hash.clone()
+    pub fn hash(&self) -> &UserHashString {
+        &self.password_hash
     }
-    pub fn id(&self) -> UserId {
-        self.id
+    pub fn id(&self) -> &UserId {
+        &self.id
     }
-    pub fn last_update(&self) -> Option<DateTime<Utc>> {
-        self.last_update
+    pub fn last_update(&self) -> Option<&DateTime<Utc>> {
+        self.last_update.as_ref()
     }
     /// Create a new [User]
     ///
@@ -1110,22 +1125,24 @@ impl User {
         username: &Username,
         password: &SecretString,
         email: &UserEmail,
-        discoverable: &Option<bool>,
-        display_name: &Option<String>,
-        summary: &Option<String>,
+        api_key: Option<&UserApiKey>,
+        discoverable: Option<bool>,
+        display_name: Option<&str>,
+        summary: Option<&str>,
     ) -> Result<User> {
         validate_password(password, &[username.as_ref(), email.as_ref()])?;
         let (pub_key, priv_key) = generate_rsa_keypair()?;
         let password_hash = User::hash_password(pepper_key, password)?;
+        let _ = display_name.unwrap_or(username).to_string();
         Ok(User {
             id: UserId::default(),
             username: username.clone(),
             discoverable: discoverable.unwrap_or(true),
-            display_name: display_name.clone().unwrap_or(username.to_string()),
-            summary: summary.clone().unwrap_or("".to_string()),
+            display_name: display_name.unwrap_or(username).to_string(),
+            summary: summary.unwrap_or("").to_string(),
             pub_key_pem: pub_key,
             priv_key_pem: priv_key,
-            api_key: None,
+            api_key: api_key.cloned(),
             first_update: None,
             last_update: None,
             password_hash: UserHashString(password_hash),
@@ -1136,17 +1153,20 @@ impl User {
     pub fn num_followers(&self) -> usize {
         self.followers.len()
     }
-    pub fn pepper_version(&self) -> PepperVersion {
-        self.pepper_version.clone()
+    pub fn password_hash(&self) -> &UserHashString {
+        &self.password_hash
     }
-    pub fn priv_key(&self) -> UserPrivateKey {
-        self.priv_key_pem.clone()
+    pub fn pepper_version(&self) -> &PepperVersion {
+        &self.pepper_version
     }
-    pub fn pub_key(&self) -> UserPublicKey {
-        self.pub_key_pem.clone()
+    pub fn priv_key(&self) -> &UserPrivateKey {
+        &self.priv_key_pem
     }
-    pub fn summary(&self) -> String {
-        self.summary.clone()
+    pub fn pub_key(&self) -> &UserPublicKey {
+        &self.pub_key_pem
+    }
+    pub fn summary(&self) -> &str {
+        &self.summary
     }
     pub fn username(&self) -> &Username {
         &self.username

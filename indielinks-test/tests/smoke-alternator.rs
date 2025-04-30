@@ -15,10 +15,15 @@
 
 //! # delicious-alternator
 //!
-//! Integration tests run against an indielinks configured with the Dynamo storage back-end.
+//! Integration tests run against an indielinks configured with the DynamoDB storage back-end.
 use common::{run, Configuration, IndielinksTest};
-use indielinks::entities::{Post, User, UserId, Username};
+use indielinks::{
+    dynamodb::{add_followers, add_user},
+    entities::{Post, User, UserEmail, UserId, UserUrl, Username},
+    peppers::{Pepper, Version as PepperVersion},
+};
 use indielinks_test::{
+    activity_pub::posting_creates_note,
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
@@ -36,13 +41,14 @@ use aws_sdk_dynamodb::{
 use either::Either;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Failed, Trial};
+use secrecy::SecretString;
 use serde_dynamo::aws_sdk_dynamodb_1::from_items;
 use snafu::{prelude::*, Backtrace, Snafu};
 use tap::Pipe;
 use tokio::runtime::Runtime;
 use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
-use std::{cmp::min, fmt::Display, io, sync::Arc};
+use std::{cmp::min, collections::HashSet, fmt::Display, io, sync::Arc};
 
 mod common;
 
@@ -62,10 +68,18 @@ enum Error {
         source: serde_dynamo::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("Expected exactly one"))]
-    ExactlyOne { backtrace: Backtrace },
+    #[snafu(display("User {username} appears more than once in the database"))]
+    MultipleUsers {
+        username: Username,
+        backtrace: Backtrace,
+    },
     #[snafu(display("No endpoint URLs specified"))]
     NoEndpoints { backtrace: Backtrace },
+    #[snafu(display("No user {username}"))]
+    NoSuchUser {
+        username: Username,
+        backtrace: Backtrace,
+    },
     #[snafu(display("DynamoDB query failed: {source}"))]
     Query {
         source: aws_smithy_runtime_api::client::result::SdkError<
@@ -162,7 +176,7 @@ impl State {
             client: ::aws_sdk_dynamodb::Client::new(&config),
         })
     }
-    async fn id_for_username(&self, username: &Username) -> Result<UserId> {
+    async fn id_for_username(&self, username: &Username) -> Result<Option<UserId>> {
         Ok(self
             .client
             .query()
@@ -178,16 +192,27 @@ impl State {
             .pipe(from_items::<User>)
             .context(DeUserSnafu)?
             .into_iter()
-            .exactly_one()
-            .map_err(|_| ExactlyOneSnafu.build())?
-            .id())
+            .at_most_one()
+            .map_err(|_| {
+                MultipleUsersSnafu {
+                    username: username.clone(),
+                }
+                .build()
+            })?
+            .map(|user| user.id().clone()))
     }
 }
 
 #[async_trait]
 impl Helper for State {
     async fn clear_posts(&self, username: &Username) -> std::result::Result<(), Failed> {
-        let user_id = self.id_for_username(username).await?;
+        let user_id = self
+            .id_for_username(username)
+            .await?
+            .context(NoSuchUserSnafu {
+                username: username.clone(),
+            })?;
+
         // Arrrrrgghhhhh... DDB provides no "truncate" operation. We need to `BatchWrite` (or drop &
         // recreate the table). Hopefully, no test will create so many posts that we can't do this
         // in-memory:
@@ -238,34 +263,68 @@ impl Helper for State {
 
         Ok(())
     }
+    async fn create_user(
+        &self,
+        pepper_version: &PepperVersion,
+        pepper_key: &Pepper,
+        username: &Username,
+        password: &SecretString,
+        followers: &HashSet<UserUrl>,
+    ) -> std::result::Result<String, Failed> {
+        use crypto_common::rand_core::{OsRng, RngCore};
+
+        let mut api_key: Vec<u8> = Vec::with_capacity(32);
+        OsRng.fill_bytes(api_key.as_mut_slice());
+        let textual_api_key = hex::encode(&api_key);
+        let user = User::new(
+            pepper_version,
+            pepper_key,
+            username,
+            password,
+            &UserEmail::new(&format!("{}@example.com", username)).unwrap(/* known good */),
+            Some(&api_key.into()),
+            None,
+            None,
+            None,
+        )?;
+
+        add_user(&self.client, &user).await?;
+        add_followers(&self.client, &user, followers).await?;
+
+        Ok(textual_api_key)
+    }
     async fn remove_user(&self, username: &Username) -> std::result::Result<(), Failed> {
         let user_id = self.id_for_username(username).await?;
-        self.client
-            .delete_item()
-            .table_name("users")
-            .key("id", AttributeValue::S(user_id.to_string()))
-            .send()
-            .await?;
-        self.client
-            .delete_item()
-            .table_name("unique_usernames")
-            .key("username", AttributeValue::S(username.to_string()))
-            .send()
-            .await?;
+        if let Some(user_id) = user_id {
+            self.client
+                .delete_item()
+                .table_name("users")
+                .key("id", AttributeValue::S(user_id.to_string()))
+                .send()
+                .await?;
+            self.client
+                .delete_item()
+                .table_name("unique_usernames")
+                .key("username", AttributeValue::S(username.to_string()))
+                .send()
+                .await?;
+        }
         Ok(())
     }
 }
 
 inventory::submit!(IndielinksTest {
     name: "000test_healthcheck",
-    test_fn: |cfg, _helper| { Box::pin(test_healthcheck(cfg.url)) },
+    test_fn: |cfg, _helper| {
+        Box::pin(test_healthcheck(cfg.indielinks /*url*/))
+    },
 });
 
 inventory::submit!(IndielinksTest {
     name: "001delicious_smoke_test",
     test_fn: |cfg, helper| {
         Box::pin(delicious_smoke_test(
-            cfg.url,
+            cfg.indielinks, /*url*/
             cfg.username,
             cfg.api_key,
             helper,
@@ -275,19 +334,33 @@ inventory::submit!(IndielinksTest {
 
 inventory::submit!(IndielinksTest {
     name: "010delicious_posts_recent",
-    test_fn: |cfg, helper| { Box::pin(posts_recent(cfg.url, cfg.username, cfg.api_key, helper)) },
+    test_fn: |cfg, helper| {
+        Box::pin(posts_recent(
+            cfg.indielinks, /*url*/
+            cfg.username,
+            cfg.api_key,
+            helper,
+        ))
+    },
 });
 
 inventory::submit!(IndielinksTest {
     name: "011delicious_posts_all",
-    test_fn: |cfg, helper| { Box::pin(posts_all(cfg.url, cfg.username, cfg.api_key, helper)) }
+    test_fn: |cfg, helper| {
+        Box::pin(posts_all(
+            cfg.indielinks, /*url*/
+            cfg.username,
+            cfg.api_key,
+            helper,
+        ))
+    }
 });
 
 inventory::submit!(IndielinksTest {
     name: "012delicious_tags_rename_and_delete",
     test_fn: |cfg: Configuration, helper| {
         Box::pin(tags_rename_and_delete(
-            cfg.url,
+            cfg.indielinks,
             cfg.username,
             cfg.api_key,
             helper,
@@ -297,14 +370,14 @@ inventory::submit!(IndielinksTest {
 
 inventory::submit!(IndielinksTest {
     name: "020user_test_signup",
-    test_fn: |cfg: Configuration, helper| { Box::pin(test_signup(cfg.url, helper)) },
+    test_fn: |cfg: Configuration, helper| { Box::pin(test_signup(cfg.indielinks, helper)) },
 });
 
 inventory::submit!(IndielinksTest {
     name: "030webfinger_smoke",
     test_fn: |cfg: Configuration, _helper| {
         Box::pin(webfinger_smoke(
-            cfg.url,
+            cfg.indielinks.clone(),
             cfg.username,
             cfg.indielinks.clone().try_into().unwrap(/* Fail the test if this fails */),
         ))
@@ -315,10 +388,22 @@ inventory::submit!(IndielinksTest {
     name: "040follow_smoke",
     test_fn: |cfg: Configuration, _helper| {
         Box::pin(accept_follow_smoke(
-            cfg.url,
+            cfg.indielinks.clone(),
             cfg.username,
-            cfg.indielinks.clone().try_into().unwrap(/* Fail the test if this fails */),
-            cfg.local_port,
+            cfg.indielinks.try_into().unwrap(),
+        ))
+    },
+});
+
+inventory::submit!(IndielinksTest {
+    name: "050post_creates_note",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(posting_creates_note(
+            cfg.indielinks,
+            version,
+            pepper,
+            helper,
         ))
     },
 });

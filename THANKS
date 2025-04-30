@@ -10,3 +10,5 @@ THANKS                                                           -*- outline -*-
   - Thanks to the picky-rs <https://github.com/Devolutions/picky-rs> author(s) for being so responsive to my PR
     <https://github.com/Devolutions/picky-rs/pull/351>
   - Thanks to Sebastian Jambor <https://seb.jambor.dev/about/> ActivityPub.academy <https://activitypub.academy/auth/sign_up>
+  - Thanks to T.J. Telan <https://tjtelan.com> for his post on building custom integration test harnesses <https://tjtelan.com/blog/rust-custom-test-harness/blog/rust-custom-test-harness/>
+ 

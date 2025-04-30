@@ -205,3 +205,12 @@
 //! to go with just coding-up my refined types by hand, while both keeping an eye on the [refined]
 //! crate and looking for patterns in my own refined types that might be amenable to abstraction,
 //! even through macros.
+//!
+//! ## Integration Tests
+//!
+//! I've begun building-out integration tests in the [indielinks-test] crate. While these tests fit
+//! into the standard Rust integration test framework, I've created them with custom harnesses that
+//! will stand-up ScyllaDB, spin-up an indielinks instance, & then allow the tests to interact with
+//! indielinks as HTTP clients.
+//!
+//! [indielinks-test]: ../../indielinks_test/index.html

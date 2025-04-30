@@ -17,11 +17,15 @@
 ///
 /// Integration tests run against an indielinks configured with the Scylla storage back-end.
 use common::{run, Configuration, IndielinksTest};
+use crypto_common::rand_core::{OsRng, RngCore};
 use indielinks::{
-    entities::{UserId, Username},
+    entities::{User, UserEmail, UserId, UserUrl, Username},
     origin::Origin,
+    peppers::{Pepper, Version as PepperVersion},
+    scylla::{add_followers, add_user},
 };
 use indielinks_test::{
+    activity_pub::posting_creates_note,
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
@@ -34,11 +38,12 @@ use async_trait::async_trait;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Failed, Trial};
 use scylla::client::session_builder::SessionBuilder;
+use secrecy::SecretString;
 use snafu::{prelude::*, Backtrace, Snafu};
 use tokio::runtime::Runtime;
 use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
-use std::{fmt::Display, io, sync::Arc};
+use std::{collections::HashSet, fmt::Display, io, sync::Arc};
 
 mod common;
 
@@ -53,16 +58,24 @@ enum Error {
         source: scylla::deserialize::DeserializationError,
         backtrace: Backtrace,
     },
-    #[snafu(display("Expected exactly one"))]
-    ExactlyOne { backtrace: Backtrace },
     #[snafu(display("Failed to set keyspace: {source}"))]
     Keyspace {
         source: scylla::errors::UseKeyspaceError,
         backtrace: Backtrace,
     },
+    #[snafu(display("User {username} appears more than once in the database"))]
+    MultipleUsers {
+        username: Username,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to create a ScyllaDB session: {source}"))]
     NewSession {
         source: scylla::errors::NewSessionError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("No user {username}"))]
+    NoSuchUser {
+        username: Username,
         backtrace: Backtrace,
     },
     #[snafu(display("ScyllaDB query failed: {source}"))]
@@ -143,7 +156,7 @@ impl State {
             .context(KeyspaceSnafu)?;
         Ok(State { session })
     }
-    async fn id_for_username(&self, username: &Username) -> Result<UserId> {
+    async fn id_for_username(&self, username: &Username) -> Result<Option<UserId>> {
         Ok(self
             .session
             .query_unpaged("select id from users where username=?", (username,))
@@ -156,16 +169,26 @@ impl State {
             .collect::<StdResult<Vec<(UserId,)>, _>>()
             .context(DeUserIdSnafu)?
             .into_iter()
-            .exactly_one()
-            .map_err(|_| ExactlyOneSnafu.build())?
-            .0)
+            .at_most_one()
+            .map_err(|_| {
+                MultipleUsersSnafu {
+                    username: username.clone(),
+                }
+                .build()
+            })?
+            .map(|opt| opt.0))
     }
 }
 
 #[async_trait]
 impl Helper for State {
     async fn clear_posts(&self, username: &Username) -> std::result::Result<(), Failed> {
-        let userid = self.id_for_username(username).await?;
+        let userid = self
+            .id_for_username(username)
+            .await?
+            .context(NoSuchUserSnafu {
+                username: username.clone(),
+            })?;
         self.session.query_unpaged("truncate posts", ()).await?;
         self.session
             .query_unpaged(
@@ -175,24 +198,58 @@ impl Helper for State {
             .await?;
         Ok(())
     }
+    async fn create_user(
+        &self,
+        pepper_version: &PepperVersion,
+        pepper_key: &Pepper,
+        username: &Username,
+        password: &SecretString,
+        followers: &HashSet<UserUrl>,
+    ) -> std::result::Result<String, Failed> {
+        let mut api_key: Vec<u8> = Vec::with_capacity(32);
+        OsRng.fill_bytes(api_key.as_mut_slice());
+        let textual_api_key = hex::encode(&api_key);
+        let user = User::new(
+            pepper_version,
+            pepper_key,
+            username,
+            password,
+            &UserEmail::new(&format!("{}@example.com", username)).unwrap(/* known good */),
+            Some(&api_key.into()),
+            None,
+            None,
+            None,
+        )?;
+
+        add_user(&self.session, None, None, &user).await?;
+        add_followers(&self.session, None, &user, followers).await?;
+
+        Ok(textual_api_key)
+    }
     async fn remove_user(&self, username: &Username) -> std::result::Result<(), Failed> {
-        self.session
-            .query_unpaged("delete * from users where username=?", (username,))
-            .await?;
+        let user_id = self.id_for_username(username).await?;
+        if let Some(user_id) = user_id {
+            self.session
+                .query_unpaged("delete from unique_usernames where username=?", (username,))
+                .await?;
+            self.session
+                .query_unpaged("delete from users where id=?", (user_id,))
+                .await?;
+        }
         Ok(())
     }
 }
 
 inventory::submit!(IndielinksTest {
     name: "000test_healthcheck",
-    test_fn: |cfg: Configuration, _helper| { Box::pin(test_healthcheck(cfg.url)) },
+    test_fn: |cfg: Configuration, _helper| { Box::pin(test_healthcheck(cfg.indielinks)) },
 });
 
 inventory::submit!(IndielinksTest {
     name: "001delicious_smoke_test",
     test_fn: |cfg, helper| {
         Box::pin(delicious_smoke_test(
-            cfg.url,
+            cfg.indielinks,
             cfg.username,
             cfg.api_key,
             helper,
@@ -202,13 +259,20 @@ inventory::submit!(IndielinksTest {
 
 inventory::submit!(IndielinksTest {
     name: "010delicious_posts_recent",
-    test_fn: |cfg, helper| { Box::pin(posts_recent(cfg.url, cfg.username, cfg.api_key, helper,)) },
+    test_fn: |cfg, helper| {
+        Box::pin(posts_recent(
+            cfg.indielinks,
+            cfg.username,
+            cfg.api_key,
+            helper,
+        ))
+    },
 });
 
 inventory::submit!(IndielinksTest {
     name: "011delicious_posts_all",
     test_fn: |cfg: Configuration, helper| {
-        Box::pin(posts_all(cfg.url, cfg.username, cfg.api_key, helper))
+        Box::pin(posts_all(cfg.indielinks, cfg.username, cfg.api_key, helper))
     },
 });
 
@@ -216,7 +280,7 @@ inventory::submit!(IndielinksTest {
     name: "012delicious_tags_rename_and_delete",
     test_fn: |cfg: Configuration, helper| {
         Box::pin(tags_rename_and_delete(
-            cfg.url,
+            cfg.indielinks,
             cfg.username,
             cfg.api_key,
             helper,
@@ -226,14 +290,14 @@ inventory::submit!(IndielinksTest {
 
 inventory::submit!(IndielinksTest {
     name: "020user_test_signup",
-    test_fn: |cfg: Configuration, helper| { Box::pin(test_signup(cfg.url, helper)) },
+    test_fn: |cfg: Configuration, helper| { Box::pin(test_signup(cfg.indielinks, helper)) },
 });
 
 inventory::submit!(IndielinksTest {
     name: "030webfinger_smoke",
     test_fn: |cfg: Configuration, _helper| {
         Box::pin(webfinger_smoke(
-            cfg.url,
+            cfg.indielinks.clone(),
             cfg.username,
             TryInto::<Origin>::try_into(cfg.indielinks.clone()).unwrap(/* fail the test if this fails */),
         ))
@@ -244,10 +308,22 @@ inventory::submit!(IndielinksTest {
     name: "040follow_smoke",
     test_fn: |cfg: Configuration, _helper| {
         Box::pin(accept_follow_smoke(
-            cfg.url,
+            cfg.indielinks.clone(),
             cfg.username,
-            TryInto::<Origin>::try_into(cfg.indielinks.clone()).unwrap(/* fail the test if this fails */),
-            cfg.local_port,
+            cfg.indielinks.clone().try_into().unwrap(),
+        ))
+    },
+});
+
+inventory::submit!(IndielinksTest {
+    name: "050post_creates_note",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(posting_creates_note(
+            cfg.indielinks,
+            version,
+            pepper,
+            helper,
         ))
     },
 });

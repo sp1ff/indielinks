@@ -81,6 +81,7 @@ impl InstrumentedMiddleware {
 }
 
 inventory::submit! { metrics::Registration::new("client.requests",                Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("client.errors",                  Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("client.responses.informational", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("client.responses.success",       Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("client.responses.redirect",      Sort::IntegralCounter) }
