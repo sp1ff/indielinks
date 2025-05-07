@@ -27,8 +27,8 @@ use enum_map::{Enum, EnumMap};
 use futures::stream;
 use itertools::Itertools;
 use scylla::{
-    client::session_builder::SessionBuilder, statement::batch::Batch,
-    statement::prepared::PreparedStatement,
+    client::session_builder::SessionBuilder,
+    statement::{batch::Batch, prepared::PreparedStatement, Statement},
 };
 use secrecy::{ExposeSecret, SecretString};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
@@ -38,8 +38,8 @@ use uuid::Uuid;
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{
-        Post, PostDay, PostId, PostUri, PostUrl, Reply, Share, Tagname, User, UserId, UserUrl,
-        Username,
+        FollowId, Post, PostDay, PostId, PostUri, PostUrl, Reply, Share, Tagname, User, UserId,
+        UserUrl, Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
@@ -258,6 +258,8 @@ enum PreparedStatements {
     AddLike,
     AddReply,
     AddShare,
+    AddFollows,
+    ConfirmFollow,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -359,7 +361,9 @@ impl Session {
             "select * from users where id=?",
             "update posts set likes = likes + { ? } where user_id = ? and url = ? if exists",
             "update posts set replies = replies + { ? } where user_id = ? and url = ? if exists",
-            "update posts set shares = shares + { ? } where user_id = ? and url = ? if exists"
+            "update posts set shares = shares + { ? } where user_id = ? and url = ? if exists",
+            "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?)", // AddFollows
+            "update following set accepted = true where user_id = ? and actor_id = ?"
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -376,7 +380,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 51] = prepared_statements
+        let prepared_statements: [PreparedStatement; 53] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -549,6 +553,34 @@ pub async fn add_followers(
     Ok(())
 }
 
+/// Note that a given user is now following one more more people
+///
+/// This logic has been factored out because the integration tests make use of it, as well.
+pub async fn add_following(
+    session: &::scylla::client::session::Session,
+    prep: Option<&PreparedStatement>,
+    user: &User,
+    follows: &HashSet<(UserUrl, FollowId)>,
+    confirmed: bool,
+) -> Result<()> {
+    let mut batch = Batch::default();
+    let mut batch_values: Vec<(UserId, UserUrl, FollowId, DateTime<Utc>, bool)> = Vec::new();
+    follows.iter().for_each(|follow| {
+        match prep {
+            Some(prep) => batch.append_statement(prep.clone()),
+            None => batch.append_statement(Statement::new(
+                "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?)",
+            )),
+        };
+        batch_values.push((*user.id(), follow.0.clone(), follow.1, Utc::now(), confirmed));
+    });
+    session
+        .batch(&batch, batch_values)
+        .await
+        .context(ExecutionSnafu)?;
+    Ok(())
+}
+
 #[async_trait]
 impl storage::Backend for Session {
     async fn add_follower(&self, user: &User, follower: &url::Url) -> StdResult<(), StorError> {
@@ -557,6 +589,23 @@ impl storage::Backend for Session {
             Some(&self.prepared_statements[PreparedStatements::AddFollowers]),
             user,
             &HashSet::from([follower.into()]),
+        )
+        .await
+        .map_err(StorError::new)
+    }
+
+    async fn add_following(
+        &self,
+        user: &User,
+        follow: &UserUrl,
+        id: &FollowId,
+    ) -> StdResult<(), StorError> {
+        add_following(
+            &self.session,
+            Some(&self.prepared_statements[PreparedStatements::AddFollows]),
+            user,
+            &HashSet::from([(follow.clone(), *id)]),
+            false,
         )
         .await
         .map_err(StorError::new)
@@ -658,6 +707,21 @@ impl storage::Backend for Session {
             }
             .fail()
         }
+    }
+
+    async fn confirm_following(
+        &self,
+        user: &User,
+        following: &UserUrl,
+    ) -> StdResult<(), StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::ConfirmFollow],
+                (user.id(), following),
+            )
+            .await
+            .map_err(StorError::new)?;
+        Ok(())
     }
 
     async fn delete_post(&self, user: &User, url: &PostUri) -> StdResult<bool, StorError> {

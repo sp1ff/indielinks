@@ -40,7 +40,7 @@ create table users (
   last_update timestamp,
   password_hash ascii,
   pepper_version ascii,
-  followers set<ascii>
+  followers set<ascii>,
 );
 
 create index users_by_username on users (username);
@@ -48,6 +48,19 @@ create index users_by_username on users (username);
 create table unique_usernames (
   username ascii PRIMARY KEY,
   id uuid
+);
+
+/* I think that (user_id, actor_id) is the natural primary key, here.
+   We wouldn't even *have* an `id` field if it weren't for the fact
+   that ActivityPub activities need it. If I do decide to actually
+   serve `Follow`s, I can always add an index in `id`. */
+create table following (
+  user_id uuid,
+  actor_id ascii,
+  id uuid,
+  created timestamp,
+  accepted boolean,
+  PRIMARY KEY (user_id, actor_id)
 );
 
 /* I've gone through a good deal of churn on representing posts. Given

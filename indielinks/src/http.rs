@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use crate::{
     background_tasks::BackgroundTasks,
+    entities::User,
     metrics::{self},
     origin::Origin,
     peppers::Peppers,
@@ -28,7 +29,7 @@ use axum::Json;
 use chrono::Duration;
 use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, ResultExt, Snafu};
+use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -70,6 +71,8 @@ pub enum Error {
         source: http::header::ToStrError,
         backtrace: Backtrace,
     },
+    #[snafu(display("Request to {path} unauthorized"))]
+    Unauthorized { path: String, backtrace: Backtrace },
     #[snafu(display("{value} is not supported as an Accept header value"))]
     UnsupportedAccept { value: String, backtrace: Backtrace },
 }
@@ -123,6 +126,31 @@ impl Accept {
             .unwrap_or(Accept::Html)
             .pipe(Ok)
     }
+}
+
+/// Retrieve the authenticated [User] from the current request
+///
+/// All requests to the del.icio.us interface should be authenticated via middleware that attaches a
+/// [User] instance to the incoming request. This method will retrieve a reference to that [User].
+///
+/// I'm not happy with this approach, since it depends on each handler invoking this method to
+/// ensure that the request has been authenticated. I mean, at the [Router] level I attach the
+/// salient middleware, which will reject any unauthenticated request, but still: I wish it were
+/// possible to write the handlers in such a way as to reject any unauthenticated request. That
+/// said, it would be hard to implement a handler for any endpoint in this interface *without*
+/// knowing the user.
+///
+/// [Router]: axum::Router
+pub fn user_for_request<'a>(
+    request: &'a axum::extract::Request,
+    pth: &str,
+) -> std::result::Result<&'a User, Error> {
+    request
+        .extensions()
+        .get::<User>()
+        .context(UnauthorizedSnafu {
+            path: pth.to_owned(),
+        })
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

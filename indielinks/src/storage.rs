@@ -18,7 +18,10 @@
 //! Abstractions for the indielinks storage layer.
 
 use crate::{
-    entities::{Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId, Username},
+    entities::{
+        FollowId, Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId, UserUrl,
+        Username,
+    },
     util::UpToThree,
 };
 
@@ -74,6 +77,13 @@ impl DateRange {
 pub trait Backend {
     /// Add a follower to a user's collection
     async fn add_follower(&self, user: &User, follower: &url::Url) -> Result<(), Error>;
+    /// Add a follow to a user's collection
+    async fn add_following(
+        &self,
+        user: &User,
+        following: &UserUrl,
+        id: &FollowId,
+    ) -> Result<(), Error>;
     /// Add a Post for `user`; return true if a new post was actually created, false if the post
     /// already existed and `replace` was set to false.
     #[allow(clippy::too_many_arguments)]
@@ -102,6 +112,8 @@ pub trait Backend {
     async fn add_share(&self, user: &User, url: &PostUri, share: &Share) -> Result<(), Error>;
     /// Add a new user
     async fn add_user(&self, user: &User) -> Result<(), Error>;
+    /// Confirm a follow for a user
+    async fn confirm_following(&self, user: &User, following: &UserUrl) -> Result<(), Error>;
     /// Remove a post-- return true if a [Post] was actually removed, false else
     async fn delete_post(&self, user: &User, url: &PostUri) -> Result<bool, Error>;
     /// Delete a tag for a user; since we've denormalized the tags (i.e. we store them along with the

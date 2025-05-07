@@ -20,11 +20,11 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{rejection::ExtensionRejection, State},
     http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use chrono::Duration;
 use itertools::Itertools;
@@ -34,11 +34,14 @@ use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
+use url::Url;
 
 use crate::{
+    activity_pub::SendFollow,
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
+    background_tasks::{self, BackgroundTasks, Sender},
     counter_add,
-    entities::{self, User, UserApiKey, UserEmail, Username},
+    entities::{self, FollowId, User, UserApiKey, UserEmail, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
@@ -100,6 +103,14 @@ pub enum Error {
     Password {
         username: Username,
         source: entities::Error,
+    },
+    #[snafu(display(
+        "Couldn't create background task for {username} following {actorid}: {source}"
+    ))]
+    SendFollow {
+        username: Username,
+        actorid: Url,
+        source: background_tasks::Error,
     },
     #[snafu(display("Failed to mint a token for user {username}: {source}"))]
     Token {
@@ -187,6 +198,13 @@ impl Error {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Couldn't validate password for {}: {}", username, source),
             ),
+            Error::SendFollow {
+                username,
+                actorid,
+                source,
+                ..
+            } => (StatusCode::INTERNAL_SERVER_ERROR,
+                  format!("Couldn't schedule a follow request for {actorid} on behalf of {username}: {source}"),),
             Error::Token {
                 username, source, ..
             } => (
@@ -233,7 +251,9 @@ inventory::submit! { metrics::Registration::new("user.auth.failures", Sort::Inte
 /// I'm going to retain the convenience of just putting the API key on the wire for now (in the
 /// Authorization header (using the "Bearer" scheme).
 ///
-/// Insert the user id (as a [UserId]) into the request's extensions on success.
+/// Insert the user id (as a [UserId]) into the request's extensions on success. On failure, we let
+/// the request go through, so we can't use the [Extension] extractor, as we'll 500 if the handler
+/// is invoked un-authorized.
 ///
 /// # Middleware
 ///
@@ -579,6 +599,68 @@ async fn login(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        `/users/follow`                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("user.follows.successful", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("user.follows.failures", Sort::IntegralCounter) }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FollowReq {
+    id: Url,
+}
+
+type StdResult<T, E> = std::result::Result<T, E>;
+
+/// Send an ActivityPub follow request
+///
+/// We need to send an ActivityPub [Follow] request to the target user. On receipt of an [Accept],
+/// we'll record the new follow for this user.
+async fn follow(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(req): Json<FollowReq>,
+) -> axum::response::Response {
+    async fn follow1(user: &User, id: &Url, sender: &Arc<BackgroundTasks>) -> Result<()> {
+        sender
+            .send(SendFollow::new(
+                user.clone(),
+                id.clone(),
+                FollowId::default(),
+            ))
+            .await
+            .context(SendFollowSnafu {
+                username: user.username().clone(),
+                actorid: id.clone(),
+            })?;
+        Ok(())
+    }
+
+    match &user {
+        Ok(user) => match follow1(user, &req.id, &state.task_sender).await {
+            Ok(_) => {
+                counter_add!(state.instruments, "user.follows.successful", 1, &[]);
+                StatusCode::OK.into_response()
+            }
+            Err(err) => {
+                counter_add!(state.instruments, "user.follows.failures", 1, &[]);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorResponseBody {
+                        error: format!("{}", err),
+                    },
+                )
+                    .into_response()
+            }
+        },
+        Err(_) => {
+            counter_add!(state.instruments, "user.follows.failures", 1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -593,6 +675,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         // do via this API (how would we model minting a new API key, for instance? Or loggig-in?)
         .route("/users/signup", post(signup))
         .route("/users/login", get(login))
+        .route("/users/follow", post(follow))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             authenticate,

@@ -36,7 +36,7 @@ use crate::{
     background_tasks::{BackgroundTasks, Sender},
     counter_add,
     entities::{self, Post, PostDay, PostId, PostUri, Tagname, User, UserApiKey, Username},
-    http::{ErrorResponseBody, Indielinks},
+    http::{user_for_request, ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
     peppers::Peppers,
@@ -195,8 +195,8 @@ pub enum Error {
         source: storage::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("Request to {path} unauthorized"))]
-    Unauthorized { path: String, backtrace: Backtrace },
+    #[snafu(display("Unauthorized: {source}"))]
+    Unauthorized { source: crate::http::Error },
     #[snafu(display("Unknown username {username}"))]
     UnknownUser { username: Username },
     #[snafu(display("Authorization scheme {scheme} not supported"))]
@@ -507,26 +507,6 @@ pub struct GenericRsp {
     pub result_code: String,
 }
 
-/// Retrieve the authenticated [User] from the current request
-///
-/// All requests to the del.icio.us interface should be authenticated via middleware that attaches a
-/// [User] instance to the incoming request. This method will retrieve a reference to that [User].
-///
-/// I'm not happy with this approach, since it depends on each handler invoking this method to
-/// ensure that the request has been authenticated. I mean, at the [Router] level I attach the
-/// salient middleware, which will reject any unauthenticated request, but still: I wish it were
-/// possible to write the handlers in such a way as to reject any unauthenticated request. That
-/// said, it would be hard to implement a handler for any endpoint in this interface *without*
-/// knowing the user.
-fn user_for_request<'a>(request: &'a axum::extract::Request, pth: &str) -> Result<&'a User> {
-    request
-        .extensions()
-        .get::<User>()
-        .context(UnauthorizedSnafu {
-            path: pth.to_string(),
-        })
-}
-
 /// Parse a `tag` parameter into a [HashSet] of [Tagname]s
 fn parse_tag_parameter(tags: &Option<String>) -> Result<HashSet<Tagname>> {
     tags.as_ref()
@@ -557,7 +537,7 @@ async fn update(
     request: axum::extract::Request,
 ) -> axum::response::Response {
     async fn update1(request: axum::extract::Request) -> Result<UpdateRsp> {
-        let user = user_for_request(&request, "/posts/update")?;
+        let user = user_for_request(&request, "/posts/update").context(UnauthorizedSnafu)?;
         let update_time = user.last_update().context(NoPostsSnafu {
             username: user.username().clone(),
         })?;
@@ -634,7 +614,7 @@ async fn add_post(
         // I'm torn as to how to handle this; given the API offered by axum, there's no way to
         // enforce this at compile-time. OTOH, it's tough to do anything in this API *without* the
         // current user, so I don't see how I can forget this:
-        let user = user_for_request(&request, "/posts/add")?;
+        let user = user_for_request(&request, "/posts/add").context(UnauthorizedSnafu)?;
         // Pull the `tag` parameter out of the request, separate the individual tags by comma, and
         // check that they're all legit `Tagname`s:
         let tags = parse_tag_parameter(&req.tags)?;
@@ -734,7 +714,7 @@ async fn delete_post(
         uri: PostUri,
         request: axum::extract::Request,
     ) -> Result<bool> {
-        let user = user_for_request(&request, "/posts/delete")?;
+        let user = user_for_request(&request, "/posts/delete").context(UnauthorizedSnafu)?;
         let deleted = storage
             .delete_post(user, &uri)
             .await
@@ -832,7 +812,7 @@ async fn get_posts(
         posts_get_req: PostsGetReq,
         request: axum::extract::Request,
     ) -> Result<PostsGetRsp> {
-        let user = user_for_request(&request, "/posts/get")?;
+        let user = user_for_request(&request, "/posts/get").context(UnauthorizedSnafu)?;
         // If the user has never made any posts, we're done:
         let last_dt = user.last_update().ok_or(
             NoPostsSnafu {
@@ -917,7 +897,7 @@ async fn get_recent(
         posts_recent_req: PostsRecentReq,
         request: axum::extract::Request,
     ) -> Result<PostsRecentRsp> {
-        let user = user_for_request(&request, "/posts/recent")?;
+        let user = user_for_request(&request, "/posts/recent").context(UnauthorizedSnafu)?;
         let tags = UpToThree::new(parse_tag_parameter(&posts_recent_req.tag)?.into_iter())
             .context(NoMoreThanThreeTagsSnafu)?;
         let count = posts_recent_req.count.unwrap_or(10);
@@ -986,7 +966,7 @@ async fn posts_dates(
         posts_dates_req: PostsDatesReq,
         request: axum::extract::Request,
     ) -> Result<PostsDatesRsp> {
-        let user = user_for_request(&request, "/posts/dates")?;
+        let user = user_for_request(&request, "/posts/dates").context(UnauthorizedSnafu)?;
         let tags = UpToThree::new(parse_tag_parameter(&posts_dates_req.tag)?.into_iter())
             .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsDatesRsp {
@@ -1109,7 +1089,7 @@ async fn all_posts(
         posts_all_req: PostsAllReq,
         request: axum::extract::Request,
     ) -> Result<PostsAllRsp> {
-        let user = user_for_request(&request, "/posts/all")?;
+        let user = user_for_request(&request, "/posts/all").context(UnauthorizedSnafu)?;
         let tags = UpToThree::new(parse_tag_parameter(&posts_all_req.tag)?.into_iter())
             .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsAllRsp {
@@ -1171,7 +1151,7 @@ async fn tags_get(
         storage: &(dyn StorageBackend + Send + Sync),
         request: axum::extract::Request,
     ) -> Result<TagsGetRsp> {
-        let user = user_for_request(&request, "/tags/get")?;
+        let user = user_for_request(&request, "/tags/get").context(UnauthorizedSnafu)?;
         Ok(TagsGetRsp {
             map: storage
                 .get_tag_cloud(user)
@@ -1222,7 +1202,7 @@ async fn tags_rename(
         tags_rename_req: TagsRenameReq,
         request: axum::extract::Request,
     ) -> Result<()> {
-        let user = user_for_request(&request, "/tags/rename")?;
+        let user = user_for_request(&request, "/tags/rename").context(UnauthorizedSnafu)?;
         storage
             .rename_tag(user, &tags_rename_req.old, &tags_rename_req.new)
             .await
@@ -1272,7 +1252,7 @@ async fn tags_delete(
         tags_delete_req: TagsDeleteReq,
         request: axum::extract::Request,
     ) -> Result<()> {
-        let user = user_for_request(&request, "/tags/delete")?;
+        let user = user_for_request(&request, "/tags/delete").context(UnauthorizedSnafu)?;
         storage
             .delete_tag(user, &tags_delete_req.tag)
             .await

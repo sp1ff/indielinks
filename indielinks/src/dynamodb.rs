@@ -22,7 +22,8 @@
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{
-        Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId, UserUrl, Username,
+        FollowId, Following, Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId,
+        UserUrl, Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
@@ -58,6 +59,12 @@ use std::{
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Failed to add follows {follows:?}: {source}"))]
+    AddFollow {
+        follows: HashSet<UserUrl>,
+        source: SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to add followers {followers:?}: {source}"))]
     AddFollower {
         followers: HashSet<UserUrl>,
@@ -80,6 +87,11 @@ pub enum Error {
     },
     #[snafu(display("Unexpected AttributeValue variant in UpdateItemOutput"))]
     BadAttrTypeUpdateItemOutput { backtrace: Backtrace },
+    #[snafu(display("A batch write failed: {source}"))]
+    BatchWrite {
+        source: SdkError<BatchWriteItemError, HttpResponse>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to delete a post: {source}"))]
     DeletePosts {
         source: aws_smithy_runtime_api::client::result::SdkError<
@@ -95,6 +107,11 @@ pub enum Error {
     #[snafu(display("{username} is already claimed"))]
     DuplicateUsername {
         username: Username,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to serialize a follow: {source}"))]
+    FollowingSer {
+        source: serde_dynamo::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Read {in_count} tags in, produced {out_count} TagIds"))]
@@ -127,6 +144,11 @@ pub enum Error {
     NoTagsWithQueryOutput { backtrace: Backtrace },
     #[snafu(display("The UpdateItemOutput was missing"))]
     NoUpdateItemOutput { backtrace: Backtrace },
+    #[snafu(display("Failed to build an Operation: {source}"))]
+    OpBuild {
+        source: aws_sdk_dynamodb::error::BuildError,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to deserialize a Post: {source}"))]
     PostDe {
         source: serde_dynamo::Error,
@@ -460,6 +482,47 @@ pub async fn add_followers(
     Ok(())
 }
 
+/// Add a follow to the database
+///
+/// This logic has been factored out because the integration tests make use of it, as well.
+pub async fn add_following(
+    client: &::aws_sdk_dynamodb::Client,
+    user: &User,
+    follows: &HashSet<(UserUrl, FollowId)>,
+) -> Result<()> {
+    // Build-up a vector of `WriteRequest`; we'll batch 'em, below.
+    let mut write_reqs = follows
+        .iter()
+        .map(|follow| {
+            WriteRequest::builder()
+                .put_request(
+                    PutRequest::builder()
+                        .set_item(Some(
+                            to_item(Following::new_with_id(user, &follow.0, &follow.1))
+                                .context(FollowingSerSnafu)?,
+                        ))
+                        .build()
+                        .context(OpBuildSnafu)?,
+                )
+                .build()
+                .pipe(Ok)
+        })
+        .collect::<Result<Vec<WriteRequest>>>()?;
+
+    // `BatchWrite` can only handle 25 items at a time.
+    while !write_reqs.is_empty() {
+        let this_batch: Vec<_> = write_reqs.drain(..min(write_reqs.len(), 25)).collect();
+        client
+            .batch_write_item()
+            .request_items("follows", this_batch)
+            .send()
+            .await
+            .context(BatchWriteSnafu)?;
+    }
+
+    Ok(())
+}
+
 #[async_trait]
 impl storage::Backend for Client {
     async fn add_follower(&self, user: &User, follower: &url::Url) -> StdResult<(), StorError> {
@@ -467,6 +530,18 @@ impl storage::Backend for Client {
             .await
             .map_err(StorError::new)
     }
+
+    async fn add_following(
+        &self,
+        user: &User,
+        follow: &UserUrl,
+        id: &FollowId,
+    ) -> StdResult<(), StorError> {
+        add_following(&self.client, user, &HashSet::from([(follow.clone(), *id)]))
+            .await
+            .map_err(StorError::new)
+    }
+
     // Return true if an insert/upsert occurred, false if the insert/upsert failed because the post
     // already existed and `replace` was false, Err otherwise.
     async fn add_post(
@@ -589,6 +664,24 @@ impl storage::Backend for Client {
         }
     }
 
+    async fn confirm_following(
+        &self,
+        user: &User,
+        following: &UserUrl,
+    ) -> StdResult<(), StorError> {
+        self.client
+            .update_item()
+            .table_name("following")
+            .key("user_id", AttributeValue::S(user.id().to_string()))
+            .key("actor_id", AttributeValue::S(following.to_string()))
+            .update_expression("set confirmed = :c")
+            .expression_attribute_values(":c", AttributeValue::Bool(true))
+            .send()
+            .await
+            .map_err(StorError::new)?;
+        Ok(())
+    }
+
     async fn delete_post(&self, user: &User, url: &PostUri) -> StdResult<bool, StorError> {
         self.client
             .delete_item()
@@ -635,7 +728,7 @@ impl storage::Backend for Client {
             .map(|put_req| WriteRequest::builder().put_request(put_req).build())
             .collect::<Vec<WriteRequest>>();
 
-        // `BatchWrite` can only handle 25 items at a tiem.
+        // `BatchWrite` can only handle 25 items at a time.
         while !write_reqs.is_empty() {
             let this_batch: Vec<_> = write_reqs.drain(..min(write_reqs.len(), 25)).collect();
             self.client

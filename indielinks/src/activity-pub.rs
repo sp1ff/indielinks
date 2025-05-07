@@ -43,10 +43,12 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    ap_entities::{self, Actor, Create, Jld, Note, ToJld, Type},
+    ap_entities::{
+        self, make_follow_id, make_user_id, Actor, Create, Follow, Jld, Note, ToJld, Type,
+    },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
     client::request_builder,
-    entities::{PostId, User, UserId, UserUrl, Username},
+    entities::{FollowId, PostId, User, UserId, UserUrl, Username},
     origin::Origin,
 };
 
@@ -56,6 +58,12 @@ use crate::{
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Failed to write a follow for {username} of {actorid}: {source}"))]
+    AddFollowing {
+        username: Username,
+        actorid: Url,
+        source: crate::storage::Error,
+    },
     #[snafu(display("Failed to set request body: {source}"))]
     Body {
         source: http::Error,
@@ -70,6 +78,12 @@ pub enum Error {
     FailedAp {
         rsp: reqwest::Response,
         backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to form an URL for follow of {id} for {username}"))]
+    FollowId {
+        username: Username,
+        id: FollowId,
+        source: crate::ap_entities::Error,
     },
     #[snafu(display("Failed to serialize entity to JSON-LD: {source}"))]
     Jld { source: crate::ap_entities::Error },
@@ -134,6 +148,11 @@ pub enum Error {
     User {
         userid: UserId,
         source: crate::storage::Error,
+    },
+    #[snafu(display("Failed to form an URL for user {username}: {source}"))]
+    UserId {
+        username: Username,
+        source: crate::ap_entities::Error,
     },
 }
 
@@ -453,5 +472,102 @@ inventory::submit! {
     BackgroundTask {
         id: SEND_CREATE,
         de: |buf| { Ok(Box::new(rmp_serde::from_slice::<SendCreate>(buf).unwrap())) }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           SendFollow                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A UUID identifying the background task [SendFollow]
+// 256046f6-1afe-414d-a48a-fb19edd970e6
+const SEND_FOLLOW: Uuid = Uuid::from_fields(
+    0x256046f6,
+    0x1afe,
+    0x414d,
+    &[0xa4, 0x8a, 0xfb, 0x19, 0xed, 0xd9, 0x70, 0xe6],
+);
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SendFollow {
+    user: User,
+    actorid: Url,
+    id: FollowId,
+}
+
+impl SendFollow {
+    pub fn new(user: User, actorid: Url, id: FollowId) -> SendFollow {
+        SendFollow { user, actorid, id }
+    }
+}
+
+#[async_trait]
+impl Task<Context> for SendFollow {
+    async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
+        debug!(
+            "Sending a Follow request to {} for {}",
+            AsRef::<str>::as_ref(&self.actorid), // Ugh
+            self.user.username()
+        );
+
+        async fn exec1(this: Box<SendFollow>, context: Context) -> Result<()> {
+            // Ugh-- this needs to be cleaned-up.
+            let userurl = UserUrl::from(this.actorid.clone());
+            // Let's write the new follow to the database,
+            context
+                .storage
+                .add_following(&this.user, &userurl, &this.id)
+                .await
+                .context(AddFollowingSnafu {
+                    username: this.user.username().clone(),
+                    actorid: this.actorid.clone(),
+                })?;
+
+            // then send the `Follow`
+            let follow = Follow::new(
+                this.actorid.clone(),
+                make_follow_id(this.user.username(), &this.id, &context.origin).context(
+                    FollowIdSnafu {
+                        username: this.user.username().clone(),
+                        id: this.id,
+                    },
+                )?,
+                make_user_id(this.user.username(), &context.origin).context(UserIdSnafu {
+                    username: this.user.username().clone(),
+                })?,
+            );
+
+            send_activity_pub_no_response::<Url, Follow>(
+                &this.user,
+                &context.origin,
+                Method::POST,
+                this.actorid,
+                Some(&follow),
+                None,
+                &context.client,
+            )
+            .await
+        }
+
+        exec1(self, context)
+            .await
+            .map_err(background_tasks::Error::new)
+    }
+    fn timeout(&self) -> Option<Duration> {
+        Some(Duration::from_secs(60))
+    }
+}
+
+impl TaggedTask<Context> for SendFollow {
+    type Tag = Uuid;
+    fn get_tag() -> Self::Tag {
+        SEND_FOLLOW
+    }
+}
+
+inventory::submit! {
+    BackgroundTask {
+        id: SEND_FOLLOW,
+        de: |buf| { Ok(Box::new(rmp_serde::from_slice::<SendFollow>(buf).unwrap())) }
     }
 }

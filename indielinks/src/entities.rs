@@ -191,8 +191,6 @@ fn mk_serde_ser_err<S: serde::Serializer>(err: impl std::error::Error) -> S::Err
 //                                          Identifiers                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// identifier!
-///
 /// # Introduction
 ///
 /// Use this to declare a type intended to be used as an opaque identifier for some other sort of entity.
@@ -297,6 +295,7 @@ macro_rules! define_id {
 
 define_id!(UserId, "userid");
 define_id!(PostId, "postid");
+define_id!(FollowId, "followid");
 
 // I had, in the past, defined a few other identifiers, making it worth it to wrap the boilerplate
 // up in a macro. Now that it's just `UserId`, I should probably go back to just implementing it by
@@ -1207,6 +1206,41 @@ impl User {
             .hash_password(password.expose_secret().as_bytes(), &salt)
             .context(HashPasswordSnafu)?
             .serialize())
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           Following                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Represents an indielinks follow; i.e. an ActivityPub entity being followed by an indielinks [User]
+#[derive(Clone, Debug, Deserialize, DeserializeRow, PartialEq, Serialize)]
+pub struct Following {
+    user_id: UserId,
+    actor_id: UserUrl,
+    id: FollowId,
+    created: DateTime<Utc>,
+    accepted: bool,
+}
+
+impl Following {
+    pub fn new(user: &User, actor_id: &UserUrl) -> Following {
+        Following {
+            user_id: *user.id(),
+            actor_id: actor_id.clone(),
+            id: FollowId::default(),
+            created: Utc::now(),
+            accepted: false,
+        }
+    }
+    pub fn new_with_id(user: &User, actor_id: &UserUrl, id: &FollowId) -> Following {
+        Following {
+            user_id: *user.id(),
+            actor_id: actor_id.clone(),
+            id: *id,
+            created: Utc::now(),
+            accepted: false,
+        }
     }
 }
 

@@ -133,7 +133,7 @@ use tap::Pipe;
 use url::Url;
 
 use crate::{
-    entities::{self, Post, PostId, User, Username, Visibility},
+    entities::{self, FollowId, Post, PostId, User, Username, Visibility},
     origin::Origin,
 };
 
@@ -213,6 +213,11 @@ type Result<T> = std::result::Result<T, Error>;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       Standard Locations                                       //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Return an URL naming a follow activity
+pub fn make_follow_id(username: &Username, id: &FollowId, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/follows/{}", origin, username, id)).context(UrlParseSnafu)
+}
 
 /// Return an URL naming a public key
 pub fn make_key_id(username: &Username, origin: &Origin) -> Result<Url> {
