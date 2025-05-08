@@ -214,3 +214,14 @@
 //! indielinks as HTTP clients.
 //!
 //! [indielinks-test]: ../../indielinks_test/index.html
+//!
+//! ## indielinks as Client
+//!
+//! Middleware turns-out to be as useful when writing an HTTP client as when writing the server.
+//! Unfortunately, the "go to" Rust HTTP Client, [reqwest] is incompatible with the standard
+//! middleware library ([tower]). [Aleksey Sidorov](https://github.com/alekseysidorov)'s
+//! [tower-reqwest](https://github.com/alekseysidorov/tower-http-client) crate inspired me to write
+//! a translation layer that would allow me to stack tower middleware on top of a reqwest client. I
+//! wrote more about that [here](https://www.unwoundstack.com/blog/rust-client-middleware.html).
+//!
+//! [tower]: https://docs.rs/tower/0.5.2/tower/

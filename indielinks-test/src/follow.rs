@@ -21,16 +21,13 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
 use indielinks::{
     actor::CollectionPage,
     ap_entities::{self, Jld},
-    authn::{ensure_sha_256, sign_request},
     entities::Username,
     origin::Origin,
 };
 use libtest_mimic::Failed;
-use picky::key::PrivateKey;
 use reqwest::{Client, Url};
 use uuid::Uuid;
 use wiremock::{
@@ -38,36 +35,7 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-use crate::{peer_actor, PeerUser, TEST_USER_AGENT};
-
-/// Take an HTTP verb/method, URL and a reqwest [Body]. Return a signed reqwest Request. The signature
-/// uses a key ID of "http://localhost:{}/users/test-user".
-async fn make_request(
-    method: http::Method,
-    url: Url,
-    body: reqwest::Body,
-    origin: &Origin,
-    priv_key: &PrivateKey,
-    username: &Username,
-) -> Result<reqwest::Request, Failed> {
-    let req = http::Request::builder()
-        .method(method)
-        .uri(url.as_ref())
-        .header(reqwest::header::CONTENT_TYPE, "application/activity+json")
-        .header(
-            reqwest::header::DATE,
-            Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
-        )
-        .header(reqwest::header::HOST, "localhost")
-        .body(body)?;
-    let req = ensure_sha_256(req)?;
-    let (mut req, sig) = sign_request(req, &format!("{}/users/{}", origin, username), priv_key)?;
-    req.headers_mut().append(
-        "Signature",
-        http::HeaderValue::from_str(&sig.to_string()[10..])?,
-    );
-    Ok(req.try_into()?)
-}
+use crate::{make_signed_request, peer_actor, PeerUser, TEST_USER_AGENT};
 
 /// First integration test for ActivityPub [Follow]s.
 ///
@@ -112,7 +80,7 @@ pub async fn accept_follow_smoke(
         Url::parse(&format!("{}/users/{}", mock_origin, mock_user.name()))?,
     );
     // Nb. that `request` is now a *reqwest* `Request`, not an axum `Request`. Sign it:
-    let request = make_request(
+    let request = make_signed_request(
         axum::http::Method::POST,
         url.join(&format!("/users/{}/inbox", &username))?,
         Jld::new(&follow, None)?.to_string().into(),
@@ -126,7 +94,7 @@ pub async fn accept_follow_smoke(
     assert!(rsp.status() == reqwest::StatusCode::CREATED);
 
     // Let's at least check that the follower now shows-up!
-    let request = make_request(
+    let request = make_signed_request(
         axum::http::Method::GET,
         url.join(&format!("/users/{}/followers", &username))?,
         reqwest::Body::default(),
@@ -143,7 +111,7 @@ pub async fn accept_follow_smoke(
     assert_eq!(page.total_items, 1);
 
     let first = page.first.unwrap(/* known good */);
-    let request = make_request(
+    let request = make_signed_request(
         axum::http::Method::GET,
         first,
         reqwest::Body::default(),

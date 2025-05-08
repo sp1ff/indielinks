@@ -1224,6 +1224,9 @@ pub struct Following {
 }
 
 impl Following {
+    pub fn actor_id(&self) -> &UserUrl {
+        &self.actor_id
+    }
     pub fn new(user: &User, actor_id: &UserUrl) -> Following {
         Following {
             user_id: *user.id(),

@@ -8,6 +8,7 @@ argon2 = { version = "0.5.3", features = ["password-hash", "std"] }
 async-trait = "0.1.83"
 aws-config = { version = "1.5.12", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1.57.0"
+aws-smithy-async = { version = "1.2.5", features = ["rt-tokio"] }
 aws-smithy-runtime-api = { version = "1.7.3", features = ["client"] }
 axum = { version = "0.8.1", features = ["macros", "tracing"] }
 axum-extra = { version = "0.10.0", features = ["query"] }

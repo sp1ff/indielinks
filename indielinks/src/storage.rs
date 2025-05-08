@@ -27,6 +27,7 @@ use crate::{
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures::stream::BoxStream;
 use snafu::{prelude::*, Backtrace};
 
 use std::collections::{HashMap, HashSet};
@@ -120,6 +121,12 @@ pub trait Backend {
     /// posts to avoid a join), this is likely to be an inefficient operation. I might want to consider
     /// special logic here for rate-limiting.
     async fn delete_tag(&self, user: &User, tag: &Tagname) -> Result<(), Error>;
+    // I considered using `TryStream`, but not sure I see the advantage, yet. Also, there's no handy
+    // type alias `BoxTryStream` (tho of course I could define it)
+    async fn get_following<'a>(
+        &'a self,
+        user: &User,
+    ) -> Result<BoxStream<'a, Result<UserUrl, Error>>, Error>;
     async fn get_post_by_id(&self, id: &PostId) -> Result<Option<Post>, Error>;
     /// Retrieve full posts with various filtering options
     async fn get_posts(

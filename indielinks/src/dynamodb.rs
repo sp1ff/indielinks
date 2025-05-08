@@ -35,12 +35,14 @@ use aws_sdk_dynamodb::{
     config::Credentials,
     operation::{
         batch_write_item::BatchWriteItemError, get_item::GetItemError, put_item::PutItemError,
-        update_item::UpdateItemError,
+        query::QueryOutput, update_item::UpdateItemError,
     },
-    types::{AttributeValue, PutRequest, ReturnValue, WriteRequest},
+    types::{AttributeValue, PutRequest, ReturnValue, Select, WriteRequest},
 };
+use aws_smithy_async::future::pagination_stream::PaginationStream;
 use chrono::{DateTime, Duration, Utc};
 use either::Either;
+use futures::{stream::BoxStream, Stream};
 use itertools::Itertools;
 use secrecy::SecretString;
 use serde_dynamo::{
@@ -54,8 +56,14 @@ use uuid::Uuid;
 
 use std::{
     cmp::min,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
+    pin::Pin,
+    task::Poll,
 };
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module Error type                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -99,6 +107,11 @@ pub enum Error {
             aws_sdk_dynamodb::config::http::HttpResponse,
         >,
     },
+    #[snafu(display("Failed to deserialize follows: {source}"))]
+    DeFollowing {
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to deserialize a tag: {source}"))]
     DeTag {
         source: serde_dynamo::Error,
@@ -107,6 +120,11 @@ pub enum Error {
     #[snafu(display("{username} is already claimed"))]
     DuplicateUsername {
         username: Username,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("When counting follows: {source}"))]
+    FollowCount {
+        source: SdkError<QueryError, HttpResponse>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to serialize a follow: {source}"))]
@@ -193,14 +211,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to write user {user:?} to the database: {source}"))]
     User {
-        user: User,
+        user: Box<User>,
         source: SdkError<PutItemError, HttpResponse>,
-    },
-    #[snafu(display("Failed to serialize user {user:?}: {source}"))]
-    UserSer {
-        user: User,
-        source: serde_dynamo::Error,
-        backtrace: Backtrace,
     },
     #[snafu(display("Failed to check whether the username was claimed: {source}"))]
     Username {
@@ -453,7 +465,9 @@ pub async fn add_user(client: &::aws_sdk_dynamodb::Client, user: &User) -> Resul
         .set_item(Some(item))
         .send()
         .await
-        .context(UserSnafu { user: user.clone() })?;
+        .context(UserSnafu {
+            user: Box::new(user.clone()),
+        })?;
     Ok(true)
 }
 
@@ -514,13 +528,113 @@ pub async fn add_following(
         let this_batch: Vec<_> = write_reqs.drain(..min(write_reqs.len(), 25)).collect();
         client
             .batch_write_item()
-            .request_items("follows", this_batch)
+            .request_items("following", this_batch)
             .send()
             .await
             .context(BatchWriteSnafu)?;
     }
 
     Ok(())
+}
+
+pub struct FollowingIter {
+    stream: Option<PaginationStream<StdResult<QueryOutput, SdkError<QueryError, HttpResponse>>>>,
+    count: usize,
+    curr: VecDeque<Following>,
+}
+
+impl FollowingIter {
+    pub async fn new(client: &::aws_sdk_dynamodb::Client, userid: UserId) -> Result<FollowingIter> {
+        // This seems like a _lot_ of work to count some items:
+        let count = client
+            .query()
+            .table_name("following")
+            .key_condition_expression("user_id = :pk")
+            .expression_attribute_values(":pk", AttributeValue::S(userid.to_string()))
+            .select(Select::Count)
+            .send()
+            .await
+            .context(FollowCountSnafu)?
+            .count;
+
+        Ok(FollowingIter {
+            stream: Some(
+                client
+                    .query()
+                    .table_name("following")
+                    .key_condition_expression("user_id = :pk")
+                    .expression_attribute_values(":pk", AttributeValue::S(userid.to_string()))
+                    .into_paginator()
+                    .page_size(512)
+                    .send(),
+            ),
+            count: count as usize,
+            curr: VecDeque::new(),
+        })
+    }
+
+    // Utility method; convert a DDB `QueryOutput` to a vector of `Following`
+    fn get_items(query_output: QueryOutput) -> Result<Vec<Following>> {
+        query_output
+            .items()
+            .to_vec()
+            .pipe(from_items::<Following>)
+            .context(DeFollowingSnafu)?
+            .pipe(Ok)
+    }
+}
+
+impl Stream for FollowingIter {
+    type Item = StdResult<UserUrl, StorError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        loop {
+            match self.curr.pop_front() {
+                Some(follow) => return Poll::Ready(Some(Ok(follow.actor_id().clone()))),
+                None => {
+                    match &mut self.stream {
+                        Some(stream) => match stream.poll_next(cx) {
+                            Poll::Ready(Some(Ok(query_output))) => {
+                                match Self::get_items(query_output) {
+                                    Ok(next_page) => {
+                                        // Not sure how to handle this; not sure it can even happen.
+                                        // Certainly, I haven't seen it. I suppose if we get an
+                                        // empty response, we treat the stream as exhausted.
+                                        match next_page.first() {
+                                            Some(_) => self.curr = next_page.into(),
+                                            None => {
+                                                self.stream = None;
+                                                return Poll::Ready(None);
+                                            }
+                                        };
+                                    }
+                                    Err(err) => {
+                                        self.stream = None;
+                                        return Poll::Ready(Some(Err(StorError::new(err))));
+                                    }
+                                }
+                            }
+                            Poll::Ready(Some(Err(err))) => {
+                                // Yield the error, then return None foreveer
+                                self.stream = None;
+                                return Poll::Ready(Some(Err(StorError::new(err))));
+                            }
+                            Poll::Ready(None) => return Poll::Ready(None),
+                            Poll::Pending => return Poll::Pending,
+                        },
+                        None => return Poll::Pending,
+                    }
+                }
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, Some(self.count))
+    }
 }
 
 #[async_trait]
@@ -739,6 +853,17 @@ impl storage::Backend for Client {
         }
 
         Ok(())
+    }
+
+    async fn get_following<'a>(
+        &'a self,
+        user: &User,
+    ) -> StdResult<BoxStream<'a, StdResult<UserUrl, StorError>>, StorError> {
+        Ok(Box::pin(
+            FollowingIter::new(&self.client, *user.id())
+                .await
+                .map_err(StorError::new)?,
+        ))
     }
 
     async fn get_posts(

@@ -29,6 +29,7 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
+use futures::StreamExt;
 use http::Method;
 use itertools::Itertools;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
@@ -42,8 +43,9 @@ use uuid::Uuid;
 use crate::{
     activity_pub::send_activity_pub_no_response,
     ap_entities::{
-        self, make_user_followers, username_and_postid_from_url, Accept, Actor, Announce,
-        AnnounceOrCreate, AsAccept, Create, Follow, FollowOrLike, Jld, Like, Note, ToJld, Undo,
+        self, make_user_followers, make_user_following, username_and_postid_from_url, Accept,
+        Actor, Announce, AnnounceOrCreate, AsAccept, Create, Follow, FollowOrLike, Jld, Like, Note,
+        ToJld, Undo,
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
@@ -107,6 +109,10 @@ pub enum Error {
     Cavage2323 { source: crate::authn::Error },
     #[snafu(display("Mismatch in the content digest: {source}"))]
     ContentDigest { source: crate::authn::Error },
+    #[snafu(display("While serving /following, failed to obtain a stream: {source}"))]
+    FollowGetStream { source: storage::Error },
+    #[snafu(display("While computing following, our stream yielded: {source}"))]
+    FollowStream { source: storage::Error },
     #[snafu(display("Failed to append a query parameter to an URL: {source}"))]
     Join {
         source: url::ParseError,
@@ -717,9 +723,10 @@ async fn actor(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("inbox.follows", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("inbox.likes", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("inbox.undos", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("inbox.errors", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("inbox.likes",   Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("inbox.undos",   Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("inbox.accepts", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("inbox.errors",  Sort::IntegralCounter) }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       Accepting a Follow                                       //
@@ -827,7 +834,7 @@ async fn accept_follow(
     // `actor` is read off the Signature header to the request (i.e. this is authenticated); let's
     // check to be sure that the actor in the request matches-up-- it would be weird if Alice was
     // sending a follow request on behalf of Bob.
-    if follow.actor_id() != *actor.id() {
+    if follow.actor_id() != actor.id() {
         return MismatchedActorIdSnafu {
             signature: actor.id().as_str().to_owned(),
             request: follow.actor_id().as_str().to_owned(),
@@ -858,6 +865,34 @@ async fn accept_like(like: &Like) -> Result<()> {
 async fn accept_undo(undo: &Undo) -> Result<()> {
     info!("Received an Undo: {:?}", undo);
     Ok(())
+}
+
+async fn accept_accept(
+    user: &User,
+    actor: &ap_entities::Actor,
+    accept: &Accept,
+    storage: &(dyn StorageBackend + Send + Sync),
+) -> Result<()> {
+    // Ahhh... ActivityPub: so many points of failure. I expect that the object of this `Accept` is
+    // the same actor as the sender. Let's verify that, and reject the `Accept` if they don't
+    // match-up.
+    if actor.id() != accept.object_id() {
+        warn!(
+            "I have received an Accept from {}, but the request was signed by {}; this is weird \
+               and I'm not comfortable with it-- rejecting the request.",
+            accept.object_id(),
+            actor.id()
+        );
+        return ActorMismatchSnafu {
+            bearer: actor.id().clone(),
+            payload: accept.object_id().clone(),
+        }
+        .fail();
+    }
+    storage
+        .confirm_following(user, &actor.id().into())
+        .await
+        .context(StorageSnafu)
 }
 
 /// ActivityPub user inbox
@@ -899,6 +934,10 @@ async fn inbox(
             FollowOrLike::Undo(undo) => {
                 counter_add!(instruments, "inbox.undos", 1, &[]);
                 accept_undo(undo).await
+            }
+            FollowOrLike::Accept(accept) => {
+                counter_add!(instruments, "inbox.accepts", 1, &[]);
+                accept_accept(&user, actor, accept, storage).await
             }
         }
     }
@@ -1056,6 +1095,100 @@ async fn followers(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           Following                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("following.pages", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("following.errors", Sort::IntegralCounter) }
+
+/// Retrieve a user's following collection
+async fn following(
+    State(state): State<Arc<Indielinks>>,
+    axum::extract::Path(username): axum::extract::Path<Username>,
+    axum::extract::Query(pagination): axum::extract::Query<CollectionPagination>,
+) -> axum::response::Response {
+    async fn following1(
+        username: &Username,
+        storage: &(dyn StorageBackend + Send + Sync),
+        origin: &Origin,
+        page: Option<usize>,
+        page_size: usize,
+    ) -> Result<CollectionPage> {
+        // Factor this out (shared by `followers()`, above, at the least):
+        let user = storage
+            .user_for_name(username)
+            .await
+            .map_err(|err| StorageSnafu.into_error(err))?
+            .ok_or(
+                NoUserSnafu {
+                    username: username.clone(),
+                }
+                .build(),
+            )?;
+
+        let following = storage
+            .get_following(&user)
+            .await
+            .context(FollowGetStreamSnafu)?;
+        let (num_following, _) = following.size_hint();
+        let following_id = make_user_following(username, origin).context(ApIdSnafu)?;
+        let first = following_id.join("?page=0").context(JoinSnafu)?;
+        match page {
+            Some(page_num) => {
+                let items = match following.chunks(page_size).skip(page_num).next().await {
+                    Some(chunk) => chunk.into_iter().collect::<StdResult<Vec<UserUrl>, _>>(),
+                    None => Ok(vec![]),
+                }
+                .context(FollowStreamSnafu)?;
+                // conditionally compute the `next` attribute...
+                let next = ((page_num + 1) * page_size < num_following).then_some(
+                    following_id
+                        .join(&format!("?page={}", page_num + 1))
+                        .context(JoinSnafu)?,
+                );
+                // and finally construct our page:
+                CollectionPage {
+                    id: following_id.clone(),
+                    total_items: num_following,
+                    first: Some(first),
+                    next,
+                    part_of: Some(following_id),
+                    ordered_items: Some(items),
+                }
+            }
+            None => CollectionPage {
+                id: following_id,
+                total_items: num_following,
+                first: Some(first),
+                next: None,
+                part_of: None,
+                ordered_items: None,
+            },
+        }
+        .pipe(Ok)
+    }
+
+    match following1(
+        &username,
+        state.storage.as_ref(),
+        &state.origin,
+        pagination.page,
+        state.collection_page_size,
+    )
+    .await
+    {
+        Ok(ref page) => match Jld::new(page, None) {
+            Ok(jrd) => {
+                counter_add!(state.instruments, "following.pages", 1, &[]);
+                patch_content_type((StatusCode::OK, jrd.to_string()).into_response())
+            }
+            Err(err) => handle_err(err, &state.instruments, "following.errors"),
+        },
+        Err(err) => handle_err(err, &state.instruments, "following.errors"),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                             Posts                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1165,6 +1298,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             )),
         )
         .route("/users/{username}/followers", get(followers))
+        .route("/users/{username}/following", get(following))
         .route("/users/{username}/posts/{postid}", get(get_post))
         .with_state(state)
 }

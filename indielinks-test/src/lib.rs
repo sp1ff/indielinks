@@ -76,6 +76,7 @@ use std::{
 /// Code relating to the test framework itself (e.g. the `Test` struct) belongs in `tests/common`.
 /// Integration test programs themselves go in `tests`.
 use async_trait::async_trait;
+use chrono::Utc;
 use libtest_mimic::Failed;
 use once_cell::sync::Lazy;
 use picky::key::{PrivateKey, PublicKey};
@@ -88,6 +89,7 @@ use wiremock::{
 
 use indielinks::{
     ap_entities::{self, make_user_id},
+    authn::{ensure_sha_256, sign_request},
     entities::{UserUrl, Username},
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
@@ -200,9 +202,41 @@ pub async fn peer_actor(user: &PeerUser, origin: &Origin) -> Result<Mock, Failed
                     .unwrap(),
                     None,
                 )
-                .unwrap()
+                .unwrap(/* known good */)
                 .to_string(),
                 "application/activity+json",
             ),
         ))
+}
+
+/// Take an HTTP verb/method, URL and a reqwest [Body]. Return a signed reqwest Request. The signature
+/// uses a key ID of "http://localhost:{}/users/test-user".
+///
+/// [Body]: reqwest::Body
+pub async fn make_signed_request(
+    method: http::Method,
+    url: Url,
+    body: reqwest::Body,
+    origin: &Origin,
+    priv_key: &PrivateKey,
+    username: &Username,
+) -> Result<reqwest::Request, Failed> {
+    let req = http::Request::builder()
+        .method(method)
+        .uri(url.as_ref())
+        .header(reqwest::header::CONTENT_TYPE, "application/activity+json")
+        .header(reqwest::header::ACCEPT, "application/activity+json")
+        .header(
+            reqwest::header::DATE,
+            Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+        )
+        .header(reqwest::header::HOST, "localhost")
+        .body(body)?;
+    let req = ensure_sha_256(req)?;
+    let (mut req, sig) = sign_request(req, &format!("{}/users/{}", origin, username), priv_key)?;
+    req.headers_mut().append(
+        "Signature",
+        http::HeaderValue::from_str(&sig.to_string()[10..])?,
+    );
+    Ok(req.try_into()?)
 }

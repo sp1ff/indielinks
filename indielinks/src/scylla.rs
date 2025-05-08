@@ -19,15 +19,25 @@
 //!
 //! [Storage]: crate::storage
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    future::Future,
+    pin::Pin,
+    task::Poll,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use enum_map::{Enum, EnumMap};
-use futures::stream;
+use futures::{
+    stream::{self, BoxStream},
+    Stream,
+};
 use itertools::Itertools;
 use scylla::{
+    client::session::Session as InnerSession,
     client::session_builder::SessionBuilder,
+    response::{PagingState, PagingStateResponse},
     statement::{batch::Batch, prepared::PreparedStatement, Statement},
 };
 use secrecy::{ExposeSecret, SecretString};
@@ -38,16 +48,20 @@ use uuid::Uuid;
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{
-        FollowId, Post, PostDay, PostId, PostUri, PostUrl, Reply, Share, Tagname, User, UserId,
-        UserUrl, Username,
+        FollowId, Following, Post, PostDay, PostId, PostUri, PostUrl, Reply, Share, Tagname, User,
+        UserId, UserUrl, Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module Error type                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("A query was expected to prodce at most one row & did not."))]
+    #[snafu(display("A query was expected to produce at most one row & did not."))]
     AtMostOneRow { backtrace: Backtrace },
     #[snafu(display(
         "The number of prepared statements isn't consistent; this is a bug & should be reported!"
@@ -58,6 +72,11 @@ pub enum Error {
     ))]
     ClaimDe {
         username: Username,
+        source: scylla::deserialize::DeserializationError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize the following count: {source}"))]
+    CountDe {
         source: scylla::deserialize::DeserializationError,
         backtrace: Backtrace,
     },
@@ -82,6 +101,11 @@ pub enum Error {
     #[snafu(display("Failed to deserialize the first row: {source}"))]
     FirstRow {
         source: scylla::response::query_result::FirstRowError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize a page worth of followers: {source}"))]
+    FollowDe {
+        source: scylla::deserialize::DeserializationError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to convert to a RowsResult: {source}"))]
@@ -267,11 +291,14 @@ enum PreparedStatements {
 /// Instantiate this via [Session::new] with connection info & credentials if need be, when dropped
 /// the ScyllaDB session will be terminated.
 pub struct Session {
-    session: ::scylla::client::session::Session,
+    session: InnerSession,
     /// An [EnumMap] is a map whose keys are enum values where all values are guaranteed to be
     /// represented. As a result, the index operator is guaranteed to succeed-- no need to unwrap
     /// [Option]s or [Result]s or some such.
     prepared_statements: EnumMap<PreparedStatements, PreparedStatement>,
+    /// Prepare statement with page size
+    // Will probably need another `EnumMap`, but for now, just make it its own field
+    following_statement: PreparedStatement,
 }
 
 impl Session {
@@ -363,7 +390,7 @@ impl Session {
             "update posts set replies = replies + { ? } where user_id = ? and url = ? if exists",
             "update posts set shares = shares + { ? } where user_id = ? and url = ? if exists",
             "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?)", // AddFollows
-            "update following set accepted = true where user_id = ? and actor_id = ?"
+            "update following set accepted = true where user_id = ? and actor_id = ?",
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -384,9 +411,18 @@ impl Session {
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
+        // Ugly hack to be factored-out
+        let stmt = "select * from following where user_id = ?";
+        let stmt = scylla
+            .prepare(Statement::new(stmt).with_page_size(512))
+            .await
+            .context(PrepareSnafu {
+                stmt: stmt.to_owned(),
+            })?;
         Ok(Session {
             session: scylla,
             prepared_statements: EnumMap::from_array(prepared_statements),
+            following_statement: stmt,
         })
     }
 }
@@ -579,6 +615,135 @@ pub async fn add_following(
         .await
         .context(ExecutionSnafu)?;
     Ok(())
+}
+
+/// A [Stream] for enumerating a [User]'s followers
+#[allow(clippy::type_complexity)]
+pub struct FollowingStream<'a> {
+    session: &'a InnerSession,
+    userid: UserId,
+    count: usize,
+    statement: &'a PreparedStatement,
+    fut: Option<
+        Pin<
+            Box<
+                dyn Future<Output = Result<(VecDeque<Following>, PagingStateResponse)>> + Send + 'a,
+            >,
+        >,
+    >,
+    curr: VecDeque<Following>,
+}
+
+impl<'a> FollowingStream<'a> {
+    pub async fn new(
+        session: &'a InnerSession,
+        statement: &'a PreparedStatement,
+        userid: UserId,
+    ) -> Result<FollowingStream<'a>> {
+        let num_following = session
+            .query_unpaged(
+                "select count(*) from following where user_id = ?",
+                (&userid,),
+            )
+            .await
+            .context(ExecutionSnafu)?
+            .into_rows_result()
+            .context(IntoRowsResultSnafu)?
+            .rows::<(i64,)>()
+            .context(TypedRowsSnafu)?
+            .exactly_one()
+            .unwrap(/* known good */)
+            .context(CountDeSnafu)?
+            .0;
+        Ok(FollowingStream {
+            session,
+            userid,
+            count: num_following as usize,
+            statement,
+            fut: Some(Box::pin(Self::get_page(
+                session,
+                statement,
+                userid,
+                PagingState::start(),
+            ))),
+            curr: VecDeque::new(),
+        })
+    }
+    async fn get_page(
+        session: &'a InnerSession,
+        statement: &'a PreparedStatement,
+        userid: UserId,
+        paging_state: PagingState,
+    ) -> Result<(VecDeque<Following>, PagingStateResponse)> {
+        let (query_result, paging_state_response) = session
+            .execute_single_page(statement, (userid,), paging_state)
+            .await
+            .context(ExecutionSnafu)?;
+        Ok((
+            query_result
+                .into_rows_result()
+                .context(IntoRowsResultSnafu)?
+                .rows::<Following>()
+                .context(TypedRowsSnafu)?
+                .collect::<StdResult<VecDeque<Following>, _>>()
+                .context(FollowDeSnafu)?,
+            paging_state_response,
+        ))
+    }
+}
+
+impl Stream for FollowingStream<'_> {
+    type Item = StdResult<UserUrl, StorError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        loop {
+            match self.curr.pop_front() {
+                Some(follow) => return Poll::Ready(Some(Ok(follow.actor_id().clone()))),
+                None => match &mut self.fut {
+                    // We're empty-- attempt to get more
+                    Some(fut) => match fut.as_mut().poll(cx) {
+                        Poll::Ready(Ok((next_page, paging_state_response))) => {
+                            // Not sure how to handle this, or whether it can even happen.
+                            match next_page.front() {
+                                Some(_) => {
+                                    self.curr = next_page;
+                                    match paging_state_response {
+                                        PagingStateResponse::HasMorePages { state } => {
+                                            self.fut = Some(Box::pin(Self::get_page(
+                                                self.session,
+                                                self.statement,
+                                                self.userid,
+                                                state,
+                                            )));
+                                        }
+                                        PagingStateResponse::NoMorePages => self.fut = None,
+                                    }
+                                }
+                                None => {
+                                    self.fut = None;
+                                    return Poll::Ready(None);
+                                }
+                            };
+                        }
+                        Poll::Ready(Err(err)) => {
+                            // Return the error this time, then drop our Future
+                            self.fut = None;
+                            return Poll::Ready(Some(Err(StorError::new(err))));
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    },
+                    None => return Poll::Ready(None), // We're done
+                },
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, Some(self.count))
+    }
 }
 
 #[async_trait]
@@ -789,6 +954,17 @@ impl storage::Backend for Session {
 
         self.session.batch(&batch, batch_values).await?;
         Ok(())
+    }
+
+    async fn get_following<'a>(
+        &'a self,
+        user: &User,
+    ) -> StdResult<BoxStream<'a, StdResult<UserUrl, StorError>>, StorError> {
+        Ok(Box::pin(
+            FollowingStream::new(&self.session, &self.following_statement, *user.id())
+                .await
+                .map_err(StorError::new)?,
+        ))
     }
 
     async fn get_posts(

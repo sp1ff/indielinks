@@ -97,6 +97,11 @@ pub enum Error {
         postid: PostId,
         backtrace: Backtrace,
     },
+    #[snafu(display("{username}'s server has no inbox"))]
+    NoInbox {
+        username: Username,
+        backtrace: Backtrace,
+    },
     #[snafu(display("{username}'s server has no shared inbox"))]
     NoSharedInbox {
         username: Username,
@@ -282,6 +287,7 @@ impl SendCreate {
         }
     }
     /// Resolve a follower (in the form of a [UserUrl]) to a public inbox
+    // This should be factored-out
     async fn follower_to_public_inbox(
         user: &User,
         origin: &Origin,
@@ -499,6 +505,26 @@ impl SendFollow {
     pub fn new(user: User, actorid: Url, id: FollowId) -> SendFollow {
         SendFollow { user, actorid, id }
     }
+    async fn inbox_for_actor(
+        user: &User,
+        origin: &Origin,
+        actorid: &Url,
+        client: &reqwest_middleware::ClientWithMiddleware,
+    ) -> Result<Url> {
+        send_activity_pub::<&'_ str, (), Actor>(
+            user,
+            origin,
+            Method::GET,
+            actorid.as_str(),
+            None,
+            None,
+            client,
+        )
+        .await?
+        .inbox()
+        .clone()
+        .pipe(Ok)
+    }
 }
 
 #[async_trait]
@@ -513,6 +539,15 @@ impl Task<Context> for SendFollow {
         async fn exec1(this: Box<SendFollow>, context: Context) -> Result<()> {
             // Ugh-- this needs to be cleaned-up.
             let userurl = UserUrl::from(this.actorid.clone());
+
+            let inbox = SendFollow::inbox_for_actor(
+                &this.user,
+                &context.origin,
+                &this.actorid,
+                &context.client,
+            )
+            .await?;
+
             // Let's write the new follow to the database,
             context
                 .storage
@@ -541,7 +576,7 @@ impl Task<Context> for SendFollow {
                 &this.user,
                 &context.origin,
                 Method::POST,
-                this.actorid,
+                inbox,
                 Some(&follow),
                 None,
                 &context.client,

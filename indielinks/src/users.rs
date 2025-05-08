@@ -606,8 +606,8 @@ inventory::submit! { metrics::Registration::new("user.follows.successful", Sort:
 inventory::submit! { metrics::Registration::new("user.follows.failures", Sort::IntegralCounter) }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct FollowReq {
-    id: Url,
+pub struct FollowReq {
+    pub id: Url,
 }
 
 type StdResult<T, E> = std::result::Result<T, E>;
@@ -640,7 +640,7 @@ async fn follow(
         Ok(user) => match follow1(user, &req.id, &state.task_sender).await {
             Ok(_) => {
                 counter_add!(state.instruments, "user.follows.successful", 1, &[]);
-                StatusCode::OK.into_response()
+                StatusCode::ACCEPTED.into_response()
             }
             Err(err) => {
                 counter_add!(state.instruments, "user.follows.failures", 1, &[]);

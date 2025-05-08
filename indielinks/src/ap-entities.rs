@@ -545,6 +545,12 @@ impl ActorField {
     }
 }
 
+impl From<Url> for ActorField {
+    fn from(value: Url) -> Self {
+        ActorField::Iri(value)
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                            Announce                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -603,12 +609,15 @@ impl Follow {
         }
     }
     /// Retrieve the `id` property of the `actor` attribute of this follow request
-    pub fn actor_id(&self) -> Url {
+    pub fn actor_id(&self) -> &Url {
         match &self.actor {
-            ActorField::Inline(follow_actor) => follow_actor.id().clone(),
-            ActorField::Iri(id) => id.clone(),
-            ActorField::InlineId(inline_id) => inline_id.id.clone(),
+            ActorField::Inline(follow_actor) => follow_actor.id(),
+            ActorField::Iri(id) => id,
+            ActorField::InlineId(inline_id) => &inline_id.id,
         }
+    }
+    pub fn object_id(&self) -> &Url {
+        &self.object
     }
 }
 
@@ -629,6 +638,27 @@ pub enum ObjectField {
     Iri(Url),
 }
 
+impl ObjectField {
+    pub fn resolve_object_id(&self) -> &Url {
+        match &self {
+            ObjectField::Inline(follow) => follow.object_id(),
+            ObjectField::Iri(url) => url,
+        }
+    }
+}
+
+impl From<Follow> for ObjectField {
+    fn from(value: Follow) -> Self {
+        ObjectField::Inline(value)
+    }
+}
+
+impl From<Url> for ObjectField {
+    fn from(value: Url) -> Self {
+        ObjectField::Iri(value)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Accept {
     object: ObjectField,
@@ -645,6 +675,12 @@ impl Accept {
             object: ObjectField::Inline(follow_req.clone()),
             actor: ActorField::Iri(make_user_id(followed, origin)?),
         })
+    }
+    pub fn new(object: ObjectField, actor: ActorField) -> Accept {
+        Accept { object, actor }
+    }
+    pub fn object_id(&self) -> &Url {
+        self.object.resolve_object_id()
     }
 }
 
@@ -1416,6 +1452,7 @@ pub enum FollowOrLike {
     Follow(Follow),
     Like(Like),
     Undo(Undo),
+    Accept(Accept),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

@@ -69,7 +69,10 @@
 //! Furthermore, it's turned into an interesting little design problem: I'm increasingly impressed
 //! with how Rust's type system allows me to express _just_ what I want, and no more.
 
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, task::Poll, time::Duration};
+use std::{
+    collections::HashMap, fmt::Display, future::Future, pin::Pin, sync::Arc, task::Poll,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -82,6 +85,7 @@ use tokio::{
     sync::Notify,
     task::{Id, JoinError, JoinHandle, JoinSet},
 };
+use tracing::error;
 use uuid::Uuid;
 
 use crate::{
@@ -199,7 +203,7 @@ pub trait Sender<C, T: Task<C>> {
 /// complete.
 #[async_trait]
 pub trait Receiver<C> {
-    type TaskId: Send + 'static;
+    type TaskId: Display + Send + 'static;
     async fn mark_complete(&self, cookie: Self::TaskId) -> Result<()>;
     async fn take_task(&self) -> Result<Option<(Box<dyn Task<C>>, Self::TaskId)>>;
 }
@@ -292,8 +296,8 @@ impl Default for Config {
 }
 
 inventory::submit! { metrics::Registration::new("background.processor.tasks.completed", Sort::IntegralCounter) }
-
-inventory::submit! { metrics::Registration::new("background.processor.tasks.inflight", Sort::IntegralGauge) }
+inventory::submit! { metrics::Registration::new("background.processor.tasks.failed",    Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("background.processor.tasks.inflight",  Sort::IntegralGauge)   }
 
 /// Process background tasks. `receiver` is a [Receiver] from which we can draw tasks. `config`
 /// holds configuration parameters for the algorithm. `shutdown` is a [Notify] instance the caller
@@ -339,12 +343,27 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
             tokio::select! {
                 result = futures.join_next_with_id() => {
                     match result {
-                        Some(Ok((id, _))) => {
-                            // The task has completed succesfully (and been consumed in the
-                            // process); now all that remains is to mark it complete.
-                            let cookie = tasks.remove(&id).context(TaskIdSnafu)?;
-                            receiver.mark_complete(cookie).await.context(CompletionSnafu)?;
-                            counter_add!(instruments, "background.processor.tasks.completed", 1, &[]);
+                        Some(Ok((id, res))) => {
+                            match res {
+                                Ok(_) => {
+                                    // The task has completed succesfully (and been consumed in the
+                                    // process); now all that remains is to mark it complete.
+                                    let cookie = tasks.remove(&id).context(TaskIdSnafu)?;
+                                    receiver.mark_complete(cookie).await.context(CompletionSnafu)?;
+                                    counter_add!(instruments, "background.processor.tasks.completed", 1, &[]);
+                                },
+                                Err(err) => {
+                                    // The task has failed (and been consumed in the process);
+                                    // clean-up our datastructure...
+                                    let cookie = tasks.remove(&id).context(TaskIdSnafu)?;
+                                    // log the error...
+                                    error!("Task {} reports failure: {:?}", cookie, err);
+                                    counter_add!(instruments, "background.processor.tasks.failed", 1, &[]);
+                                    // and that's kinda it. We just drop it on the floor. Once our
+                                    // lease in the datastore expires, it will get picked-up &
+                                    // retried again & retried.
+                                },
+                            }
                         },
                         Some(Err(err)) => {
                             return Err(JoinSnafu.into_error(err));

@@ -25,7 +25,7 @@ use indielinks::{
     scylla::{add_followers, add_user},
 };
 use indielinks_test::{
-    activity_pub::posting_creates_note,
+    activity_pub::{posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
@@ -325,6 +325,14 @@ inventory::submit!(IndielinksTest {
             pepper,
             helper,
         ))
+    },
+});
+
+inventory::submit!(IndielinksTest {
+    name: "060send_follow",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(send_follow(cfg.indielinks, version, pepper, helper))
     },
 });
 
