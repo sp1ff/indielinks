@@ -30,7 +30,7 @@ use std::{collections::VecDeque, time::Duration};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use either::Either;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, TryStreamExt};
 use http::{header, Method};
 use itertools::Itertools;
 use reqwest::IntoUrl;
@@ -48,7 +48,7 @@ use crate::{
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
     client::request_builder,
-    entities::{FollowId, PostId, User, UserId, UserUrl, Username},
+    entities::{FollowId, PostId, StorUrl, User, UserId, Username},
     origin::Origin,
 };
 
@@ -84,6 +84,11 @@ pub enum Error {
         username: Username,
         id: FollowId,
         source: crate::ap_entities::Error,
+    },
+    #[snafu(display("Failed to retrieve followers for {username}: {source}"))]
+    GetFollowers {
+        username: Username,
+        source: crate::storage::Error,
     },
     #[snafu(display("Failed to serialize entity to JSON-LD: {source}"))]
     Jld { source: crate::ap_entities::Error },
@@ -291,7 +296,7 @@ impl SendCreate {
     async fn follower_to_public_inbox(
         user: &User,
         origin: &Origin,
-        follower: &UserUrl,
+        follower: &StorUrl,
         client: &reqwest_middleware::ClientWithMiddleware,
     ) -> Result<Url> {
         debug!("Resolving follower {:?} to a public inbox...", follower);
@@ -387,11 +392,29 @@ impl Task<Context> for SendCreate {
             // `pending_calls` is a list of, well, pending calls. This is kinda lame: we're making a
             // network call to resolve each follower to a public inbox, when that's unlikely to
             // change (since the last such call). I'm going to need to build a cache.
-            let (proto_calls, errs): (Vec<_>, Vec<_>) = stream::iter(user.followers())
-                .then(|x| {
-                    SendCreate::follower_to_public_inbox(&user, &context.origin, x, &context.client)
+            let (proto_calls, errs): (Vec<_>, Vec<_>) = context
+                .storage
+                .get_followers(&user)
+                .await
+                .context(GetFollowersSnafu {
+                    username: user.username().clone(),
+                })?
+                .and_then(|follower| {
+                    let user = user.clone();
+                    let origin = context.origin.clone();
+                    let client = context.client.clone();
+                    async move {
+                        SendCreate::follower_to_public_inbox(
+                            &user,
+                            &origin,
+                            follower.actor_id(),
+                            &client,
+                        )
+                        .await
+                        .map_err(crate::storage::Error::new)
+                    }
                 })
-                .collect::<Vec<Result<Url>>>()
+                .collect::<Vec<StdResult<Url, _>>>()
                 .await
                 .into_iter()
                 .partition_map(|res| res.map_or_else(Either::Right, Either::Left));
@@ -538,7 +561,7 @@ impl Task<Context> for SendFollow {
 
         async fn exec1(this: Box<SendFollow>, context: Context) -> Result<()> {
             // Ugh-- this needs to be cleaned-up.
-            let userurl = UserUrl::from(this.actorid.clone());
+            let userurl = StorUrl::from(this.actorid.clone());
 
             let inbox = SendFollow::inbox_for_actor(
                 &this.user,

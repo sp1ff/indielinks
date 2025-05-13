@@ -40,7 +40,6 @@ create table users (
   last_update timestamp,
   password_hash ascii,
   pepper_version ascii,
-  followers set<ascii>,
 );
 
 create index users_by_username on users (username);
@@ -55,6 +54,18 @@ create table unique_usernames (
    that ActivityPub activities need it. If I do decide to actually
    serve `Follow`s, I can always add an index in `id`. */
 create table following (
+  user_id uuid,
+  actor_id ascii,
+  id uuid,
+  created timestamp,
+  accepted boolean,
+  PRIMARY KEY (user_id, actor_id)
+);
+
+/* Similarly, here (cf. table `following`, above). I considered
+   keeping both followers & followings in one table, but decided to
+   reserve the option to represent them differently. */
+create table followers (
   user_id uuid,
   actor_id ascii,
   id uuid,

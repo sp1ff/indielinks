@@ -19,7 +19,7 @@
 use common::{run, Configuration, IndielinksTest};
 use crypto_common::rand_core::{OsRng, RngCore};
 use indielinks::{
-    entities::{User, UserEmail, UserId, UserUrl, Username},
+    entities::{StorUrl, User, UserEmail, UserId, Username},
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
     scylla::{add_followers, add_user},
@@ -204,7 +204,7 @@ impl Helper for State {
         pepper_key: &Pepper,
         username: &Username,
         password: &SecretString,
-        followers: &HashSet<UserUrl>,
+        followers: &HashSet<StorUrl>,
     ) -> std::result::Result<String, Failed> {
         let mut api_key: Vec<u8> = Vec::with_capacity(32);
         OsRng.fill_bytes(api_key.as_mut_slice());
@@ -222,7 +222,7 @@ impl Helper for State {
         )?;
 
         add_user(&self.session, None, None, &user).await?;
-        add_followers(&self.session, None, &user, followers).await?;
+        add_followers(&self.session, None, &user, followers, true).await?;
 
         Ok(textual_api_key)
     }

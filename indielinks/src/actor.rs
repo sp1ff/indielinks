@@ -50,7 +50,7 @@ use crate::{
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     counter_add,
-    entities::{PostId, Reply, Share, User, UserUrl, Username},
+    entities::{Follower, Following, PostId, Reply, Share, StorUrl, User, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
@@ -113,6 +113,10 @@ pub enum Error {
     FollowGetStream { source: storage::Error },
     #[snafu(display("While computing following, our stream yielded: {source}"))]
     FollowStream { source: storage::Error },
+    #[snafu(display("While serving /followers, failed to obtain a stream: {source}"))]
+    FollowersGetStream { source: storage::Error },
+    #[snafu(display("While computing followers, our stream yielded: {source}"))]
+    FollowersStream { source: storage::Error },
     #[snafu(display("Failed to append a query parameter to an URL: {source}"))]
     Join {
         source: url::ParseError,
@@ -850,7 +854,8 @@ async fn accept_follow(
         .context(TaskSendSnafu)?;
 
     storage
-        .add_follower(user, actor.id())
+        // Urp!?
+        .add_follower(user, &actor.id().clone().into())
         .await
         .context(StorageSnafu)
 }
@@ -995,7 +1000,7 @@ pub struct CollectionPage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part_of: Option<Url>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ordered_items: Option<Vec<UserUrl>>,
+    pub ordered_items: Option<Vec<StorUrl>>,
 }
 
 impl ToJld for CollectionPage {
@@ -1032,16 +1037,25 @@ async fn followers(
                 .build(),
             )?;
         // and extract their followers:
-        let followers = user.followers();
-        let num_followers = user.num_followers();
+        let followers = storage
+            .get_followers(&user)
+            .await
+            .context(FollowersGetStreamSnafu)?;
+        let num_followers = followers.size_hint().0;
         let followers_id = make_user_followers(username, origin).context(ApIdSnafu)?;
         let first = followers_id.join("?page=0").context(JoinSnafu)?;
         // What we do now depends on `page`; if...
         match page {
             Some(page_num) => {
                 // we have a page, we need to extract the corresponding chunk from `followers`...
-                let items = match followers.chunks(page_size).into_iter().nth(page_num) {
-                    Some(chunk) => chunk.into_iter().cloned().collect::<Vec<UserUrl>>(),
+                let items = match followers.chunks(page_size).skip(page_num).next().await {
+                    Some(chunk) => chunk
+                        .into_iter()
+                        .collect::<StdResult<Vec<Follower>, _>>()
+                        .context(FollowersStreamSnafu)?
+                        .into_iter()
+                        .map(|follower| follower.actor_id().clone())
+                        .collect::<Vec<StorUrl>>(),
                     None => vec![],
                 };
                 // conditionally compute the `next` attribute...
@@ -1136,10 +1150,13 @@ async fn following(
         match page {
             Some(page_num) => {
                 let items = match following.chunks(page_size).skip(page_num).next().await {
-                    Some(chunk) => chunk.into_iter().collect::<StdResult<Vec<UserUrl>, _>>(),
+                    Some(chunk) => chunk.into_iter().collect::<StdResult<Vec<Following>, _>>(),
                     None => Ok(vec![]),
                 }
-                .context(FollowStreamSnafu)?;
+                .context(FollowStreamSnafu)?
+                .into_iter()
+                .map(|f| f.actor_id().clone())
+                .collect::<Vec<StorUrl>>();
                 // conditionally compute the `next` attribute...
                 let next = ((page_num + 1) * page_size < num_following).then_some(
                     following_id

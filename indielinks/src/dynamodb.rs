@@ -15,15 +15,15 @@
 
 //! # dynamodb
 //!
-//! [Storage] implementation for DynamoDB.
+//! [Storage] implementation for DynamoDB, along with assorted DDB-related utilities.
 //!
 //! [Storage]: crate::storage
 
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{
-        FollowId, Following, Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId,
-        UserUrl, Username,
+        FollowId, Follower, Following, Post, PostDay, PostId, PostUri, Reply, Share, StorUrl,
+        Tagname, User, UserId, Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
@@ -44,6 +44,7 @@ use chrono::{DateTime, Duration, Utc};
 use either::Either;
 use futures::{stream::BoxStream, Stream};
 use itertools::Itertools;
+use pin_project::pin_project;
 use secrecy::SecretString;
 use serde_dynamo::{
     aws_sdk_dynamodb_1::{from_items, to_item},
@@ -69,13 +70,13 @@ use std::{
 pub enum Error {
     #[snafu(display("Failed to add follows {follows:?}: {source}"))]
     AddFollow {
-        follows: HashSet<UserUrl>,
+        follows: HashSet<StorUrl>,
         source: SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to add followers {followers:?}: {source}"))]
     AddFollower {
-        followers: HashSet<UserUrl>,
+        followers: HashSet<StorUrl>,
         source: SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>,
         backtrace: Backtrace,
     },
@@ -100,6 +101,11 @@ pub enum Error {
         source: SdkError<BatchWriteItemError, HttpResponse>,
         backtrace: Backtrace,
     },
+    #[snafu(display("When counting items: {source}"))]
+    Count {
+        source: SdkError<QueryError, HttpResponse>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to delete a post: {source}"))]
     DeletePosts {
         source: aws_smithy_runtime_api::client::result::SdkError<
@@ -107,8 +113,8 @@ pub enum Error {
             aws_sdk_dynamodb::config::http::HttpResponse,
         >,
     },
-    #[snafu(display("Failed to deserialize follows: {source}"))]
-    DeFollowing {
+    #[snafu(display("Failed to deserialize items: {source}"))]
+    DeItems {
         source: serde_dynamo::Error,
         backtrace: Backtrace,
     },
@@ -122,9 +128,9 @@ pub enum Error {
         username: Username,
         backtrace: Backtrace,
     },
-    #[snafu(display("When counting follows: {source}"))]
-    FollowCount {
-        source: SdkError<QueryError, HttpResponse>,
+    #[snafu(display("Failed to serialize a follower: {source}"))]
+    FollowerSer {
+        source: serde_dynamo::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to serialize a follow: {source}"))]
@@ -226,6 +232,315 @@ type Result<T> = std::result::Result<T, Error>;
 type StdResult<T, E> = std::result::Result<T, E>;
 
 use storage::Error as StorError;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                   DynamoDB-related utilities                                   //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Many of these have been factored-out into standalone functions & types because they're used by
+// the integration test suite as well as by the Scylla `Storage` implementation.
+
+/// Count the number of items for a given partition key
+pub async fn count_range(
+    client: &::aws_sdk_dynamodb::Client,
+    table_name: &str,
+    pk_name: &str,
+    pk_value: &str,
+) -> Result<usize> {
+    Ok(client
+        .query()
+        .table_name(table_name)
+        .key_condition_expression(format!("{} = :pk", pk_name))
+        .expression_attribute_values(":pk", AttributeValue::S(pk_value.to_string()))
+        .select(Select::Count)
+        .send()
+        .await
+        .context(CountSnafu)?
+        .count as usize)
+}
+
+/// Write a user into the database
+///
+/// This logic has been factored out because the integration tests make use of it, as well. Returns
+/// true on success, false if the username was already claimed.
+pub async fn add_user(client: &::aws_sdk_dynamodb::Client, user: &User) -> Result<bool> {
+    use aws_sdk_dynamodb::{
+        error::SdkError, operation::put_item::PutItemError::ConditionalCheckFailedException,
+    };
+    let claimed = match client
+        .put_item()
+        .table_name("unique_usernames")
+        .item("username", AttributeValue::S(user.username().to_string()))
+        .item("id", AttributeValue::S(user.id().to_string()))
+        .condition_expression("attribute_not_exists(username)")
+        .send()
+        .await
+    {
+        Ok(_) => false,
+        Err(err) => {
+            if matches!(err, SdkError::ServiceError(ref inner) if matches!(inner.err(), ConditionalCheckFailedException(_)))
+            {
+                true
+            } else {
+                return Err(UsernameSnafu {
+                    username: user.username().clone(),
+                }
+                .into_error(err));
+            }
+        }
+    };
+    if claimed {
+        return Ok(false);
+    }
+
+    // I first thought to serialize the `User` via `serde_dynamo::to_item`, but serde_dynamo makes
+    // some... odd choices (serializing an empty `HashSet<String>` to `L: []`, for instance). I want
+    // to use `to_attribute_value()` wherever I can to avoid exposing implementation details and
+    // duplicating serialization logic.
+
+    use serde_dynamo::to_attribute_value as tav;
+    let item = HashMap::from([
+        ("id".to_string(), tav(user.id()).context(TAVSnafu)?),
+        (
+            "username".to_string(),
+            tav(user.username()).context(TAVSnafu)?,
+        ),
+        (
+            "discoverable".to_string(),
+            tav(user.discoverable()).context(TAVSnafu)?,
+        ),
+        (
+            "display_name".to_string(),
+            tav(user.display_name()).context(TAVSnafu)?,
+        ),
+        (
+            "summary".to_string(),
+            tav(user.summary()).context(TAVSnafu)?,
+        ),
+        (
+            "pub_key_pem".to_string(),
+            tav(user.pub_key()).context(TAVSnafu)?,
+        ),
+        (
+            "priv_key_pem".to_string(),
+            tav(user.priv_key()).context(TAVSnafu)?,
+        ),
+        (
+            "api_key".to_string(),
+            tav(user.api_key()).context(TAVSnafu)?,
+        ),
+        (
+            "password_hash".to_string(),
+            tav(user.password_hash()).context(TAVSnafu)?,
+        ),
+        (
+            "pepper_version".to_string(),
+            tav(user.pepper_version()).context(TAVSnafu)?,
+        ),
+    ]);
+
+    client
+        .put_item()
+        .table_name("users")
+        .set_item(Some(item))
+        .send()
+        .await
+        .context(UserSnafu {
+            user: Box::new(user.clone()),
+        })?;
+    Ok(true)
+}
+
+/// Add a follower to the database
+///
+/// This logic has been factored out because the integration tests make use of it, as well.
+pub async fn add_followers(
+    client: &::aws_sdk_dynamodb::Client,
+    user: &User,
+    followers: &HashSet<StorUrl>,
+) -> Result<()> {
+    // Build-up a vector of `WriteRequest`; we'll batch 'em, below.
+    let mut write_reqs = followers
+        .iter()
+        .map(|follow| {
+            WriteRequest::builder()
+                .put_request(
+                    PutRequest::builder()
+                        .set_item(Some(
+                            to_item(Follower::new(user, follow)).context(FollowerSerSnafu)?,
+                        ))
+                        .build()
+                        .context(OpBuildSnafu)?,
+                )
+                .build()
+                .pipe(Ok)
+        })
+        .collect::<Result<Vec<WriteRequest>>>()?;
+
+    // `BatchWrite` can only handle 25 items at a time.
+    while !write_reqs.is_empty() {
+        let this_batch: Vec<_> = write_reqs.drain(..min(write_reqs.len(), 25)).collect();
+        client
+            .batch_write_item()
+            .request_items("followers", this_batch)
+            .send()
+            .await
+            .context(BatchWriteSnafu)?;
+    }
+
+    Ok(())
+}
+
+/// Add a follow to the database
+///
+/// This logic has been factored out because the integration tests make use of it, as well.
+pub async fn add_following(
+    client: &::aws_sdk_dynamodb::Client,
+    user: &User,
+    follows: &HashSet<(StorUrl, FollowId)>,
+) -> Result<()> {
+    // Build-up a vector of `WriteRequest`; we'll batch 'em, below.
+    let mut write_reqs = follows
+        .iter()
+        .map(|follow| {
+            WriteRequest::builder()
+                .put_request(
+                    PutRequest::builder()
+                        .set_item(Some(
+                            to_item(Following::new_with_id(user, &follow.0, &follow.1))
+                                .context(FollowingSerSnafu)?,
+                        ))
+                        .build()
+                        .context(OpBuildSnafu)?,
+                )
+                .build()
+                .pipe(Ok)
+        })
+        .collect::<Result<Vec<WriteRequest>>>()?;
+
+    // `BatchWrite` can only handle 25 items at a time.
+    while !write_reqs.is_empty() {
+        let this_batch: Vec<_> = write_reqs.drain(..min(write_reqs.len(), 25)).collect();
+        client
+            .batch_write_item()
+            .request_items("following", this_batch)
+            .send()
+            .await
+            .context(BatchWriteSnafu)?;
+    }
+
+    Ok(())
+}
+
+/// A [Stream] implementation on top of a DDB [PaginationStream]
+#[pin_project]
+pub struct PagedResultsStream<T> {
+    #[pin]
+    stream: Option<PaginationStream<StdResult<QueryOutput, SdkError<QueryError, HttpResponse>>>>,
+    count: usize,
+    #[pin]
+    curr: VecDeque<T>,
+}
+
+impl<'a, T> PagedResultsStream<T>
+where
+    T: serde::Deserialize<'a>,
+{
+    pub async fn new(
+        client: &::aws_sdk_dynamodb::Client,
+        table_name: &str,
+        pk_name: &str,
+        pk_value: &str,
+        count: usize,
+    ) -> Result<PagedResultsStream<T>> {
+        Ok(PagedResultsStream {
+            stream: Some(
+                client
+                    .query()
+                    .table_name(table_name)
+                    .key_condition_expression(format!("{} = :pk", pk_name))
+                    .expression_attribute_values(":pk", AttributeValue::S(pk_value.to_string()))
+                    .into_paginator()
+                    .page_size(512)
+                    .send(),
+            ),
+            count,
+            curr: VecDeque::new(),
+        })
+    }
+
+    // Utility method; convert a DDB `QueryOutput` to a vector of `Following`
+    fn get_items(query_output: QueryOutput) -> Result<Vec<T>> {
+        query_output
+            .items()
+            .to_vec()
+            .pipe(from_items::<T>)
+            .context(DeItemsSnafu)?
+            .pipe(Ok)
+    }
+}
+
+impl<'a, T> Stream for PagedResultsStream<T>
+where
+    T: serde::Deserialize<'a> + Unpin,
+{
+    type Item = StdResult<T, StorError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let mut this = self.as_mut().project();
+        loop {
+            match this.curr.pop_front() {
+                Some(item) => return Poll::Ready(Some(Ok(item))),
+                None => {
+                    // This implementation was patched-up after I generalized `PagedResultsStream`
+                    // (back when it was specific to follows, it was a lot simpler). It should
+                    // probably be re-implemented from scratch-- this shouldn't be this complex.
+                    match this.stream.as_mut().get_mut() {
+                        Some(stream) => match stream.poll_next(cx) {
+                            Poll::Ready(Some(Ok(query_output))) => {
+                                match Self::get_items(query_output) {
+                                    Ok(next_page) => {
+                                        // Not sure how to handle this; not sure it can even happen.
+                                        // Certainly, I haven't seen it. I suppose if we get an
+                                        // empty response, we treat the stream as exhausted.
+                                        match next_page.first() {
+                                            Some(_) => {
+                                                *this.curr.as_mut().get_mut() = next_page.into()
+                                            }
+                                            None => {
+                                                *this.stream.as_mut().get_mut() = None;
+                                                return Poll::Ready(None);
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        self.stream = None;
+                                        return Poll::Ready(Some(Err(StorError::new(err))));
+                                    }
+                                }
+                            }
+                            Poll::Ready(Some(Err(err))) => {
+                                // Yield the error, then return None foreveer
+                                self.stream = None;
+                                return Poll::Ready(Some(Err(StorError::new(err))));
+                            }
+                            Poll::Ready(None) => return Poll::Ready(None),
+                            Poll::Pending => return Poll::Pending,
+                        },
+                        None => return Poll::Ready(None),
+                    }
+                }
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, Some(self.count))
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                indielinks DynamoDB client type                                 //
@@ -379,268 +694,10 @@ struct Tags {
     pub tags: Vec<Tagname>,
 }
 
-/// Write a user into the database
-///
-/// This logic has been factored out because the integration tests make use of it, as well. Returns
-/// true on success, false if the username was already claimed.
-pub async fn add_user(client: &::aws_sdk_dynamodb::Client, user: &User) -> Result<bool> {
-    use aws_sdk_dynamodb::{
-        error::SdkError, operation::put_item::PutItemError::ConditionalCheckFailedException,
-    };
-    let claimed = match client
-        .put_item()
-        .table_name("unique_usernames")
-        .item("username", AttributeValue::S(user.username().to_string()))
-        .item("id", AttributeValue::S(user.id().to_string()))
-        .condition_expression("attribute_not_exists(username)")
-        .send()
-        .await
-    {
-        Ok(_) => false,
-        Err(err) => {
-            if matches!(err, SdkError::ServiceError(ref inner) if matches!(inner.err(), ConditionalCheckFailedException(_)))
-            {
-                true
-            } else {
-                return Err(UsernameSnafu {
-                    username: user.username().clone(),
-                }
-                .into_error(err));
-            }
-        }
-    };
-    if claimed {
-        return Ok(false);
-    }
-
-    // I first thought to serialize the `User` via `serde_dynamo::to_item`, but serde_dynamo makes
-    // some... odd choices (serializing an empty `HashSet<String>` to `L: []`, for instance). I want
-    // to use `to_attribute_value()` wherever I can to avoid exposing implementation details and
-    // duplicating serialization logic.
-
-    use serde_dynamo::to_attribute_value as tav;
-    let item = HashMap::from([
-        ("id".to_string(), tav(user.id()).context(TAVSnafu)?),
-        (
-            "username".to_string(),
-            tav(user.username()).context(TAVSnafu)?,
-        ),
-        (
-            "discoverable".to_string(),
-            tav(user.discoverable()).context(TAVSnafu)?,
-        ),
-        (
-            "display_name".to_string(),
-            tav(user.display_name()).context(TAVSnafu)?,
-        ),
-        (
-            "summary".to_string(),
-            tav(user.summary()).context(TAVSnafu)?,
-        ),
-        (
-            "pub_key_pem".to_string(),
-            tav(user.pub_key()).context(TAVSnafu)?,
-        ),
-        (
-            "priv_key_pem".to_string(),
-            tav(user.priv_key()).context(TAVSnafu)?,
-        ),
-        (
-            "api_key".to_string(),
-            tav(user.api_key()).context(TAVSnafu)?,
-        ),
-        (
-            "password_hash".to_string(),
-            tav(user.password_hash()).context(TAVSnafu)?,
-        ),
-        (
-            "pepper_version".to_string(),
-            tav(user.pepper_version()).context(TAVSnafu)?,
-        ),
-    ]);
-
-    client
-        .put_item()
-        .table_name("users")
-        .set_item(Some(item))
-        .send()
-        .await
-        .context(UserSnafu {
-            user: Box::new(user.clone()),
-        })?;
-    Ok(true)
-}
-
-/// Add a follower to the database
-///
-/// This logic has been factored out because the integration tests make use of it, as well.
-pub async fn add_followers(
-    client: &::aws_sdk_dynamodb::Client,
-    user: &User,
-    followers: &HashSet<UserUrl>,
-) -> Result<()> {
-    client
-        .update_item()
-        .table_name("users")
-        .key("id", AttributeValue::S(user.id().to_string()))
-        .update_expression("add followers :u")
-        .expression_attribute_values(
-            ":u",
-            AttributeValue::Ss(followers.iter().map(|u| u.to_string()).collect()),
-        )
-        .send()
-        .await
-        .context(AddFollowerSnafu {
-            followers: followers.clone(),
-        })?;
-    Ok(())
-}
-
-/// Add a follow to the database
-///
-/// This logic has been factored out because the integration tests make use of it, as well.
-pub async fn add_following(
-    client: &::aws_sdk_dynamodb::Client,
-    user: &User,
-    follows: &HashSet<(UserUrl, FollowId)>,
-) -> Result<()> {
-    // Build-up a vector of `WriteRequest`; we'll batch 'em, below.
-    let mut write_reqs = follows
-        .iter()
-        .map(|follow| {
-            WriteRequest::builder()
-                .put_request(
-                    PutRequest::builder()
-                        .set_item(Some(
-                            to_item(Following::new_with_id(user, &follow.0, &follow.1))
-                                .context(FollowingSerSnafu)?,
-                        ))
-                        .build()
-                        .context(OpBuildSnafu)?,
-                )
-                .build()
-                .pipe(Ok)
-        })
-        .collect::<Result<Vec<WriteRequest>>>()?;
-
-    // `BatchWrite` can only handle 25 items at a time.
-    while !write_reqs.is_empty() {
-        let this_batch: Vec<_> = write_reqs.drain(..min(write_reqs.len(), 25)).collect();
-        client
-            .batch_write_item()
-            .request_items("following", this_batch)
-            .send()
-            .await
-            .context(BatchWriteSnafu)?;
-    }
-
-    Ok(())
-}
-
-pub struct FollowingIter {
-    stream: Option<PaginationStream<StdResult<QueryOutput, SdkError<QueryError, HttpResponse>>>>,
-    count: usize,
-    curr: VecDeque<Following>,
-}
-
-impl FollowingIter {
-    pub async fn new(client: &::aws_sdk_dynamodb::Client, userid: UserId) -> Result<FollowingIter> {
-        // This seems like a _lot_ of work to count some items:
-        let count = client
-            .query()
-            .table_name("following")
-            .key_condition_expression("user_id = :pk")
-            .expression_attribute_values(":pk", AttributeValue::S(userid.to_string()))
-            .select(Select::Count)
-            .send()
-            .await
-            .context(FollowCountSnafu)?
-            .count;
-
-        Ok(FollowingIter {
-            stream: Some(
-                client
-                    .query()
-                    .table_name("following")
-                    .key_condition_expression("user_id = :pk")
-                    .expression_attribute_values(":pk", AttributeValue::S(userid.to_string()))
-                    .into_paginator()
-                    .page_size(512)
-                    .send(),
-            ),
-            count: count as usize,
-            curr: VecDeque::new(),
-        })
-    }
-
-    // Utility method; convert a DDB `QueryOutput` to a vector of `Following`
-    fn get_items(query_output: QueryOutput) -> Result<Vec<Following>> {
-        query_output
-            .items()
-            .to_vec()
-            .pipe(from_items::<Following>)
-            .context(DeFollowingSnafu)?
-            .pipe(Ok)
-    }
-}
-
-impl Stream for FollowingIter {
-    type Item = StdResult<UserUrl, StorError>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        loop {
-            match self.curr.pop_front() {
-                Some(follow) => return Poll::Ready(Some(Ok(follow.actor_id().clone()))),
-                None => {
-                    match &mut self.stream {
-                        Some(stream) => match stream.poll_next(cx) {
-                            Poll::Ready(Some(Ok(query_output))) => {
-                                match Self::get_items(query_output) {
-                                    Ok(next_page) => {
-                                        // Not sure how to handle this; not sure it can even happen.
-                                        // Certainly, I haven't seen it. I suppose if we get an
-                                        // empty response, we treat the stream as exhausted.
-                                        match next_page.first() {
-                                            Some(_) => self.curr = next_page.into(),
-                                            None => {
-                                                self.stream = None;
-                                                return Poll::Ready(None);
-                                            }
-                                        };
-                                    }
-                                    Err(err) => {
-                                        self.stream = None;
-                                        return Poll::Ready(Some(Err(StorError::new(err))));
-                                    }
-                                }
-                            }
-                            Poll::Ready(Some(Err(err))) => {
-                                // Yield the error, then return None foreveer
-                                self.stream = None;
-                                return Poll::Ready(Some(Err(StorError::new(err))));
-                            }
-                            Poll::Ready(None) => return Poll::Ready(None),
-                            Poll::Pending => return Poll::Pending,
-                        },
-                        None => return Poll::Pending,
-                    }
-                }
-            }
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.count, Some(self.count))
-    }
-}
-
 #[async_trait]
 impl storage::Backend for Client {
-    async fn add_follower(&self, user: &User, follower: &url::Url) -> StdResult<(), StorError> {
-        add_followers(&self.client, user, &HashSet::from([follower.into()]))
+    async fn add_follower(&self, user: &User, follower: &StorUrl) -> StdResult<(), StorError> {
+        add_followers(&self.client, user, &HashSet::from([follower.clone()]))
             .await
             .map_err(StorError::new)
     }
@@ -648,7 +705,7 @@ impl storage::Backend for Client {
     async fn add_following(
         &self,
         user: &User,
-        follow: &UserUrl,
+        follow: &StorUrl,
         id: &FollowId,
     ) -> StdResult<(), StorError> {
         add_following(&self.client, user, &HashSet::from([(follow.clone(), *id)]))
@@ -781,7 +838,7 @@ impl storage::Backend for Client {
     async fn confirm_following(
         &self,
         user: &User,
-        following: &UserUrl,
+        following: &StorUrl,
     ) -> StdResult<(), StorError> {
         self.client
             .update_item()
@@ -855,14 +912,43 @@ impl storage::Backend for Client {
         Ok(())
     }
 
+    async fn get_followers<'a>(
+        &'a self,
+        user: &User,
+    ) -> StdResult<BoxStream<'a, StdResult<Follower, StorError>>, StorError> {
+        let count = count_range(&self.client, "followers", "user_id", &user.id().to_string())
+            .await
+            .map_err(StorError::new)?;
+        Ok(Box::pin(
+            PagedResultsStream::new(
+                &self.client,
+                "followers",
+                "user_id",
+                &user.id().to_string(),
+                count,
+            )
+            .await
+            .map_err(StorError::new)?,
+        ))
+    }
+
     async fn get_following<'a>(
         &'a self,
         user: &User,
-    ) -> StdResult<BoxStream<'a, StdResult<UserUrl, StorError>>, StorError> {
+    ) -> StdResult<BoxStream<'a, StdResult<Following, StorError>>, StorError> {
+        let count = count_range(&self.client, "following", "user_id", &user.id().to_string())
+            .await
+            .map_err(StorError::new)?;
         Ok(Box::pin(
-            FollowingIter::new(&self.client, *user.id())
-                .await
-                .map_err(StorError::new)?,
+            PagedResultsStream::new(
+                &self.client,
+                "following",
+                "user_id",
+                &user.id().to_string(),
+                count,
+            )
+            .await
+            .map_err(StorError::new)?,
         ))
     }
 

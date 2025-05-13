@@ -296,6 +296,7 @@ macro_rules! define_id {
 define_id!(UserId, "userid");
 define_id!(PostId, "postid");
 define_id!(FollowId, "followid");
+define_id!(FollowerId, "followerid");
 
 // I had, in the past, defined a few other identifiers, making it worth it to wrap the boilerplate
 // up in a macro. Now that it's just `UserId`, I should probably go back to just implementing it by
@@ -869,94 +870,6 @@ mod serde_hash_string {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                            UserUrl                                             //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Newtype to work around Rust's orphaned traits rule
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct UserUrl(Url);
-
-// Implement `Deserialize` by hand to fail if the serialized value isn't a legit URL
-impl<'de> Deserialize<'de> for UserUrl {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
-        UserUrl::try_from(s).map_err(mk_serde_de_err::<'de, D>)
-    }
-}
-
-impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserUrl {
-    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        String::type_check(typ)
-    }
-    fn deserialize(
-        typ: &'metadata ColumnType<'metadata>,
-        v: Option<FrameSlice<'frame>>,
-    ) -> StdResult<Self, DeserializationError> {
-        UserUrl::try_from(<String as DeserializeValue>::deserialize(typ, v)?).map_err(mk_de_err)
-    }
-}
-
-impl SerializeValue for UserUrl {
-    fn serialize<'b>(
-        &self,
-        typ: &ColumnType<'_>,
-        writer: CellWriter<'b>,
-    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        SerializeValue::serialize(&self.0.as_str(), typ, writer)
-    }
-}
-
-impl Deref for UserUrl {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref()
-    }
-}
-
-impl AsRef<str> for UserUrl {
-    fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl AsRef<Url> for UserUrl {
-    fn as_ref(&self) -> &Url {
-        &self.0
-    }
-}
-
-impl From<UserUrl> for Url {
-    fn from(value: UserUrl) -> Self {
-        value.0
-    }
-}
-
-impl From<Url> for UserUrl {
-    fn from(value: Url) -> Self {
-        Self(value)
-    }
-}
-
-impl From<&Url> for UserUrl {
-    fn from(value: &Url) -> Self {
-        Self(value.clone())
-    }
-}
-
-impl TryFrom<String> for UserUrl {
-    type Error = Error;
-
-    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
-        Ok(UserUrl(Url::parse(&s).context(UserUrlSnafu { text: s })?))
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                              User                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -977,8 +890,6 @@ pub struct User {
     last_update: Option<DateTime<Utc>>,
     password_hash: UserHashString,
     pepper_version: PepperVersion,
-    #[serde(default)]
-    followers: HashSet<UserUrl>,
 }
 
 /// Apply password validation rules
@@ -1095,9 +1006,6 @@ impl User {
     pub fn first_update(&self) -> Option<DateTime<Utc>> {
         self.first_update
     }
-    pub fn followers(&self) -> impl Iterator<Item = &UserUrl> {
-        self.followers.iter()
-    }
     pub fn hash(&self) -> &UserHashString {
         &self.password_hash
     }
@@ -1146,11 +1054,7 @@ impl User {
             last_update: None,
             password_hash: UserHashString(password_hash),
             pepper_version: pepper_version.clone(),
-            followers: HashSet::new(),
         })
-    }
-    pub fn num_followers(&self) -> usize {
-        self.followers.len()
     }
     pub fn password_hash(&self) -> &UserHashString {
         &self.password_hash
@@ -1210,6 +1114,132 @@ impl User {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            UserUrl                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Newtype to work around Rust's orphaned traits rule
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct StorUrl(Url);
+
+// Implement `Deserialize` by hand to fail if the serialized value isn't a legit URL
+impl<'de> Deserialize<'de> for StorUrl {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        StorUrl::try_from(s).map_err(mk_serde_de_err::<'de, D>)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for StorUrl {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        String::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        StorUrl::try_from(<String as DeserializeValue>::deserialize(typ, v)?).map_err(mk_de_err)
+    }
+}
+
+impl SerializeValue for StorUrl {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&self.0.as_str(), typ, writer)
+    }
+}
+
+impl Deref for StorUrl {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl AsRef<str> for StorUrl {
+    fn as_ref(&self) -> &str {
+        self.deref()
+    }
+}
+
+impl AsRef<Url> for StorUrl {
+    fn as_ref(&self) -> &Url {
+        &self.0
+    }
+}
+
+impl From<StorUrl> for Url {
+    fn from(value: StorUrl) -> Self {
+        value.0
+    }
+}
+
+impl From<Url> for StorUrl {
+    fn from(value: Url) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&Url> for StorUrl {
+    fn from(value: &Url) -> Self {
+        Self(value.clone())
+    }
+}
+
+impl TryFrom<String> for StorUrl {
+    type Error = Error;
+
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        Ok(StorUrl(Url::parse(&s).context(UserUrlSnafu { text: s })?))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           Follower                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Represents an indielinks follower; i.e. an ActivityPub entity following an indielinks [User]
+#[derive(Clone, Debug, Deserialize, DeserializeRow, PartialEq, Serialize)]
+pub struct Follower {
+    user_id: UserId,
+    actor_id: StorUrl,
+    id: FollowerId,
+    created: DateTime<Utc>,
+    accepted: bool,
+}
+
+impl Follower {
+    pub fn actor_id(&self) -> &StorUrl {
+        &self.actor_id
+    }
+    pub fn new(user: &User, actor_id: &StorUrl) -> Follower {
+        Follower {
+            user_id: *user.id(),
+            actor_id: actor_id.clone(),
+            id: FollowerId::default(),
+            created: Utc::now(),
+            accepted: false,
+        }
+    }
+    pub fn new_with_id(user: &User, actor_id: &StorUrl, id: &FollowerId) -> Follower {
+        Follower {
+            user_id: *user.id(),
+            actor_id: actor_id.clone(),
+            id: *id,
+            created: Utc::now(),
+            accepted: false,
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Following                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1217,17 +1247,17 @@ impl User {
 #[derive(Clone, Debug, Deserialize, DeserializeRow, PartialEq, Serialize)]
 pub struct Following {
     user_id: UserId,
-    actor_id: UserUrl,
+    actor_id: StorUrl,
     id: FollowId,
     created: DateTime<Utc>,
     accepted: bool,
 }
 
 impl Following {
-    pub fn actor_id(&self) -> &UserUrl {
+    pub fn actor_id(&self) -> &StorUrl {
         &self.actor_id
     }
-    pub fn new(user: &User, actor_id: &UserUrl) -> Following {
+    pub fn new(user: &User, actor_id: &StorUrl) -> Following {
         Following {
             user_id: *user.id(),
             actor_id: actor_id.clone(),
@@ -1236,7 +1266,7 @@ impl Following {
             accepted: false,
         }
     }
-    pub fn new_with_id(user: &User, actor_id: &UserUrl, id: &FollowId) -> Following {
+    pub fn new_with_id(user: &User, actor_id: &StorUrl, id: &FollowId) -> Following {
         Following {
             user_id: *user.id(),
             actor_id: actor_id.clone(),

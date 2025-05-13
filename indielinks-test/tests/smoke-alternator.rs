@@ -19,7 +19,7 @@
 use common::{run, Configuration, IndielinksTest};
 use indielinks::{
     dynamodb::{add_followers, add_user},
-    entities::{Post, User, UserEmail, UserId, UserUrl, Username},
+    entities::{Post, StorUrl, User, UserEmail, UserId, Username},
     peppers::{Pepper, Version as PepperVersion},
 };
 use indielinks_test::{
@@ -269,7 +269,7 @@ impl Helper for State {
         pepper_key: &Pepper,
         username: &Username,
         password: &SecretString,
-        followers: &HashSet<UserUrl>,
+        followers: &HashSet<StorUrl>,
     ) -> std::result::Result<String, Failed> {
         use crypto_common::rand_core::{OsRng, RngCore};
 

@@ -15,15 +15,18 @@
 
 //! # scylla
 //!
-//! [Storage] implementation for ScyallaDB.
+//! [Storage] implementation for ScyallaDB, along with other ScyllaDB-related utilities.
 //!
 //! [Storage]: crate::storage
 
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    future::Future,
-    pin::Pin,
-    task::Poll,
+use crate::{
+    background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
+    entities::{
+        FollowId, Follower, FollowerId, Following, Post, PostDay, PostId, PostUri, PostUrl, Reply,
+        Share, StorUrl, Tagname, User, UserId, Username,
+    },
+    storage::{self, DateRange, UsernameClaimedSnafu},
+    util::UpToThree,
 };
 
 use async_trait::async_trait;
@@ -34,6 +37,7 @@ use futures::{
     Stream,
 };
 use itertools::Itertools;
+use pin_project::pin_project;
 use scylla::{
     client::session::Session as InnerSession,
     client::session_builder::SessionBuilder,
@@ -45,14 +49,11 @@ use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
 use uuid::Uuid;
 
-use crate::{
-    background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
-    entities::{
-        FollowId, Following, Post, PostDay, PostId, PostUri, PostUrl, Reply, Share, Tagname, User,
-        UserId, UserUrl, Username,
-    },
-    storage::{self, DateRange, UsernameClaimedSnafu},
-    util::UpToThree,
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    future::Future,
+    pin::Pin,
+    task::Poll,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -216,6 +217,340 @@ type Result<T> = std::result::Result<T, Error>;
 type StdResult<T, E> = std::result::Result<T, E>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                   ScyllaDB-related utilities                                   //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Many of these have been factored-out into standalone functions & types because they're used by
+// the integration test suite as well as by the Scylla `Storage` implementation.
+
+/// Add a [User] to the database
+///
+/// This logic has been factored out because it's used by the integration tests, as well.
+pub async fn add_user(
+    session: &::scylla::client::session::Session,
+    prep_claim: Option<&PreparedStatement>,
+    prep_insert: Option<&PreparedStatement>,
+    user: &User,
+) -> Result<bool> {
+    let claimed = !match prep_claim {
+        Some(prep) => session
+            .execute_unpaged(prep, (user.username(), user.id()))
+            .await
+            .context(ExecutionSnafu)?,
+        None => session
+            .query_unpaged(
+                "insert into unique_usernames (username, id) values (?, ?) if not exists",
+                (user.username(), user.id()),
+            )
+            .await
+            .context(ExecutionSnafu)?,
+    }
+    .into_rows_result()
+    .context(IntoRowsResultSnafu)?
+    .rows::<(bool, Option<Username>, Option<UserId>)>()
+    .context(TypedRowsSnafu)?
+    .exactly_one()
+    .map_err(|_| {
+        MultipleUsernamesSnafu {
+            username: user.username().clone(),
+        }
+        .build()
+    })?
+    .context(ClaimDeSnafu {
+        username: user.username().clone(),
+    })?
+    .pipe(|tup| tup.0);
+
+    if claimed {
+        return Ok(false);
+    }
+
+    let params = (
+        user.id(),
+        user.username(),
+        user.discoverable(),
+        user.display_name(),
+        user.summary(),
+        user.pub_key(),
+        user.priv_key(),
+        user.api_key(),
+        user.hash(),
+        user.pepper_version(),
+    );
+    match prep_insert {
+        Some(prep) => session.execute_unpaged(prep, params).await,
+        None => {
+            session
+                .query_unpaged(
+                    "insert into users (id, username, discoverable, display_name, \
+                                       summary, pub_key_pem, priv_key_pem, api_key, first_update, \
+                                       last_update, password_hash, pepper_version) values \
+                                       (?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)",
+                    params,
+                )
+                .await
+        }
+    }
+    .context(ExecutionSnafu)?;
+
+    Ok(true)
+}
+
+/// Add a followers to the database
+///
+/// This logic has been factored out because the integration tests make use of it, as well.
+pub async fn add_followers(
+    session: &InnerSession,
+    prep: Option<&PreparedStatement>,
+    user: &User,
+    followers: &HashSet<StorUrl>,
+    confirmed: bool,
+) -> Result<()> {
+    let mut batch = Batch::default();
+    let mut batch_values: Vec<(UserId, StorUrl, FollowerId, DateTime<Utc>, bool)> = Vec::new();
+    followers.iter().for_each(|follower| {
+        match prep {
+            Some(prep) => batch.append_statement(prep.clone()),
+            None => batch.append_statement(Statement::new(
+                "insert into followers (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?)",
+            )),
+        };
+        batch_values.push((*user.id(), follower.clone(), FollowerId::default(), Utc::now(), confirmed));
+    });
+    session
+        .batch(&batch, batch_values)
+        .await
+        .context(ExecutionSnafu)?;
+    Ok(())
+}
+
+/// Retrieve the number of actors following a given [User]
+pub async fn get_followers_count(
+    session: &InnerSession,
+    prep: Option<&PreparedStatement>,
+    user: &User,
+) -> Result<usize> {
+    let res = match prep {
+        Some(prep) => session.execute_unpaged(prep, (user.id(),)).await,
+        None => {
+            session
+                .query_unpaged(
+                    "select count(*) from followers where user_id = ?",
+                    (user.id(),),
+                )
+                .await
+        }
+    };
+
+    Ok(res
+       .context(ExecutionSnafu)?
+       .into_rows_result()
+       .context(IntoRowsResultSnafu)?
+       .rows::<(i64,)>()
+       .context(TypedRowsSnafu)?
+       .exactly_one()
+       .unwrap(/* known good */)
+       .context(CountDeSnafu)?
+       .0 as usize)
+}
+
+/// Note that a given user is now following one more more people
+///
+/// This logic has been factored out because the integration tests make use of it, as well.
+// The logic is substantially the same as that of `add_followers()`-- may want to re-factor, at some
+// point, if the two tables don't diverge.
+pub async fn add_following(
+    session: &InnerSession,
+    prep: Option<&PreparedStatement>,
+    user: &User,
+    follows: &HashSet<(StorUrl, FollowId)>,
+    confirmed: bool,
+) -> Result<()> {
+    let mut batch = Batch::default();
+    let mut batch_values: Vec<(UserId, StorUrl, FollowId, DateTime<Utc>, bool)> = Vec::new();
+    follows.iter().for_each(|follow| {
+        match prep {
+            Some(prep) => batch.append_statement(prep.clone()),
+            None => batch.append_statement(Statement::new(
+                "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?)",
+            )),
+        };
+        batch_values.push((*user.id(), follow.0.clone(), follow.1, Utc::now(), confirmed));
+    });
+    session
+        .batch(&batch, batch_values)
+        .await
+        .context(ExecutionSnafu)?;
+    Ok(())
+}
+
+/// Retrieve the number of actors followed by a given [User]
+// Again, the logic is substantially the same as that of `get_followers_count()`-- may want to
+// re-factor, at some point, if the two tables don't diverge.
+pub async fn get_following_count(
+    session: &InnerSession,
+    prep: Option<&PreparedStatement>,
+    user: &User,
+) -> Result<usize> {
+    let res = match prep {
+        Some(prep) => session.execute_unpaged(prep, (user.id(),)).await,
+        None => {
+            session
+                .query_unpaged(
+                    "select count(*) from following where user_id = ?",
+                    (user.id(),),
+                )
+                .await
+        }
+    };
+
+    Ok(res
+       .context(ExecutionSnafu)?
+       .into_rows_result()
+       .context(IntoRowsResultSnafu)?
+       .rows::<(i64,)>()
+       .context(TypedRowsSnafu)?
+       .exactly_one()
+       .unwrap(/* known good */)
+       .context(CountDeSnafu)?
+       .0 as usize)
+}
+
+/// A [Stream] for enumerating a results from a paged ScyllaDB response
+///
+/// This is a utility type I whipped-up to make paged results out of ScyllaDB generic.
+#[allow(clippy::type_complexity)]
+#[pin_project]
+pub struct PagedResultsStream<'a, T, P>
+where
+    T: for<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metadata>,
+    P: scylla::serialize::row::SerializeRow + 'a,
+{
+    session: &'a InnerSession,
+    params: P,
+    count: usize,
+    statement: &'a PreparedStatement,
+    #[pin]
+    fut: Option<
+        Pin<Box<dyn Future<Output = Result<(VecDeque<T>, PagingStateResponse)>> + Send + 'a>>,
+    >,
+    #[pin]
+    curr: VecDeque<T>,
+}
+
+impl<'a, T, P> PagedResultsStream<'a, T, P>
+where
+    T: for<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metadata> + 'a,
+    P: scylla::serialize::row::SerializeRow + Clone + Send + Sync,
+{
+    pub async fn new(
+        session: &'a InnerSession,
+        statement: &'a PreparedStatement,
+        params: P,
+        count: usize,
+    ) -> Result<PagedResultsStream<'a, T, P>> {
+        Ok(PagedResultsStream {
+            session,
+            params: params.clone(),
+            count,
+            statement,
+            fut: Some(Box::pin(Self::get_page(
+                session,
+                statement,
+                params,
+                PagingState::start(),
+            ))),
+            curr: VecDeque::new(),
+        })
+    }
+    async fn get_page(
+        session: &'a InnerSession,
+        statement: &'a PreparedStatement,
+        params: P,
+        paging_state: PagingState,
+    ) -> Result<(VecDeque<T>, PagingStateResponse)> {
+        let (query_result, paging_state_response) = session
+            .execute_single_page(statement, params, paging_state)
+            .await
+            .context(ExecutionSnafu)?;
+        Ok((
+            query_result
+                .into_rows_result()
+                .context(IntoRowsResultSnafu)?
+                .rows::<T>()
+                .context(TypedRowsSnafu)?
+                .collect::<StdResult<VecDeque<T>, _>>()
+                .context(FollowDeSnafu)?,
+            paging_state_response,
+        ))
+    }
+}
+
+impl<'a, T, P> Stream for PagedResultsStream<'a, T, P>
+where
+    T: for<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metadata>
+        + Unpin
+        + 'a,
+    P: scylla::serialize::row::SerializeRow + Clone + Send + Sync,
+{
+    type Item = StdResult<T, StorError>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let mut this = self.as_mut().project();
+        loop {
+            match this.curr.pop_front() {
+                Some(row) => return Poll::Ready(Some(Ok(row))),
+                None => match this.fut.as_mut().get_mut() {
+                    // We're empty-- attempt to get more
+                    Some(fut) => match fut.as_mut().poll(cx) {
+                        Poll::Ready(Ok((next_page, paging_state_response))) => {
+                            // // Not sure how to handle this, or whether it can even happen.
+                            match next_page.front() {
+                                Some(_) => {
+                                    *this.curr.as_mut().get_mut() = next_page;
+                                    match paging_state_response {
+                                        PagingStateResponse::HasMorePages { state } => {
+                                            *this.fut.as_mut().get_mut() =
+                                                Some(Box::pin(Self::get_page(
+                                                    this.session,
+                                                    this.statement,
+                                                    this.params.clone(),
+                                                    state,
+                                                )));
+                                        }
+                                        PagingStateResponse::NoMorePages => {
+                                            *this.fut.as_mut().get_mut() = None
+                                        }
+                                    }
+                                }
+                                None => {
+                                    self.fut = None;
+                                    return Poll::Ready(None);
+                                }
+                            };
+                        }
+                        Poll::Ready(Err(err)) => {
+                            // Return the error this time, then drop our Future
+                            self.fut = None;
+                            return Poll::Ready(Some(Err(StorError::new(err))));
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    },
+                    None => return Poll::Ready(None), // We're done
+                },
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, Some(self.count))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                indielinks SycllaDB session type                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -273,7 +608,6 @@ enum PreparedStatements {
     GetPostsForTag,
     GetPostById,
     RenameTag,
-    AddFollowers,
     InsertTask,
     ScanTasks,
     TakeLease,
@@ -284,6 +618,9 @@ enum PreparedStatements {
     AddShare,
     AddFollows,
     ConfirmFollow,
+    AddFollowers,
+    CountFollowers,
+    CountFollowing,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -299,6 +636,7 @@ pub struct Session {
     /// Prepare statement with page size
     // Will probably need another `EnumMap`, but for now, just make it its own field
     following_statement: PreparedStatement,
+    followers_statement: PreparedStatement,
 }
 
 impl Session {
@@ -380,7 +718,6 @@ impl Session {
             // expose myself to the possibility of a post being deleted out from under me while
             // renaming, which would leave the system in an invalid state.
             "update posts set tags=? where user_id=? and url=? if exists",
-            "update users set followers = followers + ? where id = ?", // AddFollowers
             "insert into tasks (id, created, task, tag, lease_expires, done) values (?, ?, ?, ?, ?, ?)",
             "select * from tasks where done=false and lease_expires < ? allow filtering",
             "update tasks set lease_expires = ? where id = ? if lease_expires = ?",
@@ -389,8 +726,11 @@ impl Session {
             "update posts set likes = likes + { ? } where user_id = ? and url = ? if exists",
             "update posts set replies = replies + { ? } where user_id = ? and url = ? if exists",
             "update posts set shares = shares + { ? } where user_id = ? and url = ? if exists",
-            "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?)", // AddFollows
+            "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollows
             "update following set accepted = true where user_id = ? and actor_id = ?",
+            "insert into followers (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollowerss
+            "select count(*) from followers where user_id = ?", // CountFollowers
+            "select count(*) from following where user_id = ?" // CountFollowing
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -407,22 +747,30 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 53] = prepared_statements
+        let prepared_statements: [PreparedStatement; 55] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
         // Ugly hack to be factored-out
-        let stmt = "select * from following where user_id = ?";
-        let stmt = scylla
-            .prepare(Statement::new(stmt).with_page_size(512))
+        let followers_statement = "select * from followers where user_id = ?";
+        let followers_statement = scylla
+            .prepare(Statement::new(followers_statement).with_page_size(512))
             .await
             .context(PrepareSnafu {
-                stmt: stmt.to_owned(),
+                stmt: followers_statement.to_owned(),
+            })?;
+        let following_statement = "select * from following where user_id = ?";
+        let following_statement = scylla
+            .prepare(Statement::new(following_statement).with_page_size(512))
+            .await
+            .context(PrepareSnafu {
+                stmt: following_statement.to_owned(),
             })?;
         Ok(Session {
             session: scylla,
             prepared_statements: EnumMap::from_array(prepared_statements),
-            following_statement: stmt,
+            followers_statement,
+            following_statement,
         })
     }
 }
@@ -491,269 +839,15 @@ impl std::convert::From<scylla::response::query_result::SingleRowError> for BckE
     }
 }
 
-/// Add a [User] to the database
-///
-/// This logic has been factored out because it's used by the integration tests, as well.
-pub async fn add_user(
-    session: &::scylla::client::session::Session,
-    prep_claim: Option<&PreparedStatement>,
-    prep_insert: Option<&PreparedStatement>,
-    user: &User,
-) -> Result<bool> {
-    let claimed = !match prep_claim {
-        Some(prep) => session
-            .execute_unpaged(prep, (user.username(), user.id()))
-            .await
-            .context(ExecutionSnafu)?,
-        None => session
-            .query_unpaged(
-                "insert into unique_usernames (username, id) values (?, ?) if not exists",
-                (user.username(), user.id()),
-            )
-            .await
-            .context(ExecutionSnafu)?,
-    }
-    .into_rows_result()
-    .context(IntoRowsResultSnafu)?
-    .rows::<(bool, Option<Username>, Option<UserId>)>()
-    .context(TypedRowsSnafu)?
-    .exactly_one()
-    .map_err(|_| {
-        MultipleUsernamesSnafu {
-            username: user.username().clone(),
-        }
-        .build()
-    })?
-    .context(ClaimDeSnafu {
-        username: user.username().clone(),
-    })?
-    .pipe(|tup| tup.0);
-
-    if claimed {
-        return Ok(false);
-    }
-
-    let params = (
-        user.id(),
-        user.username(),
-        user.discoverable(),
-        user.display_name(),
-        user.summary(),
-        user.pub_key(),
-        user.priv_key(),
-        user.api_key(),
-        user.hash(),
-        user.pepper_version(),
-    );
-    match prep_insert {
-        Some(prep) => session.execute_unpaged(prep, params).await,
-        None => {
-            session
-                .query_unpaged(
-                    "insert into users (id, username, discoverable, display_name, \
-                                       summary, pub_key_pem, priv_key_pem, api_key, first_update, \
-                                       last_update, password_hash, pepper_version) values \
-                                       (?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)",
-                    params,
-                )
-                .await
-        }
-    }
-    .context(ExecutionSnafu)?;
-
-    Ok(true)
-}
-
-/// Add a follower to the database
-///
-/// This logic has been factored out because the integration tests make use of it, as well.
-pub async fn add_followers(
-    session: &::scylla::client::session::Session,
-    prep: Option<&PreparedStatement>,
-    user: &User,
-    followers: &HashSet<UserUrl>,
-) -> Result<()> {
-    let tuple = (followers, &user.id());
-    match prep {
-        Some(prep) => session.execute_unpaged(prep, tuple).await,
-        None => {
-            session
-                .query_unpaged(
-                    "update users set followers = followers + ? where id = ?",
-                    tuple,
-                )
-                .await
-        }
-    }
-    .context(ExecutionSnafu)?;
-    Ok(())
-}
-
-/// Note that a given user is now following one more more people
-///
-/// This logic has been factored out because the integration tests make use of it, as well.
-pub async fn add_following(
-    session: &::scylla::client::session::Session,
-    prep: Option<&PreparedStatement>,
-    user: &User,
-    follows: &HashSet<(UserUrl, FollowId)>,
-    confirmed: bool,
-) -> Result<()> {
-    let mut batch = Batch::default();
-    let mut batch_values: Vec<(UserId, UserUrl, FollowId, DateTime<Utc>, bool)> = Vec::new();
-    follows.iter().for_each(|follow| {
-        match prep {
-            Some(prep) => batch.append_statement(prep.clone()),
-            None => batch.append_statement(Statement::new(
-                "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?)",
-            )),
-        };
-        batch_values.push((*user.id(), follow.0.clone(), follow.1, Utc::now(), confirmed));
-    });
-    session
-        .batch(&batch, batch_values)
-        .await
-        .context(ExecutionSnafu)?;
-    Ok(())
-}
-
-/// A [Stream] for enumerating a [User]'s followers
-#[allow(clippy::type_complexity)]
-pub struct FollowingStream<'a> {
-    session: &'a InnerSession,
-    userid: UserId,
-    count: usize,
-    statement: &'a PreparedStatement,
-    fut: Option<
-        Pin<
-            Box<
-                dyn Future<Output = Result<(VecDeque<Following>, PagingStateResponse)>> + Send + 'a,
-            >,
-        >,
-    >,
-    curr: VecDeque<Following>,
-}
-
-impl<'a> FollowingStream<'a> {
-    pub async fn new(
-        session: &'a InnerSession,
-        statement: &'a PreparedStatement,
-        userid: UserId,
-    ) -> Result<FollowingStream<'a>> {
-        let num_following = session
-            .query_unpaged(
-                "select count(*) from following where user_id = ?",
-                (&userid,),
-            )
-            .await
-            .context(ExecutionSnafu)?
-            .into_rows_result()
-            .context(IntoRowsResultSnafu)?
-            .rows::<(i64,)>()
-            .context(TypedRowsSnafu)?
-            .exactly_one()
-            .unwrap(/* known good */)
-            .context(CountDeSnafu)?
-            .0;
-        Ok(FollowingStream {
-            session,
-            userid,
-            count: num_following as usize,
-            statement,
-            fut: Some(Box::pin(Self::get_page(
-                session,
-                statement,
-                userid,
-                PagingState::start(),
-            ))),
-            curr: VecDeque::new(),
-        })
-    }
-    async fn get_page(
-        session: &'a InnerSession,
-        statement: &'a PreparedStatement,
-        userid: UserId,
-        paging_state: PagingState,
-    ) -> Result<(VecDeque<Following>, PagingStateResponse)> {
-        let (query_result, paging_state_response) = session
-            .execute_single_page(statement, (userid,), paging_state)
-            .await
-            .context(ExecutionSnafu)?;
-        Ok((
-            query_result
-                .into_rows_result()
-                .context(IntoRowsResultSnafu)?
-                .rows::<Following>()
-                .context(TypedRowsSnafu)?
-                .collect::<StdResult<VecDeque<Following>, _>>()
-                .context(FollowDeSnafu)?,
-            paging_state_response,
-        ))
-    }
-}
-
-impl Stream for FollowingStream<'_> {
-    type Item = StdResult<UserUrl, StorError>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        loop {
-            match self.curr.pop_front() {
-                Some(follow) => return Poll::Ready(Some(Ok(follow.actor_id().clone()))),
-                None => match &mut self.fut {
-                    // We're empty-- attempt to get more
-                    Some(fut) => match fut.as_mut().poll(cx) {
-                        Poll::Ready(Ok((next_page, paging_state_response))) => {
-                            // Not sure how to handle this, or whether it can even happen.
-                            match next_page.front() {
-                                Some(_) => {
-                                    self.curr = next_page;
-                                    match paging_state_response {
-                                        PagingStateResponse::HasMorePages { state } => {
-                                            self.fut = Some(Box::pin(Self::get_page(
-                                                self.session,
-                                                self.statement,
-                                                self.userid,
-                                                state,
-                                            )));
-                                        }
-                                        PagingStateResponse::NoMorePages => self.fut = None,
-                                    }
-                                }
-                                None => {
-                                    self.fut = None;
-                                    return Poll::Ready(None);
-                                }
-                            };
-                        }
-                        Poll::Ready(Err(err)) => {
-                            // Return the error this time, then drop our Future
-                            self.fut = None;
-                            return Poll::Ready(Some(Err(StorError::new(err))));
-                        }
-                        Poll::Pending => return Poll::Pending,
-                    },
-                    None => return Poll::Ready(None), // We're done
-                },
-            }
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.count, Some(self.count))
-    }
-}
-
 #[async_trait]
 impl storage::Backend for Session {
-    async fn add_follower(&self, user: &User, follower: &url::Url) -> StdResult<(), StorError> {
+    async fn add_follower(&self, user: &User, follower: &StorUrl) -> StdResult<(), StorError> {
         add_followers(
             &self.session,
             Some(&self.prepared_statements[PreparedStatements::AddFollowers]),
             user,
-            &HashSet::from([follower.into()]),
+            &HashSet::from([follower.clone()]),
+            false,
         )
         .await
         .map_err(StorError::new)
@@ -762,7 +856,7 @@ impl storage::Backend for Session {
     async fn add_following(
         &self,
         user: &User,
-        follow: &UserUrl,
+        follow: &StorUrl,
         id: &FollowId,
     ) -> StdResult<(), StorError> {
         add_following(
@@ -877,7 +971,7 @@ impl storage::Backend for Session {
     async fn confirm_following(
         &self,
         user: &User,
-        following: &UserUrl,
+        following: &StorUrl,
     ) -> StdResult<(), StorError> {
         self.session
             .execute_unpaged(
@@ -956,14 +1050,49 @@ impl storage::Backend for Session {
         Ok(())
     }
 
+    async fn get_followers<'a>(
+        &'a self,
+        user: &User,
+    ) -> StdResult<BoxStream<'a, StdResult<Follower, StorError>>, StorError> {
+        let count = get_followers_count(
+            &self.session,
+            Some(&self.prepared_statements[PreparedStatements::CountFollowers]),
+            user,
+        )
+        .await
+        .map_err(StorError::new)?;
+        Ok(Box::pin(
+            PagedResultsStream::new(
+                &self.session,
+                &self.followers_statement,
+                (*user.id(),),
+                count,
+            )
+            .await
+            .map_err(StorError::new)?,
+        ))
+    }
+
     async fn get_following<'a>(
         &'a self,
         user: &User,
-    ) -> StdResult<BoxStream<'a, StdResult<UserUrl, StorError>>, StorError> {
+    ) -> StdResult<BoxStream<'a, StdResult<Following, StorError>>, StorError> {
+        let count = get_following_count(
+            &self.session,
+            Some(&self.prepared_statements[PreparedStatements::CountFollowing]),
+            user,
+        )
+        .await
+        .map_err(StorError::new)?;
         Ok(Box::pin(
-            FollowingStream::new(&self.session, &self.following_statement, *user.id())
-                .await
-                .map_err(StorError::new)?,
+            PagedResultsStream::new(
+                &self.session,
+                &self.following_statement,
+                (*user.id(),),
+                count,
+            )
+            .await
+            .map_err(StorError::new)?,
         ))
     }
 

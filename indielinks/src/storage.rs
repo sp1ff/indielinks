@@ -19,8 +19,8 @@
 
 use crate::{
     entities::{
-        FollowId, Post, PostDay, PostId, PostUri, Reply, Share, Tagname, User, UserId, UserUrl,
-        Username,
+        FollowId, Follower, Following, Post, PostDay, PostId, PostUri, Reply, Share, StorUrl,
+        Tagname, User, UserId, Username,
     },
     util::UpToThree,
 };
@@ -77,12 +77,12 @@ impl DateRange {
 #[async_trait]
 pub trait Backend {
     /// Add a follower to a user's collection
-    async fn add_follower(&self, user: &User, follower: &url::Url) -> Result<(), Error>;
+    async fn add_follower(&self, user: &User, follower: &StorUrl) -> Result<(), Error>;
     /// Add a follow to a user's collection
     async fn add_following(
         &self,
         user: &User,
-        following: &UserUrl,
+        following: &StorUrl,
         id: &FollowId,
     ) -> Result<(), Error>;
     /// Add a Post for `user`; return true if a new post was actually created, false if the post
@@ -114,7 +114,7 @@ pub trait Backend {
     /// Add a new user
     async fn add_user(&self, user: &User) -> Result<(), Error>;
     /// Confirm a follow for a user
-    async fn confirm_following(&self, user: &User, following: &UserUrl) -> Result<(), Error>;
+    async fn confirm_following(&self, user: &User, following: &StorUrl) -> Result<(), Error>;
     /// Remove a post-- return true if a [Post] was actually removed, false else
     async fn delete_post(&self, user: &User, url: &PostUri) -> Result<bool, Error>;
     /// Delete a tag for a user; since we've denormalized the tags (i.e. we store them along with the
@@ -123,10 +123,14 @@ pub trait Backend {
     async fn delete_tag(&self, user: &User, tag: &Tagname) -> Result<(), Error>;
     // I considered using `TryStream`, but not sure I see the advantage, yet. Also, there's no handy
     // type alias `BoxTryStream` (tho of course I could define it)
+    async fn get_followers<'a>(
+        &'a self,
+        user: &User,
+    ) -> Result<BoxStream<'a, Result<Follower, Error>>, Error>;
     async fn get_following<'a>(
         &'a self,
         user: &User,
-    ) -> Result<BoxStream<'a, Result<UserUrl, Error>>, Error>;
+    ) -> Result<BoxStream<'a, Result<Following, Error>>, Error>;
     async fn get_post_by_id(&self, id: &PostId) -> Result<Option<Post>, Error>;
     /// Retrieve full posts with various filtering options
     async fn get_posts(
