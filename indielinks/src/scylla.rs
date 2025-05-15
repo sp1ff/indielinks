@@ -723,7 +723,7 @@ impl Session {
             "update tasks set lease_expires = ? where id = ? if lease_expires = ?",
             "update tasks set done=true where id=?",
             "select * from users where id=?",
-            "update posts set replies = replies + { ? } where user_id = ? and url = ? if exists",
+            "insert into replies (user_id, url, id, created, reply_id, visibility) values (?, ?, ?, ?, ?, ?) if not exists", // AddReply
             "update posts set shares = shares + { ? } where user_id = ? and url = ? if exists",
             "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollows
             "update following set accepted = true where user_id = ? and actor_id = ?",
@@ -923,16 +923,11 @@ impl storage::Backend for Session {
         Ok(!result.is_rows())
     }
 
-    async fn add_reply(
-        &self,
-        user: &User,
-        url: &PostUri,
-        reply: &Reply,
-    ) -> StdResult<(), StorError> {
+    async fn add_reply(&self, reply: &Reply) -> StdResult<(), StorError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::AddReply],
-                (reply, user.id(), url),
+                reply,
             )
             .await?;
         // Unfortunately, this implementation gives us no way of knowing whether the statement had
@@ -1013,7 +1008,6 @@ impl storage::Backend for Session {
                 Option<String>,           // title
                 Option<DateTime<Utc>>,    // posted
                 Option<bool>,             // public
-                Option<HashSet<Reply>>,   // replies
                 Option<HashSet<Share>>,   // shares
                 Option<HashSet<Tagname>>, // tags
                 Option<String>,           // notes

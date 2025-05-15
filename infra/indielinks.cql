@@ -110,11 +110,6 @@ create table followers (
    but I decided I was overthinking this.
 */
 
-create type reply (
-  id ascii,
-  visibility tinyint,
-);
-
 create type share (
   id ascii,
   visibility tinyint,
@@ -131,7 +126,6 @@ create table posts (
   tags set<text>,
   public boolean,
   unread boolean,
-  replies set<frozen<reply>>,
   shares set<frozen<share>>,
   PRIMARY KEY (user_id, url)
 );
@@ -159,6 +153,17 @@ create table likes (
   like_id ascii,
   PRIMARY KEY ((user_id, url), like_id)
 );
+
+create table replies (
+  user_id uuid,
+  url ascii,
+  id uuid,
+  created timestamp,
+  reply_id ascii,
+  visibility tinyint,
+  PRIMARY KEY ((user_id, url), reply_id)
+);
+
 
 /* Background tasks */
 create table tasks (

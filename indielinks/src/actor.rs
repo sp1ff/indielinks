@@ -535,7 +535,7 @@ async fn accept_reply(
         .context(NoPostSnafu { username, postid })?;
 
     storage
-        .add_reply(&user, post.url(), &Reply::new(note.id(), visibility))
+        .add_reply(&Reply::new(user.id(), &post, note.id(), visibility))
         .await
         .context(StorageSnafu)
 }

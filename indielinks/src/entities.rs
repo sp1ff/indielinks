@@ -54,6 +54,10 @@ use zxcvbn::{feedback::Feedback, zxcvbn, Score};
 
 use crate::peppers::{self, Pepper, Peppers, Version as PepperVersion};
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module Error type                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Invalid API key"))]
@@ -303,6 +307,7 @@ define_id!(PostId, "postid");
 define_id!(FollowId, "followid");
 define_id!(FollowerId, "followerid");
 define_id!(LikeId, "likeid");
+define_id!(ReplyId, "replyid");
 
 // I had, in the past, defined a few other identifiers, making it worth it to wrap the boilerplate
 // up in a macro. Now that it's just `UserId`, I should probably go back to just implementing it by
@@ -1447,6 +1452,12 @@ impl Display for PostUri {
     }
 }
 
+impl AsRef<Uri> for PostUri {
+    fn as_ref(&self) -> &Uri {
+        &self.0
+    }
+}
+
 // Ugh-- need shims to call-out to the http-serde implementations
 pub mod serde_uri {
     use super::Uri;
@@ -1504,7 +1515,6 @@ impl SerializeValue for PostUri {
     }
 }
 
-// Alright; I confess I don't remember why I used `axum::Uri`, above, as opposed to `url::Url`
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct PostUrl(Url);
@@ -1783,19 +1793,38 @@ impl Like {
 }
 
 #[derive(
-    Clone, Debug, Deserialize, DeserializeValue, Eq, Hash, PartialEq, Serialize, SerializeValue,
+    Clone, Debug, Deserialize, DeserializeRow, Eq, Hash, PartialEq, Serialize, SerializeRow,
 )]
 pub struct Reply {
-    id: PostUrl,
+    user_id: UserId,
+    url: PostUri,
+    id: ReplyId,
+    created: DateTime<Utc>,
+    reply_id: StorUrl,
     visibility: Visibility,
 }
 
 impl Reply {
-    pub fn new(id: &Url, visibility: Visibility) -> Reply {
+    pub fn new(
+        user_id: impl Into<UserId>,
+        post: &Post,
+        reply_id: &Url,
+        visibility: Visibility,
+    ) -> Reply {
         Reply {
-            id: PostUrl(id.clone()),
+            user_id: user_id.into(),
+            url: post.url().clone(),
+            id: ReplyId::default(),
+            created: Utc::now(),
+            reply_id: reply_id.into(),
             visibility,
         }
+    }
+    pub fn url(&self) -> &Uri {
+        self.url.as_ref()
+    }
+    pub fn user_id(&self) -> &UserId {
+        &self.user_id
     }
 }
 
@@ -1835,7 +1864,6 @@ pub struct Post {
     tags: HashSet<Tagname>,
     public: bool,
     unread: bool,
-    replies: HashSet<Reply>,
     shares: HashSet<Share>,
 }
 
@@ -1864,7 +1892,6 @@ impl Post {
             tags: tags.clone(),
             public,
             unread,
-            replies: HashSet::new(),
             shares: HashSet::new(),
         }
     }
