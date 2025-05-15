@@ -450,6 +450,40 @@ async fn create_posts(client: &Client) -> Result<()> {
     Ok(())
 }
 
+async fn create_likes(client: &Client) -> Result<()> {
+    let out = client
+        .create_table()
+        .table_name("likes")
+        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
+        // DynamoDB
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("user_id_and_url", S), // partition key
+            table_attr!("like_id", S),         // sort key
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("user_id_and_url")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "user_id_and_url".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("like_id")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "like_id".to_string(),
+                })?,
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu)?;
+    debug!("create likes: {:#?}", out);
+    Ok(())
+}
+
 async fn create_tasks(client: &Client) -> Result<()> {
     let out = client
         .create_table()
@@ -477,6 +511,7 @@ async fn create_tables(client: &Client) -> Result<()> {
     create_following(client).await?;
     create_followers(client).await?;
     create_posts(client).await?;
+    create_likes(client).await?;
     create_tasks(client).await?;
     Ok(())
 }

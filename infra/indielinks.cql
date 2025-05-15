@@ -131,7 +131,6 @@ create table posts (
   tags set<text>,
   public boolean,
   unread boolean,
-  likes set<ascii>,
   replies set<frozen<reply>>,
   shares set<frozen<share>>,
   PRIMARY KEY (user_id, url)
@@ -152,6 +151,15 @@ create materialized view posts_by_day as
 
 create index post_id_idx on posts (id);
 
+create table likes (
+  user_id uuid,
+  url ascii,
+  id uuid,
+  created timestamp,
+  like_id ascii,
+  PRIMARY KEY ((user_id, url), like_id)
+);
+
 /* Background tasks */
 create table tasks (
   id uuid PRIMARY KEY,
@@ -159,6 +167,6 @@ create table tasks (
   task blob,
   tag uuid,
   lease_expires timestamp,
-  done boolean,  
+  done boolean
 );
 

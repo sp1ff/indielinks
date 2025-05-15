@@ -297,6 +297,7 @@ impl Default for Config {
 
 inventory::submit! { metrics::Registration::new("background.processor.tasks.completed", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("background.processor.tasks.failed",    Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("background.processor.tasks.timedout",  Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("background.processor.tasks.inflight",  Sort::IntegralGauge)   }
 
 /// Process background tasks. `receiver` is a [Receiver] from which we can draw tasks. `config`
@@ -345,14 +346,14 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
                     match result {
                         Some(Ok((id, res))) => {
                             match res {
-                                Ok(_) => {
+                                Ok(Ok(_)) => {
                                     // The task has completed succesfully (and been consumed in the
                                     // process); now all that remains is to mark it complete.
                                     let cookie = tasks.remove(&id).context(TaskIdSnafu)?;
                                     receiver.mark_complete(cookie).await.context(CompletionSnafu)?;
                                     counter_add!(instruments, "background.processor.tasks.completed", 1, &[]);
                                 },
-                                Err(err) => {
+                                Ok(Err(err)) => {
                                     // The task has failed (and been consumed in the process);
                                     // clean-up our datastructure...
                                     let cookie = tasks.remove(&id).context(TaskIdSnafu)?;
@@ -361,7 +362,18 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
                                     counter_add!(instruments, "background.processor.tasks.failed", 1, &[]);
                                     // and that's kinda it. We just drop it on the floor. Once our
                                     // lease in the datastore expires, it will get picked-up &
-                                    // retried again & retried.
+                                    // retried.
+                                },
+                                Err(elapsed) => {
+                                    // The task has timed-out. Nb that the future has been *cancelled*-- it
+                                    // won't complete without us knowing about it. Clean-up our datastructure...
+                                    let cookie = tasks.remove(&id).context(TaskIdSnafu)?;
+                                    // log the error...
+                                    error!("Task {} reports timeout: {:?}", cookie, elapsed);
+                                    counter_add!(instruments, "background.processor.tasks.timedout", 1, &[]);
+                                    // and that's kinda it. We just drop it on the floor. Once our
+                                    // lease in the datastore expires, it will get picked-up &
+                                    // retried.
                                 },
                             }
                         },

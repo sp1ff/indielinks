@@ -22,6 +22,7 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 use libtest_mimic::Failed;
 use reqwest::{Client, Url};
 use tracing::info;
+use uuid::Uuid;
 use wiremock::{
     matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
@@ -29,7 +30,7 @@ use wiremock::{
 
 use indielinks::{
     actor::CollectionPage,
-    ap_entities::{Accept, ActorField, Create, Jld, ObjectField},
+    ap_entities::{Accept, ActorField, Create, Jld, Like, ObjectField},
     entities::Username,
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
@@ -88,10 +89,11 @@ pub async fn posting_creates_note(
     );
 
     // Alright! Let's create a post!
-    Client::builder()
+    let client = Client::builder()
         .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
-        .build()?
-        .get(format!("{}api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy&shared=true&replace=true", url))
+        .build()?;
+
+    client.get(format!("{}api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy&shared=true&replace=true", url))
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {}:{}",  username, api_key))
         .send()
         .await?;
@@ -129,6 +131,33 @@ pub async fn posting_creates_note(
             .as_slice(),
     );
     assert!(create.is_ok());
+
+    // Now let's send a `Like` for this note
+    let create = create.unwrap();
+    info!("Received a {:#?}", create);
+    let mut id = mock_user.id(&mock_origin)?;
+    id.path_segments_mut()
+            .unwrap(/* known good */)
+            .extend(vec!["likes".to_string(), Uuid::new_v4().to_string()]);
+    let like = Like::new(
+        create.object_id()?,
+        id,
+        ActorField::Iri(mock_user.id(&mock_origin)?),
+    );
+    info!("Sending a {:#?}", like);
+
+    let request = make_signed_request(
+        axum::http::Method::POST,
+        url.join(&format!("/users/{}/inbox", username))?,
+        Jld::new(&like, None)?.to_string().into(),
+        &mock_origin,
+        mock_user.priv_key(),
+        mock_user.name(),
+    )
+    .await?;
+
+    let rsp = client.execute(request).await?;
+    assert_eq!(rsp.status(), reqwest::StatusCode::CREATED);
 
     Ok(())
 }

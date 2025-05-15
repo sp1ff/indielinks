@@ -22,7 +22,7 @@
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{
-        FollowId, Follower, Following, Post, PostDay, PostId, PostUri, Reply, Share, StorUrl,
+        FollowId, Follower, Following, Like, Post, PostDay, PostId, PostUri, Reply, Share, StorUrl,
         Tagname, User, UserId, Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
@@ -711,6 +711,22 @@ impl storage::Backend for Client {
         add_following(&self.client, user, &HashSet::from([(follow.clone(), *id)]))
             .await
             .map_err(StorError::new)
+    }
+
+    async fn add_like(&self, reply: &Like) -> StdResult<(), StorError> {
+        self.client
+            .put_item()
+            .table_name("likes")
+            .item(
+                "user_id_and_url",
+                AttributeValue::S(format!("{}#{}", reply.user_id(), reply.url())),
+            )
+            .item("id", AttributeValue::S(reply.id().to_string()))
+            .item("like_id", AttributeValue::S(reply.like_id().to_string()))
+            .item("created", AttributeValue::S(format!("{}", reply.created())))
+            .send()
+            .await?;
+        Ok(())
     }
 
     // Return true if an insert/upsert occurred, false if the insert/upsert failed because the post

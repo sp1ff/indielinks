@@ -40,7 +40,7 @@ use scylla::{
         writers::{CellWriter, WrittenCellProof},
         SerializationError,
     },
-    DeserializeRow, DeserializeValue, SerializeValue,
+    DeserializeRow, DeserializeValue, SerializeRow, SerializeValue,
 };
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -267,6 +267,11 @@ macro_rules! define_id {
                 value.0
             }
         }
+        impl From<&$type_name> for $type_name {
+            fn from(value: &$type_name) -> Self {
+                $type_name(value.0)
+            }
+        }
         // Arggghhhh... the derive macro doesn't work with newtype structs.
         impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for $type_name {
             fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
@@ -297,6 +302,7 @@ define_id!(UserId, "userid");
 define_id!(PostId, "postid");
 define_id!(FollowId, "followid");
 define_id!(FollowerId, "followerid");
+define_id!(LikeId, "likeid");
 
 // I had, in the past, defined a few other identifiers, making it worth it to wrap the boilerplate
 // up in a macro. Now that it's just `UserId`, I should probably go back to just implementing it by
@@ -1739,6 +1745,44 @@ impl SerializeValue for Visibility {
 }
 
 #[derive(
+    Clone, Debug, Deserialize, DeserializeRow, Eq, Hash, PartialEq, Serialize, SerializeRow,
+)]
+pub struct Like {
+    user_id: UserId,
+    url: PostUri,
+    id: LikeId,
+    created: DateTime<Utc>,
+    like_id: StorUrl,
+}
+
+impl Like {
+    pub fn user_id(&self) -> &UserId {
+        &self.user_id
+    }
+    pub fn url(&self) -> &PostUri {
+        &self.url
+    }
+    pub fn id(&self) -> &LikeId {
+        &self.id
+    }
+    pub fn created(&self) -> &DateTime<Utc> {
+        &self.created
+    }
+    pub fn like_id(&self) -> &StorUrl {
+        &self.like_id
+    }
+    pub fn from_parts(user_id: impl Into<UserId>, post: &Post, like_id: &Url) -> Like {
+        Like {
+            user_id: user_id.into(),
+            url: post.url().clone(),
+            id: LikeId::default(),
+            created: Utc::now(),
+            like_id: like_id.into(),
+        }
+    }
+}
+
+#[derive(
     Clone, Debug, Deserialize, DeserializeValue, Eq, Hash, PartialEq, Serialize, SerializeValue,
 )]
 pub struct Reply {
@@ -1791,7 +1835,6 @@ pub struct Post {
     tags: HashSet<Tagname>,
     public: bool,
     unread: bool,
-    likes: HashSet<PostUrl>,
     replies: HashSet<Reply>,
     shares: HashSet<Share>,
 }
@@ -1821,7 +1864,6 @@ impl Post {
             tags: tags.clone(),
             public,
             unread,
-            likes: HashSet::new(),
             replies: HashSet::new(),
             shares: HashSet::new(),
         }

@@ -19,7 +19,7 @@
 
 use crate::{
     entities::{
-        FollowId, Follower, Following, Post, PostDay, PostId, PostUri, Reply, Share, StorUrl,
+        FollowId, Follower, Following, Like, Post, PostDay, PostId, PostUri, Reply, Share, StorUrl,
         Tagname, User, UserId, Username,
     },
     util::UpToThree,
@@ -85,6 +85,8 @@ pub trait Backend {
         following: &StorUrl,
         id: &FollowId,
     ) -> Result<(), Error>;
+    /// Ad a [Like]
+    async fn add_like(&self, reply: &Like) -> Result<(), Error>;
     /// Add a Post for `user`; return true if a new post was actually created, false if the post
     /// already existed and `replace` was set to false.
     #[allow(clippy::too_many_arguments)]

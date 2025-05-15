@@ -389,6 +389,8 @@ impl Task<Context> for SendCreate {
                     postid: this.postid,
                 })?;
 
+            debug!("Will send: {:?}", create);
+
             // `pending_calls` is a list of, well, pending calls. This is kinda lame: we're making a
             // network call to resolve each follower to a public inbox, when that's unlikely to
             // change (since the last such call). I'm going to need to build a cache.
@@ -429,6 +431,8 @@ impl Task<Context> for SendCreate {
                 .unique()
                 .map(|inbox| inbox.into())
                 .collect::<VecDeque<PendingCall>>();
+
+            debug!("I have {} pending calls.", pending_calls.len());
 
             // My idea here is to walk the list of URLs in a loop. For each URL, if we succeed in
             // sending the `Create` activity, we remove that URL. If we fail, we note the next time at

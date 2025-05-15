@@ -22,7 +22,7 @@
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{
-        FollowId, Follower, FollowerId, Following, Post, PostDay, PostId, PostUri, PostUrl, Reply,
+        FollowId, Follower, FollowerId, Following, Like, Post, PostDay, PostId, PostUri, Reply,
         Share, StorUrl, Tagname, User, UserId, Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
@@ -613,7 +613,6 @@ enum PreparedStatements {
     TakeLease,
     FinishTask,
     GetUserById,
-    AddLike,
     AddReply,
     AddShare,
     AddFollows,
@@ -621,6 +620,7 @@ enum PreparedStatements {
     AddFollowers,
     CountFollowers,
     CountFollowing,
+    AddLike,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -723,14 +723,14 @@ impl Session {
             "update tasks set lease_expires = ? where id = ? if lease_expires = ?",
             "update tasks set done=true where id=?",
             "select * from users where id=?",
-            "update posts set likes = likes + { ? } where user_id = ? and url = ? if exists",
             "update posts set replies = replies + { ? } where user_id = ? and url = ? if exists",
             "update posts set shares = shares + { ? } where user_id = ? and url = ? if exists",
             "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollows
             "update following set accepted = true where user_id = ? and actor_id = ?",
             "insert into followers (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollowerss
             "select count(*) from followers where user_id = ?", // CountFollowers
-            "select count(*) from following where user_id = ?" // CountFollowing
+            "select count(*) from following where user_id = ?", // CountFollowing
+            "insert into likes (user_id, url, id, created, like_id) values (?, ?, ?, ?, ?) if not exists"
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -870,6 +870,16 @@ impl storage::Backend for Session {
         .map_err(StorError::new)
     }
 
+    async fn add_like(&self, like: &Like) -> StdResult<(), StorError> {
+        self.session
+            .execute_unpaged(&self.prepared_statements[PreparedStatements::AddLike], like)
+            .await?;
+        // Unfortunately, this implementation gives us no way of knowing whether the statement had
+        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
+        // that.
+        Ok(())
+    }
+
     async fn add_post(
         &self,
         user: &User,
@@ -1000,7 +1010,6 @@ impl storage::Backend for Session {
                 Option<PostUri>,          // url
                 Option<PostDay>,          // day
                 Option<PostId>,           // id
-                Option<HashSet<PostUrl>>, // likes
                 Option<String>,           // title
                 Option<DateTime<Utc>>,    // posted
                 Option<bool>,             // public

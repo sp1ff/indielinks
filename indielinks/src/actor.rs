@@ -50,7 +50,7 @@ use crate::{
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     counter_add,
-    entities::{Follower, Following, PostId, Reply, Share, StorUrl, User, Username},
+    entities::{self, Follower, Following, PostId, Reply, Share, StorUrl, User, Username},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
@@ -98,7 +98,11 @@ pub enum Error {
     BadObject {
         url: Url,
         source: crate::ap_entities::Error,
-        backtrace: Backtrace,
+    },
+    #[snafu(display("Couldn't parse {url} as a Post ID: {source}"))]
+    BadPost {
+        url: Url,
+        source: crate::ap_entities::Error,
     },
     #[snafu(display("Signature validation failure: {source}"))]
     BadSignature {
@@ -860,9 +864,43 @@ async fn accept_follow(
         .context(StorageSnafu)
 }
 
-// This is a stub.
-async fn accept_like(like: &Like) -> Result<()> {
+/// Accept a [Like] for one of `user`'s posts.
+async fn accept_like(
+    user: &User,
+    like: &Like,
+    storage: &(dyn StorageBackend + Send + Sync),
+) -> Result<()> {
     info!("Received a Like: {:?}", like);
+
+    // We have, in `like`, an `Url` naming the post that was liked. We resolve that to a `Post` by
+    // first extracting the post ID from that URL...
+    let (username, postid) = username_and_postid_from_url(like.object()).context(BadPostSnafu {
+        url: like.object().clone(),
+    })?;
+    if username != *user.username() {
+        error!("The Like {:?} was posted to the inbox of a different user ({}) than that who made \
+                the post that was liked ({}). This is weird and uncomfortable-- failing the request.",
+               like, user.username(), username
+        );
+        return PostUserMismatchSnafu {
+            postid,
+            requested_username: user.username().clone(),
+            actual_username: username,
+        }
+        .fail();
+    }
+
+    // Use the `PostId` to retrieve the `Post`...
+    let post = storage
+        .get_post_by_id(&postid)
+        .await
+        .context(StorageSnafu)?
+        .context(NoPostSnafu { username, postid })?;
+
+    let like = entities::Like::from_parts(user.id(), &post, like.id());
+
+    storage.add_like(&like).await.context(StorageSnafu)?;
+
     Ok(())
 }
 
@@ -934,7 +972,7 @@ async fn inbox(
             }
             FollowOrLike::Like(like) => {
                 counter_add!(instruments, "inbox.follows", 1, &[]);
-                accept_like(like).await
+                accept_like(&user, like, storage).await
             }
             FollowOrLike::Undo(undo) => {
                 counter_add!(instruments, "inbox.undos", 1, &[]);

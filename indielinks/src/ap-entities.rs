@@ -148,6 +148,8 @@ pub enum Error {
         source: reqwest::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Unexpected object `id` type"))]
+    BadObjectId { backtrace: Backtrace },
     #[snafu(display("More than one capture when attempting to parse an Actor ID"))]
     Capture { backtrace: Backtrace },
     #[snafu(display("No captures when attempting to parse an Actor ID"))]
@@ -175,9 +177,16 @@ pub enum Error {
     JsonSer { source: serde_json::Error },
     #[snafu(display("AP entities serialized to unexpected JSON types"))]
     JsonTypeMismatch { backtrace: Backtrace },
+    #[snafu(display("The object has no `id` property"))]
+    NoObjectId { backtrace: Backtrace },
     #[snafu(display("The note {note:?} did not serialize to a map-- this is a bug"))]
     NoteNotMap {
         note: Box<Note>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Couldn't parse the object ID as an URL: {source}"))]
+    ObjectId {
+        source: url::ParseError,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
@@ -247,14 +256,6 @@ pub fn make_user_inbox(username: &Username, origin: &Origin) -> Result<Url> {
 
 pub fn make_user_outbox(username: &Username, origin: &Origin) -> Result<Url> {
     Url::parse(&format!("{}/users/{}/outbox", origin, username)).context(UrlParseSnafu)
-}
-
-pub fn make_user_post_create_id(
-    username: &Username,
-    postid: &PostId,
-    origin: &Origin,
-) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/posts/{}", origin, username, postid)).context(UrlParseSnafu)
 }
 
 pub fn make_user_post_id(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
@@ -695,6 +696,24 @@ pub struct Like {
     object: Url,
     id: Url,
     actor: ActorField,
+}
+
+impl Like {
+    pub fn new(object: Url, id: Url, actor: ActorField) -> Like {
+        Like { object, id, actor }
+    }
+    pub fn id(&self) -> &Url {
+        &self.id
+    }
+    pub fn object(&self) -> &Url {
+        &self.object
+    }
+}
+
+impl ToJld for Like {
+    fn get_type(&self) -> Type {
+        Type::Like
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -1299,11 +1318,20 @@ impl Create {
     pub fn de_object<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
         serde_json::from_value::<T>(Value::Object(self.object.clone())).context(FromValueSnafu)
     }
+    pub fn id(&self) -> &Url {
+        &self.id
+    }
     pub fn to(&self) -> impl Iterator<Item = &Url> {
         self.to.iter()
     }
     pub fn cc(&self) -> impl Iterator<Item = &Url> {
         self.cc.iter()
+    }
+    pub fn object_id(&self) -> Result<Url> {
+        match self.object.get("id").context(NoObjectIdSnafu)? {
+            Value::String(s) => Ok(Url::parse(s).context(ObjectIdSnafu)?),
+            _ => BadObjectIdSnafu.fail(),
+        }
     }
 }
 
