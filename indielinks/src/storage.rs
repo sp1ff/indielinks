@@ -112,7 +112,7 @@ pub trait Backend {
     /// `user` actually made a post with [PostId] `postid`! This is to preserve the possibility for
     /// the implementation to optimize that implementation (by doing it a single request with a
     /// "WHERE" clause, for instance)
-    async fn add_share(&self, user: &User, url: &PostUri, share: &Share) -> Result<(), Error>;
+    async fn add_share(&self, share: &Share) -> Result<(), Error>;
     /// Add a new user
     async fn add_user(&self, user: &User) -> Result<(), Error>;
     /// Confirm a follow for a user

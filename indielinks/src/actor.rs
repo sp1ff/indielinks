@@ -607,7 +607,7 @@ async fn accept_share(
         .context(NoPostSnafu { username, postid })?;
 
     storage
-        .add_share(&user, post.url(), &Share::new(announce.id(), visibility))
+        .add_share(&Share::new(user.id(), &post, announce.id(), visibility))
         .await
         .context(StorageSnafu)
 }

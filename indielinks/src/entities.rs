@@ -40,7 +40,7 @@ use scylla::{
         writers::{CellWriter, WrittenCellProof},
         SerializationError,
     },
-    DeserializeRow, DeserializeValue, SerializeRow, SerializeValue,
+    DeserializeRow, SerializeRow,
 };
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -308,6 +308,7 @@ define_id!(FollowId, "followid");
 define_id!(FollowerId, "followerid");
 define_id!(LikeId, "likeid");
 define_id!(ReplyId, "replyid");
+define_id!(ShareId, "shareid");
 
 // I had, in the past, defined a few other identifiers, making it worth it to wrap the boilerplate
 // up in a macro. Now that it's just `UserId`, I should probably go back to just implementing it by
@@ -1831,19 +1832,38 @@ impl Reply {
 // Yes, yes... this is identical, at the time of this writing, to `Reply`. Perhaps I'll merge
 // them, but I want to see how this develops.
 #[derive(
-    Clone, Debug, Deserialize, DeserializeValue, Eq, Hash, PartialEq, Serialize, SerializeValue,
+    Clone, Debug, Deserialize, DeserializeRow, Eq, Hash, PartialEq, Serialize, SerializeRow,
 )]
 pub struct Share {
-    id: PostUrl,
+    user_id: UserId,
+    url: PostUri,
+    id: ShareId,
+    created: DateTime<Utc>,
+    share_id: StorUrl,
     visibility: Visibility,
 }
 
 impl Share {
-    pub fn new(id: &Url, visibility: Visibility) -> Share {
+    pub fn new(
+        user_id: impl Into<UserId>,
+        post: &Post,
+        share_id: &Url,
+        visibility: Visibility,
+    ) -> Share {
         Share {
-            id: PostUrl(id.clone()),
+            user_id: user_id.into(),
+            url: post.url().clone(),
+            id: ShareId::default(),
+            created: Utc::now(),
+            share_id: share_id.into(),
             visibility,
         }
+    }
+    pub fn url(&self) -> &Uri {
+        self.url.as_ref()
+    }
+    pub fn user_id(&self) -> &UserId {
+        &self.user_id
     }
 }
 
@@ -1864,7 +1884,6 @@ pub struct Post {
     tags: HashSet<Tagname>,
     public: bool,
     unread: bool,
-    shares: HashSet<Share>,
 }
 
 impl Post {
@@ -1892,7 +1911,6 @@ impl Post {
             tags: tags.clone(),
             public,
             unread,
-            shares: HashSet::new(),
         }
     }
     pub fn day(&self) -> PostDay {

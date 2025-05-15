@@ -809,26 +809,22 @@ impl storage::Backend for Client {
         Ok(())
     }
 
-    async fn add_share(
-        &self,
-        user: &User,
-        url: &PostUri,
-        share: &Share,
-    ) -> StdResult<(), StorError> {
-        let item = serde_dynamo::to_item(share).map_err(StorError::new)?;
-        let _ = self
-            .client
-            .update_item()
-            .table_name("posts")
-            .key("user_id", AttributeValue::S(user.id().to_string()))
-            .key("url", AttributeValue::S(url.to_string()))
-            .update_expression("set #s = list_append(#s, :val)")
-            .expression_attribute_names("#s", "shares".to_owned())
-            .expression_attribute_values(":val", AttributeValue::L(vec![AttributeValue::M(item)]))
+    async fn add_share(&self, share: &Share) -> StdResult<(), StorError> {
+        let mut item: HashMap<String, AttributeValue> = serde_dynamo::to_item(share)?;
+        item.remove("user_id");
+        item.remove("url");
+        item.insert(
+            "user_id_and_url".to_owned(),
+            AttributeValue::S(format!("{}#{}", share.user_id(), share.url())),
+        );
+
+        self.client
+            .put_item()
+            .table_name("shares")
+            .set_item(Some(item))
             .send()
             .await?;
-        // Nb. Unlike in `delete_post()`, this query will error-out if the key doesn't name an
-        // extant Post ("UpdateExpression: list_append() given a non-list")
+
         Ok(())
     }
 
