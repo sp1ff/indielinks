@@ -19,13 +19,13 @@
 use common::{run, Configuration, IndielinksTest};
 use crypto_common::rand_core::{OsRng, RngCore};
 use indielinks::{
-    entities::{StorUrl, User, UserEmail, UserId, Username},
+    entities::{FollowId, StorUrl, User, UserEmail, UserId, Username},
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
-    scylla::{add_followers, add_user},
+    scylla::{add_followers, add_following, add_user},
 };
 use indielinks_test::{
-    activity_pub::{posting_creates_note, send_follow},
+    activity_pub::{as_follower, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
@@ -205,6 +205,7 @@ impl Helper for State {
         username: &Username,
         password: &SecretString,
         followers: &HashSet<StorUrl>,
+        following: &HashSet<(StorUrl, FollowId)>,
     ) -> std::result::Result<String, Failed> {
         let mut api_key: Vec<u8> = Vec::with_capacity(32);
         OsRng.fill_bytes(api_key.as_mut_slice());
@@ -223,6 +224,7 @@ impl Helper for State {
 
         add_user(&self.session, None, None, &user).await?;
         add_followers(&self.session, None, &user, followers, true).await?;
+        add_following(&self.session, None, &user, following, true).await?;
 
         Ok(textual_api_key)
     }
@@ -333,6 +335,14 @@ inventory::submit!(IndielinksTest {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(send_follow(cfg.indielinks, version, pepper, helper))
+    },
+});
+
+inventory::submit!(IndielinksTest {
+    name: "070as_follower",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(as_follower(cfg.indielinks, version, pepper, helper))
     },
 });
 

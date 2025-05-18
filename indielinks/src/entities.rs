@@ -60,6 +60,8 @@ use crate::peppers::{self, Pepper, Peppers, Version as PepperVersion};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Attempted to deserialize an invalid value for ActivityPubPostFlavor: {n}"))]
+    ActivityPubPostFlavorDe { n: i8, backtrace: Backtrace },
     #[snafu(display("Invalid API key"))]
     BadApiKey { backtrace: Backtrace },
     #[snafu(display("{email} is not a valid e-mail address"))]
@@ -438,6 +440,12 @@ impl TryFrom<String> for Username {
         } else {
             BadUsernameSnafu { name }.fail()
         }
+    }
+}
+
+impl From<&Username> for Username {
+    fn from(value: &Username) -> Self {
+        value.clone()
     }
 }
 
@@ -1287,6 +1295,9 @@ impl Following {
             accepted: false,
         }
     }
+    pub fn user_id(&self) -> &UserId {
+        &self.user_id
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1944,5 +1955,72 @@ impl Post {
     }
     pub fn user_id(&self) -> UserId {
         self.user_id
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        ActivityPubPost                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Serialize)]
+#[repr(i8)]
+pub enum ActivityPubPostFlavor {
+    Share,
+    Reply,
+    Mention,
+    Post,
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for ActivityPubPostFlavor {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        i8::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        match <i8 as DeserializeValue>::deserialize(typ, v)? {
+            0 => Ok(ActivityPubPostFlavor::Share),
+            n => Err(DeserializationError::new(
+                ActivityPubPostFlavorDeSnafu { n }.build(),
+            )),
+        }
+    }
+}
+
+impl SerializeValue for ActivityPubPostFlavor {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&(*self as i8), typ, writer)
+    }
+}
+
+/// Represents an external post in the ActivityPub sense of the term
+#[derive(Clone, Debug, Deserialize, DeserializeRow, Eq, PartialEq, Serialize, SerializeRow)]
+pub struct ActivityPubPost {
+    user_id: UserId,
+    post_id: StorUrl,
+    posted: DateTime<Utc>,
+    flavor: ActivityPubPostFlavor,
+    visibility: Visibility,
+}
+
+impl ActivityPubPost {
+    pub fn new(
+        user_id: impl Into<UserId>,
+        post_id: impl Into<StorUrl>,
+        flavor: ActivityPubPostFlavor,
+        visibility: Visibility,
+    ) -> ActivityPubPost {
+        ActivityPubPost {
+            user_id: user_id.into(),
+            post_id: post_id.into(),
+            posted: Utc::now(),
+            flavor,
+            visibility,
+        }
     }
 }

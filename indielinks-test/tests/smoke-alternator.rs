@@ -18,12 +18,12 @@
 //! Integration tests run against an indielinks configured with the DynamoDB storage back-end.
 use common::{run, Configuration, IndielinksTest};
 use indielinks::{
-    dynamodb::{add_followers, add_user},
-    entities::{Post, StorUrl, User, UserEmail, UserId, Username},
+    dynamodb::{add_followers, add_following, add_user},
+    entities::{FollowId, Post, StorUrl, User, UserEmail, UserId, Username},
     peppers::{Pepper, Version as PepperVersion},
 };
 use indielinks_test::{
-    activity_pub::{posting_creates_note, send_follow},
+    activity_pub::{as_follower, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
@@ -270,6 +270,7 @@ impl Helper for State {
         username: &Username,
         password: &SecretString,
         followers: &HashSet<StorUrl>,
+        following: &HashSet<(StorUrl, FollowId)>,
     ) -> std::result::Result<String, Failed> {
         use crypto_common::rand_core::{OsRng, RngCore};
 
@@ -290,6 +291,7 @@ impl Helper for State {
 
         add_user(&self.client, &user).await?;
         add_followers(&self.client, &user, followers).await?;
+        add_following(&self.client, &user, following).await?;
 
         Ok(textual_api_key)
     }
@@ -413,6 +415,14 @@ inventory::submit!(IndielinksTest {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(send_follow(cfg.indielinks, version, pepper, helper))
+    },
+});
+
+inventory::submit!(IndielinksTest {
+    name: "070as_follower",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(as_follower(cfg.indielinks, version, pepper, helper))
     },
 });
 

@@ -22,14 +22,14 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
+    Extension, Json, Router,
     extract::State,
-    http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::IntoResponse,
     routing::{get, post},
-    Extension, Json, Router,
 };
 use chrono::Utc;
-use futures::StreamExt;
+use futures::{StreamExt, stream};
 use http::Method;
 use itertools::Itertools;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
@@ -41,20 +41,23 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
-    activity_pub::send_activity_pub_no_response,
+    activity_pub::{derive_visibility, resolve_recipients, send_activity_pub_no_response},
     ap_entities::{
-        self, make_user_followers, make_user_following, username_and_postid_from_url, Accept,
-        Actor, Announce, AnnounceOrCreate, AsAccept, Create, Follow, FollowOrLike, Jld, Like, Note,
-        ToJld, Undo,
+        self, Accept, Actor, Announce, AnnounceOrCreate, AsAccept, Create, Follow, FollowOrLike,
+        Jld, Like, Note, Recipient, ToJld, Undo, make_user_followers, make_user_following,
+        username_and_postid_from_url,
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     counter_add,
-    entities::{self, Follower, Following, PostId, Reply, Share, StorUrl, User, Username},
+    entities::{
+        self, ActivityPubPost, ActivityPubPostFlavor, Follower, Following, PostId, Reply, Share,
+        StorUrl, User, Username,
+    },
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
-    storage::{self, Backend as StorageBackend},
+    storage::{self, Backend as StorageBackend, Error as StorError},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -130,7 +133,9 @@ pub enum Error {
     Jrd { source: crate::ap_entities::Error },
     #[snafu(display("Failed to form Key ID: {source}"))]
     KeyId { source: crate::ap_entities::Error },
-    #[snafu(display("The Actor ID parsed from the request signature ({signature}) doesn't match that in the request body ({request})"))]
+    #[snafu(display(
+        "The Actor ID parsed from the request signature ({signature}) doesn't match that in the request body ({request})"
+    ))]
     MismatchedActorId {
         signature: String,
         request: String,
@@ -177,6 +182,11 @@ pub enum Error {
     },
     #[snafu(display("Failed to obtain an Actor public key: {source}"))]
     PublicKey { source: ap_entities::Error },
+    #[snafu(display("Failed to resolve recipients {recipients:?}: {source}"))]
+    Recipients {
+        recipients: Vec<Recipient>,
+        source: crate::activity_pub::Error,
+    },
     #[snafu(display("Failed to buld an http request: {source}"))]
     Request { source: crate::activity_pub::Error },
     #[snafu(display("Failed to resolve a key ID to an Actor: {source}"))]
@@ -202,7 +212,7 @@ pub enum Error {
     },
     #[snafu(display("Failed to determine visibility: {source}"))]
     Visibility {
-        source: crate::ap_entities::Error,
+        source: crate::activity_pub::Error,
         backtrace: Backtrace,
     },
 }
@@ -455,13 +465,20 @@ inventory::submit! { metrics::Registration::new("shared_inbox.announcements", So
 inventory::submit! { metrics::Registration::new("shared_inbox.creates", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("shared_inbox.errors", Sort::IntegralCounter) }
 
-/// Accept a reply to an indielinks user's [Post]
-// Any `Create` AP entity sent to the shared inbox will end here. At the time of this writing, I
-// only anticipate that happening for one reason: a reply has been made to a Post on this instance.
-// I suspect that when I begin coding-up the *follow* side of the protocol, i.e. when indielinks
-// users get the ability to follow users on other instances, we'll start seeing this quite a bit
-// more.
-async fn accept_reply(
+/// Handle `Note` creation
+///
+/// Any `Create` AP entity sent to the shared inbox will wind-up here. We can receive them for
+/// a few reasons:
+///
+/// - a reply has been made to a Post on this instance: in this case, the `in_reply_to` field of the
+///   enclosed `Note` will name an indielinks post residing on this instance
+///
+/// - an indielinks [User] on this instance has been mentioned: in this case, the `to` or `cc`
+///   fields will include that [UserId]; if the actor mentioning that user has followers on this
+///   instance, that actor's followers will also be listed as recipients
+///
+/// - else, this is an ActivityPub `Note` made by some actor with followers on this instance
+async fn accept_create(
     actor: &ap_entities::Actor,
     create: &Create,
     storage: &(dyn StorageBackend + Send + Sync),
@@ -492,59 +509,84 @@ async fn accept_reply(
 
     debug!("The Create denotes the creation of the note: {:?}", note);
 
-    // Aspects of this `Note` that are of interest:
-    // - note.in_reply_to: extract the User & PostId out of this URL (we'll have to validate them, of course)
-    // - note.id: we want to write-down the id of this Note as a reply to the salient Post
-    // - note.to & .cc: will be Vec<Url>; they determine privacy settings
-    let in_reply_to = note.in_reply_to().context(NoInReplyToSnafu)?;
-    let (username, postid) =
-        username_and_postid_from_url(in_reply_to).context(BadInReplyToSnafu {
-            url: in_reply_to.clone(),
-        })?;
-
-    debug!(
-        "The Note is (allegedly) in response to post {} by user {}.",
-        postid, username
-    );
-
     let (visibility, local_recipients) =
-        ap_entities::derive_visibility(create.to(), create.cc(), origin)
-            .context(VisibilitySnafu)?;
+        derive_visibility(create.to(), create.cc(), origin).context(VisibilitySnafu)?;
 
     debug!("This Create has visibility {:?}", visibility);
-    debug!(
-        "This Create is addressed to the following local users: {:?}",
-        local_recipients
-    );
 
-    let user = storage
-        .user_for_name(&username)
-        .await
-        .map_err(|err| StorageSnafu.into_error(err))?
-        .ok_or(
-            NoUserSnafu {
-                username: username.clone(),
-            }
-            .build(),
-        )?;
+    // Any local users mentioned?
+    let mention = local_recipients
+        .iter()
+        .filter(|recipient| matches!(recipient, Recipient::Direct(_)))
+        .collect::<Vec<_>>()
+        .is_empty();
 
-    let post = storage
-        .get_post_by_id(&postid)
+    let mut recipients = resolve_recipients(local_recipients.iter(), storage)
         .await
-        .context(StorageSnafu)?
-        .context(NoPostSnafu { username, postid })?;
+        .context(RecipientsSnafu {
+            recipients: local_recipients.clone(),
+        })?;
 
-    storage
-        .add_reply(&Reply::new(user.id(), &post, note.id(), visibility))
+    let reply = match note
+        .in_reply_to()
+        .and_then(|reply| username_and_postid_from_url(origin, reply).ok())
+    {
+        Some((username, postid)) => {
+            debug!(
+                "The Note is (allegedly) in response to post {} by user {}.",
+                postid, username
+            );
+
+            let user = storage
+                .user_for_name(&username)
+                .await
+                .map_err(|err| StorageSnafu.into_error(err))?
+                .ok_or(
+                    NoUserSnafu {
+                        username: username.clone(),
+                    }
+                    .build(),
+                )?;
+
+            let post = storage
+                .get_post_by_id(&postid)
+                .await
+                .context(StorageSnafu)?
+                .context(NoPostSnafu { username, postid })?;
+
+            storage
+                .add_reply(&Reply::new(user.id(), &post, note.id(), visibility))
+                .await
+                .context(StorageSnafu)?;
+
+            recipients.remove(user.id());
+
+            true
+        }
+        None => false,
+    };
+
+    let flavor = match (reply, mention) {
+        (true, _) => ActivityPubPostFlavor::Reply,
+        (false, true) => ActivityPubPostFlavor::Mention,
+        (false, false) => ActivityPubPostFlavor::Post,
+    };
+
+    stream::iter(recipients.into_iter())
+        .map(|recipient| ActivityPubPost::new(recipient, note.id(), flavor, visibility))
+        .then(|post| async move { storage.add_activity_pub_post(&post).await })
+        .collect::<Vec<StdResult<(), StorError>>>()
         .await
-        .context(StorageSnafu)
+        .into_iter()
+        .collect::<StdResult<Vec<()>, StorError>>()
+        .context(StorageSnafu)?;
+
+    Ok(())
 }
 
 /// Accept a share of an indielinks user's [Post]
 // Any `Announce` AP entity sent to the shared inbox will end here. At the time of this writing, I
-// only anticipate that happening for one reason: a a Post on this instance has been shared. I
-// suspect that when I begin coding-up the *follow* side of the protocol, i.e. when indielinks users
-// get the ability to follow users on other instances, we'll start seeing this quite a bit more.
+// only anticipate that happening for one reason: a a `Post` on this instance has been shared.
 async fn accept_share(
     actor: &ap_entities::Actor,
     announce: &Announce,
@@ -575,13 +617,12 @@ async fn accept_share(
     debug!("This Announce relates to the object {}", object);
 
     let (username, postid) =
-        username_and_postid_from_url(announce.object()).context(BadObjectSnafu {
+        username_and_postid_from_url(origin, object).context(BadObjectSnafu {
             url: announce.object().clone(),
         })?;
 
     let (visibility, local_recipients) =
-        ap_entities::derive_visibility(announce.to(), announce.cc(), origin)
-            .context(VisibilitySnafu)?;
+        derive_visibility(announce.to(), announce.cc(), origin).context(VisibilitySnafu)?;
 
     debug!("This Announce has visibility {:?}", visibility);
     debug!(
@@ -609,13 +650,42 @@ async fn accept_share(
     storage
         .add_share(&Share::new(user.id(), &post, announce.id(), visibility))
         .await
-        .context(StorageSnafu)
+        .context(StorageSnafu)?;
+
+    // Alright-- at this point, we've stored the share, but there may be other recipients to whom
+    // this message was addressed, including recpients in the form of "https://so-and-so/followers"
+    let mut recipients = resolve_recipients(local_recipients.iter(), storage)
+        .await
+        .context(RecipientsSnafu {
+            recipients: local_recipients.clone(),
+        })?;
+    recipients.remove(user.id());
+
+    stream::iter(recipients.into_iter())
+        .map(|recipient| {
+            ActivityPubPost::new(
+                recipient,
+                // Dear God this is dumb...
+                StorUrl::try_from(post.url().to_string()).unwrap(),
+                ActivityPubPostFlavor::Share,
+                visibility,
+            )
+        })
+        .then(|post| async move { storage.add_activity_pub_post(&post).await })
+        .collect::<Vec<StdResult<(), StorError>>>()
+        .await
+        .into_iter()
+        .collect::<StdResult<Vec<()>, StorError>>()
+        .context(StorageSnafu)?;
+
+    Ok(())
 }
 
 /// `/inbox` handler
 ///
-/// This is the indielinks instance shared inbox. Replies & boosts/shares come here; I'm not sure
-/// about mentions, yet, or what else might show-up 🤷. I provide no response body at this time.
+/// This is the indielinks instance shared inbox. Replies & boosts/shares of our posts come here, as
+/// do mentions, as well as posts & replies by people _we_ follow. No idea what else might show-up
+/// 🤷. I provide no response body at this time.
 async fn shared_inbox(
     State(state): State<Arc<Indielinks>>,
     Extension(actor): Extension<ap_entities::Actor>,
@@ -629,13 +699,15 @@ async fn shared_inbox(
         instruments: &metrics::Instruments,
     ) -> Result<()> {
         match body {
+            // AFAIK, an `Announce` is strictly used to notify us that someone has shared one of our
+            // posts.
             AnnounceOrCreate::Announce(announce) => {
                 counter_add!(instruments, "shared_inbox.announcements", 1, &[]);
                 accept_share(actor, announce, storage, origin).await
             }
             AnnounceOrCreate::Create(create) => {
                 counter_add!(instruments, "shared_inbox.creates", 1, &[]);
-                accept_reply(actor, create, storage, origin).await
+                accept_create(actor, create, storage, origin).await
             }
         }
     }
@@ -868,19 +940,24 @@ async fn accept_follow(
 async fn accept_like(
     user: &User,
     like: &Like,
+    origin: &Origin,
     storage: &(dyn StorageBackend + Send + Sync),
 ) -> Result<()> {
     info!("Received a Like: {:?}", like);
 
     // We have, in `like`, an `Url` naming the post that was liked. We resolve that to a `Post` by
     // first extracting the post ID from that URL...
-    let (username, postid) = username_and_postid_from_url(like.object()).context(BadPostSnafu {
-        url: like.object().clone(),
-    })?;
+    let (username, postid) =
+        username_and_postid_from_url(origin, like.object()).context(BadPostSnafu {
+            url: like.object().clone(),
+        })?;
     if username != *user.username() {
-        error!("The Like {:?} was posted to the inbox of a different user ({}) than that who made \
+        error!(
+            "The Like {:?} was posted to the inbox of a different user ({}) than that who made \
                 the post that was liked ({}). This is weird and uncomfortable-- failing the request.",
-               like, user.username(), username
+            like,
+            user.username(),
+            username
         );
         return PostUserMismatchSnafu {
             postid,
@@ -972,7 +1049,7 @@ async fn inbox(
             }
             FollowOrLike::Like(like) => {
                 counter_add!(instruments, "inbox.follows", 1, &[]);
-                accept_like(&user, like, storage).await
+                accept_like(&user, like, origin, storage).await
             }
             FollowOrLike::Undo(undo) => {
                 counter_add!(instruments, "inbox.undos", 1, &[]);

@@ -90,7 +90,7 @@ use wiremock::{
 use indielinks::{
     ap_entities::{self, make_user_id},
     authn::{ensure_sha_256, sign_request},
-    entities::{StorUrl, Username},
+    entities::{FollowId, StorUrl, Username},
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
 };
@@ -149,6 +149,7 @@ pub trait Helper {
         username: &Username,
         password: &SecretString,
         followers: &HashSet<StorUrl>,
+        following: &HashSet<(StorUrl, FollowId)>,
     ) -> Result<String, Failed>;
     /// Remove a user
     async fn remove_user(&self, username: &Username) -> Result<(), Failed>;

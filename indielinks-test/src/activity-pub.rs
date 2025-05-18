@@ -24,20 +24,20 @@ use reqwest::{Client, Url};
 use tracing::info;
 use uuid::Uuid;
 use wiremock::{
-    matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
 };
 
 use indielinks::{
     actor::CollectionPage,
-    ap_entities::{Accept, ActorField, Create, Jld, Like, ObjectField},
-    entities::Username,
+    ap_entities::{Accept, ActorField, Create, Jld, Like, Note, ObjectField},
+    entities::{FollowId, Username},
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
     users::FollowReq,
 };
 
-use crate::{make_signed_request, peer_actor, Helper, PeerUser};
+use crate::{Helper, PeerUser, make_signed_request, peer_actor};
 
 pub async fn posting_creates_note(
     url: Url,
@@ -80,6 +80,7 @@ pub async fn posting_creates_note(
             // be rejected 😛)
             &"0534e7529239fed032a49953ee6ba4d9".to_owned().into(),
             &HashSet::from([mock_user.id(&mock_origin)?.into()]),
+            &HashSet::new(),
         )
         .await?;
 
@@ -168,8 +169,6 @@ pub async fn send_follow(
     pepper_key: Pepper,
     helper: Arc<dyn Helper + Send + Sync>,
 ) -> Result<(), Failed> {
-    // Coding speculatively...
-
     // Clean-up this test user, just in case it's laying around from a prior, failed test.
     let username = Username::new("send_follow_user").unwrap(/* known good */);
     helper.remove_user(&username).await?;
@@ -206,6 +205,7 @@ pub async fn send_follow(
             // be rejected 😛)
             &"0534e7529239fed032a49953ee6ba4d9".to_owned().into(),
             &HashSet::from([mock_user.id(&mock_origin)?.into()]),
+            &HashSet::new(),
         )
         .await?;
 
@@ -300,5 +300,139 @@ pub async fn send_follow(
         items[0],
         Url::parse(&format!("{}/users/{}", mock_origin, mock_user.name()))?.into()
     );
+    Ok(())
+}
+
+pub async fn as_follower(
+    indielinks: Url,
+    pepper_version: PepperVersion,
+    pepper_key: Pepper,
+    helper: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
+    let username = Username::new("as_follower_user").unwrap(/* known good */);
+    helper.remove_user(&username).await?;
+
+    // Alright: let's create a mock AP server with which indielinks can federate...
+    let mock_server = MockServer::start().await;
+    // along with a mock user on that peer:
+    let mock_user = PeerUser::new()?;
+
+    let mock_origin: Origin = mock_server.uri().try_into()?;
+
+    // For this test, we expect indielinks to post a `Create` activity to the shared inboxes of it's
+    // peers that contain followers of the user as whom we'll post:
+    Mock::given(method("POST"))
+        .and(path("/inbox"))
+        .respond_with(ResponseTemplate::new(202))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    peer_actor(&mock_user, &mock_origin)
+        .await?
+        .mount(&mock_server)
+        .await;
+
+    let api_key = helper
+        .create_user(
+            &pepper_version,
+            &pepper_key,
+            &username,
+            // 16 bytes from `/dev/urandom` to ensure the password has enough entropy (else it will
+            // be rejected 😛)
+            &"5161b92b86085a8ecf703cbe8eb1cb2a'".to_owned().into(),
+            &HashSet::from([mock_user.id(&mock_origin)?.into()]),
+            &HashSet::from([(mock_user.id(&mock_origin)?.into(), FollowId::default())]),
+        )
+        .await?;
+
+    // Alright! Let's create a post!
+    let client = Client::builder()
+        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
+        .build()?;
+
+    client.get(format!("{}api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy&shared=true&replace=true", indielinks))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}:{}",  username, api_key))
+        .send()
+        .await?;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let mut num_requests = mock_server
+        .received_requests()
+        .await
+        .map(|x| x.len())
+        .unwrap_or(0);
+    let mut n = 0;
+    while num_requests < 2 && n < 8 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        num_requests = mock_server
+            .received_requests()
+            .await
+            .map(|x| x.len())
+            .unwrap_or(0);
+        n += 1;
+    }
+
+    assert_eq!(num_requests, 2);
+
+    let create = serde_json::from_slice::<Create>(
+        mock_server
+            .received_requests()
+            .await
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .body
+            .as_slice(),
+    );
+    assert!(create.is_ok());
+    let create = create.unwrap();
+
+    // Let's have our mock user reply:
+    let id = Url::parse(&format!(
+        "{}/users/{}/posts/{}",
+        mock_origin,
+        mock_user.name(),
+        Uuid::new_v4()
+    ))?;
+    let reply = Note::new_from_parts(
+        id.clone(),
+        Some(create.object_id()?),
+        id,
+        Url::parse(&format!("{}/users/{}", mock_origin, mock_user.name()))?,
+        vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")?].into_iter(),
+        vec![Url::parse(&format!(
+            "{}/users/{}/followers",
+            mock_origin,
+            mock_user.name()
+        ))?]
+        .into_iter(),
+        "<p>Greate site!</p>".to_owned(),
+    )?;
+
+    let reply: Create = reply.try_into()?;
+    info!("Sending a {:#?}", reply);
+
+    let request = make_signed_request(
+        axum::http::Method::POST,
+        indielinks.join("/inbox")?,
+        Jld::new(&reply, None)?.to_string().into(),
+        &mock_origin,
+        mock_user.priv_key(),
+        mock_user.name(),
+    )
+    .await?;
+
+    let rsp = client.execute(request).await?;
+    info!("reply :=> {rsp:?}");
+    assert_eq!(rsp.status(), reqwest::StatusCode::ACCEPTED);
+
+    // Still to test:
+    // - retrieve my original Note-- the like & the reply should be listed!
+    // More stuff to test
+    // - boost
+    // - mention @sp1ff
+    // - make a completely new post
+
     Ok(())
 }

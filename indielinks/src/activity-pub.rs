@@ -25,17 +25,21 @@
 //!
 //! [actor]: crate::actor
 
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::{HashSet, VecDeque},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use either::Either;
-use futures::{StreamExt, TryStreamExt};
-use http::{header, Method};
+use futures::{StreamExt, TryStreamExt, stream};
+use http::{Method, header};
 use itertools::Itertools;
+use lazy_static::lazy_static;
 use reqwest::IntoUrl;
 use serde::{Deserialize, Serialize};
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, IntoError, prelude::*};
 use tap::Pipe;
 use tokio::time::Instant;
 use tracing::{debug, warn};
@@ -44,12 +48,14 @@ use uuid::Uuid;
 
 use crate::{
     ap_entities::{
-        self, make_follow_id, make_user_id, Actor, Create, Follow, Jld, Note, ToJld, Type,
+        self, Actor, Create, Follow, Jld, Note, Recipient, ToJld, Type, make_follow_id,
+        make_user_id,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
     client::request_builder,
-    entities::{FollowId, PostId, StorUrl, User, UserId, Username},
+    entities::{FollowId, PostId, StorUrl, User, UserId, Username, Visibility},
     origin::Origin,
+    storage::Backend as StorageBackend,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -58,10 +64,12 @@ use crate::{
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("ActivityPub entities error: {source}"))]
+    Ap { source: crate::ap_entities::Error },
     #[snafu(display("Failed to write a follow for {username} of {actorid}: {source}"))]
     AddFollowing {
         username: Username,
-        actorid: Url,
+        actorid: Box<Url>,
         source: crate::storage::Error,
     },
     #[snafu(display("Failed to set request body: {source}"))]
@@ -85,6 +93,8 @@ pub enum Error {
         id: FollowId,
         source: crate::ap_entities::Error,
     },
+    #[snafu(display("Failed to obtain a follow: {source}"))]
+    Following { source: crate::storage::Error },
     #[snafu(display("Failed to retrieve followers for {username}: {source}"))]
     GetFollowers {
         username: Username,
@@ -117,6 +127,11 @@ pub enum Error {
         userid: UserId,
         backtrace: Backtrace,
     },
+    #[snafu(display("No User with username {username}"))]
+    NoUserName {
+        username: Username,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to convert Post ID {postid} into a Note: {source}"))]
     Note {
         postid: PostId,
@@ -147,13 +162,15 @@ pub enum Error {
         keyid: String,
         source: crate::authn::Error,
     },
+    #[snafu(display("Datastore error: {source}"))]
+    Storage { source: crate::storage::Error },
     #[snafu(display("Conversion into an URL failed: {source}"))]
     Url {
         source: reqwest::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("{url} has no host component"))]
-    UrlHost { url: Url, backtrace: Backtrace },
+    UrlHost { url: Box<Url>, backtrace: Backtrace },
     #[snafu(display("Failed to lookup User ID {userid}: {source}"))]
     User {
         userid: UserId,
@@ -164,6 +181,8 @@ pub enum Error {
         username: Username,
         source: crate::ap_entities::Error,
     },
+    #[snafu(display("Unable to derive visibility"))]
+    Visibility { backtrace: Backtrace },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -203,7 +222,9 @@ async fn send_activity_pub_core<U: IntoUrl, B: ToJld + std::fmt::Debug>(
         )
         .header(
             header::HOST,
-            url.host_str().context(UrlHostSnafu { url: url.clone() })?,
+            url.host_str().context(UrlHostSnafu {
+                url: Box::new(url.clone()),
+            })?,
         )
         .body::<reqwest::Body>(
             body.map(|b| Jld::new(b, context).context(JldSnafu))
@@ -263,6 +284,159 @@ pub async fn send_activity_pub<
     }
 
     response.json::<R>().await.context(RspJsonSnafu)
+}
+
+/// Resolve a collection of [Recipient]s to a set of indielinks [User]s
+pub async fn resolve_recipients<'a, I>(
+    recipients: I,
+    storage: &(dyn StorageBackend + Send + Sync),
+) -> Result<HashSet<UserId>>
+where
+    I: Iterator<Item = &'a Recipient>,
+{
+    // This is a little irritating, but I'm going to do this in a few passes. The first pass will
+    // resolve the `Recipient`s to `Result<Vec<UserId>>`s. If all are `Ok`, then the *second* pass
+    // will flatten them into a `HashSet`.
+    stream::iter(recipients)
+        .then(|recipient| async move {
+            match recipient {
+                Recipient::Direct(username) => {
+                    let id = *storage
+                        .user_for_name(username)
+                        .await
+                        .context(StorageSnafu)?
+                        .context(NoUserNameSnafu { username })?
+                        .id();
+                    Ok(vec![id])
+                }
+                Recipient::Followers(actor_id) => {
+                    // Now, getting ahold of the stream can fail...
+                    storage
+                        .followers_for_actor(&actor_id.into())
+                        .await
+                        .context(StorageSnafu)?
+                        // as can each invocation of `poll_next()`-- at this point, we have a `Stream`
+                        // that yields `StdResult<Following, StorError>`, and we want one what yields
+                        // `Result<UserId>`:
+                        .map(|res| match res {
+                            Ok(following) => Ok(*following.user_id()),
+                            Err(err) => Err(FollowingSnafu.into_error(err)),
+                        })
+                        // collect that into a `Vec`...
+                        .collect::<Vec<Result<UserId>>>()
+                        // asynchronously...
+                        .await
+                        // and now `collect()` that into a `Result<Vec<...>>`:
+                        .into_iter()
+                        .collect::<Result<Vec<UserId>>>()
+                }
+            }
+        })
+        .collect::<Vec<Result<Vec<UserId>>>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<Vec<UserId>>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<UserId>>()
+        .pipe(Ok)
+}
+
+lazy_static! {
+    static ref PUBLIC: Url = Url::parse("https://www.w3.org/ns/activitystreams#Public").unwrap(/* known good */);
+}
+
+/// Derive a [Visibility] and a list of local recipients from a pair of collections of [Url]s
+/// (presumably an ActivityPub message's "to" & "cc" fields)
+pub fn derive_visibility<'a, S, T>(
+    to: S,
+    cc: T,
+    origin: &Origin,
+) -> Result<(Visibility, Vec<Recipient>)>
+where
+    S: Iterator<Item = &'a Url>,
+    T: Iterator<Item = &'a Url>,
+{
+    // Honestly, this entire implementation feels awkward, but but we only get one pass on the
+    // iterators unless we want to also demand that they be `Clone`. I'm also still
+    // understanding how various AP platforms express visibility.
+
+    // This should probably be public, but we'll see if it would come-in handy anywhere else.
+    fn origin_is_eq(url: &Url, origin: &Origin) -> bool {
+        matches!(url.try_into().map(|o: Origin| o == *origin), Ok(true))
+    }
+
+    let mut public_is_in_to = false;
+    let to_local_recipients = to
+        .filter_map(|url| {
+            if *url == *PUBLIC {
+                public_is_in_to = true;
+            };
+            origin_is_eq(url, origin).then_some(url.clone())
+        })
+        .collect::<HashSet<Url>>();
+
+    let mut public_is_in_cc = false;
+    let cc_local_recipients = cc
+        .filter_map(|url| {
+            if *url == *PUBLIC {
+                public_is_in_cc = true;
+            };
+            origin_is_eq(url, origin).then_some(url.clone())
+        })
+        .collect::<HashSet<Url>>();
+
+    let local_recipients = to_local_recipients
+        .union(&cc_local_recipients)
+        .map(|url| Recipient::new(origin, url).map_err(|err| ApSnafu.into_error(err)))
+        .collect::<Result<Vec<Recipient>>>()?;
+
+    // - public: to contains =https://www.w3.org/ns/activitystreams#Public=, cc contains ={actor ID}/followers=
+    // - unlisted: to contains ={actor ID}/followers=, cc contains =https://www.w3.org/ns/activitystreams#Public=
+    // - followers only: to contains ={actor ID}/followers=, cc is empty
+    // - DM: to contains actor IDs, cc is empty
+    if public_is_in_to {
+        // We expect some local (follower) recipients in cc, but I'm not going to enforce that, yet.
+        Ok((Visibility::Public, local_recipients))
+    } else if public_is_in_cc {
+        // We expect some local (follower) recipients in to, but I'm not going to enforce that, yet.
+        Ok((Visibility::Unlisted, local_recipients))
+    } else if !to_local_recipients.is_empty() {
+        // We expect some local (follower) recipients in to, but I'm not going to enforce that, yet.
+        Ok((Visibility::Followers, local_recipients))
+    } else if cc_local_recipients.is_empty() && local_recipients.iter().all(Recipient::is_direct) {
+        // We expect actors only, and an empty cc
+        Ok((Visibility::DirectMessage, local_recipients))
+    } else {
+        Err(VisibilitySnafu.build())
+    }
+}
+
+#[cfg(test)]
+pub mod test_visibility {
+
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn test_recipient() {
+        let origin = Origin::from_str("http://indiemark.local").unwrap(/* known good */);
+        let recip = Recipient::new(&origin, &Url::parse("http://indiemark.local/users/sp1ff")
+                                   .unwrap(/* known good */))
+            .unwrap(/* known good */);
+        assert!(recip == Recipient::Direct(Username::new("sp1ff").unwrap(/* known good */)));
+
+        let recip = Recipient::new(&origin, &Url::parse("http://indiemark.local/users/sp1ff/followers")
+                                   .unwrap(/* known good */))
+        .unwrap(/* known good */);
+        assert!(
+            recip
+                == Recipient::Followers(
+                    Url::parse("http://indiemark.local/users/sp1ff").unwrap(/* known good */)
+                )
+        );
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -582,7 +756,7 @@ impl Task<Context> for SendFollow {
                 .await
                 .context(AddFollowingSnafu {
                     username: this.user.username().clone(),
-                    actorid: this.actorid.clone(),
+                    actorid: Box::new(this.actorid.clone()),
                 })?;
 
             // then send the `Follow`

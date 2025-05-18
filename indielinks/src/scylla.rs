@@ -22,8 +22,8 @@
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{
-        FollowId, Follower, FollowerId, Following, Like, Post, PostDay, PostId, PostUri, Reply,
-        Share, StorUrl, Tagname, User, UserId, Username,
+        ActivityPubPost, FollowId, Follower, FollowerId, Following, Like, Post, PostDay, PostId,
+        PostUri, Reply, Share, StorUrl, Tagname, User, UserId, Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
@@ -621,6 +621,8 @@ enum PreparedStatements {
     CountFollowers,
     CountFollowing,
     AddLike,
+    CountFollowingByActor,
+    AddActivityPubPost,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -637,6 +639,7 @@ pub struct Session {
     // Will probably need another `EnumMap`, but for now, just make it its own field
     following_statement: PreparedStatement,
     followers_statement: PreparedStatement,
+    following_by_actor_statement: PreparedStatement,
 }
 
 impl Session {
@@ -730,7 +733,9 @@ impl Session {
             "insert into followers (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollowerss
             "select count(*) from followers where user_id = ?", // CountFollowers
             "select count(*) from following where user_id = ?", // CountFollowing
-            "insert into likes (user_id, url, id, created, like_id) values (?, ?, ?, ?, ?) if not exists"
+            "insert into likes (user_id, url, id, created, like_id) values (?, ?, ?, ?, ?) if not exists",
+            "select count(*) from following where actor_id = ?", // CountFollowingByActor
+            "insert into activity_pub_posts (user_id, post_id, posted, flavor, visibility) values (?, ?, ?, ?, ?) if not exists"
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -747,7 +752,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 55] = prepared_statements
+        let prepared_statements: [PreparedStatement; 57] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -766,11 +771,19 @@ impl Session {
             .context(PrepareSnafu {
                 stmt: following_statement.to_owned(),
             })?;
+        let following_by_actor_statement = "select * from following where actor_id = ?";
+        let following_by_actor_statement = scylla
+            .prepare(Statement::new(following_by_actor_statement).with_page_size(512))
+            .await
+            .context(PrepareSnafu {
+                stmt: following_by_actor_statement.to_owned(),
+            })?;
         Ok(Session {
             session: scylla,
             prepared_statements: EnumMap::from_array(prepared_statements),
             followers_statement,
             following_statement,
+            following_by_actor_statement,
         })
     }
 }
@@ -841,6 +854,19 @@ impl std::convert::From<scylla::response::query_result::SingleRowError> for BckE
 
 #[async_trait]
 impl storage::Backend for Session {
+    async fn add_activity_pub_post(&self, post: &ActivityPubPost) -> StdResult<(), StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::AddActivityPubPost],
+                post,
+            )
+            .await?;
+        // Unfortunately, this implementation gives us no way of knowing whether the statement had
+        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
+        // that.
+        Ok(())
+    }
+
     async fn add_follower(&self, user: &User, follower: &StorUrl) -> StdResult<(), StorError> {
         add_followers(
             &self.session,
@@ -1045,6 +1071,32 @@ impl storage::Backend for Session {
 
         self.session.batch(&batch, batch_values).await?;
         Ok(())
+    }
+
+    async fn followers_for_actor<'a>(
+        &'a self,
+        actor_id: &StorUrl,
+    ) -> StdResult<BoxStream<'a, StdResult<Following, StorError>>, StorError> {
+        let count: usize = self
+            .session
+            .execute_unpaged(&self.prepared_statements[PreparedStatements::CountFollowingByActor], (actor_id,))
+            .await?
+            .into_rows_result()?
+            .rows::<(i64,)>()?
+            .exactly_one()
+            .unwrap(/* known good */)?
+            .0 as usize;
+
+        Ok(Box::pin(
+            PagedResultsStream::new(
+                &self.session,
+                &self.following_by_actor_statement,
+                (actor_id.clone(),),
+                count,
+            )
+            .await
+            .map_err(StorError::new)?,
+        ))
     }
 
     async fn get_followers<'a>(

@@ -62,6 +62,8 @@ create table following (
   PRIMARY KEY (user_id, actor_id)
 );
 
+create index following_by_actor on following (actor_id);
+
 /* Similarly, here (cf. table `following`, above). I considered
    keeping both followers & followings in one table, but decided to
    reserve the option to represent them differently. */
@@ -73,6 +75,8 @@ create table followers (
   accepted boolean,
   PRIMARY KEY (user_id, actor_id)
 );
+
+create index followers_by_actor on followers (actor_id);
 
 /* I've gone through a good deal of churn on representing posts. Given
    that I'm always accessing posts by user, `user_id` needs to be
@@ -167,6 +171,20 @@ create table shares (
   visibility tinyint,
   PRIMARY KEY ((user_id, url), share_id)
 );
+
+create table activity_pub_posts (
+  user_id uuid,
+  post_id ascii,
+  posted timestamp,
+  flavor tinyint,
+  visibility tinyint,
+  PRIMARY KEY (user_id, post_id)
+);
+
+create materialized view activity_pub_posts_by_posted as
+  select * from activity_pub_posts where post_id is not null and posted is not null
+  primary key (user_id, posted, post_id) -- user_id is still the partition key
+  with clustering order by (posted desc);
 
 /* Background tasks */
 create table tasks (

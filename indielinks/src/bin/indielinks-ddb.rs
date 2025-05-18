@@ -320,6 +320,17 @@ async fn create_following(client: &Client) -> Result<()> {
                     name: "actor_id".to_string(),
                 })?,
         ]))
+        .global_secondary_indexes(
+            GlobalSecondaryIndex::builder()
+                .index_name("following_by_actor_id")
+                .set_key_schema(Some(vec![KeySchemaElement::builder()
+                    .attribute_name("actor_id")
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .unwrap()]))
+                .build()
+                .unwrap(),
+        )
         .send()
         .await
         .context(CreateTableSnafu)?;
@@ -552,6 +563,62 @@ async fn create_shares(client: &Client) -> Result<()> {
     Ok(())
 }
 
+async fn create_activity_pub_posts(client: &Client) -> Result<()> {
+    let out = client
+        .create_table()
+        .table_name("activity_pub_posts")
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("user_id", S),
+            table_attr!("post_id", S),
+            table_attr!("posted", S), // Sort key for the LSI
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("user_id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "user_id".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("post_id")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "post_id".to_string(),
+                })?,
+        ]))
+        .local_secondary_indexes(
+            LocalSecondaryIndex::builder()
+                .index_name("activity_pub_posts_by_posted")
+                .set_key_schema(Some(vec![
+                    KeySchemaElement::builder()
+                        .attribute_name("user_id")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .unwrap(),
+                    KeySchemaElement::builder()
+                        .attribute_name("posted")
+                        .key_type(KeyType::Range)
+                        .build()
+                        .context(GenericBuildFailureSnafu {
+                            name: "posted".to_string(),
+                        })?,
+                ]))
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "activity_pub_posts_by_posted".to_string(),
+                })?,
+        )
+        .send()
+        .await
+        .context(CreateTableSnafu);
+    debug!("create activity_pub_posts: {:#?}", out);
+    out.expect("Failed to create `activity_pub_posts`");
+    Ok(())
+}
+
 async fn create_tasks(client: &Client) -> Result<()> {
     let out = client
         .create_table()
@@ -582,6 +649,7 @@ async fn create_tables(client: &Client) -> Result<()> {
     create_likes(client).await?;
     create_replies(client).await?;
     create_shares(client).await?;
+    create_activity_pub_posts(client).await?;
     create_tasks(client).await?;
     Ok(())
 }

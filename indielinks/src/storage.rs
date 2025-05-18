@@ -19,8 +19,8 @@
 
 use crate::{
     entities::{
-        FollowId, Follower, Following, Like, Post, PostDay, PostId, PostUri, Reply, Share, StorUrl,
-        Tagname, User, UserId, Username,
+        ActivityPubPost, FollowId, Follower, Following, Like, Post, PostDay, PostId, PostUri,
+        Reply, Share, StorUrl, Tagname, User, UserId, Username,
     },
     util::UpToThree,
 };
@@ -76,6 +76,7 @@ impl DateRange {
 
 #[async_trait]
 pub trait Backend {
+    async fn add_activity_pub_post(&self, post: &ActivityPubPost) -> Result<(), Error>;
     /// Add a follower to a user's collection
     async fn add_follower(&self, user: &User, follower: &StorUrl) -> Result<(), Error>;
     /// Add a follow to a user's collection
@@ -123,6 +124,11 @@ pub trait Backend {
     /// posts to avoid a join), this is likely to be an inefficient operation. I might want to consider
     /// special logic here for rate-limiting.
     async fn delete_tag(&self, user: &User, tag: &Tagname) -> Result<(), Error>;
+    /// Return a stream of all [User]s following a given AP actor
+    async fn followers_for_actor<'a>(
+        &'a self,
+        actor_id: &StorUrl,
+    ) -> Result<BoxStream<'a, Result<Following, Error>>, Error>;
     // I considered using `TryStream`, but not sure I see the advantage, yet. Also, there's no handy
     // type alias `BoxTryStream` (tho of course I could define it)
     async fn get_followers<'a>(

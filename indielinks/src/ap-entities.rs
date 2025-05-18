@@ -116,11 +116,7 @@
 //! compatibility with as many other apps as possible.
 //!
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Display,
-    ops::Deref,
-};
+use std::{collections::HashMap, fmt::Display, ops::Deref};
 
 use chrono::{DateTime, FixedOffset, Utc};
 use lazy_static::lazy_static;
@@ -133,7 +129,7 @@ use tap::Pipe;
 use url::Url;
 
 use crate::{
-    entities::{self, FollowId, Post, PostId, User, Username, Visibility},
+    entities::{self, FollowId, Post, PostId, User, Username},
     origin::Origin,
 };
 
@@ -150,6 +146,8 @@ pub enum Error {
     },
     #[snafu(display("Unexpected object `id` type"))]
     BadObjectId { backtrace: Backtrace },
+    #[snafu(display("{url} cannot be a base, which is not permitted"))]
+    CannotBeABase { url: Box<Url>, backtrace: Backtrace },
     #[snafu(display("More than one capture when attempting to parse an Actor ID"))]
     Capture { backtrace: Backtrace },
     #[snafu(display("No captures when attempting to parse an Actor ID"))]
@@ -177,6 +175,12 @@ pub enum Error {
     JsonSer { source: serde_json::Error },
     #[snafu(display("AP entities serialized to unexpected JSON types"))]
     JsonTypeMismatch { backtrace: Backtrace },
+    #[snafu(display("The provided origin {provided:?} doesn't match the true origin {golden}"))]
+    MismatchedOrigin {
+        golden: Box<Origin>,
+        provided: url::Origin,
+        backtrace: Backtrace,
+    },
     #[snafu(display("The object has no `id` property"))]
     NoObjectId { backtrace: Backtrace },
     #[snafu(display("The note {note:?} did not serialize to a map-- this is a bug"))]
@@ -188,6 +192,11 @@ pub enum Error {
     ObjectId {
         source: url::ParseError,
         backtrace: Backtrace,
+    },
+    #[snafu(display("{url} has an opaque origin: {source}"))]
+    OpaqueOrigin {
+        url: Box<Url>,
+        source: crate::origin::Error,
     },
     #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
     Pem { source: entities::Error },
@@ -213,8 +222,6 @@ pub enum Error {
         source: url::ParseError,
         backtrace: Backtrace,
     },
-    #[snafu(display("Unable to derive visibility"))]
-    Visibility { backtrace: Backtrace },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -268,7 +275,18 @@ lazy_static! {
 }
 
 /// Parse a [Username] from an indielinks actor ID (as an [Url])
-pub fn username_from_url(url: &Url) -> Result<Username> {
+pub fn username_from_url(origin: &Origin, url: &Url) -> Result<Username> {
+    if origin
+        != &Origin::new(&url.origin()).context(OpaqueOriginSnafu {
+            url: Box::new(url.clone()),
+        })?
+    {
+        return MismatchedOriginSnafu {
+            golden: Box::new(origin.clone()),
+            provided: url.origin(),
+        }
+        .fail();
+    }
     USER_PATH
         .captures(url.path())
         .context(CapturesSnafu)?
@@ -286,7 +304,18 @@ lazy_static! {
 }
 
 /// Parse a [Username] & [PostId] from and indielinks post ID (as an [Url])
-pub fn username_and_postid_from_url(url: &Url) -> Result<(Username, PostId)> {
+pub fn username_and_postid_from_url(origin: &Origin, url: &Url) -> Result<(Username, PostId)> {
+    if origin
+        != &Origin::new(&url.origin()).context(OpaqueOriginSnafu {
+            url: Box::new(url.clone()),
+        })?
+    {
+        return MismatchedOriginSnafu {
+            golden: Box::new(origin.clone()),
+            provided: url.origin(),
+        }
+        .fail();
+    }
     let captures = USER_POSTID_PATH
         .captures(url.path())
         .context(CapturesSnafu)?;
@@ -301,6 +330,8 @@ pub fn username_and_postid_from_url(url: &Url) -> Result<(Username, PostId)> {
 
 #[cfg(test)]
 mod test_locations {
+    use std::str::FromStr;
+
     use uuid::Uuid;
 
     use super::*;
@@ -308,6 +339,7 @@ mod test_locations {
     #[test]
     fn test_username_from_url() {
         let res = username_from_url(
+            &Origin::from_str("http://indiemark.local").unwrap(/* known good */),
             &Url::parse("http://indiemark.local/users/sp1ff").unwrap(/* known good */),
         );
         assert!(res.is_ok());
@@ -318,7 +350,8 @@ mod test_locations {
     #[test]
     fn test_username_and_postid_from_url() {
         let url = Url::parse("http://indiemark.local/users/sp1ff/posts/36bbef8b-9922-4f6b-916b-2b2241797964").unwrap(/* known good */);
-        let res = username_and_postid_from_url(&url);
+        let origin = Origin::from_str("http://indiemark.local").unwrap();
+        let res = username_and_postid_from_url(&origin, &url);
         assert!(res.is_ok());
         let (username, postid) = res.unwrap();
         assert!(*"sp1ff" == *username);
@@ -1211,11 +1244,40 @@ impl Note {
             // `http://indieweb.social/@sp1ff/...`
             url: make_user_post_id(username, &post.id(), origin)?,
             attributed_to: make_user_id(username, origin)?,
-            to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
-                .context(UrlParseSnafu)?],
+            to: vec![
+                Url::parse("https://www.w3.org/ns/activitystreams#Public")
+                    .context(UrlParseSnafu)?,
+            ],
             cc: vec![make_user_followers(username, origin)?],
             content: post_html.clone(),
             content_map: HashMap::from([("en".to_owned(), post_html)]),
+        })
+    }
+    pub fn new_from_parts<T, U>(
+        id: Url,
+        in_reply_to: Option<Url>,
+        url: Url,
+        attributed_to: Url,
+        to: T,
+        cc: U,
+        content: String,
+    ) -> Result<Note>
+    where
+        T: Iterator<Item = Url>,
+        U: Iterator<Item = Url>,
+    {
+        let content = Html(content);
+        Ok(Note {
+            id,
+            summary: None,
+            in_reply_to,
+            published: Utc::now(),
+            url,
+            attributed_to,
+            to: to.collect::<Vec<Url>>(),
+            cc: cc.collect::<Vec<Url>>(),
+            content: content.clone(),
+            content_map: HashMap::from([("en".to_owned(), content)]),
         })
     }
     pub fn content(&self) -> &Html {
@@ -1232,6 +1294,9 @@ impl Note {
     }
     pub fn cc(&self) -> impl Iterator<Item = &Url> {
         self.cc.iter()
+    }
+    pub fn url(&self) -> &Url {
+        &self.url
     }
 }
 
@@ -1491,14 +1556,10 @@ pub enum AnnounceOrCreate {
     Create(Create),
 }
 
-lazy_static! {
-    static ref PUBLIC: Url = Url::parse("https://www.w3.org/ns/activitystreams#Public").unwrap(/* known good */);
-}
-
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Recipient {
     Direct(Username),
-    Followers(Username),
+    Followers(Url),
 }
 
 impl Recipient {
@@ -1508,118 +1569,21 @@ impl Recipient {
             Recipient::Followers(_) => false,
         }
     }
-}
-
-lazy_static! {
-    static ref FOLLOWERS_PATH: Regex =
-        Regex::new("^/users/([a-zA-Z][-_.a-zA-Z0-9]+)(/followers)?$").unwrap(/* known good */);
-}
-
-impl TryFrom<&Url> for Recipient {
-    type Error = Error;
-
-    fn try_from(url: &Url) -> std::result::Result<Self, Self::Error> {
-        let what = FOLLOWERS_PATH.captures(url.path()).context(CapturesSnafu)?;
-        match (what.get(1), what.get(2)) {
-            (Some(u), Some(_)) => Ok(Recipient::Followers(
-                Username::new(u.as_str()).context(InvalidUsernameSnafu)?,
-            )),
-            (Some(u), None) => Ok(Recipient::Direct(
-                Username::new(u.as_str()).context(InvalidUsernameSnafu)?,
-            )),
-            _ => InvalidRecipientSnafu {
-                url: Box::new(url.clone()),
-            }
-            .fail(),
+    pub fn new(origin: &Origin, url: &Url) -> Result<Recipient> {
+        if url.path().ends_with("/followers") {
+            let mut actor = url.clone();
+            actor
+                .path_segments_mut()
+                .map_err(|_err| {
+                    CannotBeABaseSnafu {
+                        url: Box::new(url.clone()),
+                    }
+                    .build()
+                })?
+                .pop();
+            Ok(Recipient::Followers(actor))
+        } else {
+            Ok(Recipient::Direct(username_from_url(origin, url)?))
         }
-    }
-}
-
-impl TryFrom<Url> for Recipient {
-    type Error = Error;
-
-    fn try_from(url: Url) -> std::result::Result<Self, Self::Error> {
-        Recipient::try_from(&url)
-    }
-}
-
-/// Derive a [Visibility] and a list of local recipients from a pair of collections of [Url]s
-/// (presumably an ActivityPub message's "to" & "cc" fields)
-pub fn derive_visibility<'a, S, T>(
-    to: S,
-    cc: T,
-    origin: &Origin,
-) -> Result<(Visibility, Vec<Recipient>)>
-where
-    S: Iterator<Item = &'a Url>,
-    T: Iterator<Item = &'a Url>,
-{
-    // Honestly, this entire implementation feels awkward, but but we only get one pass on the
-    // iterators unless we want to also demand that they be `Clone`. I'm also still
-    // understanding how various AP platforms express visibility.
-
-    // This should probably be public, but we'll see if it would come-in handy anywhere else.
-    fn origin_is_eq(url: &Url, origin: &Origin) -> bool {
-        matches!(url.try_into().map(|o: Origin| o == *origin), Ok(true))
-    }
-
-    let mut public_is_in_to = false;
-    let to_local_recipients = to
-        .filter_map(|url| {
-            if *url == *PUBLIC {
-                public_is_in_to = true;
-            };
-            origin_is_eq(url, origin).then_some(url.clone())
-        })
-        .collect::<HashSet<Url>>();
-
-    let mut public_is_in_cc = false;
-    let cc_local_recipients = cc
-        .filter_map(|url| {
-            if *url == *PUBLIC {
-                public_is_in_cc = true;
-            };
-            origin_is_eq(url, origin).then_some(url.clone())
-        })
-        .collect::<HashSet<Url>>();
-
-    let local_recipients = to_local_recipients
-        .union(&cc_local_recipients)
-        .map(|url| url.try_into())
-        .collect::<Result<Vec<Recipient>>>()?;
-
-    // - public: to contains =https://www.w3.org/ns/activitystreams#Public=, cc contains ={actor ID}/followers=
-    // - unlisted: to contains ={actor ID}/followers=, cc contains =https://www.w3.org/ns/activitystreams#Public=
-    // - followers only: to contains ={actor ID}/followers=, cc is empty
-    // - DM: to contains actor IDs, cc is empty
-    if public_is_in_to {
-        // We expect some local (follower) recipients in cc, but I'm not going to enforce that, yet.
-        Ok((Visibility::Public, local_recipients))
-    } else if public_is_in_cc {
-        // We expect some local (follower) recipients in to, but I'm not going to enforce that, yet.
-        Ok((Visibility::Unlisted, local_recipients))
-    } else if !to_local_recipients.is_empty() {
-        // We expect some local (follower) recipients in to, but I'm not going to enforce that, yet.
-        Ok((Visibility::Followers, local_recipients))
-    } else if cc_local_recipients.is_empty() && local_recipients.iter().all(Recipient::is_direct) {
-        // We expect actors only, and an empty cc
-        Ok((Visibility::DirectMessage, local_recipients))
-    } else {
-        Err(VisibilitySnafu.build())
-    }
-}
-
-#[cfg(test)]
-pub mod test_visibility {
-
-    use super::*;
-
-    #[test]
-    fn test_recipient() {
-        let recip: Recipient = Url::parse("http://indiemark.local/users/sp1ff").unwrap(/* known good */).try_into().unwrap();
-        assert!(recip == Recipient::Direct(Username::new("sp1ff").unwrap(/* known good */)));
-
-        let recip: Recipient = Url::parse("http://indiemark.local/users/sp1ff/followers").unwrap(/* known good */).try_into().unwrap();
-        assert!(recip == Recipient::Followers(Username::new("sp1ff").unwrap(/* known good */)));
     }
 }

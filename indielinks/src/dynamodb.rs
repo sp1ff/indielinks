@@ -22,15 +22,15 @@
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     entities::{
-        FollowId, Follower, Following, Like, Post, PostDay, PostId, PostUri, Reply, Share, StorUrl,
-        Tagname, User, UserId, Username,
+        ActivityPubPost, FollowId, Follower, Following, Like, Post, PostDay, PostId, PostUri,
+        Reply, Share, StorUrl, Tagname, User, UserId, Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
 
 use async_trait::async_trait;
-use aws_config::{meta::region::RegionProviderChain, BehaviorVersion, Region};
+use aws_config::{BehaviorVersion, Region, meta::region::RegionProviderChain};
 use aws_sdk_dynamodb::{
     config::Credentials,
     operation::{
@@ -42,7 +42,7 @@ use aws_sdk_dynamodb::{
 use aws_smithy_async::future::pagination_stream::PaginationStream;
 use chrono::{DateTime, Duration, Utc};
 use either::Either;
-use futures::{stream::BoxStream, Stream};
+use futures::{Stream, stream::BoxStream};
 use itertools::Itertools;
 use pin_project::pin_project;
 use secrecy::SecretString;
@@ -246,10 +246,12 @@ pub async fn count_range(
     table_name: &str,
     pk_name: &str,
     pk_value: &str,
+    index_name: Option<String>,
 ) -> Result<usize> {
     Ok(client
         .query()
         .table_name(table_name)
+        .set_index_name(index_name)
         .key_condition_expression(format!("{} = :pk", pk_name))
         .expression_attribute_values(":pk", AttributeValue::S(pk_value.to_string()))
         .select(Select::Count)
@@ -452,12 +454,14 @@ where
         pk_name: &str,
         pk_value: &str,
         count: usize,
+        index_name: Option<String>,
     ) -> Result<PagedResultsStream<T>> {
         Ok(PagedResultsStream {
             stream: Some(
                 client
                     .query()
                     .table_name(table_name)
+                    .set_index_name(index_name)
                     .key_condition_expression(format!("{} = :pk", pk_name))
                     .expression_attribute_values(":pk", AttributeValue::S(pk_value.to_string()))
                     .into_paginator()
@@ -696,6 +700,15 @@ struct Tags {
 
 #[async_trait]
 impl storage::Backend for Client {
+    async fn add_activity_pub_post(&self, post: &ActivityPubPost) -> StdResult<(), StorError> {
+        self.client
+            .put_item()
+            .table_name("activity_pub_posts")
+            .set_item(Some(serde_dynamo::to_item(post)?))
+            .send()
+            .await?;
+        Ok(())
+    }
     async fn add_follower(&self, user: &User, follower: &StorUrl) -> StdResult<(), StorError> {
         add_followers(&self.client, user, &HashSet::from([follower.clone()]))
             .await
@@ -916,13 +929,46 @@ impl storage::Backend for Client {
         Ok(())
     }
 
+    async fn followers_for_actor<'a>(
+        &'a self,
+        actor_id: &StorUrl,
+    ) -> StdResult<BoxStream<'a, StdResult<Following, StorError>>, StorError> {
+        let count = count_range(
+            &self.client,
+            "followers",
+            "actor_id",
+            actor_id,
+            Some("following_by_actor_id".to_owned()),
+        )
+        .await
+        .map_err(StorError::new)?;
+        Ok(Box::pin(
+            PagedResultsStream::new(
+                &self.client,
+                "followers",
+                "actor_id",
+                actor_id,
+                count,
+                Some("following_by_actor_id".to_owned()),
+            )
+            .await
+            .map_err(StorError::new)?,
+        ))
+    }
+
     async fn get_followers<'a>(
         &'a self,
         user: &User,
     ) -> StdResult<BoxStream<'a, StdResult<Follower, StorError>>, StorError> {
-        let count = count_range(&self.client, "followers", "user_id", &user.id().to_string())
-            .await
-            .map_err(StorError::new)?;
+        let count = count_range(
+            &self.client,
+            "followers",
+            "user_id",
+            &user.id().to_string(),
+            None,
+        )
+        .await
+        .map_err(StorError::new)?;
         Ok(Box::pin(
             PagedResultsStream::new(
                 &self.client,
@@ -930,6 +976,7 @@ impl storage::Backend for Client {
                 "user_id",
                 &user.id().to_string(),
                 count,
+                None,
             )
             .await
             .map_err(StorError::new)?,
@@ -940,9 +987,15 @@ impl storage::Backend for Client {
         &'a self,
         user: &User,
     ) -> StdResult<BoxStream<'a, StdResult<Following, StorError>>, StorError> {
-        let count = count_range(&self.client, "following", "user_id", &user.id().to_string())
-            .await
-            .map_err(StorError::new)?;
+        let count = count_range(
+            &self.client,
+            "following",
+            "user_id",
+            &user.id().to_string(),
+            None,
+        )
+        .await
+        .map_err(StorError::new)?;
         Ok(Box::pin(
             PagedResultsStream::new(
                 &self.client,
@@ -950,6 +1003,7 @@ impl storage::Backend for Client {
                 "user_id",
                 &user.id().to_string(),
                 count,
+                None,
             )
             .await
             .map_err(StorError::new)?,

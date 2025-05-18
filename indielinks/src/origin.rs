@@ -106,7 +106,7 @@ use std::{
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, prelude::*};
 use url::Url;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -121,8 +121,8 @@ pub enum Error {
         source: url::ParseError,
         backtrace: Backtrace,
     },
-    #[snafu(display("{text} results in an opaque origin"))]
-    OpaqueOrigin { text: String, backtrace: Backtrace },
+    #[snafu(display("Opaque origins are not supported"))]
+    OpaqueOrigin { backtrace: Backtrace },
     #[snafu(display("Failed to parse {text} as an URL: {source}"))]
     OriginUrl {
         text: String,
@@ -289,6 +289,18 @@ impl TryFrom<url::Host> for Host {
     }
 }
 
+impl TryFrom<&url::Host> for Host {
+    type Error = Error;
+
+    fn try_from(value: &url::Host) -> std::result::Result<Self, Self::Error> {
+        match value {
+            url::Host::Domain(s) => Ok(Host::RegName(RegName::new(s)?)),
+            url::Host::Ipv4(ipv4) => Ok(Host::Ipv4Address(*ipv4)),
+            url::Host::Ipv6(ipv6) => Ok(Host::IpLiteral(*ipv6)),
+        }
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                             Origin                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -306,6 +318,16 @@ pub struct Origin {
 impl Origin {
     pub fn host(&self) -> &Host {
         &self.host
+    }
+    pub fn new(origin: &url::Origin) -> Result<Origin> {
+        match origin {
+            url::Origin::Opaque(_) => OpaqueOriginSnafu.fail(),
+            url::Origin::Tuple(scheme, host, port) => Ok(Origin {
+                scheme: Protocol::from_str(scheme)?,
+                host: Host::try_from(host)?,
+                port: Some(*port),
+            }),
+        }
     }
     pub fn port(&self) -> Option<u16> {
         self.port
@@ -387,10 +409,7 @@ impl TryFrom<&Url> for Origin {
 
     fn try_from(value: &Url) -> std::result::Result<Self, Self::Error> {
         match value.origin() {
-            url::Origin::Opaque(_) => OpaqueOriginSnafu {
-                text: value.as_str().to_owned(),
-            }
-            .fail(),
+            url::Origin::Opaque(_) => OpaqueOriginSnafu.fail(),
             url::Origin::Tuple(scheme, host, port) => Ok(Origin {
                 scheme: scheme.as_str().parse::<Protocol>()?,
                 host: host.try_into()?,
