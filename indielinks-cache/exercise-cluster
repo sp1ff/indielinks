@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+# Trivial script to exercise `indielinks-cache` as a standalone Raft cluster
+
+function current_leader {
+    local node_id=$1
+    curl -s http://127.0.0.1:2080${node_id}/admin/metrics|jq .current_leader
+}
+
+function kill_all {
+    for pid in $(ps aux|grep debug/node|grep -v grep|awk '{print $2}'); do
+        echo "Killing PID $pid"
+        kill $pid
+    done
+}
+
+set -e
+kill_all
+
+cargo run -- 0 127.0.0.1:20800 2>&1 > n0.log &
+sleep 1
+cargo run -- 1 127.0.0.1:20801 2>&1 > n1.log &
+sleep 1
+cargo run -- 2 127.0.0.1:20802 2>&1 > n2.log &
+sleep 1
+
+echo -n "First metrics: "
+curl -s http://127.0.0.1:20800/admin/metrics
+echo
+
+curl -s \
+     -H 'Content-Type: application/json' \
+     --data '[[0, "127.0.0.1:20800"], [1, "127.0.0.1:20801"], [2, "127.0.0.1:20802"]]' \
+     http://127.0.0.1:20800/admin/init
+sleep 1
+
+echo -n "Current leader: "
+current_leader 2
+echo
+
