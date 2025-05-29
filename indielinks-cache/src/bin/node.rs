@@ -39,7 +39,7 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{Level, error, info, subscriber::set_global_default};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
-use indielinks_cache::{LogStore, Network, NodeId, StateMachine, TypeConfig};
+use indielinks_cache::{LogStore, Network, NodeId, Request, StateMachine, TypeConfig};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                   Raft API -- this is the Raft nodes talking to one another                    //
@@ -87,15 +87,26 @@ async fn admin_init(
         req.push((state.id, state.addr.to_string()));
     }
 
-    Json(
-        state
+    let result = state
+        .raft
+        .initialize(BTreeMap::from_iter(
+            req.into_iter().map(|(id, addr)| (id, BasicNode { addr })),
+        ))
+        .await;
+
+    if result.is_ok() {
+        let nodes = state
             .raft
-            .initialize(BTreeMap::from_iter(
-                req.into_iter().map(|(id, addr)| (id, BasicNode { addr })),
-            ))
-            .await,
-    )
-    .into_response()
+            .metrics()
+            .borrow()
+            .membership_config
+            .nodes()
+            .map(|(id, _)| *id)
+            .collect();
+        let _ = state.raft.client_write(Request::Init { nodes }).await;
+    }
+
+    Json(result).into_response()
 }
 
 async fn admin_metrics(State(state): State<NodeState>) -> axum::response::Response {
@@ -123,7 +134,43 @@ async fn admin_change_membership(
     State(state): State<NodeState>,
     Json(req): Json<Vec<NodeId>>,
 ) -> axum::response::Response {
-    Json(state.raft.change_membership(req, false).await).into_response()
+    let result = state.raft.change_membership(req, false).await;
+
+    // This is kinda lame-- we shouldn't re-init the hash ring, just update it.
+    if result.is_ok() {
+        let nodes = state
+            .raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .nodes()
+            .map(|(id, _)| *id)
+            .collect();
+        let _ = state.raft.client_write(Request::Init { nodes }).await;
+    }
+
+    Json(result).into_response()
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        application API                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+async fn get_hash_ring(State(state): State<NodeState>) -> axum::response::Response {
+    Json(state.state_machine.get_hash_ring()).into_response()
+}
+
+async fn update_hash_ring(
+    State(state): State<NodeState>,
+    Json((shard, node)): Json<(u64, NodeId)>,
+) -> axum::response::Response {
+    Json(
+        state
+            .raft
+            .client_write(Request::InsertNode { shard, node })
+            .await,
+    )
+    .into_response()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -153,7 +200,7 @@ struct NodeState {
     id: NodeId,
     addr: SocketAddrV4,
     raft: openraft::Raft<TypeConfig>,
-    _state_machine: StateMachine,
+    state_machine: StateMachine,
 }
 
 #[tokio::main]
@@ -212,7 +259,7 @@ async fn main() {
         id: opts.id,
         addr: opts.addr,
         raft,
-        _state_machine: state_machine,
+        state_machine,
     };
 
     let mut sigkill = signal(SignalKind::terminate()).expect("Failed to subscribe to SIGKILLs");
@@ -231,6 +278,8 @@ async fn main() {
             .route("/admin/metrics", get(admin_metrics))
             .route("/admin/add-learner", post(admin_add_learner))
             .route("/admin/membership", post(admin_change_membership))
+            .route("/app/hash-ring", get(get_hash_ring))
+            .route("/app/hash-ring", post(update_hash_ring))
             .layer(
                 TraceLayer::new_for_http()
                     .make_span_with(

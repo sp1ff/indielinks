@@ -43,6 +43,12 @@ echo -n "Current leader: "
 current_leader 2
 echo
 
+echo "Current hash ring: "
+curl -s \
+     -H 'Content-Type: application/json' \
+     http://127.0.0.1:20800/app/hash-ring
+
+echo
 echo "Add nodes 3 & 4 as learners"
 curl -s \
      -H 'Content-Type: application/json' \
@@ -56,6 +62,8 @@ curl -s \
 echo
 echo "Adding nodes 3 & 4 to the cluster"
 
+sleep 1
+
 curl -s \
      -H 'Content-Type: application/json' \
      --data '[0, 1, 2, 3, 4]' \
@@ -64,6 +72,13 @@ curl -s \
 echo
 echo -n "Retrieve metrics from node 4:"
 curl -s http://127.0.0.1:20804/admin/metrics|jq .
+
+sleep 1
+
+echo "Current hash ring per node 3: "
+curl -s \
+     -H 'Content-Type: application/json' \
+     http://127.0.0.1:20803/app/hash-ring
 
 echo
 echo "Killing all nodes..."

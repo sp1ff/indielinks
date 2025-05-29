@@ -61,6 +61,7 @@ use std::error::Error as StdError;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Request {
+    Init { nodes: Vec<NodeId> },
     InsertNode { shard: u64, node: NodeId },
     RemoveNode { shard: u64 },
 }
@@ -278,6 +279,18 @@ pub struct StateMachine {
     inner: Arc<RwLock<StateMachineInner>>,
 }
 
+impl StateMachine {
+    pub fn get_hash_ring(&self) -> Vec<(u64, NodeId)> {
+        self.inner
+            .read()
+            .expect("Poisoned R/W lock!")
+            .ring
+            .iter()
+            .map(|(x, y)| (*x, *y))
+            .collect()
+    }
+}
+
 // Here again, the `raft-kv-memstore` sample introduces multiple layers of composition here, which
 // seems needlessly complex to me.
 
@@ -402,8 +415,15 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 openraft::EntryPayload::Blank => res.push(Response(())),
                 openraft::EntryPayload::Normal(request) => {
                     match request {
-                        Request::InsertNode { shard, node } => sm.ring.insert(shard, node),
-                        Request::RemoveNode { shard } => sm.ring.remove(&shard),
+                        Request::Init { nodes } => {
+                            sm.ring = BTreeMap::from_iter(nodes.iter().map(|n| ((7 * n) % 11, *n)))
+                        }
+                        Request::InsertNode { shard, node } => {
+                            sm.ring.insert(shard, node);
+                        }
+                        Request::RemoveNode { shard } => {
+                            sm.ring.remove(&shard);
+                        }
                     };
                     res.push(Response(()));
                 }
