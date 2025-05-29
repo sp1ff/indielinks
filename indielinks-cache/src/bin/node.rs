@@ -41,32 +41,6 @@ use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 use indielinks_cache::{LogStore, Network, NodeId, StateMachine, TypeConfig};
 
-// Giving `bpaf` a try
-#[derive(Debug)]
-struct Options {
-    no_color: bool,
-    verbose: bool,
-    id: NodeId,
-    addr: SocketAddrV4,
-}
-
-fn options() -> impl Parser<Options> {
-    construct!(Options {
-        no_color(bpaf::short('c').long("no-color").help("Disable logging in color").switch()),
-        verbose(bpaf::short('v').long("verbose").help("Increase the verbosity").switch()),
-        id(bpaf::positional::<NodeId>("ID").help("Node ID, expressed as an unsigned integer")),
-        addr(bpaf::positional::<String>("SOCKADDR").parse(|s| SocketAddrV4::from_str(&s)))
-    })
-}
-
-#[derive(Clone)]
-struct NodeState {
-    id: NodeId,
-    addr: SocketAddrV4,
-    raft: openraft::Raft<TypeConfig>,
-    _state_machine: StateMachine,
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                   Raft API -- this is the Raft nodes talking to one another                    //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -128,9 +102,59 @@ async fn admin_metrics(State(state): State<NodeState>) -> axum::response::Respon
     Json(state.raft.metrics().borrow().clone()).into_response()
 }
 
+/// Add a node to the cluster
+///
+/// New nodes must be added as learners.
+async fn admin_add_learner(
+    State(state): State<NodeState>,
+    Json((node_id, addr)): Json<(NodeId, String /* SocketAddrV4 */)>,
+) -> axum::response::Response {
+    Json(
+        state
+            .raft
+            // Imma try setting `blocking` to true for now
+            .add_learner(node_id, BasicNode { addr }, true)
+            .await,
+    )
+    .into_response()
+}
+
+async fn admin_change_membership(
+    State(state): State<NodeState>,
+    Json(req): Json<Vec<NodeId>>,
+) -> axum::response::Response {
+    Json(state.raft.change_membership(req, false).await).into_response()
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                             main()                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Giving `bpaf` a try
+#[derive(Debug)]
+struct Options {
+    no_color: bool,
+    verbose: bool,
+    id: NodeId,
+    addr: SocketAddrV4,
+}
+
+fn options() -> impl Parser<Options> {
+    construct!(Options {
+        no_color(bpaf::short('c').long("no-color").help("Disable logging in color").switch()),
+        verbose(bpaf::short('v').long("verbose").help("Increase the verbosity").switch()),
+        id(bpaf::positional::<NodeId>("ID").help("Node ID, expressed as an unsigned integer")),
+        addr(bpaf::positional::<String>("SOCKADDR").parse(|s| SocketAddrV4::from_str(&s)))
+    })
+}
+
+#[derive(Clone)]
+struct NodeState {
+    id: NodeId,
+    addr: SocketAddrV4,
+    raft: openraft::Raft<TypeConfig>,
+    _state_machine: StateMachine,
+}
 
 #[tokio::main]
 async fn main() {
@@ -205,6 +229,8 @@ async fn main() {
             .route("/raft/vote", post(raft_vote))
             .route("/admin/init", post(admin_init))
             .route("/admin/metrics", get(admin_metrics))
+            .route("/admin/add-learner", post(admin_add_learner))
+            .route("/admin/membership", post(admin_change_membership))
             .layer(
                 TraceLayer::new_for_http()
                     .make_span_with(

@@ -23,11 +23,16 @@ cargo run -- 1 127.0.0.1:20801 2>&1 > n1.log &
 sleep 1
 cargo run -- 2 127.0.0.1:20802 2>&1 > n2.log &
 sleep 1
+cargo run -- 3 127.0.0.1:20803 2>&1 > n3.log &
+sleep 1
+cargo run -- 4 127.0.0.1:20804 2>&1 > n4.log &
+sleep 1
 
 echo -n "First metrics: "
 curl -s http://127.0.0.1:20800/admin/metrics
 echo
 
+echo "Initializing a three-node cluster"
 curl -s \
      -H 'Content-Type: application/json' \
      --data '[[0, "127.0.0.1:20800"], [1, "127.0.0.1:20801"], [2, "127.0.0.1:20802"]]' \
@@ -38,3 +43,29 @@ echo -n "Current leader: "
 current_leader 2
 echo
 
+echo "Add nodes 3 & 4 as learners"
+curl -s \
+     -H 'Content-Type: application/json' \
+     --data '[3, "127.0.0.1:20803"]' \
+     http://127.0.0.1:20800/admin/add-learner
+curl -s \
+     -H 'Content-Type: application/json' \
+     --data '[4, "127.0.0.1:20804"]' \
+     http://127.0.0.1:20800/admin/add-learner
+
+echo
+echo "Adding nodes 3 & 4 to the cluster"
+
+curl -s \
+     -H 'Content-Type: application/json' \
+     --data '[0, 1, 2, 3, 4]' \
+     http://127.0.0.1:20800/admin/membership
+
+echo
+echo -n "Retrieve metrics from node 4:"
+curl -s http://127.0.0.1:20804/admin/metrics|jq .
+
+echo
+echo "Killing all nodes..."
+kill_all
+echo "Killing all nodes...done."

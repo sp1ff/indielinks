@@ -181,9 +181,9 @@ where
     ///
     /// Per the [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.append):
     ///
-    ///     - When this method returns, the entries must be readable, i.e., a LogReader can read these entries
-    ///     - When the callback is called, the entries must be persisted on disk
-    ///     - There must not be a hole in logs. Because Raft only examine the last log id to ensure correctness
+    /// - When this method returns, the entries must be readable, i.e., a LogReader can read these entries
+    /// - When the callback is called, the entries must be persisted on disk
+    /// - There must not be a hole in logs. Because Raft only examine the last log id to ensure correctness
     ///
     /// This implementation is broken in that it doesn't write anything to disk (for now). I'm not
     /// entirely clear on what is meant by a "hole"-- I can only surmise that the log entries are
@@ -273,17 +273,9 @@ where
 //     - the state machine itself (in our case, the hash ring)
 //     - the most recently installed "snapshot" (if any; we may not have seen one)
 //     - I gather we also need to *build* snapshots off of our current state
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct StateMachine {
     inner: Arc<RwLock<StateMachineInner>>,
-}
-
-impl Default for StateMachine {
-    fn default() -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(StateMachineInner::default())),
-        }
-    }
 }
 
 // Here again, the `raft-kv-memstore` sample introduces multiple layers of composition here, which
@@ -314,24 +306,13 @@ impl Default for StateMachine {
 //
 // `SnapshotData` is just a `Box<C::SnapshotData>`, which by default & in our case, is a
 // `Cursor<Vec<u8>>`. What sort of `Cursor`, I can't tell. I guess `std::io::Cursor`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct StateMachineInner {
     pub last_applied_log: Option<LogId<NodeId>>,
     pub last_membership: StoredMembership<NodeId, BasicNode>,
     pub current_snapshot: Option<Snapshot<TypeConfig>>,
     /// The hash ring for our distributed KV store
     pub ring: BTreeMap<u64, NodeId>,
-}
-
-impl Default for StateMachineInner {
-    fn default() -> Self {
-        Self {
-            last_applied_log: None,
-            last_membership: StoredMembership::<NodeId, BasicNode>::default(),
-            current_snapshot: None,
-            ring: BTreeMap::new(),
-        }
-    }
 }
 
 impl RaftSnapshotBuilder<TypeConfig> for StateMachine {
@@ -342,15 +323,15 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachine {
     ///
     /// Building snapshot can be done by:
     ///
-    ///     - Performing log compaction, e.g. merge log entries that operates on the same key, like
-    ///       a LSM-tree does,
-    ///     - or by fetching a snapshot from the state machine.""
+    /// - Performing log compaction, e.g. merge log entries that operates on the same key, like
+    ///   a LSM-tree does,
+    /// - or by fetching a snapshot from the state machine.""
     ///
     /// The sample code again seems overly complex to me. AFAICT, we need to:
     ///
-    ///     1. build a snapshot of our current state
-    ///     2. save a copy into `current_snapshot`
-    ///     3. return the snapshot
+    /// 1. build a snapshot of our current state
+    /// 2. save a copy into `current_snapshot`
+    /// 3. return the snapshot
     async fn build_snapshot(&mut self) -> StdResult<Snapshot<TypeConfig>, StorageError<NodeId>> {
         let sm = self.inner.read().expect("Poisoned R/W lock!");
         let data =
@@ -395,17 +376,17 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
     /// [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftStateMachine.html#tymethod.apply),
     /// for each entry we shall:
     ///
-    ///     - Store the log id as last applied log id.
-    ///     - Deal with the business logic log.
-    ///     - Store membership config if RaftEntry::get_membership() returns Some.
+    /// - Store the log id as last applied log id.
+    /// - Deal with the business logic log.
+    /// - Store membership config if RaftEntry::get_membership() returns Some.
     ///
     /// And: An implementation may choose to persist either the state machine or the snapshot:
     ///
-    ///     - An implementation with persistent state machine: persists the state on disk before
-    ///       returning from apply(). So that a snapshot does not need to be persistent.
-    ///     - An implementation with persistent snapshot: apply() does not have to persist state on
-    ///       disk. But every snapshot has to be persistent. And when starting up the application, the
-    ///       state machine should be rebuilt from the last snapshot.
+    /// - An implementation with persistent state machine: persists the state on disk before
+    ///   returning from apply(). So that a snapshot does not need to be persistent.
+    /// - An implementation with persistent snapshot: apply() does not have to persist state on
+    ///   disk. But every snapshot has to be persistent. And when starting up the application, the
+    ///   state machine should be rebuilt from the last snapshot.
     #[instrument(level = "debug", skip(self, entries))]
     async fn apply<I>(&mut self, entries: I) -> StdResult<Vec<Response>, StorageError<NodeId>>
     where
@@ -424,7 +405,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                         Request::InsertNode { shard, node } => sm.ring.insert(shard, node),
                         Request::RemoveNode { shard } => sm.ring.remove(&shard),
                     };
-                    todo!()
+                    res.push(Response(()));
                 }
                 openraft::EntryPayload::Membership(membership) => {
                     // Cluster membership has changed-- I should probably record this
@@ -456,9 +437,9 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
     ///
     /// This method shall, before returning:
     ///
-    ///     - replace the state machine with the new contents of the snapshot,
-    ///     - save the input snapshot (i.e. `Self::get_current_snapshot()` should return it)
-    ///     - delete all other snapshots
+    /// - replace the state machine with the new contents of the snapshot,
+    /// - save the input snapshot (i.e. `Self::get_current_snapshot()` should return it)
+    /// - delete all other snapshots
     ///
     /// Here again, the sample seems needlessly complex. All we need to do here is update our
     /// `StateMachine` from the given snapshot, and store the snapshot as the "current" snapshot.
