@@ -1,0 +1,14 @@
+[package]
+name = "indielinks-cache-test"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8.4", features = ["macros"] }
+bpaf = { version = "0.9.20", features = ["bright-color"] }
+indielinks-cache = { path = "../indielinks-cache" }
+openraft = { version = "0.9.18", features = ["serde", "storage-v2"] }
+tokio = { version = "1.45.1", features = ["rt-multi-thread", "signal"] }
+tower-http = { version = "0.6.4", features = ["trace"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["ansi", "env-filter"] }
