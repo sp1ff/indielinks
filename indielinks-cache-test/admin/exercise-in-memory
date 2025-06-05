@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+function healthcheck() {
+    local node=$1
+    local hc=$(curl -s http://${node}/healthcheck)
+    while [ "$hc" != "GOOD" ]; do
+        sleep 0.5
+        hc=$(curl -s http://${node}/healthcheck)
+    done
+}
+
+function current_leader {
+    local node_id=$1
+    curl -s http://127.0.0.1:2080${node_id}/admin/metrics|jq .current_leader
+}
+
+function kill_all {
+    for pid in $(ps aux|grep debug/in-memory|grep -v grep|awk '{print $2}'); do
+        echo "Killing PID $pid"
+        kill $pid
+    done
+}
+
+set -ex
+kill_all
+
+# Run three copies of `in-memory`-- this will be our cluster
+RUST_LOG=debug,openraft=info,hyper_util=info cargo run -q --bin in-memory -- 0 127.0.0.1:18000 2>&1 > n0.log &
+RUST_LOG=debug,openraft=info,hyper_util=info cargo run -q --bin in-memory -- 1 127.0.0.1:18001 2>&1 > n1.log &
+RUST_LOG=debug,openraft=info,hyper_util=info cargo run -q --bin in-memory -- 2 127.0.0.1:18002 2>&1 > n2.log &
+
+# Wait for all cluster members to be up & ready to take traffic
+healthcheck 127.0.0.1:18000
+healthcheck 127.0.0.1:18001
+healthcheck 127.0.0.1:18002
+
+# Initialize the Raft cluster
+result=$(curl -s -H 'Content-Type: application/json' \
+              --data '[[0,"127.0.0.1:18000"],[1,"127.0.0.1:18001"],[2,"127.0.0.1:18002"]]' \
+              -w "%{http_code}" \
+              http://127.0.0.1:18000/admin/init)
+test "${result}" == "201" || exit 1
+
+echo "Cluster initialized."
+
+echo -n "Looking up key \"foo\" in cache 1..."
+result=$(curl -s -X GET -H 'Content-Type: application/json' http://127.0.0.1:18000/cache/lookup --data '{"cache":1,"key":"foo"}'|jq .value)
+test "${result}" == "null" || exit 1
+echo "done (null)."
+
+echo -n "Inserting \"foo\" := 11 into cache 1..."
+result=$(curl -s -H 'Content-Type: application/json' http://127.0.0.1:18000/cache/insert --data '{"cache":1,"key":"foo","value":11}')
+test "${result}" == '{"cache":1,"key":"foo"}' || exit 1
+echo "done."
+
+echo -n "Looking up key \"foo\" in cache 1..."
+result=$(curl -s -X GET -H 'Content-Type: application/json' http://127.0.0.1:18000/cache/lookup --data '{"cache":1,"key":"foo"}'|jq .value)
+test "${result}" == "11" || exit 1
+echo "done(11)."
+
+echo -n "Looking up key \"foo\" in cache 1, on node 1..."
+result=$(curl -s -X GET -H 'Content-Type: application/json' http://127.0.0.1:18001/cache/lookup --data '{"cache":1,"key":"foo"}'|jq .value)
+test "${result}" == "11" || exit 1
+echo "done(11)."
+
+echo -n "Looking up key \"foo\" in cache 1, on node 2..."
+result=$(curl -s -X GET -H 'Content-Type: application/json' http://127.0.0.1:18002/cache/lookup --data '{"cache":1,"key":"foo"}'|jq .value)
+test "${result}" == "11" || exit 1
+echo "done(11)."
+
+echo "Killing all nodes..."
+kill_all
+echo "Killing all nodes...done."
+
+echo "If you made it this far, indielinks-cache tested out 🍻"

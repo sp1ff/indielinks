@@ -15,584 +15,119 @@
 
 //! # indielinks-cache
 //!
-//! Trivial first implementation
+//! ## Some First Thoughts
+//!
+//! The Raft consensus protocol (see [In Search of an Understandable Consensus Algorithm])
+//! synchronises a (typically small) state across a cluster of nodes. It doesn't guarantee that the
+//! state is exactly the same across all nodes at all times; rather it guarantees that a message log
+//! is *seen* by all the nodes in the same order. A given node may be behind it's peers at any given
+//! time, in terms of the log messages it's committed, but given enough time, it will eventually
+//! catch-up, and it will catch up by committing the exact messages committed by its peers, in the
+//! same order.
+//!
+//! [In Search of an Understandable Consensus Algorithm]: https://raft.github.io/raft.pdf
+//!
+//! The state on any given node then, is the cumulative application of all the committed log
+//! messages. In order to use the [openraft] crate, we need to customize its generic implementation
+//! in several ways, beginning with the _log messages_. [openraft] defines a trait consisting
+//! solely of associated types, [RaftTypeConfig]. The first associated type, [D], is the
+//! application-specific log message. This is typically a sum type containing all the differnet
+//! ways in which the state can be mutated.
+//!
+//! [openraft]: https://docs.rs/openraft/latest/openraft/docs/getting_started/index.html
+//! [RaftTypeConfig]: https://docs.rs/openraft/latest/openraft/type_config/trait.RaftTypeConfig.html
+//! [D]: https://docs.rs/openraft/latest/openraft/type_config/trait.RaftTypeConfig.html#associatedtype.D
+//!
+//! In our case, this means:
+//!
+//! - variants for manipulating the hash ring (setting it to its initial state, inserting nodes, &
+//!   removing nodes)
+//! - variants for designating "owners" for the assorted top-k counts
+//!
+//! Raft models the process of applying one log message after another as a state machine, and makes
+//! certain demands on the implementation as to their persistence and management (compaction e.g.).
+//! [openraft] models these demands as [RaftLogStorage] and [RaftStateMachine], respectively.
+//!
+//! [RaftLogStorage]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html
+//! [RaftStateMachine]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftStateMachine.html
+//!
+//! As the name implies, [RaftLogStorage] is mostly concerned with persistence. In our case, we'll
+//! leverage the backend for this, defining our own trait listing the methods we'll need, and
+//! demanding an implementation from our caller. [RaftStateMachine] is concerned with updating the
+//! state in response to received log messages, as well snapshot handling.
+//!
+//! Finally, [openraft] is in the same boat we're in: we need to exchange messages with other
+//! members of the cluster, but we'd prefer not to open sockets & choose transport mechanisms in the
+//! library. [openraft] handles this by defining the [RaftNetwork] trait with a method per message
+//! to be exchanged. On the _receiving_ side, [openraft] says... very little. You pretty-much have
+//! to look at the samples to realize that you need to setup a server that is compatible with your
+//! [RaftNetwork] implementation, and invoke certain methods on the [Raft] struct you're
+//! maintaining.
+//!
+//! [RaftNetwork]: https://docs.rs/openraft/latest/openraft/network/trait.RaftNetwork.html
+//! [Raft]: https://docs.rs/openraft/latest/openraft/raft/struct.Raft.html
+//!
+//! I'd hoped to present a nicer abstraction to this crate's consumers, but I have to admit:
+//! it's a challenging design problem. I'm working off of two use cases:
+//!
+//! 1. the application starts by wanting to use JSON over HTTP (simple, easy to trouble-shoot)
+//! 2. once things are working the application wants to mvoe to gRPC for performance reasons
+//!
+//! I'd _like_ the application to be able to shift from 1. to 2. with no change to the library code.
+//! I believe this implies that the library is going to have to:
+//!
+//! 1. leak its messages to the app on the send and receive side
+//! 2. just document the fact that the application, on receipt of thus-and-such a message, should
+//!    call this-or-that method in the library
+//!
+//! I thought about doing something clever on the receive side, like having the application setup a
+//! =TcpStream= and handing it off to the library, but that would mean the library would need to
+//! know all about the transport mechanism the app has chosen in order to deserialize the incoming
+//! messages! I just don't see a way out of having serde handled by the app, not the library.
+//!
+//! There is one other possible thing that occurs to me: have the library provide indirect support
+//! for JSON/HTTP & gRPC. The library could provide, say an =axum::Route= instance and a
+//! =tonic::Grpc= instance; the dispatch piece of a server without the routing piece. The
+//! application could assemble the provided routing piece with their own transport choices. The
+//! downside here is that if the app wants _another_ RPC mechanism, the library would have to
+//! implement it.
+//!
+//! ## Why Am I Not Using Redis?
+//!
+//! The reader may well ask: why do all this? Why just not use Redis (or something similar)? Perhaps
+//! I will, yet, but I don't think that should be the default answer. Taking a dependency is not a
+//! cost-free, unalloyed good. You're now dependent on someone else's code, and in the case of a
+//! completely separate distributed cache, you've added a network hop & concomitant
+//! point-of-failure. I'd _still_ need to write code to specialize the cache to indielinks'
+//! particular use case. Finally, I've tried to get any number of Fediverse apps up & running
+//! locally (to test interoperability); in every case, I've only succeeded when some dev
+//! took the time to write a `docker-compose` file with the correct incantations, since they
+//! _all have so many moving parts_
+//!
+//! Rather, the choice to take a dependency should be viewed as a trade-off: is the work savings
+//! worth the cost? Without that limiting prinicple, you wind-up in the state node finds itself in,
+//! with packages devoted to [trimming whitespace] (there are several; the package at the link was
+//! just the first search hit). Now, fifteen or twenty years ago, the answer would have been clear:
+//! consensus protocols were bleeding edge technology; available only in the academic literature or
+//! in closed-source code bases at places like Google or Twitter. Today? I'm not so sure. [openraft]
+//! has been [downloaded] hundreds of thousands of times, and I had it up & running after two
+//! afternoons of hacking. For now, that along with the operational simplicity I can gain by not
+//! adding another component makes me land on the side of "just coding it up".
+//!
+//! [trimming whitespace]: https://www.npmjs.com/package/trim-whitespace
+//! [downloaded]: https://crates.io/crates/openraft
 
-use std::{
-    collections::BTreeMap,
-    io::Cursor,
-    ops::RangeBounds,
-    sync::{Arc, Mutex, RwLock},
-};
+// I'm thinking the initialization process will work like this:
+// 1. the application stands-up it's server implementation
+// 2. the app then initializes indielinks-cache, passing it:
+//    - the Raft cluster configuration
+//    - any Raft configuration I choose to expose
+//    - a "network" implementation
+// 3. we'll create the Raft instance here, and return... something (cookie, token, type whatever)
+// 4. indielinks then creates its caches (and top-k lists), _passing in_ the token it got
+//    in step 3
 
-use openraft::{
-    BasicNode, Entry, LogId, LogState, OptionalSend, RaftLogId, RaftLogReader, RaftNetwork,
-    RaftNetworkFactory, RaftSnapshotBuilder, RaftTypeConfig, Snapshot, SnapshotMeta, StorageError,
-    StorageIOError, StoredMembership, Vote,
-    error::{InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Unreachable},
-    network::RPCOption,
-    raft::{
-        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
-        InstallSnapshotResponse, VoteRequest, VoteResponse,
-    },
-    storage::{LogFlushed, RaftLogStorage, RaftStateMachine},
-};
-
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use snafu::Snafu;
-use tap::Pipe;
-use tracing::{info, instrument};
-
-pub type NodeId = u64;
-
-#[derive(Debug, Snafu)]
-pub enum Error {}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
-pub type StdResult<T, E> = std::result::Result<T, E>;
-
-use std::error::Error as StdError;
-
-// I've decided that my Raft state machine will manage the hash ring. Further, I've decided to model
-// the hash ring as an array of `(shard, NodeId)` pairs, sorted by `shard`. Per the openraft
-// "Getting Started" guide
-// <https://docs.rs/openraft/latest/openraft/docs/getting_started/index.html>, this gives us
-// something like this for our (Raft) client messages:
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Request {
-    Init { nodes: Vec<NodeId> },
-    InsertNode { shard: u64, node: NodeId },
-    RemoveNode { shard: u64 },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Response(());
-
-openraft::declare_raft_types! (
-   pub TypeConfig:
-       D            = Request,
-       R            = Response,
-);
-
-// Next-up: implement `RaftLogStorage`
-// (<https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html>). I'm really
-// confused by this: I can't find any requirements on this type to be `Clone`, but that's how the
-// `raft-kv-memstore` sample sets it up. It *does* have to be Send, OptionalSync, OptionalSend, Send
-// & 'static. Oddly, if I implement `RaftLogStorage` on a type, I also have to implement `RaftLogReader`
-#[derive(Clone, Debug, Default)]
-pub struct LogStore<C: RaftTypeConfig> {
-    inner: Arc<Mutex<LogStoreInner<C>>>,
-}
-
-#[derive(Debug)]
-struct LogStoreInner<C: RaftTypeConfig> {
-    /// The Raft log
-    log: BTreeMap<u64, C::Entry>,
-    /// The current granted vote.
-    vote: Option<Vote<C::NodeId>>,
-    last_purged_log_id: Option<LogId<C::NodeId>>,
-}
-
-impl<C: RaftTypeConfig> Default for LogStoreInner<C> {
-    fn default() -> Self {
-        LogStoreInner {
-            log: BTreeMap::new(),
-            vote: None,
-            last_purged_log_id: None,
-        }
-    }
-}
-
-// From the docs (<https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogReader.html):
-// "Typically, the log reader implementation as such will be hidden behind an Arc<T> and this
-// interface implemented on the Arc<T>. It can be co-implemented with RaftStorage interface on the
-// same cloneable object, if the underlying state machine is anyway synchronized."
-impl<C: RaftTypeConfig> RaftLogReader<C> for LogStore<C>
-where
-    C::Entry: Clone,
-{
-    async fn try_get_log_entries<R>(
-        &mut self,
-        range: R,
-    ) -> StdResult<Vec<C::Entry>, StorageError<C::NodeId>>
-    where
-        R: RangeBounds<u64> + Clone + std::fmt::Debug + OptionalSend,
-    {
-        // let response = self.log.range(range.clone()).map(|(_, val)| val.clone()).collect::<Vec<_>>();
-        self.inner
-            .lock()
-            .expect("Poisoned mutex!")
-            .log
-            .range(range)
-            .map(|(_, entry)| entry)
-            .cloned()
-            .collect::<Vec<_>>()
-            .pipe(Ok)
-    }
-}
-
-impl<C: RaftTypeConfig> RaftLogStorage<C> for LogStore<C>
-where
-    C::Entry: Clone,
-{
-    type LogReader = Self;
-
-    async fn get_log_state(&mut self) -> StdResult<LogState<C>, StorageError<C::NodeId>> {
-        let this = self.inner.lock().expect("Poisoned mutex!");
-        Ok(LogState {
-            last_purged_log_id: this.last_purged_log_id.clone(),
-            last_log_id: this
-                .log
-                .iter()
-                .next_back()
-                .map(|(_, ent)| ent.get_log_id().clone())
-                .or(this.last_purged_log_id.clone()),
-        })
-    }
-
-    async fn get_log_reader(&mut self) -> Self::LogReader {
-        self.clone()
-    }
-
-    /// Write a [Vote] to storage
-    ///
-    /// Per the
-    /// [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.save_vote),
-    /// "The vote must be persisted on disk before returning."
-    async fn save_vote(
-        &mut self,
-        vote: &Vote<C::NodeId>,
-    ) -> StdResult<(), StorageError<C::NodeId>> {
-        // In this implementation, we of course don't write to disk:
-        self.inner.lock().expect("Poisoned mutex!").vote = Some(vote.clone());
-        Ok(())
-    }
-
-    async fn read_vote(&mut self) -> StdResult<Option<Vote<C::NodeId>>, StorageError<C::NodeId>> {
-        Ok(self.inner.lock().expect("Poisoned mutex!").vote.clone())
-    }
-
-    /// Append log entries (presumably from the cluster leader)
-    ///
-    /// The contract is that this method shall return immediately after saving the input log entries
-    /// in memory, and arrange to have the provided callback invoked once the entries are persisted
-    /// on disk. That said, the intent is to avoid blocking in this method; the callback can be
-    /// called either before or after this method returns.
-    ///
-    /// Per the [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.append):
-    ///
-    /// - When this method returns, the entries must be readable, i.e., a LogReader can read these entries
-    /// - When the callback is called, the entries must be persisted on disk
-    /// - There must not be a hole in logs. Because Raft only examine the last log id to ensure correctness
-    ///
-    /// This implementation is broken in that it doesn't write anything to disk (for now). I'm not
-    /// entirely clear on what is meant by a "hole"-- I can only surmise that the log entries are
-    /// numbered, and that, at the end of this method, the entries in our log must be sequential (?)
-    #[instrument(level = "debug", skip(entries, callback))]
-    async fn append<I>(
-        &mut self,
-        entries: I,
-        callback: LogFlushed<C>,
-    ) -> StdResult<(), StorageError<C::NodeId>>
-    where
-        I: IntoIterator<Item = C::Entry> + OptionalSend,
-        I::IntoIter: OptionalSend,
-    {
-        self.inner.lock().expect("Poisoned mutex!").log.extend(
-            entries
-                .into_iter()
-                .map(|entry| (entry.get_log_id().index, entry)),
-        );
-        callback.log_io_completed(Ok(()));
-        Ok(())
-    }
-
-    /// Remove the logs from `log_id` and later
-    // Not sure why this would happen?
-    #[instrument(level = "debug")]
-    async fn truncate(
-        &mut self,
-        log_id: LogId<C::NodeId>,
-    ) -> StdResult<(), StorageError<C::NodeId>> {
-        let mut this = self.inner.lock().expect("Poisoned mutex!");
-        let to_be_removed = this
-            .log
-            .range(log_id.index..)
-            .map(|(k, _)| k)
-            .cloned()
-            .collect::<Vec<_>>();
-        to_be_removed.into_iter().for_each(|k| {
-            this.log.remove(&k);
-        });
-        Ok(())
-    }
-
-    /// Remove logs up to `log_id`, inclusive
-    // Seems reasonable-- but we need to note this `LogId` for future reference
-    async fn purge(&mut self, log_id: LogId<C::NodeId>) -> StdResult<(), StorageError<C::NodeId>> {
-        assert!(
-            self.inner
-                .lock()
-                .expect("Poisoned mutex!")
-                .last_purged_log_id
-                .as_ref()
-                <= Some(&log_id)
-        );
-
-        let mut this = self.inner.lock().expect("Poisoned mutex!");
-
-        this.last_purged_log_id = Some(log_id.clone());
-
-        let to_be_removed = this
-            .log
-            .range(..=log_id.index)
-            .map(|(k, _)| k)
-            .cloned()
-            .collect::<Vec<_>>();
-        to_be_removed.into_iter().for_each(|k| {
-            this.log.remove(&k);
-        });
-
-        Ok(())
-    }
-}
-
-// This is my state machine. Again not sure about the semantics, but it seems handy to have the
-// state machine shared by the `Raft` instance *and* the application state. That said, the
-// `raft-kv-memstore` sample seems needlessly complex: they wrap their state machine in an inner,
-// then wrap the "outer" in an `Arc` and implement the salient traits on the `Arc`. I'm going
-// to try replicating the idiom I used for the Raft storage.
-
-// Per the docs
-// (<https://docs.rs/openraft/latest/openraft/docs/components/state_machine/index.html>), "The state
-// machine in the Raft application is typically an in-memory component."
-
-// I'm struggling to get my head around the required behavior, here, but so far it seems we
-// need to maintain:
-//
-//     - the state machine itself (in our case, the hash ring)
-//     - the most recently installed "snapshot" (if any; we may not have seen one)
-//     - I gather we also need to *build* snapshots off of our current state
-#[derive(Clone, Debug, Default)]
-pub struct StateMachine {
-    inner: Arc<RwLock<StateMachineInner>>,
-}
-
-impl StateMachine {
-    pub fn get_hash_ring(&self) -> Vec<(u64, NodeId)> {
-        self.inner
-            .read()
-            .expect("Poisoned R/W lock!")
-            .ring
-            .iter()
-            .map(|(x, y)| (*x, *y))
-            .collect()
-    }
-}
-
-// Here again, the `raft-kv-memstore` sample introduces multiple layers of composition here, which
-// seems needlessly complex to me.
-
-// Now, what the heck *is* a `Snapshot`, anyway? Well, we have:
-//
-//     pub struct Snapshot<C: RaftTypeConfig>
-//     {
-//         pub meta: SnapshotMeta<C::NodeId, C::Node>,
-//         pub snapshot: Box<C::SnapshotData>,
-//     }
-//
-// so it's "metadata + data". Fine. Let's look at `SnapshotMeta`:
-//
-//     pub struct SnapshotMeta<NID: NodeId, N: Node>
-//     {
-//         pub last_log_id: Option<LogId<NID>>,
-//         pub last_membership: StoredMembership<NID, N>,
-//         pub snapshot_id: SnapshotId,
-//     }
-//
-// so the metadata consists of the last log ID to be incorporated into this snapshot, the last
-// membership status known to this snapshot, and an identifier-- not sure what the requirements on
-// that last one are. Otherwise, again fine. Ah:
-// <https://docs.rs/openraft/latest/openraft/type.SnapshotId.html> it just needs to be "globally
-// unique".
-//
-// `SnapshotData` is just a `Box<C::SnapshotData>`, which by default & in our case, is a
-// `Cursor<Vec<u8>>`. What sort of `Cursor`, I can't tell. I guess `std::io::Cursor`.
-#[derive(Clone, Debug, Default)]
-struct StateMachineInner {
-    pub last_applied_log: Option<LogId<NodeId>>,
-    pub last_membership: StoredMembership<NodeId, BasicNode>,
-    pub current_snapshot: Option<Snapshot<TypeConfig>>,
-    /// The hash ring for our distributed KV store
-    pub ring: BTreeMap<u64, NodeId>,
-}
-
-impl RaftSnapshotBuilder<TypeConfig> for StateMachine {
-    /// Per the
-    /// [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftSnapshotBuilder.html#tymethod.build_snapshot):
-    /// "A snapshot has to contain state of all applied log, including membership. Usually it is
-    /// just a serialized state machine.
-    ///
-    /// Building snapshot can be done by:
-    ///
-    /// - Performing log compaction, e.g. merge log entries that operates on the same key, like
-    ///   a LSM-tree does,
-    /// - or by fetching a snapshot from the state machine.""
-    ///
-    /// The sample code again seems overly complex to me. AFAICT, we need to:
-    ///
-    /// 1. build a snapshot of our current state
-    /// 2. save a copy into `current_snapshot`
-    /// 3. return the snapshot
-    async fn build_snapshot(&mut self) -> StdResult<Snapshot<TypeConfig>, StorageError<NodeId>> {
-        let sm = self.inner.read().expect("Poisoned R/W lock!");
-        let data =
-            serde_json::to_vec(&sm.ring).map_err(|e| StorageIOError::read_state_machine(&e))?;
-
-        let snap = Snapshot::<TypeConfig> {
-            meta: SnapshotMeta::<NodeId, BasicNode> {
-                last_log_id: sm.last_applied_log,
-                last_membership: sm.last_membership.clone(),
-                snapshot_id: uuid::Uuid::new_v4().to_string(),
-            },
-            snapshot: Box::new(Cursor::new(data)),
-        };
-
-        drop(sm);
-
-        let mut sm = self.inner.write().expect("Poisoned R/W lock!");
-        sm.current_snapshot = Some(snap.clone());
-
-        Ok(snap)
-    }
-}
-
-impl RaftStateMachine<TypeConfig> for StateMachine {
-    type SnapshotBuilder = Self;
-
-    /// Nb. "It is all right to return a membership with greater log id than the
-    /// last-applied-log-id. Because upon startup, the last membership will be loaded by scanning
-    /// logs from the last-applied-log-id."--
-    /// [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftStateMachine.html#tymethod.applied_state)
-    async fn applied_state(
-        &mut self,
-    ) -> StdResult<(Option<LogId<NodeId>>, StoredMembership<NodeId, BasicNode>), StorageError<NodeId>>
-    {
-        let sm = self.inner.read().expect("Poisoned R/W lock!");
-        Ok((sm.last_applied_log, sm.last_membership.clone()))
-    }
-
-    /// Apply the given payload of entries to the state machine
-    ///
-    /// This is where we apply log entries to our state machine. Per the
-    /// [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftStateMachine.html#tymethod.apply),
-    /// for each entry we shall:
-    ///
-    /// - Store the log id as last applied log id.
-    /// - Deal with the business logic log.
-    /// - Store membership config if RaftEntry::get_membership() returns Some.
-    ///
-    /// And: An implementation may choose to persist either the state machine or the snapshot:
-    ///
-    /// - An implementation with persistent state machine: persists the state on disk before
-    ///   returning from apply(). So that a snapshot does not need to be persistent.
-    /// - An implementation with persistent snapshot: apply() does not have to persist state on
-    ///   disk. But every snapshot has to be persistent. And when starting up the application, the
-    ///   state machine should be rebuilt from the last snapshot.
-    #[instrument(level = "debug", skip(self, entries))]
-    async fn apply<I>(&mut self, entries: I) -> StdResult<Vec<Response>, StorageError<NodeId>>
-    where
-        I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
-        I::IntoIter: OptionalSend,
-    {
-        let mut res = Vec::new();
-        let mut sm = self.inner.write().expect("Poisoned R/W lock!");
-        for entry in entries {
-            info!("Replicating {} to this State Machine", entry.log_id);
-            sm.last_applied_log = Some(entry.log_id);
-            match entry.payload {
-                openraft::EntryPayload::Blank => res.push(Response(())),
-                openraft::EntryPayload::Normal(request) => {
-                    match request {
-                        Request::Init { nodes } => {
-                            sm.ring = BTreeMap::from_iter(nodes.iter().map(|n| ((7 * n) % 11, *n)))
-                        }
-                        Request::InsertNode { shard, node } => {
-                            sm.ring.insert(shard, node);
-                        }
-                        Request::RemoveNode { shard } => {
-                            sm.ring.remove(&shard);
-                        }
-                    };
-                    res.push(Response(()));
-                }
-                openraft::EntryPayload::Membership(membership) => {
-                    // Cluster membership has changed-- I should probably record this
-                    sm.last_membership =
-                        StoredMembership::new(Some(entry.log_id), membership.clone());
-                    res.push(Response(()));
-                }
-            };
-        }
-        Ok(res)
-    }
-
-    async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
-        self.clone()
-    }
-
-    /// I'm still confused as to this method. The
-    /// [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftStateMachine.html#tymethod.begin_receiving_snapshot)
-    /// merely say "Create a new blank snapshot, returning a writable handle to the snapshot
-    /// object."
-    #[instrument(level = "debug", skip(self))]
-    async fn begin_receiving_snapshot(
-        &mut self,
-    ) -> StdResult<Box<Cursor<Vec<u8>>>, StorageError<NodeId>> {
-        Ok(Box::new(Cursor::new(Vec::new())))
-    }
-
-    /// Install a snapshot which has finished streaming from the leader.
-    ///
-    /// This method shall, before returning:
-    ///
-    /// - replace the state machine with the new contents of the snapshot,
-    /// - save the input snapshot (i.e. `Self::get_current_snapshot()` should return it)
-    /// - delete all other snapshots
-    ///
-    /// Here again, the sample seems needlessly complex. All we need to do here is update our
-    /// `StateMachine` from the given snapshot, and store the snapshot as the "current" snapshot.
-    #[instrument(level = "debug", skip(self, snapshot))]
-    async fn install_snapshot(
-        &mut self,
-        meta: &SnapshotMeta<NodeId, BasicNode>,
-        snapshot: Box<Cursor<Vec<u8>>>,
-    ) -> StdResult<(), StorageError<NodeId>> {
-        let ring: BTreeMap<u64, NodeId> = serde_json::from_slice(snapshot.get_ref())
-            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
-
-        let mut sm = self.inner.write().expect("Poisoned R/W lock!");
-        sm.last_applied_log = meta.last_log_id;
-        sm.last_membership = meta.last_membership.clone();
-        sm.current_snapshot = Some(Snapshot::<TypeConfig> {
-            meta: meta.clone(),
-            snapshot,
-        });
-        sm.ring = ring;
-
-        Ok(())
-    }
-
-    /// Per the
-    /// [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftStateMachine.html#tymethod.get_current_snapshot):
-    /// "Implementing this method should be straightforward. Check the configured snapshot directory
-    /// for any snapshot files. A proper implementation will only ever have one active snapshot,
-    /// though another may exist while it is being created. As such, it is recommended to use a file
-    /// naming pattern which will allow for easily distinguishing between the current live snapshot,
-    /// and any new snapshot which is being created.
-    ///
-    /// A proper snapshot implementation will store last-applied-log-id and the
-    /// last-applied-membership config as part of the snapshot, which should be decoded for creating
-    /// this method’s response data."
-    ///
-    /// So it _seems_ that we're expected to generate these periodically & keep them, or at least
-    /// the most recent one, laying around on disk. It also seems possible that we have yet to
-    /// create one, which is why we return an `Option`. That said, the raft-kv-memstore sample just
-    /// keeps one in-memory and returns a copy on demand (?)
-    async fn get_current_snapshot(
-        &mut self,
-    ) -> StdResult<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
-        Ok(self
-            .inner
-            .read()
-            .expect("Poisoned R/W lock!")
-            .current_snapshot
-            .clone())
-    }
-}
-
-// I still need to test these implementations: <https://docs.rs/openraft/latest/openraft/testing/struct.Suite.html>
-
-// Wheh! Finally, we're on to the "network" implementation. I'm again struggling to get my head
-// around the abstractions. I apparently need a type on which to implement `RaftNetworkFactory`:
-
-pub struct Network;
-
-impl RaftNetworkFactory<TypeConfig> for Network {
-    type Network = NetworkConnection;
-
-    async fn new_client(&mut self, target: NodeId, node: &BasicNode) -> Self::Network {
-        NetworkConnection {
-            node: node.clone(),
-            id: target,
-            client: reqwest::Client::new(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct NetworkConnection {
-    node: BasicNode,
-    id: NodeId, // may want this for logging purposes
-    client: reqwest::Client,
-}
-
-impl RaftNetwork<TypeConfig> for NetworkConnection {
-    async fn append_entries(
-        &mut self,
-        req: AppendEntriesRequest<TypeConfig>,
-        _option: RPCOption,
-    ) -> StdResult<AppendEntriesResponse<NodeId>, RPCError<NodeId, BasicNode, RaftError<NodeId>>>
-    {
-        send_raft_rpc(self.id, &self.node, &req, "raft/append", &self.client).await
-    }
-
-    async fn install_snapshot(
-        &mut self,
-        req: InstallSnapshotRequest<TypeConfig>,
-        _option: RPCOption,
-    ) -> StdResult<
-        InstallSnapshotResponse<NodeId>,
-        RPCError<NodeId, BasicNode, RaftError<NodeId, InstallSnapshotError>>,
-    > {
-        send_raft_rpc(self.id, &self.node, &req, "raft/install", &self.client).await
-    }
-
-    async fn vote(
-        &mut self,
-        req: VoteRequest<NodeId>,
-        _option: RPCOption,
-    ) -> StdResult<VoteResponse<NodeId>, RPCError<NodeId, BasicNode, RaftError<NodeId>>> {
-        send_raft_rpc(self.id, &self.node, &req, "raft/vote", &self.client).await
-    }
-}
-
-async fn send_raft_rpc<Req, Resp, Err>(
-    target: NodeId,
-    target_node: &BasicNode,
-    req: &Req,
-    uri: &str,
-    client: &reqwest::Client,
-) -> StdResult<Resp, RPCError<NodeId, BasicNode, Err>>
-where
-    Req: Serialize,
-    Resp: DeserializeOwned,
-    Err: StdError + DeserializeOwned,
-{
-    let url = format!("http://{}/{}", target_node.addr, uri);
-
-    let resp = client.post(url).json(&req).send().await.map_err(|e| {
-        // If the error is a connection error, we return `Unreachable` so that connection isn't
-        // retried immediately:
-        if e.is_connect() {
-            return openraft::error::RPCError::Unreachable(Unreachable::new(&e));
-        }
-        openraft::error::RPCError::Network(NetworkError::new(&e))
-    })?;
-
-    resp.json::<StdResult<Resp, Err>>()
-        .await
-        .map_err(|e| openraft::error::RPCError::Network(NetworkError::new(&e)))?
-        .map_err(|e| openraft::error::RPCError::RemoteError(RemoteError::new(target, e)))
-}
+pub mod cache;
+pub mod network;
+pub mod raft;
+pub mod types;
