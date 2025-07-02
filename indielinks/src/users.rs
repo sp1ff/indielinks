@@ -20,25 +20,25 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{rejection::ExtensionRejection, State},
-    http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
+    Extension, Json, Router,
+    extract::{State, rejection::ExtensionRejection},
+    http::{HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::IntoResponse,
     routing::{get, post},
-    Extension, Json, Router,
 };
 use chrono::Duration;
 use itertools::Itertools;
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use snafu::{prelude::*, Backtrace, IntoError};
+use snafu::{Backtrace, IntoError, prelude::*};
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 use url::Url;
 
 use crate::{
     activity_pub::SendFollow,
-    authn::{self, check_api_key, check_password, check_token, AuthnScheme},
+    authn::{self, AuthnScheme, check_api_key, check_password, check_token},
     background_tasks::{self, BackgroundTasks, Sender},
     counter_add,
     entities::{self, FollowId, User, UserApiKey, UserEmail, Username},
@@ -203,8 +203,12 @@ impl Error {
                 actorid,
                 source,
                 ..
-            } => (StatusCode::INTERNAL_SERVER_ERROR,
-                  format!("Couldn't schedule a follow request for {actorid} on behalf of {username}: {source}"),),
+            } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Couldn't schedule a follow request for {actorid} on behalf of {username}: {source}"
+                ),
+            ),
             Error::Token {
                 username, source, ..
             } => (
@@ -674,7 +678,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         // `user/users/:username`), but that model doesn't really map to the set of things one can
         // do via this API (how would we model minting a new API key, for instance? Or loggig-in?)
         .route("/users/signup", post(signup))
-        .route("/users/login", get(login))
+        .route("/users/login", get(login).merge(post(login)))
         .route("/users/follow", post(follow))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),

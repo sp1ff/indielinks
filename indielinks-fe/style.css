@@ -1,0 +1,27 @@
+.banner {
+    width: 100%;
+    background-color: #007Ba7;
+    display: flex;
+}
+
+.logo {
+    justify-content: left;
+    color: #f5f5ff;
+    padding-top: 4px;
+    padding-left: 8px;
+}
+
+.tab {
+    color: #f5f5ff;
+    margin: 6px;
+}
+
+.tab-list {
+    padding-left: 16px;
+}
+
+.uath-actions {
+    color: #f5f5ff;
+    margin-left: auto;
+    padding-right: 8px;
+}
