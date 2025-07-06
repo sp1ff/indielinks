@@ -20,9 +20,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     convert::identity,
+    fmt::Debug,
     io::Cursor,
     num::NonZero,
-    ops::RangeBounds,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -31,14 +31,14 @@ use std::{
 };
 
 use openraft::{
-    Entry, LogId, LogState, OptionalSend, Raft, RaftLogId, RaftLogReader, RaftSnapshotBuilder,
-    RaftTypeConfig, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership, Vote,
+    Entry, LogId, OptionalSend, Raft, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
+    StorageIOError, StoredMembership,
     error::{ClientWriteError, InstallSnapshotError, RaftError},
     raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
-    storage::{LogFlushed, RaftLogStorage, RaftStateMachine},
+    storage::{RaftLogStorage, RaftStateMachine},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
@@ -153,191 +153,7 @@ where
 pub type StdResult<T, E> = std::result::Result<T, E>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                          The Raft Log                                          //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// The [indielinks-cache] log store.
-///
-/// [Raft] works by synchronizing log messages across a cluster of nodes (each of which modifies
-/// a state machine maintained on each node). We'll hang the [RaftLogStorage] implementation
-/// here.
-///
-/// [RaftLogStorage]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html
-//  I'm really confused by this: I can't find any requirements on this type to be `Clone`, but
-//  that's how the `raft-kv-memstore` sample sets it up. It *does* have to be Send, OptionalSync,
-//  OptionalSend, Send & 'static. Oddly, if I implement `RaftLogStorage` on a type, I also have to
-//  implement `RaftLogReader`
-#[derive(Clone, Debug, Default)]
-struct LogStore<C: RaftTypeConfig> {
-    inner: Arc<RwLock<LogStoreInner<C>>>,
-}
-
-#[derive(Debug)]
-struct LogStoreInner<C: RaftTypeConfig> {
-    /// The Raft log
-    log: BTreeMap<u64, C::Entry>,
-    /// The current granted vote.
-    vote: Option<Vote<C::NodeId>>,
-    last_purged_log_id: Option<LogId<C::NodeId>>,
-}
-
-impl<C: RaftTypeConfig> Default for LogStoreInner<C> {
-    fn default() -> Self {
-        LogStoreInner {
-            log: BTreeMap::new(),
-            vote: None,
-            last_purged_log_id: None,
-        }
-    }
-}
-
-/// From the [docs] "Typically, the log reader implementation as such will be hidden behind an
-/// Arc<T> and this interface implemented on the Arc<T>. It can be co-implemented with RaftStorage
-/// interface on the same cloneable object, if the underlying state machine is anyway synchronized."
-///
-/// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogReader.html
-impl<C: RaftTypeConfig> RaftLogReader<C> for LogStore<C>
-where
-    C::Entry: Clone,
-{
-    async fn try_get_log_entries<R>(
-        &mut self,
-        range: R,
-    ) -> StdResult<Vec<C::Entry>, StorageError<C::NodeId>>
-    where
-        R: RangeBounds<u64> + Clone + std::fmt::Debug + OptionalSend,
-    {
-        self.inner
-            .read()
-            .await
-            .log
-            .range(range)
-            .map(|(_, entry)| entry)
-            .cloned()
-            .collect::<Vec<_>>()
-            .pipe(Ok)
-    }
-}
-
-impl<C: RaftTypeConfig> RaftLogStorage<C> for LogStore<C>
-where
-    C::Entry: Clone,
-{
-    type LogReader = Self;
-
-    async fn get_log_state(&mut self) -> StdResult<LogState<C>, StorageError<C::NodeId>> {
-        let this = self.inner.read().await;
-        Ok(LogState {
-            last_purged_log_id: this.last_purged_log_id.clone(),
-            last_log_id: this
-                .log
-                .iter()
-                .next_back()
-                .map(|(_, ent)| ent.get_log_id().clone())
-                .or(this.last_purged_log_id.clone()),
-        })
-    }
-
-    async fn get_log_reader(&mut self) -> Self::LogReader {
-        self.clone()
-    }
-
-    /// Write a [Vote] to storage
-    ///
-    /// Per the
-    /// [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.save_vote),
-    /// "The vote must be persisted on disk before returning."
-    async fn save_vote(
-        &mut self,
-        vote: &Vote<C::NodeId>,
-    ) -> StdResult<(), StorageError<C::NodeId>> {
-        // In this implementation, we of course don't write to disk:
-        self.inner.write().await.vote = Some(vote.clone());
-        Ok(())
-    }
-
-    async fn read_vote(&mut self) -> StdResult<Option<Vote<C::NodeId>>, StorageError<C::NodeId>> {
-        Ok(self.inner.read().await.vote.clone())
-    }
-
-    /// Append log entries (presumably from the cluster leader)
-    ///
-    /// The contract is that this method shall return immediately after saving the input log entries
-    /// in memory, and arrange to have the provided callback invoked once the entries are persisted
-    /// on disk. That said, the intent is to avoid blocking in this method; the callback can be
-    /// called either before or after this method returns.
-    ///
-    /// Per the [docs](https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.append):
-    ///
-    /// - When this method returns, the entries must be readable, i.e., a LogReader can read these entries
-    /// - When the callback is called, the entries must be persisted on disk
-    /// - There must not be a hole in logs. Because Raft only examine the last log id to ensure correctness
-    ///
-    /// This implementation is broken in that it doesn't write anything to disk (for now). I'm not
-    /// entirely clear on what is meant by a "hole"-- I can only surmise that the log entries are
-    /// numbered, and that, at the end of this method, the entries in our log must be sequential (?)
-    #[instrument(level = "debug", skip(entries, callback))]
-    async fn append<I>(
-        &mut self,
-        entries: I,
-        callback: LogFlushed<C>,
-    ) -> StdResult<(), StorageError<C::NodeId>>
-    where
-        I: IntoIterator<Item = C::Entry> + OptionalSend,
-        I::IntoIter: OptionalSend,
-    {
-        self.inner.write().await.log.extend(
-            entries
-                .into_iter()
-                .map(|entry| (entry.get_log_id().index, entry)),
-        );
-        callback.log_io_completed(Ok(()));
-        Ok(())
-    }
-
-    /// Remove the logs from `log_id` and later
-    async fn truncate(
-        &mut self,
-        log_id: LogId<C::NodeId>,
-    ) -> StdResult<(), StorageError<C::NodeId>> {
-        let mut this = self.inner.write().await;
-        let to_be_removed = this
-            .log
-            .range(log_id.index..)
-            .map(|(k, _)| k)
-            .cloned()
-            .collect::<Vec<_>>();
-        to_be_removed.into_iter().for_each(|k| {
-            this.log.remove(&k);
-        });
-        Ok(())
-    }
-
-    /// Remove logs up to `log_id`, inclusive
-    // Seems reasonable-- but we need to note this `LogId` for future reference
-    async fn purge(&mut self, log_id: LogId<C::NodeId>) -> StdResult<(), StorageError<C::NodeId>> {
-        assert!(self.inner.read().await.last_purged_log_id.as_ref() <= Some(&log_id));
-
-        let mut this = self.inner.write().await;
-
-        this.last_purged_log_id = Some(log_id.clone());
-
-        let to_be_removed = this
-            .log
-            .range(..=log_id.index)
-            .map(|(k, _)| k)
-            .cloned()
-            .collect::<Vec<_>>();
-        to_be_removed.into_iter().for_each(|k| {
-            this.log.remove(&k);
-        });
-
-        Ok(())
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// OK: that's log storage done. Next up: the shared state machine.
+// ok: that's log storage done. Next up: the shared state machine.
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// The [indielinks-cache] shared ([Raft]) state machine
@@ -738,7 +554,11 @@ where
     F::CacheClient: Clone + Send + Sync + 'static,
 {
     /// Initialize the current host as a member of an [indielinks-cache] cluster
-    pub async fn new(config: &Configuration, factory: F) -> Result<CacheNodeInner<F>> {
+    pub async fn new<T: RaftLogStorage<TypeConfig>>(
+        config: &Configuration,
+        factory: F,
+        storage: T,
+    ) -> Result<CacheNodeInner<F>> {
         let already = CACHE_NODE_CREATED
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err();
@@ -764,7 +584,7 @@ where
             config.this_node,              // Node ID
             raft_config,                   // Config
             Network::new(factory.clone()), // Network
-            LogStore::default(),           // Log Store
+            storage,                       // Log Store
             state_machine.clone(),         // State Machine
         )
         .await
@@ -916,9 +736,15 @@ where
     F::CacheClient: Clone + Send + Sync + 'static,
 {
     /// Initialize the current host as a member of an [indielinks-cache] cluster
-    pub async fn new(config: &Configuration, factory: F) -> Result<CacheNode<F>> {
+    pub async fn new<T: RaftLogStorage<TypeConfig>>(
+        config: &Configuration,
+        factory: F,
+        storage: T,
+    ) -> Result<CacheNode<F>> {
         Ok(CacheNode {
-            inner: Arc::new(RwLock::new(CacheNodeInner::new(config, factory).await?)),
+            inner: Arc::new(RwLock::new(
+                CacheNodeInner::new(config, factory, storage).await?,
+            )),
         })
     }
     pub async fn id(&self) -> NodeId {

@@ -18,7 +18,7 @@ run() {
   announce "Completed $1 in $INTERVAL seconds" $GREEN
 }
 
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(git status --porcelain|grep -v '??')" ]; then
     echo "Can't sign-off on a dirty repository:" >&2
     git status
     exit 1
