@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 
-# Trivial script to exercise `indielinks-cache` as a standalone Raft cluster
-
 function current_leader {
     local node_id=$1
-    curl -s http://127.0.0.1:2080${node_id}/admin/metrics|jq .current_leader
+    curl -s http://127.0.0.1:2080${node_id}/admin/metrics|jq .raft.current_leader
 }
 
 function kill_all {
-    for pid in $(ps aux|grep debug/node|grep -v grep|awk '{print $2}'); do
+    for pid in $(ps aux|grep debug/in-memory|grep -v grep|awk '{print $2}'); do
         echo "Killing PID $pid"
         kill $pid
     done
@@ -43,12 +41,18 @@ echo -n "Current leader: "
 current_leader 2
 echo
 
-echo "Current hash ring: "
-curl -s \
-     -H 'Content-Type: application/json' \
-     http://127.0.0.1:20800/app/hash-ring
-
+echo -n "Cache 1: foo :=>"
+curl -s -X GET -H 'Content-Type: application/json' http://127.0.0.1:20800/cache/lookup --data '{"cache":1,"key":"foo"}'|jq .
 echo
+
+echo -n "Insert foo :=> 11"
+curl -s -H 'Content-Type: application/json' http://127.0.0.1:20800/cache/insert --data '{"cache":1,"key":"foo","value":11}'
+echo
+
+echo -n "Cache 1: foo :=>"
+curl -s -X GET -H 'Content-Type: application/json' http://127.0.0.1:20800/cache/lookup --data '{"cache":1,"key":"foo"}'|jq .
+echo
+
 echo "Add nodes 3 & 4 as learners"
 curl -s \
      -H 'Content-Type: application/json' \
@@ -75,10 +79,9 @@ curl -s http://127.0.0.1:20804/admin/metrics|jq .
 
 sleep 1
 
-echo "Current hash ring per node 3: "
-curl -s \
-     -H 'Content-Type: application/json' \
-     http://127.0.0.1:20803/app/hash-ring
+echo -n "Cache 1: foo :=>"
+curl -s -X GET -H 'Content-Type: application/json' http://127.0.0.1:20804/cache/lookup --data '{"cache":1,"key":"foo"}'|jq .
+echo
 
 echo
 echo "Killing all nodes..."

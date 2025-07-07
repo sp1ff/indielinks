@@ -31,8 +31,8 @@ use std::{
 };
 
 use openraft::{
-    Entry, LogId, OptionalSend, Raft, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
-    StorageIOError, StoredMembership,
+    Entry, LogId, OptionalSend, Raft, RaftMetrics, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
+    StorageError, StorageIOError, StoredMembership,
     error::{ClientWriteError, InstallSnapshotError, RaftError},
     raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
@@ -51,6 +51,8 @@ use crate::{
     network::{Client, ClientFactory, Network},
     types::{CacheId, ClusterNode, NodeId, Request, Response, TypeConfig},
 };
+
+pub use openraft::{ChangeMembers, raft::ClientWriteResponse};
 
 use std::error::Error as StdError;
 
@@ -481,6 +483,12 @@ pub struct Configuration {
     election_timeout_max: Duration,
 }
 
+impl Configuration {
+    pub fn builder(cluster_name: impl Into<String>, this_node: NodeId) -> ConfigurationBuilder {
+        ConfigurationBuilder::new(cluster_name, this_node)
+    }
+}
+
 pub struct ConfigurationBuilder {
     cluster_name: String,
     this_node: NodeId,
@@ -522,10 +530,11 @@ impl ConfigurationBuilder {
     }
 }
 
-impl Configuration {
-    pub fn builder(cluster_name: impl Into<String>, this_node: NodeId) -> ConfigurationBuilder {
-        ConfigurationBuilder::new(cluster_name, this_node)
-    }
+// This needs to be built-out: would be interesting to expose memory footprint, e.g.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Metrics {
+    id: NodeId,
+    raft: RaftMetrics<NodeId, ClusterNode>,
 }
 
 // I really can't see a case where you'd want more than one "cluster node" in a process. I thought
@@ -599,17 +608,27 @@ where
         })
     }
 
-    fn node_for_id(&self, node_id: NodeId) -> Result<ClusterNode> {
-        self.raft
-            .metrics()
-            .borrow()
-            .membership_config
-            .nodes()
-            .find(|(id, _node)| **id == node_id)
-            .context(NoNodeSnafu { node_id })?
-            .1
-            .clone()
-            .pipe(Ok)
+    async fn add_learner(
+        &self,
+        id: NodeId,
+        node: ClusterNode,
+        blocking: bool,
+    ) -> StdResult<
+        ClientWriteResponse<TypeConfig>,
+        RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>,
+    > {
+        self.raft.add_learner(id, node, blocking).await
+    }
+
+    async fn change_membership(
+        &self,
+        members: impl Into<ChangeMembers<NodeId, ClusterNode>>,
+        retain: bool,
+    ) -> StdResult<
+        ClientWriteResponse<TypeConfig>,
+        RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>,
+    > {
+        self.raft.change_membership(members, retain).await
     }
 
     async fn client_for_id(&mut self, node_id: NodeId) -> Result<F::CacheClient> {
@@ -626,6 +645,26 @@ where
             }
         }
         .pipe(Ok)
+    }
+
+    fn node_for_id(&self, node_id: NodeId) -> Result<ClusterNode> {
+        self.raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .nodes()
+            .find(|(id, _node)| **id == node_id)
+            .context(NoNodeSnafu { node_id })?
+            .1
+            .clone()
+            .pipe(Ok)
+    }
+
+    fn metrics(&self) -> Metrics {
+        Metrics {
+            id: self.id,
+            raft: self.raft.metrics().borrow().clone(),
+        }
     }
 
     /// Insert a value into the distributed cache
@@ -747,9 +786,45 @@ where
             )),
         })
     }
+    pub async fn add_learner(
+        &self,
+        id: NodeId,
+        node: ClusterNode,
+        blocking: bool,
+    ) -> StdResult<
+        ClientWriteResponse<TypeConfig>,
+        RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>,
+    > {
+        self.inner
+            .read()
+            .await
+            .add_learner(id, node, blocking)
+            .await
+    }
+
+    pub async fn change_membership(
+        &self,
+        members: impl Into<ChangeMembers<NodeId, ClusterNode>>,
+        retain: bool,
+    ) -> StdResult<
+        ClientWriteResponse<TypeConfig>,
+        RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>,
+    > {
+        self.inner
+            .read()
+            .await
+            .change_membership(members, retain)
+            .await
+    }
+
     pub async fn id(&self) -> NodeId {
         self.inner.read().await.id
     }
+
+    pub async fn metrics(&self) -> Metrics {
+        self.inner.read().await.metrics()
+    }
+
     pub async fn node_for_key<K: std::hash::Hash + std::fmt::Debug>(
         &self,
         key: &K,

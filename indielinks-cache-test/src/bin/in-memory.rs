@@ -428,6 +428,10 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         let mut this = self.inner.write().await;
         let to_be_removed = this
             .log
+            // Weirdly (to me), the openraft examples use the log *index* as a unique identifier
+            // when serializing entries. For instance, the in-memory implementatino indexes its map
+            // using the index, not the entire `LogId` (despite the fact that `LogId` implements
+            // `Ord`).
             .range(log_id.index..)
             .map(|(k, _)| k)
             .cloned()
@@ -627,54 +631,60 @@ async fn admin_init(
     }
 }
 
-// async fn admin_metrics(State(state): State<NodeState>) -> axum::response::Response {
-//     Json(state.raft.metrics().borrow().clone()).into_response()
-// }
+async fn admin_metrics(State(state): State<AppState>) -> axum::response::Response {
+    Json(state.node.metrics().await).into_response()
+}
 
-// /// Add a node to the cluster
-// ///
-// /// New nodes must be added as learners.
-// async fn admin_add_learner(
-//     State(state): State<NodeState>,
-//     Json((node_id, addr)): Json<(NodeId, String /* SocketAddrV4 */)>,
-// ) -> axum::response::Response {
-//     Json(
-//         state
-//             .raft
-//             // Imma try setting `blocking` to true for now
-//             .add_learner(node_id, BasicNode { addr }, true)
-//             .await,
-//     )
-//     .into_response()
-// }
+/// Add a node to the cluster
+///
+/// New nodes must be added as learners.
+async fn admin_add_learner(
+    State(state): State<AppState>,
+    Json((node_id, addr)): Json<(NodeId, String /* SocketAddrV4 */)>,
+) -> axum::response::Response {
+    match addr.parse::<SocketAddr>() {
+        Ok(addr) => Json(
+            state
+                .node
+                // Imma try setting `blocking` to true for now
+                .add_learner(node_id, ClusterNode { addr }, true)
+                .await,
+        )
+        .into_response(),
+        Err(err) => {
+            error!("{err:?}");
+            (StatusCode::BAD_REQUEST, format!("{err:#?}")).into_response()
+        }
+    }
+}
 
-// async fn admin_change_membership(
-//     State(state): State<NodeState>,
-//     Json(req): Json<Vec<NodeId>>,
-// ) -> axum::response::Response {
-//     let result = state.raft.change_membership(req, false).await;
+async fn admin_change_membership(
+    State(state): State<AppState>,
+    Json(req): Json<Vec<NodeId>>,
+) -> axum::response::Response {
+    Json(state.node.change_membership(req, false).await).into_response()
 
-//     // This is kinda lame-- we shouldn't re-init the hash ring, just update it.
-//     if result.is_ok() {
-//         let nodes = state
-//             .raft
-//             .metrics()
-//             .borrow()
-//             .membership_config
-//             .nodes()
-//             .map(|(id, _)| *id)
-//             .collect();
-//         let _ = state
-//             .raft
-//             .client_write(Request::Init {
-//                 nodes,
-//                 num_virtual: 0,
-//             })
-//             .await;
-//     }
+    //     // This is kinda lame-- we shouldn't re-init the hash ring, just update it.
+    //     if result.is_ok() {
+    //         let nodes = state
+    //             .raft
+    //             .metrics()
+    //             .borrow()
+    //             .membership_config
+    //             .nodes()
+    //             .map(|(id, _)| *id)
+    //             .collect();
+    //         let _ = state
+    //             .raft
+    //             .client_write(Request::Init {
+    //                 nodes,
+    //                 num_virtual: 0,
+    //             })
+    //             .await;
+    //     }
 
-//     Json(result).into_response()
-// }
+    //     Json(result).into_response()
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        application API                                         //
@@ -779,9 +789,9 @@ async fn main() {
             .route("/cache/lookup", get(cache_lookup))
             .route("/cache/insert", post(cache_insert))
             .route("/admin/init", post(admin_init))
-            // .route("/admin/metrics", get(admin_metrics))
-            // .route("/admin/add-learner", post(admin_add_learner))
-            // .route("/admin/membership", post(admin_change_membership))
+            .route("/admin/metrics", get(admin_metrics))
+            .route("/admin/add-learner", post(admin_add_learner))
+            .route("/admin/membership", post(admin_change_membership))
             .layer(
                 TraceLayer::new_for_http()
                     .make_span_with(
