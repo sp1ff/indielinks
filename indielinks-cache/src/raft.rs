@@ -188,6 +188,74 @@ struct StateMachine {
     inner: Arc<RwLock<StateMachineInner>>,
 }
 
+/// Allow [indielinks-cache](crate) clients to test their log storage implementations
+pub mod test {
+    use std::marker::PhantomData;
+
+    use openraft::{
+        StorageError,
+        storage::RaftLogStorage,
+        testing::{StoreBuilder as RaftStoreBuilder, Suite},
+    };
+
+    use crate::types::{NodeId, TypeConfig};
+
+    /// Small trait to be implement by the [indielinks-cache](crate) caller allowing us to
+    /// instantiate their [RaftLogStorage] implementation
+    pub trait StoreBuilder<LS, G = ()>
+    where
+        LS: RaftLogStorage<TypeConfig>,
+    {
+        fn build(
+            &self,
+        ) -> impl Future<Output = std::result::Result<(G, LS), StorageError<NodeId>>> + Send;
+    }
+    /// Implementation of [RaftStoreBuilder] that _we_ will provide to openraft
+    struct OurBuilder<F, LS, G>
+    where
+        LS: RaftLogStorage<TypeConfig>,
+        F: StoreBuilder<LS, G>,
+    {
+        inner: F,
+        _phantom: PhantomData<(LS, G)>,
+    }
+
+    impl<F, LS, G> RaftStoreBuilder<TypeConfig, LS, super::StateMachine, G> for OurBuilder<F, LS, G>
+    where
+        LS: RaftLogStorage<TypeConfig>,
+        F: StoreBuilder<LS, G> + Send + Sync,
+        G: Send + Sync,
+    {
+        async fn build(
+            &self,
+        ) -> std::result::Result<(G, LS, super::StateMachine), StorageError<NodeId>> {
+            let (g, ls) = self.inner.build().await?;
+            Ok((g, ls, super::StateMachine::default()))
+        }
+    }
+
+    /// Run the openraft test
+    /// [suite](https://docs.rs/openraft/latest/openraft/testing/struct.Suite.html) against our
+    /// caller's [RaftLogStorage] implementation and our state machine.
+    pub fn test_storage<LS, G, F>(f: F) -> std::result::Result<(), StorageError<NodeId>>
+    where
+        LS: RaftLogStorage<TypeConfig>,
+        F: StoreBuilder<LS, G> + Send + Sync,
+        G: Send + Sync,
+    {
+        Suite::test_all(OurBuilder {
+            inner: f,
+            _phantom: PhantomData,
+        })
+        // let builder = OurBuilder {
+        //     inner: f,
+        //     _phantom: PhantomData,
+        // };
+        // let (_g, store, sm) = builder.build().await?;
+        // Suite::<TypeConfig, LS, StateMachine, OurBuilder<F, LS, G>, G>::last_membership_in_log_multi_step(store, sm).await
+    }
+}
+
 #[derive(Clone, Default)]
 struct Hasher {
     hash: Xxh64Builder,

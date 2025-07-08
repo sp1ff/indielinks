@@ -465,6 +465,28 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use openraft::StorageError;
+
+    use super::*;
+
+    struct Builder;
+
+    impl indielinks_cache::raft::test::StoreBuilder<LogStore> for Builder {
+        async fn build(&self) -> StdResult<((), LogStore), StorageError<NodeId>> {
+            Ok(((), LogStore::default()))
+        }
+    }
+
+    #[test_log::test]
+    fn test_log_store() {
+        let res = indielinks_cache::raft::test::test_storage(Builder);
+        debug!("openraft :=> {res:#?}");
+        assert!(res.is_ok());
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                   Raft API -- this is the Raft nodes talking to one another                    //
 ////////////////////////////////////////////////////////////////////////////////////////////////////

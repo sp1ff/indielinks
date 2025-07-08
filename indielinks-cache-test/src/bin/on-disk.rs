@@ -399,7 +399,7 @@ impl RaftLogReader<TypeConfig> for LogStore {
         let store = self.store.lock().expect("Poisoned mutex");
 
         LogStore::log_entries(&*store)
-            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))?
+            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?
             .iter()
             .filter_map(|path| {
                 if range.contains(
@@ -435,13 +435,15 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         }?;
 
         let last_log_id = LogStore::log_entries(&*store)
-            .unwrap()
+            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?
             .iter()
             .next_back()
             .map(|path| LogStore::read_entry(store.join(path)))
             .transpose()?
             .map(|entry| *entry.get_log_id())
             .or(last_purged_log_id);
+
+        debug!("get_log_state: {:?}, {:?}", last_purged_log_id, last_log_id);
 
         Ok(LogState {
             last_purged_log_id,
@@ -488,7 +490,10 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         entries
             .into_iter()
             .map(|entry| {
-                std::fs::File::create(store.join(format!("{}", entry.log_id.index)))
+                // Super-lame, but in order to get the filenames to compare correctly (e.g. we want
+                // "9" to be less than "10"), we need to zero-pad the names.
+                assert!(entry.log_id.index < 100000);
+                std::fs::File::create(store.join(format!("{:05}", entry.log_id.index)))
                     .map_err(|err| {
                         LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
                     })
@@ -509,14 +514,15 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     ///
     /// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.truncate
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        info!("truncate: {log_id:?}");
         let store = self.store.lock().expect("Poisoned mutex");
-        let log_id = PathBuf::from(format!("{}", log_id.index));
+        let log_id = PathBuf::from(format!("{:05}", log_id.index));
         LogStore::log_entries(&*store)
             .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))?
             .into_iter()
-            .filter(|pth| *pth > log_id)
+            .filter(|pth| *pth >= log_id)
             .map(|pth| {
-                std::fs::remove_file(&pth).map_err(|err| {
+                std::fs::remove_file(store.join(pth)).map_err(|err| {
                     LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
                 })
             })
@@ -530,6 +536,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     ///
     /// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.purge
     async fn purge(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        info!("purge: {log_id:?}");
         let store = self.store.lock().expect("Poisoned mutex");
 
         let file = std::fs::File::create(store.join("last-purged")).map_err(|err| {
@@ -539,18 +546,66 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
         })?;
 
-        let log_id = PathBuf::from(format!("{}", log_id.index));
+        let log_id = PathBuf::from(format!("{:05}", log_id.index));
         LogStore::log_entries(&*store)
             .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))?
             .into_iter()
-            .filter(|pth| *pth < log_id)
+            .filter(|pth| *pth <= log_id)
             .map(|pth| {
-                std::fs::remove_file(&pth).map_err(|err| {
+                std::fs::remove_file(store.join(&pth)).map_err(|err| {
                     LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
                 })
             })
             .collect::<StdResult<Vec<()>, StorageError<NodeId>>>()
             .map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use openraft::StorageError;
+
+    use super::*;
+
+    struct Dropper {
+        pth: PathBuf,
+    }
+
+    impl Dropper {
+        pub fn new<P: AsRef<Path>>(p: P) -> Dropper {
+            Dropper::cleanup(&p);
+            std::fs::create_dir(&p).expect("Failed to create test directory");
+            Dropper {
+                pth: p.as_ref().to_path_buf(),
+            }
+        }
+        fn cleanup<P: AsRef<Path>>(p: P) {
+            let _ = std::fs::remove_dir_all(p); // Ignore errors
+        }
+    }
+
+    impl std::ops::Drop for Dropper {
+        fn drop(&mut self) {
+            Dropper::cleanup(&self.pth)
+        }
+    }
+
+    struct Builder;
+
+    impl indielinks_cache::raft::test::StoreBuilder<LogStore, Dropper> for Builder {
+        async fn build(&self) -> StdResult<(Dropper, LogStore), StorageError<NodeId>> {
+            let pth =
+                PathBuf::from_str("/tmp/indielinks-unit-test-cfd4c84a-dfc0-4837-b56b-4ab782328e18")
+                    .unwrap();
+            Ok((Dropper::new(&pth), LogStore::new(pth)))
+        }
+    }
+
+    #[test_log::test]
+    fn test_log_store() {
+        let res = indielinks_cache::raft::test::test_storage(Builder);
+        info!("test_storage :=> {res:#?}");
+        assert!(res.is_ok());
     }
 }
 
