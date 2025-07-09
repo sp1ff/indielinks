@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+function hc {
+    local bin="$1"
+    local port="$2"
+    # curl can fail if the server isn't up, yet
+    set +e
+    local status=$(curl -s http://localhost:${port}/healthcheck)
+    local ntries=1
+    while [ "${status}" != "GOOD" ]; do
+        sleep 0.5
+        status=$(curl -s http://localhost:${port}/healthcheck)
+        ntries=$(($ntries+1))
+        # Give it five seconds
+        if [ ${ntries} -gt 10 ]; then
+            echo "${bin} failed to come up" >&2
+            set -e
+            return "1"
+        fi
+    done
+    set -e
+    return "0"
+}
+
+if [ $# -ne 2 ]; then
+    echo "Invoke as 'cache-test-cluster-up [in-memory|on-disk] PORT'" >&2
+    exit 2
+fi
+bin="$1"
+base_port="$2"
+
+set -e
+here=$(dirname $(realpath $0))
+cd $here/../indielinks-cache-test
+
+if [ "${bin}" == "on-disk" ]; then
+    # Create the state directories for each node
+    mkdir /tmp/on-disk-node-0
+    mkdir /tmp/on-disk-node-1
+    mkdir /tmp/on-disk-node-2
+    mkdir /tmp/on-disk-node-3
+    mkdir /tmp/on-disk-node-4
+fi
+
+# Stand-up a five node cluster. If I don't place each `cargo run` invocation
+# into a sub-shell, `Command::output()` hangs.
+(RUST_BACKTRACE=1 RUST_LOG=debug cargo run --bin "${bin}" -- 0 127.0.0.1:${base_port})      > n0.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG=debug cargo run --bin "${bin}" -- 1 127.0.0.1:$(($base_port+1))) > n1.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG=debug cargo run --bin "${bin}" -- 2 127.0.0.1:$(($base_port+2))) > n2.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG=debug cargo run --bin "${bin}" -- 3 127.0.0.1:$(($base_port+3))) > n3.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG=debug cargo run --bin "${bin}" -- 4 127.0.0.1:$(($base_port+4))) > n4.log 2>&1 < /dev/null &
+
+# Now healthcheck each instance
+hc "${bin}" ${base_port}
+hc "${bin}" $(($base_port+1))
+hc "${bin}" $(($base_port+2))
+hc "${bin}" $(($base_port+3))
+hc "${bin}" $(($base_port+4))
+
+exit 0

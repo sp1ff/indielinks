@@ -601,8 +601,8 @@ impl ConfigurationBuilder {
 // This needs to be built-out: would be interesting to expose memory footprint, e.g.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Metrics {
-    id: NodeId,
-    raft: RaftMetrics<NodeId, ClusterNode>,
+    pub id: NodeId,
+    pub raft: RaftMetrics<NodeId, ClusterNode>,
 }
 
 // I really can't see a case where you'd want more than one "cluster node" in a process. I thought

@@ -48,7 +48,7 @@ use openraft::{
     error::{NetworkError, RemoteError, Unreachable},
     storage::{LogFlushed, RaftLogStorage},
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{from_value, to_value};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Pipe, Tap};
@@ -70,6 +70,9 @@ use indielinks_cache::{
     },
     raft::{CacheNode, Configuration},
     types::{CacheId, ClusterNode, NodeId, TypeConfig},
+};
+use indielinks_cache_test::{
+    CacheInsertRequest, CacheInsertResponse, CacheLookupRequest, CacheLookupResponse,
 };
 
 #[derive(Debug, Snafu)]
@@ -151,32 +154,6 @@ pub struct Client {
     id: NodeId,
     addr: SocketAddr,
     client: reqwest::Client,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct CacheInsertRequest {
-    cache: CacheId,
-    key: serde_json::Value,
-    value: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct CacheInsertResponse {
-    cache: CacheId,
-    key: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct CacheLookupRequest {
-    cache: CacheId,
-    key: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct CacheLookupResponse {
-    cache: CacheId,
-    key: serde_json::Value,
-    value: Option<serde_json::Value>,
 }
 
 impl Client {

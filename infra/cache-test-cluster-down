@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+if [ $# -ne 1 ]; then
+    echo "Invoke as 'cache-test-down [in-memory|on-disk]'" >&2
+    exit 2
+fi
+bin="$1"
+
+set -ex
+here=$(dirname $(realpath $0))
+cd $here
+
+# `killall` exits with status 1 if it kills no processes
+set +e
+killall -w "${bin}"
+set -e
+
+if [ "${bin}" == "on-disk" ]; then
+    # Clean-up the state directories for each node
+    rm -rf /tmp/on-disk-node-0
+    rm -rf /tmp/on-disk-node-1
+    rm -rf /tmp/on-disk-node-2
+    rm -rf /tmp/on-disk-node-3
+    rm -rf /tmp/on-disk-node-4
+fi

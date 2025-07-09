@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! # [indielinks-cache](crate) integration tests via the `in-memory` log store implementation
+//! # [indielinks-cache](crate) integration tests for a single-node Raft implementation
 
 use std::io;
 
@@ -46,24 +46,24 @@ type Result<T> = std::result::Result<T, Error>;
 
 inventory::submit!(Test {
     name: "00_smoke",
-    test_fn: |config| { common::smoke::test(config.base_port) },
+    test_fn: |config| { common::smoke::single_node(config.base_port) },
 });
 
-fn setup(base_port: u16) -> Result<()> {
+fn setup(port: u16) -> Result<()> {
     teardown()?;
     run(
-        "../infra/cache-test-cluster-up",
-        &["in-memory", &format!("{base_port}")],
+        "../infra/single-node-cluster-up",
+        &["in-memory", &format!("{port}")],
         None,
     )
     .context(CommandSnafu {
-        cmd: "cache-test-cluster-up".to_owned(),
+        cmd: "single-node-cluster-up".to_owned(),
     })
 }
 
 fn teardown() -> Result<()> {
-    run("../infra/cache-test-cluster-down", &["in-memory"], None).context(CommandSnafu {
-        cmd: "cache-test-cluster-down".to_owned(),
+    run("../infra/single-node-cluster-down", &["in-memory"], None).context(CommandSnafu {
+        cmd: "single-node-cluster-down".to_owned(),
     })
 }
 

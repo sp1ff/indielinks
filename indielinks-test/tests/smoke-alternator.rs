@@ -16,24 +16,24 @@
 //! # delicious-alternator
 //!
 //! Integration tests run against an indielinks configured with the DynamoDB storage back-end.
-use common::{run, Configuration, IndielinksTest};
+use common::{Configuration, IndielinksTest, run};
 use indielinks::{
     dynamodb::{add_followers, add_following, add_user},
     entities::{FollowId, Post, StorUrl, User, UserEmail, UserId, Username},
     peppers::{Pepper, Version as PepperVersion},
 };
 use indielinks_test::{
+    Helper,
     activity_pub::{as_follower, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
     users::test_signup,
     webfinger::webfinger_smoke,
-    Helper,
 };
 
 use async_trait::async_trait;
-use aws_config::{meta::region::RegionProviderChain, BehaviorVersion, Region};
+use aws_config::{BehaviorVersion, Region, meta::region::RegionProviderChain};
 use aws_sdk_dynamodb::{
     config::Credentials,
     types::{AttributeValue, DeleteRequest, Select, WriteRequest},
@@ -43,10 +43,10 @@ use itertools::Itertools;
 use libtest_mimic::{Arguments, Failed, Trial};
 use secrecy::SecretString;
 use serde_dynamo::aws_sdk_dynamodb_1::from_items;
-use snafu::{prelude::*, Backtrace, Snafu};
+use snafu::{Backtrace, Snafu, prelude::*};
 use tap::Pipe;
 use tokio::runtime::Runtime;
-use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 use std::{cmp::min, collections::HashSet, fmt::Display, io, sync::Arc};
 
@@ -68,6 +68,10 @@ enum Error {
         source: serde_dynamo::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to parse RUST_LOG: {source}"))]
+    Filter {
+        source: tracing_subscriber::filter::FromEnvError,
+    },
     #[snafu(display("User {username} appears more than once in the database"))]
     MultipleUsers {
         username: Username,
@@ -87,10 +91,6 @@ enum Error {
             aws_sdk_dynamodb::config::http::HttpResponse,
         >,
         backtrace: Backtrace,
-    },
-    #[snafu(display("Failed to parse RUST_LOG: {source}"))]
-    Filter {
-        source: tracing_subscriber::filter::FromEnvError,
     },
     #[snafu(display("Failed to set the global tracing subscriber: {source}"))]
     SetGlobalDefault {

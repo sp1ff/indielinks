@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! # [indielinks-cache](crate) integration tests via the `in-memory` log store implementation
+//! # [indielinks-cache](crate) integration tests via the `on-disk` log store implementation
 
 use std::io;
 
@@ -21,7 +21,6 @@ use common::{Configuration, Test, run};
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Trial};
 use snafu::{ResultExt, Snafu};
-use tracing::info;
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 mod common;
@@ -53,7 +52,7 @@ fn setup(base_port: u16) -> Result<()> {
     teardown()?;
     run(
         "../infra/cache-test-cluster-up",
-        &["in-memory", &format!("{base_port}")],
+        &["on-disk", &format!("{base_port}")],
         None,
     )
     .context(CommandSnafu {
@@ -62,7 +61,8 @@ fn setup(base_port: u16) -> Result<()> {
 }
 
 fn teardown() -> Result<()> {
-    run("../infra/cache-test-cluster-down", &["in-memory"], None).context(CommandSnafu {
+    // Let's try & make this idempotent
+    run("../infra/cache-test-cluster-down", &["on-disk"], None).context(CommandSnafu {
         cmd: "cache-test-cluster-down".to_owned(),
     })
 }
@@ -87,20 +87,18 @@ fn main() -> Result<()> {
         .context(SetGlobalDefaultSnafu)?;
     }
 
-    info!("Logging configured.");
-
     if !config.no_setup {
         setup(config.base_port)?;
     }
 
     if !matches!(args.test_threads, Some(1)) {
-        info!("Temporarily overriding --test-threads to 1.");
+        eprintln!("Temporarily overriding --test-threads to 1.");
         args.test_threads = Some(1);
     }
 
     let conclusion = libtest_mimic::run(
         &args,
-        inventory::iter::<Test>
+        inventory::iter::<common::Test>
             .into_iter()
             .sorted_by_key(|t| t.name)
             .map(|test| {
