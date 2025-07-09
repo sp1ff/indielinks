@@ -18,12 +18,12 @@
 //! ## Some First Thoughts
 //!
 //! The Raft consensus protocol (see [In Search of an Understandable Consensus Algorithm])
-//! synchronises a (typically small) state across a cluster of nodes. It doesn't guarantee that the
-//! state is exactly the same across all nodes at all times; rather it guarantees that a message log
-//! is *seen* by all the nodes in the same order. A given node may be behind it's peers at any given
-//! time, in terms of the log messages it's committed, but given enough time, it will eventually
-//! catch-up, and it will catch up by committing the exact messages committed by its peers, in the
-//! same order.
+//! synchronises (a typically small amount of) state across a cluster of nodes. It doesn't guarantee
+//! that the state is exactly the same across all nodes at all times; rather it guarantees that a
+//! message log is *seen* by all the nodes in the same order. A given node may be behind it's peers
+//! at any given time, in terms of the log messages it's committed, but given enough time, it will
+//! eventually catch-up, and it will catch up by committing the exact messages committed by its
+//! peers, in the same order.
 //!
 //! [In Search of an Understandable Consensus Algorithm]: https://raft.github.io/raft.pdf
 //!
@@ -31,7 +31,7 @@
 //! messages. In order to use the [openraft] crate, we need to customize its generic implementation
 //! in several ways, beginning with the _log messages_. [openraft] defines a trait consisting
 //! solely of associated types, [RaftTypeConfig]. The first associated type, [D], is the
-//! application-specific log message. This is typically a sum type containing all the differnet
+//! application-specific log message. This is typically a sum type containing all the different
 //! ways in which the state can be mutated.
 //!
 //! [openraft]: https://docs.rs/openraft/latest/openraft/docs/getting_started/index.html
@@ -62,7 +62,7 @@
 //! to be exchanged. On the _receiving_ side, [openraft] says... very little. You pretty-much have
 //! to look at the samples to realize that you need to setup a server that is compatible with your
 //! [RaftNetwork] implementation, and invoke certain methods on the [Raft] struct you're
-//! maintaining.
+//! maintaining in the server's handlers.
 //!
 //! [RaftNetwork]: https://docs.rs/openraft/latest/openraft/network/trait.RaftNetwork.html
 //! [Raft]: https://docs.rs/openraft/latest/openraft/raft/struct.Raft.html
@@ -81,13 +81,13 @@
 //!    call this-or-that method in the library
 //!
 //! I thought about doing something clever on the receive side, like having the application setup a
-//! =TcpStream= and handing it off to the library, but that would mean the library would need to
+//! `TcpStream` and handing it off to the library, but that would mean the library would need to
 //! know all about the transport mechanism the app has chosen in order to deserialize the incoming
 //! messages! I just don't see a way out of having serde handled by the app, not the library.
 //!
 //! There is one other possible thing that occurs to me: have the library provide indirect support
-//! for JSON/HTTP & gRPC. The library could provide, say an =axum::Route= instance and a
-//! =tonic::Grpc= instance; the dispatch piece of a server without the routing piece. The
+//! for JSON/HTTP & gRPC. The library could provide, say an `axum::Route` instance and a
+//! `tonic::Grpc` instance; the dispatch piece of a server without the routing piece. The
 //! application could assemble the provided routing piece with their own transport choices. The
 //! downside here is that if the app wants _another_ RPC mechanism, the library would have to
 //! implement it.
@@ -95,7 +95,7 @@
 //! ## Why Am I Not Using Redis?
 //!
 //! The reader may well ask: why do all this? Why just not use Redis (or something similar)? Perhaps
-//! I will, yet, but I don't think that should be the default answer. Taking a dependency is not a
+//! I will yet, but I don't think that should be the default answer. Taking a dependency is not a
 //! cost-free, unalloyed good. You're now dependent on someone else's code, and in the case of a
 //! completely separate distributed cache, you've added a network hop & concomitant
 //! point-of-failure. I'd _still_ need to write code to specialize the cache to indielinks'
@@ -105,7 +105,7 @@
 //! _all have so many moving parts_
 //!
 //! Rather, the choice to take a dependency should be viewed as a trade-off: is the work savings
-//! worth the cost? Without that limiting prinicple, you wind-up in the state node finds itself in,
+//! worth the cost? Without that limiting principle, you wind-up in the state node finds itself in,
 //! with packages devoted to [trimming whitespace] (there are several; the package at the link was
 //! just the first search hit). Now, fifteen or twenty years ago, the answer would have been clear:
 //! consensus protocols were bleeding edge technology; available only in the academic literature or
