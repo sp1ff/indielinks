@@ -20,25 +20,33 @@
 //! I haven't done any sort of frontend/UI development in twenty years. It seems the fundamentals of
 //! web frontends haven't changed all that much: you lay-out the UI in terms of HTML elements and
 //! make them responsive by modifying the DOM. And things _have_ gotten better: back in the day, we
-//! all had to use the `<table>` element whereas HTML 5 provides a number of elements specifically
-//! designed for this purpose.
+//! all had to use the `<table>` element for layout whereas HTML 5 provides a number of elements
+//! specifically designed for this purpose.
 //!
 //! I've chosen the [Leptos] Rust framework to build this app in the hopes of flattening my learning
 //! curve. [Leptos] uses the Rust macro system to define a DSL for expressing reactive UI
 //! components. Thing is, the syntax of this DSL is barely documented, and the semantics not at all.
 //! As I figure both out, I'll be documenting the code copiously.
+//!
+//! [Leptos]: https://book.leptos.dev
 
-use leptos::{html, prelude::*};
+use std::collections::HashSet;
+
+use chrono::{DateTime, Utc};
+use leptos::{either::Either, html, prelude::*};
 use leptos_router::{
     components::{ProtectedRoute, Route, Router, Routes},
     hooks::use_location,
     path,
 };
 use serde::{Deserialize, Serialize};
+use tap::prelude::*;
 use thaw::{Layout, LayoutHeader, Link, Tab, TabList};
 use tracing::{error, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
+use url::Url;
+use uuid::Uuid;
 
 /// indielinks "instance" page
 #[component]
@@ -51,12 +59,168 @@ fn Instance() -> impl IntoView {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, /*DeserializeRow, */ Eq, PartialEq, Serialize)]
+pub struct Post {
+    url: Url,      /*PostUri*/
+    user_id: Uuid, /*UserId*/
+    id: Uuid,      /*PostId*/
+    posted: DateTime<Utc>,
+    day: String, /*PostDay*/
+    title: String,
+    notes: Option<String>,
+    tags: HashSet<String /*Tagname*/>,
+    public: bool,
+    unread: bool,
+}
+
+#[component]
+fn Post(post: Post) -> impl IntoView {
+    view! {
+        <div class="post">
+            <p><a href=move || format!("{}", post.url)>{post.title}</a></p>
+            <p style="font-size: x-small;">{move || format!("{}", post.posted)}</p>
+        </div>
+    }
+}
+
 /// The indielinks' user "home" page
 #[component]
-fn Home() -> impl IntoView {
+fn Home(token: ReadSignal<Option<String>>) -> impl IntoView {
+    // RE posts: we can be in one of three situations:
+    // 1. zero posts-- the user just signed-up & hasn't posted anything; don't display the
+    // pagination controls & show an explanatory message in the list div
+    // 2. up to one page's worth of posts: don't display the pagination controls, display the
+    // posts in the list div
+    // 3. more than one page's worth of posts: display the pagnination controls, display
+    // the appropriate page in the list div
+
+    // This is an interesting problem: we have a collection of posts on the server, and we need to
+    // display one page's worth. That collection can change-out from beneath us. We have three
+    // operations at our disposal:
+
+    // - /posts/date : date of the most recent change
+    // - /posts/recent : request the n most recent posts
+    // - /posts/all : request a range of posts (offset + # to return)
+
+    // I think my initial approach is going to be to simply maintain the "current page" as a signal
+    // and manipulate it via an Effect/Action (still not sure when to use which). The idea then will
+    // be to render the posts div according to that state on demand. This means we'll only re-render
+    // when the page is changed, not when we discover that the server-side state has changed-out
+    // beneath us. I'm not sure how to force a render; for now I'm planning on just adding a
+    // "refresh" button.
+    let client =
+        use_context::<ReadSignal<reqwest::Client>>().expect("Failed to retrieve the HTTP client");
+
+    let (page, set_page) = signal(0usize);
+
+    // Ugh-- copied from `indielinks`; if I take a dependency on the indielinks crate, I get a ton
+    // of error messages when I try to build *this* one-- I suspect because `indielinks` has
+    // dependencies that don't support the wasm32 target (?) I may need to factor types like this
+    // out into their own crate that can be shared by the front-end & back-end.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct PostsAllReq {
+        tag: Option<String>,
+        start: Option<usize>,
+        results: Option<usize>,
+        fromdt: Option<DateTime<Utc>>,
+        todt: Option<DateTime<Utc>>,
+        #[serde(rename = "meta")]
+        _meta: Option<bool>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct PostsAllRsp {
+        pub user: String, /*Username*/
+        pub tag: String,
+        pub posts: Vec<Post>,
+    }
+
+    // I'd really prefer to return a `Result<Vec<Post>>`, but I can't use this as a `LocalResource`
+    // unless the return type is `Clone`, which errors generally are not. I *could* change my error
+    // type to box all source errors and so be `Clone`, but before I go to that length, I want to be
+    // sure I'm actually going to *use* the returned error. The hackernews example, for instance,
+    // returns an `Option`, simply logging any errors it encounters before returning `None`.
+    async fn load_data(client: reqwest::Client, token: String, page: usize) -> Option<Vec<Post>> {
+        client
+            .post("http://127.0.0.1:20673/api/v1/posts/all")
+            .bearer_auth(token)
+            .json(&PostsAllReq {
+                tag: None,
+                start: Some(page * 6),
+                results: Some(6),
+                fromdt: None,
+                todt: None,
+                _meta: None,
+            })
+            .send()
+            .await
+            .and_then(|rsp| rsp.error_for_status())
+            .map_err(|err| error!("Requesting a page's worth of posts: {err:?}"))
+            .ok()?
+            .json::<PostsAllRsp>()
+            .await
+            .map_err(|err| error!("Deserializing a page's worth of posts; {err:?}"))
+            .ok()?
+            .pipe(|rsp| Some(rsp.posts))
+    }
+
+    let page_data = LocalResource::new(move || {
+        load_data(
+            client.get().clone(),
+            token.get().clone().expect("Missing token"),
+            page.get(),
+        )
+    });
+
     view! {
-        <div style="padding: 8px;">
-        "This will be the user's \"home\" page; it should only be visible page when you're signed-in"
+        <div class="user-view" style="display: flex;">
+            // User's posts
+            <div class="posts-view">
+                <div class="posts-nav" style="display: flex; font-size: smaller; color: #888">
+                    <span style="padding: 2px 6px;">
+                        {move || {
+                            if page.get() > 0 {
+                                Either::Left(view!{
+                                    <a href="#" on:click=move |_| set_page.update(|n| *n -= 1)>"< prev"</a>
+                                })
+                            } else {
+                                Either::Right(view!{"< prev"})
+                            }
+                        }}
+                    </span>
+                    <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=move |_| {
+                        let p = page.get();
+                        set_page.set(p); // Touch, don't change value-- seems to work
+                    }>"    refresh"</a></span>
+                    <span style="padding: 2px 6px;">
+                        {move || {
+                          match page_data.get() {
+                              Some(Some(posts)) if posts.len() == 6 => Either::Left(view!{
+                                  <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
+                              }),
+                              _ => Either::Right(view!{"next >"})
+                          }}
+                        }
+                    </span>
+            </div>
+            {move || {
+                view! {
+                    <div class="post-list">
+                        <Transition fallback=move || view!{ <p>"Loading..."</p> }>
+                            <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
+                                 key=|post| post.id
+                                 let:post>
+                              <Post post/>
+                            </For>
+                        </Transition>
+                    </div>
+                }
+            }}
+            </div>
+            // User's tags
+            <div style="flex: 1; margin: 6px; border: 1px solid #ccc; display: flex; align-items: center; justify-content: space-around;">
+              <span>"Tags will go here!"</span>
+            </div>
         </div>
     }
 }
@@ -82,7 +246,7 @@ fn SignIn(
     let client =
         use_context::<ReadSignal<reqwest::Client>>().expect("Failed to retrieve the HTTP client");
 
-    // TBH, I have *no* head what this does:
+    // TBH, I have *no* idea what this does:
     let username_element: NodeRef<html::Input> = NodeRef::new();
     let password_element: NodeRef<html::Input> = NodeRef::new();
 
@@ -104,10 +268,6 @@ fn SignIn(
 
     let navigate = leptos_router::hooks::use_navigate();
 
-    // let try_login = create_action(|()|)
-
-    // If I don't say this, the damn page reloads before the HTTP call returns
-    // ev.prevent_default();
     let on_submit = Action::new_local(move |_: &()| {
         let username = username_element
             .get()
@@ -159,9 +319,11 @@ fn SignIn(
         }
     });
 
+    // Ugh: I really need to move this stuff to CSS:
     view! {
         <div style="display: flex; align-items: center; justify-content: space-around; flex-direction: column;">
             <form style="padding: 1em;" on:submit=move |ev| {
+                // If I don't say this, the damn page reloads before the HTTP call returns
                 ev.prevent_default();
                 on_submit.dispatch(());
             }>
@@ -196,16 +358,20 @@ fn App() -> impl IntoView {
     // We setup our HTTP client here, and make it avaiable throughout the app through context. Not
     // really sure how to handle failure; if we can't construct the `Client` then there's not much
     // we can really do-- I guess I need a fallback page of some sort, but I want to see some other
-    // failure opportunities before I set thi sup.
+    // failure opportunities before I set this up.
+    //
+    // In particular, I'm interseted in the `ErrorBoundary` component as a means of error handling.
     let (client, _) = signal(
         reqwest::Client::builder()
             .user_agent("indielinks-fe/0.0.1 (+sp1ff@pobox.com)")
             .build()
             .expect("Failed to build an HTTP client!"),
     );
+    // Make the client available to any of our sub-components (avoiding "prop drilling"-- making
+    // this a parameter into every single `View` setup function below us):
     provide_context(client);
 
-    // OK-- we store the access token here.
+    // OK-- we store the access token here. Perhaps make this into a context, as well?
     let (token, set_token): (ReadSignal<Option<String>>, WriteSignal<Option<String>>) =
         signal(None);
 
@@ -252,7 +418,7 @@ fn App() -> impl IntoView {
                                 // None means that this information is still loading
                                 condition = move || Some(token.get().is_some())
                                 redirect_path = || "/"
-                                view=Home
+                                view=move || view! { <Home token=token/>}
                             />
                             <ProtectedRoute
                                 path=path!("/f")

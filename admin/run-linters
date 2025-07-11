@@ -8,8 +8,8 @@ fi
 
 set -e
 cargo clippy -- --no-deps -Dwarnings \
-      -A clippy::result_large_err \
       -A clippy::large_enum_variant \
+      -A clippy::result_large_err \
       -A clippy::uninlined_format_args
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps
 

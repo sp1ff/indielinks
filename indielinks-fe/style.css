@@ -25,3 +25,22 @@
     margin-left: auto;
     padding-right: 8px;
 }
+
+.posts-view {
+    flex: 0 0 61%;
+    margin: 6px;
+    border: 1px solid #ccc;
+}
+
+.post-list {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    margin-top: 6px;
+}
+
+.post {
+    margin: 4px;
+    padding: 6px;
+    border: 1px solid #ddd;
+}

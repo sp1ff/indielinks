@@ -32,11 +32,11 @@
 
 use crate::{
     activity_pub::SendCreate,
-    authn::{self, check_api_key, check_password, check_token, AuthnScheme},
+    authn::{self, AuthnScheme, check_api_key, check_password, check_token},
     background_tasks::{BackgroundTasks, Sender},
     counter_add,
     entities::{self, Post, PostDay, PostId, PostUri, Tagname, User, UserApiKey, Username},
-    http::{user_for_request, ErrorResponseBody, Indielinks},
+    http::{ErrorResponseBody, Indielinks, user_for_request},
     metrics::{self, Sort},
     origin::Origin,
     peppers::Peppers,
@@ -46,11 +46,11 @@ use crate::{
 };
 
 use axum::{
+    Router,
     extract::{Json, State},
-    http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
+    http::{HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::IntoResponse,
     routing::{get, post},
-    Router,
 };
 use axum_extra::extract::Query;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -1009,15 +1009,15 @@ async fn posts_dates(
 
 inventory::submit! { metrics::Registration::new("delicious.posts.all", Sort::IntegralCounter) }
 
-#[derive(Debug, Deserialize)]
-struct PostsAllReq {
-    tag: Option<String>,
-    start: Option<usize>,
-    results: Option<usize>,
-    fromdt: Option<DateTime<Utc>>,
-    todt: Option<DateTime<Utc>>,
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PostsAllReq {
+    pub tag: Option<String>,
+    pub start: Option<usize>,
+    pub results: Option<usize>,
+    pub fromdt: Option<DateTime<Utc>>,
+    pub todt: Option<DateTime<Utc>>,
     #[serde(rename = "meta")]
-    _meta: Option<bool>,
+    pub _meta: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1299,7 +1299,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route("/posts/get", get(get_posts))
         .route("/posts/recent", get(get_recent))
         .route("/posts/dates", get(posts_dates))
-        .route("/posts/all", get(all_posts))
+        .route("/posts/all", get(all_posts).merge(post(all_posts)))
         .route("/tags/get", get(tags_get))
         .route("/tags/rename", get(tags_rename).merge(post(tags_rename)))
         .route("/tags/delete", get(tags_delete).merge(post(tags_delete)))
