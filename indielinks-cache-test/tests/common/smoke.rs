@@ -106,7 +106,7 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
     );
 
     debug!("Add nodes 3 & 4 to the Raft as learners");
-    // You have to take care to make this call to the *leader*... which seems wrong to me.
+    // You have to take care to make this call to the *leader*...
     client
         .post(format!("http://127.0.0.1:{}/admin/add-learner", base_port))
         .header(CONTENT_TYPE, "application/json")
@@ -123,12 +123,9 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
     std::thread::sleep(std::time::Duration::from_secs(2));
 
     debug!("Update Raft membership");
-    // Here, it appears that you can make the call to any node member (?)
+    // along with this one.
     client
-        .post(format!(
-            "http://127.0.0.1:{}/admin/membership",
-            base_port + 1
-        ))
+        .post(format!("http://127.0.0.1:{base_port}/admin/membership",))
         .header(CONTENT_TYPE, "application/json")
         .json(&vec![0, 1, 2, 3, 4])
         .send()?
@@ -146,11 +143,12 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
         .error_for_status()?
         .json::<CacheLookupResponse>()?;
     assert_eq!(rsp.cache, 1);
+    // This will invalidate the cache
     assert_eq!(
         rsp.value
             .map(|val| serde_json::from_value::<usize>(val))
             .transpose()?,
-        Some(11)
+        None
     );
 
     Ok(())

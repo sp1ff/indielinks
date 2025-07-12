@@ -38,7 +38,7 @@ fi
 
 # Stand-up a five node cluster. If I don't place each `cargo run` invocation
 # into a sub-shell, `Command::output()` hangs.
-(RUST_BACKTRACE=1 RUST_LOG=debug cargo run --bin "${bin}" -- 0 127.0.0.1:${port}) > n0.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG=debug cargo run --bin "${bin}" -- -c 0 127.0.0.1:${port}) > n0.log 2>&1 < /dev/null &
 
 # Now healthcheck each instance
 hc "${bin}" ${port}

@@ -64,6 +64,11 @@ use std::error::Error as StdError;
 pub enum Error {
     #[snafu(display("The CacheNode representing this process has already been constructed"))]
     CacheNodeAlready,
+    #[snafu(display("Failed to change cluster membership: {source}"))]
+    ChangeMembership {
+        #[snafu(source(from(RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>, Box::new)))]
+        source: Box<RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>>,
+    },
     #[snafu(display("Invalid configuration: {source}"))]
     Config {
         #[snafu(source(from(openraft::ConfigError, Box::new)))]
@@ -657,6 +662,8 @@ where
         );
 
         let state_machine = StateMachine::default();
+        // On return from `Raft::new()`, this Raft node will be in the "learner" state. The cluster
+        // won't be established until `Raft::initialize()` is invoked on some member.
         let raft = openraft::Raft::new(
             config.this_node,              // Node ID
             raft_config,                   // Config
@@ -692,11 +699,33 @@ where
         &self,
         members: impl Into<ChangeMembers<NodeId, ClusterNode>>,
         retain: bool,
-    ) -> StdResult<
-        ClientWriteResponse<TypeConfig>,
-        RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>,
-    > {
-        self.raft.change_membership(members, retain).await
+    ) -> Result<ClientWriteResponse<TypeConfig>> {
+        let mut rx = self.raft.server_metrics();
+        let membership_response = self
+            .raft
+            .change_membership(members, retain)
+            .await
+            .context(ChangeMembershipSnafu)?;
+        // Won't resolve until there's been a change *since channel creation*
+        rx.changed().await.unwrap();
+
+        let node_ids = rx
+            .borrow()
+            .membership_config
+            .nodes()
+            .map(|(nid, _)| *nid)
+            .collect::<Vec<NodeId>>();
+        let write_response = self
+            .raft
+            .client_write(Request::Init {
+                nodes: node_ids,
+                num_virtual: NonZero::new(1).unwrap(/* known good */),
+            })
+            .await
+            .context(RaftWriteSnafu)?;
+        debug!("Write response :=> {write_response:?}");
+
+        Ok(membership_response)
     }
 
     async fn client_for_id(&mut self, node_id: NodeId) -> Result<F::CacheClient> {
@@ -797,15 +826,20 @@ where
         let nodes = BTreeMap::from_iter(nodes);
         let node_ids = nodes.keys().cloned().collect::<Vec<NodeId>>();
 
+        let mut rx = self.raft.server_metrics();
+        debug!(
+            "Raft uninitialized: leader is {:?}",
+            rx.borrow().current_leader
+        );
+
         self.raft.initialize(nodes).await.context(RaftInitSnafu)?;
 
-        let mut leader = self.raft.current_leader().await;
-        info!("Raft initialized: leader is {:?}", leader);
-
-        while leader.is_none() {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            leader = self.raft.current_leader().await;
-            info!("The Raft leader is now {:?}", leader);
+        debug!("Waiting on a server metrics change notification.");
+        loop {
+            rx.changed().await.unwrap();
+            if rx.borrow_and_update().current_leader.is_some() {
+                break;
+            }
         }
 
         // Now that the underlying Raft has been initialized, we initialize the shared state,
@@ -874,10 +908,7 @@ where
         &self,
         members: impl Into<ChangeMembers<NodeId, ClusterNode>>,
         retain: bool,
-    ) -> StdResult<
-        ClientWriteResponse<TypeConfig>,
-        RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>,
-    > {
+    ) -> Result<ClientWriteResponse<TypeConfig>> {
         self.inner
             .read()
             .await

@@ -662,28 +662,10 @@ async fn admin_change_membership(
     State(state): State<AppState>,
     Json(req): Json<Vec<NodeId>>,
 ) -> axum::response::Response {
-    Json(state.node.change_membership(req, false).await).into_response()
-
-    //     // This is kinda lame-- we shouldn't re-init the hash ring, just update it.
-    //     if result.is_ok() {
-    //         let nodes = state
-    //             .raft
-    //             .metrics()
-    //             .borrow()
-    //             .membership_config
-    //             .nodes()
-    //             .map(|(id, _)| *id)
-    //             .collect();
-    //         let _ = state
-    //             .raft
-    //             .client_write(Request::Init {
-    //                 nodes,
-    //                 num_virtual: 0,
-    //             })
-    //             .await;
-    //     }
-
-    //     Json(result).into_response()
+    match state.node.change_membership(req, false).await {
+        Ok(rsp) => Json(rsp).into_response(),
+        Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#?}")).into_response(),
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -17,13 +17,13 @@
 //!
 //! ## Background
 //!
-//! This module implements a distributed cache using consistent hashing. The idea is that the
-//! range of the hash function is distributed around a ring (so if the hash function's output
-//! ranges from 0 to `n-1`, 0 & `n-1` would be adjacent to one another in the circle.) We assign
-//! to each of `n` physical nodes `m` virtual nodes, and we distribute the `n*m` nodes around
-//! the ring. When access to a value that hashes to, say, `i` is required, we "walk" around
-//! the ring clockwise until we hit a virtual node. The physical node corresponding to that
-//! virtual node is responsible for storing the desired value.
+//! This module implements a distributed cache using consistent hashing. The idea is that the range
+//! of the hash function is distributed around a ring (so if the hash function's output ranges from
+//! 0 to `n-1`, 0 & `n-1` would be adjacent to one another in the circle.) We assign to each of `n`
+//! physical nodes `m` virtual nodes, and we distribute the `n*m` nodes around the ring. When access
+//! to a value that hashes to, say, `i` is required, we "walk" around the ring clockwise from `i`
+//! until we hit a virtual node. The physical node corresponding to that virtual node is responsible
+//! for storing the desired value.
 //!
 //! ### Example
 //!
@@ -36,37 +36,52 @@
 //! H = c_0 * 31^k + c_1 * 31^{k-1} + ... + c_{k-1}*31
 //! ```
 //!
-//! Let's give our hash ring a size of 17, so all the arithmetic involved in the computation of
-//! `H`, above, will be done modulo 17. Let's compute the hash values of our virtual nodes:
+//! Let's give our hash ring a size of 18, so all the arithmetic involved in the computation of
+//! `H`, above, will be done modulo 18. Let's compute the hash values of our virtual nodes:
 //!
 //! ```text
 //! 00 |=> 0 * 961 + 0 * 31 = 0    |=>  0
-//! 01 |=> 0 * 961 + 1 * 31 = 31   |=> 14
-//! 10 |=> 1 * 961 + 0 * 31 = 961  |=>  5
-//! 11 |=> 1 * 961 + 1 * 31 = 992  |=>  6
-//! 20 |=> 2 * 961 + 0 * 31 = 1922 |=>  1
-//! 21 |=> 2 * 961 + 1 * 31 = 1953 |=> 15
+//! 01 |=> 0 * 961 + 1 * 31 = 31   |=> 13
+//! 10 |=> 1 * 961 + 0 * 31 = 961  |=>  7
+//! 11 |=> 1 * 961 + 1 * 31 = 992  |=>  2
+//! 20 |=> 2 * 961 + 0 * 31 = 1922 |=> 14
+//! 21 |=> 2 * 961 + 1 * 31 = 1953 |=>  9
 //! ```
 //!
 //! Yielding a ring that looks like:
 //!
 //! ```text
 //!                                           1
-//!   0   1   2   3   4   5   6   7   8   9   0   1   2   3   4   5   6
-//! +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
-//! |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   | --+
-//! +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+   |
-//!  0:0 2:0             1:0 1:1                             0:1 2:1        |
-//!   ^                                                                     |
-//!   |                                                                     |
-//!   +---------------------------------------------------------------------+
+//!   0   1   2   3   4   5   6   7   8   9   0   1   2   3   4   5   6   7
+//! +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+//! |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   | --+
+//! +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+   |
+//!  0:0     1:1                 1:0     2:1             0:1 2:0                |
+//!   ^                                                                         |
+//!   |                                                                         |
+//!   +-------------------------------------------------------------------------+
 //! ```
 //!
 //! Alright, not a great distribution, but then this is a highly-contrived example. Now, suppose we
-//! hash a given key to, say, `4`. We would walk the ring to the right, until we hit `5` where we
+//! hash a given key to, say, `4`. We would walk the ring to the right, until we hit `7` where we
 //! find "1:0" (i.e. node 1, virtual node 0)-- physical node 1 is responsible for this value. If we
 //! were to hash a key to `16`, we would again walk to the right, hit the end, wrap around and find
 //! that physical node 0 is responsible for this value.
+//!
+//! ### Adding & Removing Nodes
+//!
+//! One of the advantages to constistent hashing is that nodes can be added & removed without
+//! changing the responsibility for _every_ partition. Adding a node only affects the segment
+//! between its predecessor on the ring and itself: the keys in that range remap to the new node.
+//! Removing a node only causes its segment to "collapse" onto its successor.
+//!
+//! At least initially, I plan on an even simpler way to handle membership changes: do nothing. When
+//! a node loses responsibility for any given partition, it will simply receive no more requests for
+//! that partition, and the elements will slowly age-out. When a newly added node joins, it will
+//! slowly build-out state as it serves requests for the partitions for which it is newly
+//! responsible. I'll add this to the project backlog of features to be added 1) later and 2) if
+//! there seems to be a need.
+
 use std::{fmt::Debug, num::NonZeroUsize};
 
 use lru::LruCache;
