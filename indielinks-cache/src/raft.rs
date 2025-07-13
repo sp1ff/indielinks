@@ -56,6 +56,8 @@ pub use openraft::{ChangeMembers, raft::ClientWriteResponse};
 
 use std::error::Error as StdError;
 
+pub type StdResult<T, E> = std::result::Result<T, E>;
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module error type                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -128,7 +130,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum CacheError<C>
 where
     C: crate::network::Client,
-    C::ErrorType: StdError + std::fmt::Debug + 'static,
+    C::ErrorType: StdError + Debug + 'static,
 {
     #[snafu(display("While looking up a node: {source}"))]
     BadId {
@@ -157,11 +159,29 @@ where
     }
 }
 
-pub type StdResult<T, E> = std::result::Result<T, E>;
+/// A thing that can hash virtual nodes and hash keys via the xxhash64 algorithm.
+#[derive(Clone, Default)]
+struct Hasher {
+    hash: Xxh64Builder,
+}
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ok: that's log storage done. Next up: the shared state machine.
-////////////////////////////////////////////////////////////////////////////////////////////////////
+// No constructor; instances are generally created through [default]
+impl Hasher {
+    /// Hash a virtual node (in our hash ring) to a `u64` via the xxhash64 algorithm
+    pub fn hash_node(&self, id: &NodeId, m: usize) -> u64 {
+        let mut hash = self.hash.build();
+        use std::hash::{Hash, Hasher};
+        id.hash(&mut hash);
+        hash.write_i8(58); // 58 is ASCII ':'
+        hash.write_usize(m);
+        hash.finish()
+    }
+    /// Hash an arbitrary key to a `u64` via the xxhash64 algorithm
+    pub fn hash_key<K: std::hash::Hash>(&self, key: &K) -> u64 {
+        use std::hash::BuildHasher;
+        self.hash.hash_one(key)
+    }
+}
 
 /// The [indielinks-cache] shared ([Raft]) state machine
 ///
@@ -176,11 +196,10 @@ pub type StdResult<T, E> = std::result::Result<T, E>;
 /// Per the [docs], "The state machine in the Raft application is typically an in-memory component."
 ///
 /// [docs]: https://docs.rs/openraft/latest/openraft/docs/components/state_machine/index.html
-// This is my state machine. Again not sure about the ownership semantics, but it seems handy to
-// have the state machine shared by the `Raft` instance *and* the application state. That said, the
-// `raft-kv-memstore` sample seems needlessly complex: they wrap their state machine in an inner,
-// then wrap the "outer" in an `Arc` and implement the salient traits on the `Arc`. I'm going to try
-// replicating the idiom I used for the Raft storage.
+// It seems handy to have the state machine shared by the `Raft` instance *and* the application
+// state. That said, the `raft-kv-memstore` sample seems needlessly complex: they wrap their state
+// machine in an inner, then wrap the "outer" in an `Arc` and implement the salient traits on the
+// `Arc`.
 //
 // I'm struggling to get my head around the required behavior, here, but so far it seems we
 // need to maintain:
@@ -261,30 +280,10 @@ pub mod test {
     }
 }
 
-#[derive(Clone, Default)]
-struct Hasher {
-    hash: Xxh64Builder,
-}
-
-// No constructor; instances are generally created through [default]
-impl Hasher {
-    pub fn hash_node(&self, id: &NodeId, m: usize) -> u64 {
-        let mut hash = self.hash.build();
-        use std::hash::{Hash, Hasher};
-        id.hash(&mut hash);
-        hash.write_i8(58); // 58 is ASCII ':'
-        hash.write_usize(m);
-        hash.finish()
-    }
-    pub fn hash_key<K: std::hash::Hash>(&self, key: &K) -> u64 {
-        use std::hash::BuildHasher;
-        self.hash.hash_one(key)
-    }
-}
-
-// Here again, the `raft-kv-memstore` sample introduces multiple layers of composition here, which
-// seems needlessly complex to me.
-//
+/// The core state machine implementation
+///
+/// Each node will have precisely one instance of this type, but can hand-out many copies of the
+/// [stateMachine] wrapper.
 // Now, what the heck *is* a `Snapshot`, anyway? Well, we have:
 //
 //     pub struct Snapshot<C: RaftTypeConfig>
@@ -322,6 +321,7 @@ struct StateMachineInner {
 
 // Again, no constructor: just construct via [Default]
 impl StateMachineInner {
+    /// Given an arbitrary hash key, return the node responsible for hosting it
     pub fn node_for_key<K: std::hash::Hash + std::fmt::Debug>(&self, key: &K) -> Result<NodeId> {
         if self.ring.is_empty() {
             return Err(Error::EmptyRing);
@@ -444,10 +444,10 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                             sm.ring = Vec::from_iter(ring.into_iter());
                             debug!("I now have a hash ring of {:#?}", sm.ring);
                         }
-                        Request::InsertNode { .. } => {
+                        Request::InsertNodes { .. } => {
                             unimplemented!()
                         }
-                        Request::RemoveNode { .. } => {
+                        Request::RemoveNodes { .. } => {
                             unimplemented!()
                         }
                     };
@@ -534,7 +534,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// The [indielinks-cache] public interface
+//                             The indielinks-cache public interface                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// [indielinks-cache] cluster configuration
@@ -619,10 +619,8 @@ pub struct Metrics {
 // For now, I'm just going to go with the simple approach:
 static CACHE_NODE_CREATED: AtomicBool = AtomicBool::new(false);
 
-struct CacheNodeInner<F>
-where
-    F: ClientFactory,
-{
+/// Singleton type representing the current [indielinks-cache] node.
+struct CacheNodeInner<F: ClientFactory> {
     id: NodeId,
     raft: Raft<TypeConfig>,
     state: StateMachine,
@@ -695,6 +693,48 @@ where
         self.raft.add_learner(id, node, blocking).await
     }
 
+    pub async fn append_entries(
+        &self,
+        rpc: AppendEntriesRequest<TypeConfig>,
+    ) -> StdResult<AppendEntriesResponse<NodeId>, RaftError<NodeId>> {
+        self.raft.append_entries(rpc).await
+    }
+
+    /// Insert a value into the distributed cache
+    ///
+    /// This method is intended to _send_ a key/value pair to another node in the cluster; it will
+    /// panic if `node_id` names _this_ node.
+    pub async fn cache_insert<K: Serialize + Send + Sync, V: Serialize + Send + Sync>(
+        &mut self,
+        node_id: NodeId,
+        cache_id: CacheId,
+        k: impl Into<K> + Send,
+        v: impl Into<V> + Send,
+    ) -> StdResult<(), CacheError<F::CacheClient>> {
+        assert!(node_id != self.id); // I think this is panic-worthy
+        self.client_for_id(node_id)
+            .await
+            .context(BadIdSnafu)?
+            .cache_insert(cache_id, k, v)
+            .await
+            .context(NetworkSnafu)
+    }
+    /// Lookup a value in the distributed cache
+    pub async fn cache_lookup<K: Serialize + Send, V: DeserializeOwned>(
+        &mut self,
+        node_id: NodeId,
+        cache_id: CacheId,
+        k: impl Into<K> + Send,
+    ) -> StdResult<Option<V>, CacheError<F::CacheClient>> {
+        assert!(node_id != self.id); // I think this is panic-worthy
+        self.client_for_id(node_id)
+            .await
+            .context(BadIdSnafu)?
+            .cache_lookup(cache_id, k)
+            .await
+            .context(NetworkSnafu)
+    }
+
     async fn change_membership(
         &self,
         members: impl Into<ChangeMembers<NodeId, ClusterNode>>,
@@ -715,15 +755,13 @@ where
             .nodes()
             .map(|(nid, _)| *nid)
             .collect::<Vec<NodeId>>();
-        let write_response = self
-            .raft
+        self.raft
             .client_write(Request::Init {
                 nodes: node_ids,
                 num_virtual: NonZero::new(1).unwrap(/* known good */),
             })
             .await
             .context(RaftWriteSnafu)?;
-        debug!("Write response :=> {write_response:?}");
 
         Ok(membership_response)
     }
@@ -764,46 +802,6 @@ where
         }
     }
 
-    /// Insert a value into the distributed cache
-    ///
-    /// This method is intended to _send_ a key/value pair to another node in the cluster; it will
-    /// panic if `node_id` names _this_ node.
-    pub async fn cache_insert<K: Serialize + Send + Sync, V: Serialize + Send + Sync>(
-        &mut self,
-        node_id: NodeId,
-        cache_id: CacheId,
-        k: impl Into<K> + Send,
-        v: impl Into<V> + Send,
-    ) -> StdResult<(), CacheError<F::CacheClient>> {
-        assert!(node_id != self.id); // I think this is panic-worthy
-        self.client_for_id(node_id)
-            .await
-            .context(BadIdSnafu)?
-            .cache_insert(cache_id, k, v)
-            .await
-            .context(NetworkSnafu)
-    }
-    /// Lookup a value in the distributed cache
-    pub async fn cache_lookup<K: Serialize + Send, V: DeserializeOwned>(
-        &mut self,
-        node_id: NodeId,
-        cache_id: CacheId,
-        k: impl Into<K> + Send,
-    ) -> StdResult<Option<V>, CacheError<F::CacheClient>> {
-        assert!(node_id != self.id); // I think this is panic-worthy
-        self.client_for_id(node_id)
-            .await
-            .context(BadIdSnafu)?
-            .cache_lookup(cache_id, k)
-            .await
-            .context(NetworkSnafu)
-    }
-    pub async fn append_entries(
-        &self,
-        rpc: AppendEntriesRequest<TypeConfig>,
-    ) -> StdResult<AppendEntriesResponse<NodeId>, RaftError<NodeId>> {
-        self.raft.append_entries(rpc).await
-    }
     pub async fn install_snapshot(
         &self,
         req: InstallSnapshotRequest<TypeConfig>,
@@ -865,7 +863,13 @@ where
     }
 }
 
-/// Represents this process' node in the [indielinks-cache] cluster
+/// A Clonable representation of this process' node in the [indielinks-cache] cluster
+// I have reservations about this approach. For one, it requires writing a bunch of forwarding
+// functions. For another, it makes access to the state machine tedious: go through the `Arc`, get a
+// lock on the inner, go through the `Arc` wrapping the state machine, get a lock that _that_ inner,
+// then finally do the thing. That said, we need to keep multiple references to the `CacheNode`
+// around (one per `Cache`, e.g.), hence the `Arc`. And we sometimes need mutable access to it,
+// hence the `RwLock`.
 #[derive(Clone)]
 pub struct CacheNode<F: ClientFactory> {
     inner: Arc<RwLock<CacheNodeInner<F>>>,

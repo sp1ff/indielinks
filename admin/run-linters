@@ -7,6 +7,9 @@ if rg -t rust -g '!.old-files' -g '!hello-scylla' 'TODO|TOOD|LATER|IN-?PROGRESS|
 fi
 
 set -e
-cargo clippy -- --no-deps -Dwarnings -A clippy::result_large_err -A clippy::large_enum_variant -A clippy::uninlined_format_args
+cargo clippy -- --no-deps -Dwarnings \
+      -A clippy::result_large_err \
+      -A clippy::large_enum_variant \
+      -A clippy::uninlined_format_args
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps
 

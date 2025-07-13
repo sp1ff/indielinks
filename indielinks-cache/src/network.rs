@@ -16,8 +16,9 @@
 //! # [indielinks-cache] client-side networking
 //!
 //! Raft cluster nodes need to exchange messages to establish consensus. [indielinks-cache] node
-//! members need to exchange messages to manage shared state. This module defines the messages
-//! cluster nodes need to exchange, but the application will need to provide an implementation.
+//! members need to exchange messages to manage shared state. This module defines the *messages*
+//! cluster nodes need to exchange, but the *application* will need to provide an implementation
+//! of the network transport.
 
 use async_trait::async_trait;
 use openraft::{RaftNetwork, RaftNetworkFactory};
@@ -33,15 +34,6 @@ pub use openraft::{
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
 };
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                       module Error type                                        //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// #[derive(Debug, Snafu)]
-// pub enum Error {}
-
-// pub type Result<T> = std::result::Result<T, Error>;
 
 use std::error::Error as StdError;
 
@@ -59,7 +51,7 @@ pub type StdResult<T, E> = std::result::Result<T, E>;
 ///
 /// [CacheNode]: crate::raft::CacheNode
 ///
-/// The first three methods pertain to the [Raft] protocol and are re-exported verbatim from the
+/// The first three methods pertain to the [Raft] protocol and are copied verbatim from the
 /// [corresponding] [openraft] trait. The second two are specific to [indielinks-cache].
 ///
 /// [Raft]: https://raft.github.io/raft.pdf

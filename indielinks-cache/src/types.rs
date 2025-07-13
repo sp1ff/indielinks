@@ -16,7 +16,8 @@
 //! # Basic types used throughout [indielinks-cache]
 //!
 //! While I generally loathe these sorts of "types" or "entities" modules, the [openraft] crate is
-//! parameterized by types throughout.
+//! parameterized by types throughout; I thought it might make sense to collect them in one place
+//! where we could define our [TypeConfig].
 
 use std::{
     io::Cursor,
@@ -30,7 +31,6 @@ use serde::{Deserialize, Serialize};
 /// Type for naming nodes in the [raft] cluster
 ///
 /// [raft]: https://raft.github.io/raft.pdf
-// This seems like a C typedef-- should I go with the newtype idiom instead?
 pub type NodeId = u64;
 
 /// Type for naming individual caches in each node
@@ -53,20 +53,31 @@ pub enum Request {
         nodes: Vec<NodeId>,
         num_virtual: NonZero<usize>,
     },
-    InsertNode {
-        node: NodeId,
+    InsertNodes {
+        nodes: Vec<NodeId>,
     },
-    RemoveNode {
-        node: NodeId,
+    RemoveNodes {
+        nodes: Vec<NodeId>,
     },
 }
 
-// Seems like I should be returning something that can express failure?
+/// Response type for the application of [Request]s
+///
+/// It might *seem* reasonable to return a [Result] here, but 1) most error types are not
+/// serializable (as this type must be) and 2) any errors raised while applying a log message will
+/// be handled by our [RaftStateMachine::apply] implementation, anyway.
+///
+/// [RaftStateMachine::apply]: openraft::storage::RaftStateMachine::apply
+///
+/// A reasonable value would be the new hash ring (i.e. the hash ring after application of this
+/// message), but I don't want to add the overhead until I know I'm going to actually use that
+/// information, somewhere.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Response(pub ());
 
 /// Represents an arbitrary node in our Raft cluster
-// This is in-progress
+// I suspect that it will be handy to tuck away additional bits of information here, but for now,
+// we'll just use the network location.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize)]
 pub struct ClusterNode {
     pub addr: SocketAddr,
@@ -79,7 +90,7 @@ pub struct ClusterNode {
 impl Default for ClusterNode {
     fn default() -> Self {
         Self {
-            addr: SocketAddr::V4(SocketAddrV4::from_str("127.0.0.1:80").unwrap(/* known good*/)),
+            addr: SocketAddr::V4(SocketAddrV4::from_str("127.0.0.1:18000").unwrap(/* known good*/)),
         }
     }
 }

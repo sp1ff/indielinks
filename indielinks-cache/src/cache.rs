@@ -19,11 +19,11 @@
 //!
 //! This module implements a distributed cache using consistent hashing. The idea is that the range
 //! of the hash function is distributed around a ring (so if the hash function's output ranges from
-//! 0 to `n-1`, 0 & `n-1` would be adjacent to one another in the circle.) We assign to each of `n`
-//! physical nodes `m` virtual nodes, and we distribute the `n*m` nodes around the ring. When access
-//! to a value that hashes to, say, `i` is required, we "walk" around the ring clockwise from `i`
-//! until we hit a virtual node. The physical node corresponding to that virtual node is responsible
-//! for storing the desired value.
+//! 0 to `n-1`, 0 & `n-1` would be adjacent to one another in the circle.) We posit `n` physical
+//! nodes & `m` virtual nodes per physical node, and we distribute the resulting `n*m` virtual nodes
+//! around the ring. When access to a value that hashes to, say, `i` is required, we "walk" around
+//! the ring clockwise from `i` until we hit a virtual node. The physical node corresponding to that
+//! virtual node is responsible for storing the desired value.
 //!
 //! ### Example
 //!
@@ -88,15 +88,14 @@ use lru::LruCache;
 use serde::{Serialize, de::DeserializeOwned};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tracing::debug;
-// use xxhash_rust::xxh64::Xxh64Builder;
 
 use crate::{network::ClientFactory, raft::CacheNode, types::CacheId};
+
+use std::error::Error as StdError;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module error type                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-use std::error::Error as StdError;
 
 #[derive(Snafu)]
 pub enum Error<C>
@@ -141,8 +140,8 @@ pub type StdResult<T, E> = std::result::Result<T, E>;
 // I believe to be foldhash.
 pub struct Cache<F: ClientFactory, K, V> {
     id: CacheId,
-    node: CacheNode<F>, // Cheaply clonable
-    map: LruCache<K, V>,
+    node: CacheNode<F>,  // Cheaply clonable
+    map: LruCache<K, V>, // This node's partitions' storage
 }
 
 impl<F, K, V> Cache<F, K, V>
