@@ -13,24 +13,21 @@
 // You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use std::{fmt::Display, io, sync::Arc};
+use std::{io, sync::Arc};
 
-/// # Background task processing integration tests for DynamoDB/Alternator
-use common::{BackgroundTest, Configuration, run};
-
-use indielinks_test::background::first_background;
+use indielinks_test::cache::openraft_test_suite;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Trial};
 use snafu::prelude::*;
-use tokio::runtime::Runtime;
+use tokio::{runtime::Runtime, sync::RwLock};
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+
+use common::{CacheTest, Configuration, run};
 
 mod common;
 
-#[derive(Snafu)]
+#[derive(Debug, Snafu)]
 enum Error {
-    #[snafu(display("Failed to create a DynamoDB session: {source}"))]
-    Client { source: indielinks::dynamodb::Error },
     #[snafu(display("Failed to run {cmd}: {source}"))]
     Command { cmd: String, source: common::Error },
     #[snafu(display("Error obtaining test configuration: {source}"))]
@@ -39,21 +36,12 @@ enum Error {
     Filter {
         source: tracing_subscriber::filter::FromEnvError,
     },
+    #[snafu(display("Failed to create ScyllaDB session: {source}"))]
+    Session { source: indielinks::scylla::Error },
     #[snafu(display("Failed to set the global tracing subscriber: {source}"))]
     SetGlobalDefault {
         source: tracing::subscriber::SetGlobalDefaultError,
     },
-}
-
-impl std::fmt::Debug for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Command { cmd, source } => {
-                write!(f, "Failed to run command {}: {}", cmd, source)
-            }
-            _ => Display::fmt(&self, f),
-        }
-    }
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -74,36 +62,30 @@ fn teardown() -> Result<()> {
 }
 
 struct State {
-    session: Arc<indielinks::dynamodb::Client>,
+    session: Arc<RwLock<indielinks::scylla::Session>>,
 }
 
 impl State {
     pub async fn new(cfg: &Configuration) -> Result<State> {
         Ok(State {
-            session: Arc::new(
-                indielinks::dynamodb::Client::new(
-                    &cfg.dynamo.location,
-                    &cfg.dynamo
+            session: Arc::new(RwLock::new(
+                indielinks::scylla::Session::new(
+                    cfg.scylla.hosts.clone(),
+                    &cfg.scylla
                         .credentials
                         .clone()
                         .map(|(x, y)| (x.into(), y.into())),
                 )
                 .await
-                .context(ClientSnafu)?,
-            ),
+                .context(SessionSnafu)?,
+            )),
         })
     }
 }
 
-inventory::submit!(BackgroundTest {
-    name: "010first_background_test",
-    test_fn: |cfg: Configuration, backend, storage| {
-        Box::pin(first_background(
-            cfg.indielinks.try_into().unwrap(),
-            backend,
-            storage,
-        ))
-    },
+inventory::submit!(CacheTest {
+    name: "001openraft_test_suite",
+    test_fn: |_: Configuration, backend| { openraft_test_suite(backend,) },
 });
 
 fn main() -> Result<()> {
@@ -149,16 +131,14 @@ fn main() -> Result<()> {
     // Nb. this program is always run from the root directory of the owning crate.
     let conclusion = libtest_mimic::run(
         &args,
-        inventory::iter::<common::BackgroundTest>
+        inventory::iter::<common::CacheTest>
             .into_iter()
             .sorted_by_key(|t| t.name)
             .map(|test| {
                 Trial::test(test.name, {
-                    let rt = rt.clone();
                     let cfg = config.clone();
-                    let session = state.session.clone();
                     let storage = state.session.clone();
-                    move || rt.block_on(async { (test.test_fn)(cfg, session, storage).await })
+                    move || (test.test_fn)(cfg, storage)
                 })
             })
             .collect(),

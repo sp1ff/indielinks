@@ -20,8 +20,8 @@
 //! Code common to the indielinks integration test framework goes here. See [indielinks_test] for a
 //! full description.
 use indielinks::{
-    background_tasks::Backend as TasksBackend, entities::Username, peppers::Peppers,
-    storage::Backend as StorageBackend,
+    background_tasks::Backend as TasksBackend, cache::Backend as CacheBackend, entities::Username,
+    peppers::Peppers, storage::Backend as StorageBackend,
 };
 use indielinks_test::Helper;
 
@@ -29,8 +29,9 @@ use either::Either;
 use libtest_mimic::Failed;
 use reqwest::Url;
 use serde::Deserialize;
-use snafu::{prelude::*, Backtrace, IntoError};
+use snafu::{Backtrace, IntoError, prelude::*};
 use tap::Pipe;
+use tokio::sync::RwLock;
 use tracing::Level;
 
 use std::{env, fs, process::Command, sync::Arc};
@@ -214,7 +215,7 @@ impl Default for Configuration {
             pepper: Peppers::default(),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
-            logging: false,
+            logging: true,
             log_level: Level::DEBUG,
         }
     }
@@ -244,3 +245,14 @@ pub struct BackgroundTest {
 }
 
 inventory::collect!(BackgroundTest);
+
+#[allow(dead_code)] // not used by all test programs
+pub struct CacheTest {
+    pub name: &'static str,
+    pub test_fn: fn(
+        Configuration,
+        Arc<RwLock<dyn CacheBackend + Send + Sync>>,
+    ) -> std::result::Result<(), Failed>,
+}
+
+inventory::collect!(CacheTest);

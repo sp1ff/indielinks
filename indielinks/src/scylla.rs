@@ -19,42 +19,89 @@
 //!
 //! [Storage]: crate::storage
 
-use crate::{
-    background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
-    entities::{
-        ActivityPubPost, FollowId, Follower, FollowerId, Following, Like, Post, PostDay, PostId,
-        PostUri, Reply, Share, StorUrl, Tagname, User, UserId, Username,
-    },
-    storage::{self, DateRange, UsernameClaimedSnafu},
-    util::UpToThree,
-};
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
+use std::future::Future;
+use std::ops::Bound;
+use std::pin::Pin;
+use std::task::Poll;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
-use enum_map::{Enum, EnumMap};
-use futures::{
-    stream::{self, BoxStream},
-    Stream,
-};
+use chrono::DateTime;
+use chrono::Duration;
+use chrono::Utc;
+use enum_map::Enum;
+use enum_map::EnumMap;
+use futures::Stream;
+use futures::stream::BoxStream;
+use futures::stream::{self};
+use indielinks_cache::types::NodeId;
+use indielinks_cache::types::TypeConfig;
 use itertools::Itertools;
+use num_bigint::BigInt;
+use openraft::Entry;
+use openraft::ErrorSubject;
+use openraft::ErrorVerb;
+use openraft::LogId;
+use openraft::LogState;
+use openraft::RaftLogId;
+use openraft::StorageError;
+use openraft::StorageIOError;
+use openraft::Vote;
 use pin_project::pin_project;
-use scylla::{
-    client::session::Session as InnerSession,
-    client::session_builder::SessionBuilder,
-    response::{PagingState, PagingStateResponse},
-    statement::{batch::Batch, prepared::PreparedStatement, Statement},
-};
-use secrecy::{ExposeSecret, SecretString};
-use snafu::{Backtrace, IntoError, ResultExt, Snafu};
+use rmp_serde::from_slice;
+use rmp_serde::to_vec;
+use scylla::client::session::Session as InnerSession;
+use scylla::client::session_builder::SessionBuilder;
+use scylla::response::PagingState;
+use scylla::response::PagingStateResponse;
+use scylla::statement::Statement;
+use scylla::statement::batch::Batch;
+use scylla::statement::batch::BatchStatement;
+use scylla::statement::batch::BatchType;
+use scylla::statement::prepared::PreparedStatement;
+use secrecy::ExposeSecret;
+use secrecy::SecretString;
+use snafu::Backtrace;
+use snafu::IntoError;
+use snafu::ResultExt;
+use snafu::Snafu;
 use tap::Pipe;
+use tracing::debug;
 use uuid::Uuid;
 
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    future::Future,
-    pin::Pin,
-    task::Poll,
-};
+use crate::background_tasks::Backend as TasksBackend;
+use crate::background_tasks::Error as BckError;
+use crate::background_tasks::FlatTask;
+use crate::cache::Backend as CacheBackend;
+use crate::cache::Flavor;
+use crate::cache::LogIndex;
+use crate::cache::NID;
+use crate::cache::RaftLog;
+use crate::cache::RaftMetadata;
+use crate::cache::to_storage_io_err;
+use crate::entities::ActivityPubPost;
+use crate::entities::FollowId;
+use crate::entities::Follower;
+use crate::entities::FollowerId;
+use crate::entities::Following;
+use crate::entities::Like;
+use crate::entities::Post;
+use crate::entities::PostDay;
+use crate::entities::PostId;
+use crate::entities::PostUri;
+use crate::entities::Reply;
+use crate::entities::Share;
+use crate::entities::StorUrl;
+use crate::entities::Tagname;
+use crate::entities::User;
+use crate::entities::UserId;
+use crate::entities::Username;
+use crate::storage::DateRange;
+use crate::storage::UsernameClaimedSnafu;
+use crate::storage::{self};
+use crate::util::UpToThree;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -94,6 +141,11 @@ pub enum Error {
     },
     #[snafu(display("The query succeeded, but returned zero rows"))]
     EmptyQueryResult { backtrace: Backtrace },
+    #[snafu(display("Failed to deserialize an openraft log Entry: {source}"))]
+    EntryDe {
+        source: rmp_serde::decode::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("ScyllaDB query failed: {source}"))]
     Execution {
         source: scylla::errors::ExecutionError,
@@ -117,6 +169,11 @@ pub enum Error {
     #[snafu(display("Failed to set keyspace: {source}"))]
     Keyspace {
         source: scylla::errors::UseKeyspaceError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to serialize an openraft LogId: {source}"))]
+    LogIdSer {
+        source: rmp_serde::encode::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Read {in_count} tags in, produced {out_count} TagIds"))]
@@ -174,6 +231,16 @@ pub enum Error {
         source: scylla::errors::PrepareError,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to deserialize a RaftLog: {source}"))]
+    RaftLogDe {
+        source: scylla::deserialize::DeserializationError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize Raft metadata: {source}"))]
+    RaftMetaDe {
+        source: scylla::deserialize::DeserializationError,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Expected rows: {source}"))]
     ResultNotRows {
         source: scylla::response::query_result::IntoRowsResultError,
@@ -208,6 +275,16 @@ pub enum Error {
     UserQuery {
         username: String,
         source: scylla::errors::ExecutionError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize an openraft Vote: {source}"))]
+    VoteDe {
+        source: rmp_serde::decode::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to serialize an openraft Vote: {source}"))]
+    VoteSer {
+        source: rmp_serde::encode::Error,
         backtrace: Backtrace,
     },
 }
@@ -315,7 +392,13 @@ pub async fn add_followers(
                 "insert into followers (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?)",
             )),
         };
-        batch_values.push((*user.id(), follower.clone(), FollowerId::default(), Utc::now(), confirmed));
+        batch_values.push((
+            *user.id(),
+            follower.clone(),
+            FollowerId::default(),
+            Utc::now(),
+            confirmed,
+        ));
     });
     session
         .batch(&batch, batch_values)
@@ -629,6 +712,7 @@ enum PreparedStatements {
 ///
 /// Instantiate this via [Session::new] with connection info & credentials if need be, when dropped
 /// the ScyllaDB session will be terminated.
+// Nb. `InnerSession` (AKA scylla::client::session::Session) is *not* `Clone` (!)
 pub struct Session {
     session: InnerSession,
     /// An [EnumMap] is a map whose keys are enum values where all values are guaranteed to be
@@ -640,6 +724,8 @@ pub struct Session {
     following_statement: PreparedStatement,
     followers_statement: PreparedStatement,
     following_by_actor_statement: PreparedStatement,
+    // This is a placeholder, to be replaced (I think) by CacheNode<F>
+    node_id: NodeId,
 }
 
 impl Session {
@@ -784,6 +870,7 @@ impl Session {
             followers_statement,
             following_statement,
             following_by_actor_statement,
+            node_id: 0, // placeholder
         })
     }
 }
@@ -1665,5 +1752,347 @@ impl TasksBackend for Session {
             )
             .await?;
         Ok(())
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// In the implementation of `CacheBackend`, we need to convert a variety of `Error`s into
+// `StorageError<NodeId>`. The natural move is to implement `From<...> for StorageError<NodeId`.
+// Unfortunately, this module genearlly defines neither the source nor the target for such a
+// conversion, meaning that Rust's orphaned trait rules preclude us from doing this.
+//
+// For now, I'm just going to write a sequence of infallible free functions to handle the
+// conversion. Later on, it might make sense to define a new trait (say, `IntoStorageError`) or,
+// perhaps better, if I wind-up keeping `CacheBackend` around, define it in terms of an error type
+// defined in the `cache` module.
+
+fn from_vec_error(log_id: LogId<NodeId>, err: rmp_serde::encode::Error) -> StorageError<NodeId> {
+    StorageError::<NodeId>::IO {
+        source: StorageIOError::<NodeId>::new(
+            ErrorSubject::<NodeId>::Apply(log_id),
+            ErrorVerb::Write,
+            &err,
+        ),
+    }
+}
+
+#[async_trait]
+impl CacheBackend for Session {
+    /// Append log entries
+    #[tracing::instrument(skip(self))]
+    async fn append(&self, entries: Vec<Entry<TypeConfig>>) -> StdResult<(), StorageError<NodeId>> {
+        // Make one pass; produce both a vector of `BatchStatement` and a vector of tuples
+        let (batch, logs): (Vec<BatchStatement>, Vec<RaftLog>) = entries
+            .into_iter()
+            .map(|entry| match to_vec(&entry) {
+                Ok(buf) => Ok((
+                    BatchStatement::Query(Statement::new(
+                        "insert into raft_log (node_id, log_id, entry) values (?, ?, ?)",
+                    )),
+                    RaftLog {
+                        node_id: NID(self.node_id),
+                        log_id: LogIndex(entry.log_id.index),
+                        entry: buf,
+                    },
+                )),
+                Err(err) => Err(from_vec_error(entry.log_id, err)),
+            })
+            .collect::<StdResult<Vec<_>, _>>()?
+            .into_iter()
+            .unzip();
+
+        // Submit 'em both:
+        self.session
+            .batch(&Batch::new_with_statements(BatchType::Logged, batch), logs)
+            .await
+            .map(|_| ())
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Write, &err))
+    }
+    /// Truncate the `raft_log` & `raft_metadata` tables
+    #[tracing::instrument(skip(self))]
+    async fn drop_all_rows(&self) -> StdResult<(), StorageError<NodeId>> {
+        self.session
+            .query_unpaged("truncate raft_log", ())
+            .await
+            .map_err(|err| {
+                to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
+            })?;
+
+        self.session
+            .query_unpaged("truncate raft_metadata", ())
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::None, ErrorVerb::Delete, &err))
+            .map(|_| ())
+    }
+    /// Returns the last deleted log id and the last log id
+    #[tracing::instrument(skip(self))]
+    async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
+        async fn get_log_state1(
+            session: &InnerSession,
+            node_id: NodeId,
+        ) -> Result<LogState<TypeConfig>> {
+            let last_purged_log_id = session
+                .query_unpaged(
+                    "select * from raft_metadata where node_id = ? and flavor = ?",
+                    (Into::<BigInt>::into(node_id), Flavor::LastPurged),
+                )
+                .await
+                .context(ExecutionSnafu)?
+                .into_rows_result()
+                .context(IntoRowsResultSnafu)?
+                .rows::<RaftMetadata>()
+                .context(TypedRowsSnafu)?
+                .collect::<StdResult<Vec<RaftMetadata>, _>>()
+                .context(RaftMetaDeSnafu)?
+                .into_iter()
+                .at_most_one()
+                .map_err(|_| AtMostOneRowSnafu.build())?
+                .map(|meta| from_slice::<LogId<NodeId>>(&meta.data).context(EntryDeSnafu))
+                .transpose()?;
+
+            let last_log_id = session
+                .query_unpaged(
+                    "select * from raft_log where node_id = ? order by log_id desc limit 1",
+                    (Into::<BigInt>::into(node_id),),
+                )
+                .await
+                .context(ExecutionSnafu)?
+                .into_rows_result()
+                .context(IntoRowsResultSnafu)?
+                .rows::<RaftLog>()
+                .context(TypedRowsSnafu)?
+                .collect::<StdResult<Vec<RaftLog>, _>>()
+                .context(RaftLogDeSnafu)?
+                .into_iter()
+                .at_most_one()
+                .map_err(|_| AtMostOneRowSnafu.build())?
+                .map(|log| {
+                    from_slice::<Entry<TypeConfig>>(&log.entry)
+                        .map(|entry| *entry.get_log_id())
+                        .context(EntryDeSnafu)
+                })
+                .transpose()?
+                .or(last_purged_log_id);
+
+            debug!("get_log_state(): => {last_purged_log_id:?}|{last_log_id:?}");
+
+            Ok(LogState {
+                last_purged_log_id,
+                last_log_id,
+            })
+        }
+
+        get_log_state1(&self.session, self.node_id)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
+    }
+    /// Purge logs upto log_id, inclusive
+    #[tracing::instrument(skip(self))]
+    async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        async fn purge1(
+            session: &InnerSession,
+            node_id: NodeId,
+            log_id: LogId<NodeId>,
+        ) -> Result<()> {
+            session
+                .query_unpaged(
+                    "delete from raft_log where node_id = ? and log_id <= ?",
+                    (
+                        Into::<BigInt>::into(node_id),
+                        Into::<BigInt>::into(log_id.index),
+                    ),
+                )
+                .await
+                .context(ExecutionSnafu)?;
+            // This is kind of lame, since if the next write fails, we can't undo the delete-- I
+            // guess we could keep it in memory?
+            session
+                .query_unpaged(
+                    "insert into raft_metadata (node_id, flavor, data) values (?, ?, ?)",
+                    RaftMetadata {
+                        node_id: NID(node_id),
+                        flavor: Flavor::LastPurged,
+                        data: to_vec(&log_id).context(LogIdSerSnafu)?,
+                    },
+                )
+                .await
+                .context(ExecutionSnafu)
+                .map(|_| ())
+        }
+
+        purge1(&self.session, self.node_id, log_id)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))
+    }
+    /// Return the last saved vote by [Self::save_vote] (if any)
+    #[tracing::instrument(skip(self))]
+    async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
+        async fn read_vote1(
+            session: &InnerSession,
+            node_id: NodeId,
+        ) -> Result<Option<Vote<NodeId>>> {
+            session
+                .query_unpaged(
+                    "select * from raft_metadata where node_id=? and flavor=?",
+                    (Into::<BigInt>::into(node_id), Flavor::Vote),
+                )
+                .await
+                .context(ExecutionSnafu)?
+                .into_rows_result()
+                .context(IntoRowsResultSnafu)?
+                .rows::<RaftMetadata>()
+                .context(TypedRowsSnafu)?
+                .collect::<StdResult<Vec<RaftMetadata>, _>>()
+                .context(RaftMetaDeSnafu)?
+                .into_iter()
+                .at_most_one()
+                .map_err(|_| AtMostOneRowSnafu.build())?
+                .map(|meta| from_slice::<Vote<NodeId>>(&meta.data).context(VoteDeSnafu))
+                .transpose()?
+                .pipe(Ok)
+        }
+
+        read_vote1(&self.session, self.node_id)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err))
+    }
+    /// Save vote to storage
+    #[tracing::instrument(skip(self))]
+    async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        async fn save_vote1(
+            session: &InnerSession,
+            node_id: NodeId,
+            vote: &Vote<NodeId>,
+        ) -> Result<()> {
+            session
+                .query_unpaged(
+                    "insert into raft_metadata (node_id, flavor, data) values (?, ?, ?)",
+                    RaftMetadata {
+                        node_id: NID(node_id),
+                        flavor: Flavor::Vote,
+                        data: to_vec(&vote).context(VoteSerSnafu)?,
+                    },
+                )
+                .await
+                .context(ExecutionSnafu)
+                .map(|_| ())
+        }
+
+        save_vote1(&self.session, self.node_id, vote)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))
+    }
+    /// Truncate logs since log_id, inclusive
+    #[tracing::instrument(skip(self))]
+    async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        self.session
+            .query_unpaged(
+                "delete from raft_log where node_id = ? and log_id >= ?",
+                (
+                    Into::<BigInt>::into(self.node_id),
+                    Into::<BigInt>::into(log_id.index),
+                ),
+            )
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))
+            .map(|_| ())
+    }
+    /// Get a series of log entries from storage.
+    #[tracing::instrument(skip(self))]
+    async fn try_get_log_entries(
+        &self,
+        lower_bound: Bound<&u64>,
+        upper_bound: Bound<&u64>,
+    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>> {
+        async fn try_get_log_entries1(
+            session: &InnerSession,
+            node_id: NodeId,
+            lower_bound: Bound<&u64>,
+            upper_bound: Bound<&u64>,
+        ) -> Result<Vec<Entry<TypeConfig>>> {
+            let node_id = Into::<BigInt>::into(node_id);
+            // This seems prolix... see if I can tighten this up when I move to prepared statements
+            match (lower_bound, upper_bound) {
+                (Bound::Included(i), Bound::Included(j)) => {
+                    let i = Into::<BigInt>::into(*i);
+                    let j = Into::<BigInt>::into(*j);
+                    session
+                        .query_unpaged(
+                            "select * from raft_log where node_id = ? and log_id >= ? and log_id <= ?",
+                            (node_id, i, j),
+                        )
+                        .await
+                }
+                (Bound::Included(i), Bound::Excluded(j)) => {
+                    let i = Into::<BigInt>::into(*i);
+                    let j = Into::<BigInt>::into(*j);
+                    session
+                        .query_unpaged(
+                            "select * from raft_log where node_id = ? and log_id >= ? and log_id < ?",
+                            (node_id, i, j),
+                        )
+                        .await
+                }
+                (Bound::Included(i), Bound::Unbounded) => {
+                    let i = Into::<BigInt>::into(*i);
+                    session
+                        .query_unpaged("select * from raft_log where node_id = ? and log_id >= ?", (node_id, i))
+                        .await
+                }
+                (Bound::Excluded(i), Bound::Included(j)) => {
+                    let i = Into::<BigInt>::into(*i);
+                    let j = Into::<BigInt>::into(*j);
+                    session
+                        .query_unpaged(
+                            "select * from raft_log where node_id = and log_id > ? and log_id <= ?",
+                            (node_id, i, j),
+                        )
+                        .await
+                }
+                (Bound::Excluded(i), Bound::Excluded(j)) => {
+                    let i = Into::<BigInt>::into(*i);
+                    let j = Into::<BigInt>::into(*j);
+                    session
+                        .query_unpaged(
+                            "select * from raft_log where node_id = and log_id > ? and log_id < ?",
+                            (node_id, i, j),
+                        )
+                        .await
+                }
+                (Bound::Excluded(i), Bound::Unbounded) => {
+                    let i = Into::<BigInt>::into(*i);
+                    session.query_unpaged("select * from raft_log where node_id = and log_id > ?", (node_id, i)).await
+                }
+                (Bound::Unbounded, Bound::Included(j)) => {
+                    let j = Into::<BigInt>::into(*j);
+                    session.query_unpaged("select * from raft_log where node_id = and log_id <= ?", (node_id, j)).await
+                }
+                (Bound::Unbounded, Bound::Excluded(j)) => {
+                    let j = Into::<BigInt>::into(*j);
+                    session.query_unpaged("select * from raft_log where node_id = and log_id < ?", (node_id, j)).await
+                }
+                (Bound::Unbounded, Bound::Unbounded) => {
+                    session.query_unpaged("select * from raft_log where node_id = and ", (node_id,)).await
+                }
+            }
+            .context(ExecutionSnafu)?
+            .into_rows_result()
+            .context(IntoRowsResultSnafu)?
+            .rows::<RaftLog>()
+            .context(TypedRowsSnafu)?
+            // At this point, we have an iterator over `Result<RaftLog, DeserializationError>`, and
+            // I need to fallibly deserialize the `entry` field to an `Entry<TypeConfig>`. I guess
+            // I'd prefer to do one pass, at the cost of a more complex lambda:
+            .map(|res| {
+                res.context(RaftLogDeSnafu)
+                    .and_then(|log| from_slice::<Entry<TypeConfig>>(log.entry.as_slice()).context(EntryDeSnafu))
+            })
+            .collect::<Result<Vec<Entry<TypeConfig>>>>()
+        }
+
+        try_get_log_entries1(&self.session, self.node_id, lower_bound, upper_bound)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
     }
 }

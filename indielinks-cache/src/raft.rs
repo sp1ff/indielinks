@@ -32,7 +32,7 @@ use std::{
 
 use openraft::{
     Entry, LogId, OptionalSend, Raft, RaftMetrics, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
-    StorageError, StorageIOError, StoredMembership,
+    StorageIOError, StoredMembership,
     error::{ClientWriteError, InstallSnapshotError, RaftError},
     raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
@@ -52,7 +52,7 @@ use crate::{
     types::{CacheId, ClusterNode, NodeId, Request, Response, TypeConfig},
 };
 
-pub use openraft::{ChangeMembers, raft::ClientWriteResponse};
+pub use openraft::{ChangeMembers, StorageError, raft::ClientWriteResponse};
 
 use std::error::Error as StdError;
 
@@ -544,16 +544,34 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
 /// I've exposed a few of the [openraft::Config] fields here.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Configuration {
+    #[serde(rename = "cluster-name")]
     cluster_name: String,
     // The ID for *this* node
+    #[serde(rename = "this-node")]
     this_node: NodeId,
     // The interval at which leaders will send heartbeats to followers; this defaults to 50ms, which
     // can make the cluster awfully chatty
+    #[serde(rename = "heartbeat-interval")]
     heartbeat_interval: Duration,
     // The lower bound on the election timeout (defaults to 150ms)
+    #[serde(rename = "election-timeout-min")]
     election_timeout_min: Duration,
     // The upper bound on the election timeout (defaults to 300ms)
+    #[serde(rename = "election-timeout-max")]
     election_timeout_max: Duration,
+}
+
+/// Suitable for a single-node cluster only
+impl Default for Configuration {
+    fn default() -> Self {
+        Self {
+            cluster_name: "indielinks".to_owned(),
+            this_node: 0,
+            heartbeat_interval: Duration::from_millis(500),
+            election_timeout_min: Duration::from_millis(1500),
+            election_timeout_max: Duration::from_millis(3000),
+        }
+    }
 }
 
 impl Configuration {

@@ -37,22 +37,22 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
 use axum::{
+    Router,
     extract::State,
     routing::{get, post},
-    Router,
 };
 use chrono::Duration;
-use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, Command, crate_authors, crate_version, value_parser};
 use either::Either;
 use http::{HeaderName, HeaderValue};
 use libc::{
-    close, dup, exit, fork, getdtablesize, getpid, lockf, open, setsid, umask, write, F_TLOCK,
+    F_TLOCK, close, dup, exit, fork, getdtablesize, getpid, lockf, open, setsid, umask, write,
 };
 use opentelemetry::global;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -62,22 +62,24 @@ use snafu::prelude::*;
 use tap::Pipe;
 use tokio::{
     net::TcpListener,
-    signal::unix::{signal, SignalKind},
-    sync::{mpsc, Notify},
+    signal::unix::{SignalKind, signal},
+    sync::{Notify, mpsc},
 };
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
 };
-use tracing::{error, info, Level};
+use tracing::{Level, error, info};
 use tracing_subscriber::{
+    Layer, Registry,
     filter::EnvFilter,
     fmt::{self, MakeWriter},
     layer::SubscriberExt,
-    Layer, Registry,
 };
 use url::Url;
+
+use indielinks_cache::raft::Configuration as RaftConfiguration;
 
 use indielinks::{
     actor::make_router as make_actor_router,
@@ -339,6 +341,8 @@ struct ConfigV1 {
     collection_page_size: usize,
     #[serde(rename = "background-tasks")]
     background_tasks: background_tasks::Config,
+    #[serde(rename = "raft-config")]
+    _raft_config: RaftConfiguration,
 }
 
 impl ConfigV1 {
@@ -366,6 +370,7 @@ impl Default for ConfigV1 {
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
             collection_page_size: 12, // Copied from Mastodon
             background_tasks: background_tasks::Config::default(),
+            _raft_config: RaftConfiguration::default(),
         }
     }
 }
@@ -454,7 +459,6 @@ impl<'a> MakeWriter<'a> for LogFile {
     }
 }
 
-// impl<'a> io::Write for MyMutexGuardWriter<'a> {
 impl io::Write for MyMutexGuardWriter<'_> {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -583,7 +587,6 @@ async fn metrics(State(state): State<Arc<Indielinks>>) -> String {
 }
 
 async fn dev(State(state): State<Arc<Indielinks>>) -> String {
-    // Work in progress
     format!("{:#?}", state.storage.user_for_name("sp1ff").await)
 }
 

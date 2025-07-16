@@ -1,0 +1,327 @@
+// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+//
+// This file is part of indielinks.
+//
+// indielinks is free software: you can redistribute it and/or modify it under the terms of the GNU
+// General Public License as published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// indielinks is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+// even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
+// see <http://www.gnu.org/licenses/>.
+
+//! # cache
+//!
+//! The [indielinks](crate) interface to [indielinks-cache].
+
+use std::{
+    fmt::Debug,
+    ops::{Bound, RangeBounds},
+    sync::Arc,
+};
+
+use async_trait::async_trait;
+use num_bigint::BigInt;
+use openraft::{
+    Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader, StorageError,
+    StorageIOError, Vote,
+    storage::{LogFlushed, RaftLogStorage},
+};
+use scylla::{
+    DeserializeRow, SerializeRow,
+    cluster::metadata::ColumnType,
+    deserialize::{FrameSlice, value::DeserializeValue},
+    errors::{DeserializationError, SerializationError, TypeCheckError},
+    serialize::{
+        value::SerializeValue,
+        writers::{CellWriter, WrittenCellProof},
+    },
+};
+use serde::{Deserialize, Serialize};
+use snafu::{Backtrace, Snafu};
+use tokio::sync::RwLock;
+
+use indielinks_cache::types::{NodeId, TypeConfig};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module Error type                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("Attempted to deserialize an invalid value for Flavor: {n}"))]
+    FlavorDe { n: i8, backtrace: Backtrace },
+}
+
+type StdResult<T, E> = std::result::Result<T, E>;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[repr(i8)]
+pub enum Flavor {
+    Vote = 0,
+    LastPurged = 1,
+}
+
+impl std::fmt::Display for Flavor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Flavor::Vote => "Vote",
+                Flavor::LastPurged => "LastPurged",
+            }
+        )
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Flavor {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        i8::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        match <i8 as DeserializeValue>::deserialize(typ, v)? {
+            0 => Ok(Flavor::Vote),
+            1 => Ok(Flavor::LastPurged),
+            n => Err(DeserializationError::new(FlavorDeSnafu { n }.build())),
+        }
+    }
+}
+
+impl SerializeValue for Flavor {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&(*self as i8), typ, writer)
+    }
+}
+
+/// Object-safe trait abstracting over the storage backend for operations required by [LogStore]
+///
+/// The [LogStore] will write [Raft] log messages and so on to the [indielinks](crate) storage
+/// backend, which in production may be ScyllaDB or DynamoDB. This trait is intended to be
+/// implemented by either of the corresponding backends, and an implementation given to the log
+/// store.
+///
+/// [Raft]: https://raft.github.io/raft.pdf
+#[async_trait]
+pub trait Backend {
+    async fn append(&self, entries: Vec<Entry<TypeConfig>>) -> StdResult<(), StorageError<NodeId>>;
+    async fn drop_all_rows(&self) -> StdResult<(), StorageError<NodeId>>;
+    async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>>;
+    async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>>;
+    async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>>;
+    async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>>;
+    async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>>;
+    async fn try_get_log_entries(
+        &self,
+        lower_bound: Bound<&u64>,
+        upper_bound: Bound<&u64>,
+    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>>;
+}
+
+pub fn to_storage_io_err(
+    subject: ErrorSubject<NodeId>,
+    verb: ErrorVerb,
+    source: impl Into<openraft::AnyError>,
+) -> StorageError<NodeId> {
+    StorageError::<NodeId>::IO {
+        source: StorageIOError::<NodeId>::new(subject, verb, source),
+    }
+}
+
+/// The [indielinks](crate) [Raft] log storage
+///
+/// [Raft]: https://raft.github.io/raft.pdf
+// In my samples, the log storage is `Clone` via wrapping a non-clonable inner, as are the
+// [openraft] samples I've perused. That said, I couldn't see why it should be: once constructed we
+// just move it into the `Raft`. This is unlike the state machine: there, we need to give a
+// reference to the `Raft` while (likely) we keep a reference for the application so that it can
+// read state.
+//
+// The answer is found in [RaftLogStorage::get_log_reader]; you wouldn't think so-- the name and
+// signature suggests that we're returning a separate, new type. However, `RaftLogStorage` is
+// contrained to itself implement `RaftLogReader`, which, I suppose, is why every sample I've seen
+// just clones itself.
+//
+// This also complicates the approach of just implementing `RaftLogReader` and `RaftLogStorage`
+// directly on my backend implementations; i.e. just dispensing with `LogStore` altogether.
+// `scylla::Session` isn't `Clone` (at this time), and so implmeneting `get_log_reader()` would be
+// tough. We could pretty easily make it clone (by wrapping the native `scylla`) session field in a
+// reference & a guard, but I'd rather not take on that effort and performane hit if I don't have
+// to.
+//
+// This has gotten really irritating: this implementation really does nothing except instantiate a
+// few generic parameters & then forward every call to the `Backend` implementation. Once I have
+// this working (and tested!), I'd like to experiment with making `dynamodb::Client` and
+// `scylla::Session` both `Clone`, and then just implement `RaftLogStorage` directly on each of
+// them.
+#[derive(Clone)]
+pub struct LogStore {
+    storage: Arc<RwLock<dyn Backend + Send + Sync>>,
+}
+
+impl LogStore {
+    pub fn new(storage: Arc<RwLock<dyn Backend + Send + Sync>>) -> LogStore {
+        LogStore { storage }
+    }
+}
+
+impl RaftLogReader<TypeConfig> for LogStore {
+    async fn try_get_log_entries<R>(
+        &mut self,
+        range: R,
+    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>>
+    where
+        R: RangeBounds<u64> + Clone + Debug + OptionalSend,
+    {
+        self.storage
+            .read()
+            .await
+            .try_get_log_entries(range.start_bound(), range.end_bound())
+            .await
+    }
+}
+
+impl RaftLogStorage<TypeConfig> for LogStore {
+    type LogReader = Self;
+
+    async fn get_log_state(&mut self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
+        self.storage.read().await.get_log_state().await
+    }
+
+    async fn get_log_reader(&mut self) -> Self::LogReader {
+        self.clone()
+    }
+
+    async fn save_vote(&mut self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        self.storage.read().await.save_vote(vote).await
+    }
+
+    async fn read_vote(&mut self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
+        self.storage.read().await.read_vote().await
+    }
+
+    async fn append<I>(
+        &mut self,
+        entries: I,
+        callback: LogFlushed<TypeConfig>,
+    ) -> StdResult<(), StorageError<NodeId>>
+    where
+        I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
+        I::IntoIter: OptionalSend,
+    {
+        self.storage
+            .read()
+            .await
+            // This is particularly galling: since we can't use generic parameters in a dyn-safe
+            // trait, we need to make this completely useless copy:
+            .append(entries.into_iter().collect::<Vec<Entry<TypeConfig>>>())
+            .await?;
+        callback.log_io_completed(Ok(()));
+        Ok(())
+    }
+
+    async fn truncate(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        self.storage.read().await.truncate(log_id).await
+    }
+
+    async fn purge(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        self.storage.read().await.purge(log_id).await
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// New types to work around the orphan trait rule
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct NID(pub NodeId);
+
+impl std::fmt::Display for NID {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct LogIndex(pub u64);
+
+impl std::fmt::Display for LogIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, DeserializeRow, Serialize, SerializeRow)]
+pub struct RaftLog {
+    pub node_id: NID,
+    pub log_id: LogIndex,
+    pub entry: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, DeserializeRow, Serialize, SerializeRow)]
+pub struct RaftMetadata {
+    pub node_id: NID,
+    pub flavor: Flavor,
+    pub data: Vec<u8>,
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for NID {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        BigInt::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        u64::try_from(&<BigInt as DeserializeValue>::deserialize(typ, v)?)
+            .map_err(DeserializationError::new)
+            .map(NID)
+    }
+}
+
+// Again, the derive macro doesn't work with newtype structs.
+impl SerializeValue for NID {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&Into::<BigInt>::into(self.0), typ, writer)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for LogIndex {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        BigInt::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        u64::try_from(&<BigInt as DeserializeValue>::deserialize(typ, v)?)
+            .map_err(DeserializationError::new)
+            .map(LogIndex)
+    }
+}
+
+// Again, the derive macro doesn't work with newtype structs.
+impl SerializeValue for LogIndex {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&Into::<BigInt>::into(self.0), typ, writer)
+    }
+}

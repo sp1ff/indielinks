@@ -28,6 +28,7 @@
 
 use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::{
+    Client,
     config::Region,
     error::SdkError,
     operation::{create_table::CreateTableError, put_item::PutItemError},
@@ -36,19 +37,18 @@ use aws_sdk_dynamodb::{
         AttributeDefinition, AttributeValue, BillingMode, GlobalSecondaryIndex, KeySchemaElement,
         KeyType, LocalSecondaryIndex, ScalarAttributeType,
     },
-    Client,
 };
-use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command, crate_authors, crate_version, value_parser};
 use either::Either;
 use indielinks::util::exactly_two;
 use itertools::Itertools;
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, prelude::*};
 use tap::Pipe;
-use tracing::{debug, info, Level};
+use tracing::{Level, debug, info};
 use tracing_subscriber::{
+    EnvFilter, Layer, Registry,
     fmt::{self},
     layer::SubscriberExt,
-    EnvFilter, Layer, Registry,
 };
 use url::Url;
 
@@ -247,13 +247,15 @@ async fn create_users(client: &Client) -> Result<()> {
         // DynamoDB
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![table_attr!("id", S), table_attr!("username", S)]))
-        .set_key_schema(Some(vec![KeySchemaElement::builder()
-            .attribute_name("id")
-            .key_type(KeyType::Hash)
-            .build()
-            .context(GenericBuildFailureSnafu {
-                name: "id".to_string(),
-            })?]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "id".to_string(),
+                })?,
+        ]))
         .global_secondary_indexes(
             //
             GlobalSecondaryIndex::builder()
@@ -279,18 +281,20 @@ async fn create_users(client: &Client) -> Result<()> {
         .table_name("unique_usernames")
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![table_attr!("username", S)]))
-        .set_key_schema(Some(vec![KeySchemaElement::builder()
-            .attribute_name("username")
-            .key_type(KeyType::Hash)
-            .build()
-            .context(GenericBuildFailureSnafu {
-                name: "username".to_string(),
-            })?]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("username")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "username".to_string(),
+                })?,
+        ]))
         .send()
         .await
-        .context(CreateTableSnafu)?;
+        .context(CreateTableSnafu);
     debug!("create unique_usernames: {:#?}", out);
-    Ok(())
+    out.map(|_| ())
 }
 
 async fn create_following(client: &Client) -> Result<()> {
@@ -323,19 +327,21 @@ async fn create_following(client: &Client) -> Result<()> {
         .global_secondary_indexes(
             GlobalSecondaryIndex::builder()
                 .index_name("following_by_actor_id")
-                .set_key_schema(Some(vec![KeySchemaElement::builder()
-                    .attribute_name("actor_id")
-                    .key_type(KeyType::Hash)
-                    .build()
-                    .unwrap()]))
+                .set_key_schema(Some(vec![
+                    KeySchemaElement::builder()
+                        .attribute_name("actor_id")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .unwrap(),
+                ]))
                 .build()
                 .unwrap(),
         )
         .send()
         .await
-        .context(CreateTableSnafu)?;
+        .context(CreateTableSnafu);
     debug!("create following: {:#?}", out);
-    Ok(())
+    out.map(|_| ())
 }
 
 async fn create_followers(client: &Client) -> Result<()> {
@@ -367,9 +373,9 @@ async fn create_followers(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)?;
+        .context(CreateTableSnafu);
     debug!("create followers: {:#?}", out);
-    Ok(())
+    out.map(|_| ())
 }
 
 async fn create_posts(client: &Client) -> Result<()> {
@@ -445,11 +451,13 @@ async fn create_posts(client: &Client) -> Result<()> {
         .global_secondary_indexes(
             GlobalSecondaryIndex::builder()
                 .index_name("posts_by_id")
-                .set_key_schema(Some(vec![KeySchemaElement::builder()
-                    .attribute_name("id")
-                    .key_type(KeyType::Hash)
-                    .build()
-                    .unwrap()]))
+                .set_key_schema(Some(vec![
+                    KeySchemaElement::builder()
+                        .attribute_name("id")
+                        .key_type(KeyType::Hash)
+                        .build()
+                        .unwrap(),
+                ]))
                 .build()
                 .unwrap(),
         )
@@ -457,8 +465,7 @@ async fn create_posts(client: &Client) -> Result<()> {
         .await
         .context(CreateTableSnafu);
     debug!("create posts: {:#?}", out);
-    out.expect("Failed to create `posts`");
-    Ok(())
+    out.map(|_| ())
 }
 
 async fn create_likes(client: &Client) -> Result<()> {
@@ -490,9 +497,9 @@ async fn create_likes(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)?;
+        .context(CreateTableSnafu);
     debug!("create likes: {:#?}", out);
-    Ok(())
+    out.map(|_| ())
 }
 
 async fn create_replies(client: &Client) -> Result<()> {
@@ -524,9 +531,9 @@ async fn create_replies(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)?;
+        .context(CreateTableSnafu);
     debug!("create replies: {:#?}", out);
-    Ok(())
+    out.map(|_| ())
 }
 
 async fn create_shares(client: &Client) -> Result<()> {
@@ -558,9 +565,9 @@ async fn create_shares(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)?;
+        .context(CreateTableSnafu);
     debug!("create shares: {:#?}", out);
-    Ok(())
+    out.map(|_| ())
 }
 
 async fn create_activity_pub_posts(client: &Client) -> Result<()> {
@@ -615,8 +622,7 @@ async fn create_activity_pub_posts(client: &Client) -> Result<()> {
         .await
         .context(CreateTableSnafu);
     debug!("create activity_pub_posts: {:#?}", out);
-    out.expect("Failed to create `activity_pub_posts`");
-    Ok(())
+    out.map(|_| ())
 }
 
 async fn create_tasks(client: &Client) -> Result<()> {
@@ -627,18 +633,84 @@ async fn create_tasks(client: &Client) -> Result<()> {
         .set_attribute_definitions(Some(vec![
             table_attr!("id", S), // partition key
         ]))
-        .set_key_schema(Some(vec![KeySchemaElement::builder()
-            .attribute_name("id")
-            .key_type(KeyType::Hash)
-            .build()
-            .context(GenericBuildFailureSnafu {
-                name: "id".to_string(),
-            })?]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "id".to_string(),
+                })?,
+        ]))
         .send()
         .await
         .context(CreateTableSnafu);
     debug!("create tasks: {:#?}", out);
-    Ok(())
+    out.map(|_| ())
+}
+
+async fn create_raft_log(client: &Client) -> Result<()> {
+    let out = client
+        .create_table()
+        .table_name("raft_log")
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("node_id", N),
+            table_attr!("log_id", N),
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("node_id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "node_id".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("log_id")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "log_id".to_string(),
+                })?,
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu);
+    debug!("create raft_log: {:#?}", out);
+    out.map(|_| ())
+}
+
+async fn create_raft_metadata(client: &Client) -> Result<()> {
+    let out = client
+        .create_table()
+        .table_name("raft_metadata")
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("node_id", N),
+            table_attr!("flavor", S),
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("node_id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "node_id".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("flavor")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "flavor".to_string(),
+                })?,
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu);
+    debug!("create raft_metadata: {:#?}", out);
+    out.map(|_| ())
 }
 
 async fn create_tables(client: &Client) -> Result<()> {
@@ -651,6 +723,8 @@ async fn create_tables(client: &Client) -> Result<()> {
     create_shares(client).await?;
     create_activity_pub_posts(client).await?;
     create_tasks(client).await?;
+    create_raft_log(client).await?;
+    create_raft_metadata(client).await?;
     Ok(())
 }
 

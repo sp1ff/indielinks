@@ -30,3 +30,11 @@ max-concurrent-tasks = 16
 sleep-duration = { secs = 1, nanos = 0 }
 shutdown-timeout = { secs = 0, nanos = 500000000 } # "500ms"
 pickup-timeout = { secs = 1, nanos = 0 }
+
+[raft-config]
+cluster-name = "indielinks"
+this-node = 0
+heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
+election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
+election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
+

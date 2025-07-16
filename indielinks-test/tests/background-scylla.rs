@@ -15,17 +15,15 @@
 
 use std::{fmt::Display, io, sync::Arc};
 
-/// # background-scylla
-///
-/// Integration tests run against the indielinks ScyllaDB
-use common::{run, BackgroundTest, Configuration};
+/// # Background task processing integration tests for ScyllaDB
+use common::{BackgroundTest, Configuration, run};
 
 use indielinks_test::background::first_background;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Trial};
 use snafu::prelude::*;
 use tokio::runtime::Runtime;
-use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 mod common;
 

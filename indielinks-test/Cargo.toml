@@ -16,6 +16,7 @@ futures = "0.3.31"
 hex = "0.4.3"
 http = "1.2.0"
 indielinks = { path = "../indielinks" }
+indielinks-cache = { path = "../indielinks-cache" }
 inventory = "0.3.17"
 itertools = "0.14.0"
 lazy_static = "1.5.0"
@@ -54,4 +55,12 @@ harness = false
 
 [[test]]
 name = "background-alternator"
+harness = false
+
+[[test]]
+name = "cache-scylla"
+harness = false
+
+[[test]]
+name = "cache-alternator"
 harness = false

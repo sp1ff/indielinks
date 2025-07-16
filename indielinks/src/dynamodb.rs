@@ -21,6 +21,9 @@
 
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
+    cache::{
+        Backend as CacheBackend, Flavor, LogIndex, NID, RaftLog, RaftMetadata, to_storage_io_err,
+    },
     entities::{
         ActivityPubPost, FollowId, Follower, Following, Like, Post, PostDay, PostId, PostUri,
         Reply, Share, StorUrl, Tagname, User, UserId, Username,
@@ -37,14 +40,17 @@ use aws_sdk_dynamodb::{
         batch_write_item::BatchWriteItemError, get_item::GetItemError, put_item::PutItemError,
         query::QueryOutput, update_item::UpdateItemError,
     },
-    types::{AttributeValue, PutRequest, ReturnValue, Select, WriteRequest},
+    types::{AttributeValue, DeleteRequest, PutRequest, ReturnValue, Select, WriteRequest},
 };
 use aws_smithy_async::future::pagination_stream::PaginationStream;
 use chrono::{DateTime, Duration, Utc};
 use either::Either;
 use futures::{Stream, stream::BoxStream};
+use indielinks_cache::types::{NodeId, TypeConfig};
 use itertools::Itertools;
+use openraft::{Entry, ErrorSubject, ErrorVerb, LogId, LogState, StorageError, Vote};
 use pin_project::pin_project;
+use rmp_serde::{from_slice, to_vec};
 use secrecy::SecretString;
 use serde_dynamo::{
     aws_sdk_dynamodb_1::{from_items, to_item},
@@ -52,12 +58,14 @@ use serde_dynamo::{
 };
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
+use tracing::debug;
 use url::Url;
 use uuid::Uuid;
 
 use std::{
     cmp::min,
     collections::{HashMap, HashSet, VecDeque},
+    ops::Bound,
     pin::Pin,
     task::Poll,
 };
@@ -96,6 +104,12 @@ pub enum Error {
     },
     #[snafu(display("Unexpected AttributeValue variant in UpdateItemOutput"))]
     BadAttrTypeUpdateItemOutput { backtrace: Backtrace },
+    #[snafu(display("Bad metadata type {flavor} for {node_id}"))]
+    BadMetadataType {
+        node_id: NodeId,
+        flavor: crate::cache::Flavor,
+        backtrace: Backtrace,
+    },
     #[snafu(display("A batch write failed: {source}"))]
     BatchWrite {
         source: SdkError<BatchWriteItemError, HttpResponse>,
@@ -138,6 +152,10 @@ pub enum Error {
         source: serde_dynamo::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to read last-purged from the database: {source}"))]
+    LastPurgedGet {
+        source: SdkError<GetItemError, HttpResponse>,
+    },
     #[snafu(display("Read {in_count} tags in, produced {out_count} TagIds"))]
     MismatchedTagCounts {
         in_count: usize,
@@ -150,6 +168,12 @@ pub enum Error {
     MismatchedTagIdCounts {
         tag_ids: usize,
         unique: usize,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Missing {flavor} for {node_id}"))]
+    MissingMetadata {
+        node_id: NodeId,
+        flavor: crate::cache::Flavor,
         backtrace: Backtrace,
     },
     #[snafu(display("{userid}'s post count has gone negative ({count})"))]
@@ -184,6 +208,56 @@ pub enum Error {
             aws_sdk_dynamodb::operation::query::QueryError,
             aws_sdk_dynamodb::config::http::HttpResponse,
         >,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize a Raft log entry: {source}"))]
+    RaftLogDecode {
+        source: rmp_serde::decode::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to serialize a Raft log entry: {source}"))]
+    RaftLogEncode {
+        source: rmp_serde::encode::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to serialize a Raft log entry to a DDB Item: {source}"))]
+    RaftLogSer {
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize a Raft log entry from a DDB Item: {source}"))]
+    RaftLogDe {
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize openraft metadata: {source}"))]
+    RaftMetaDe {
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to decode openraft metadata: {source}"))]
+    RaftMetaDecode {
+        source: rmp_serde::decode::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to encode openraft metadata: {source}"))]
+    RaftMetaEncode {
+        source: rmp_serde::encode::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to serialize openraft metadata: {source}"))]
+    RaftMetaSer {
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to write Raft metadata to the database: {source}"))]
+    RaftMetaPut {
+        source: SdkError<PutItemError, HttpResponse>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("A scan failed: {source}"))]
+    Scan {
+        source: SdkError<ScanError, HttpResponse>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to serialize to an AttributeValue: {source}"))]
@@ -224,6 +298,22 @@ pub enum Error {
     Username {
         username: Username,
         source: SdkError<PutItemError, HttpResponse>,
+    },
+    #[snafu(display("Failed to read a vote from the database: {source}"))]
+    VoteGet {
+        source: SdkError<GetItemError, HttpResponse>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to write vote {vote:?} to the database: {source}"))]
+    VotePut {
+        vote: Vote<NodeId>,
+        source: SdkError<PutItemError, HttpResponse>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to serialize a Raft Vote: {source}"))]
+    VoteEncode {
+        source: rmp_serde::encode::Error,
+        backtrace: Backtrace,
     },
 }
 
@@ -550,8 +640,11 @@ where
 //                                indielinks DynamoDB client type                                 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Clone)]
 pub struct Client {
     client: ::aws_sdk_dynamodb::Client,
+    // This is a placeholder, to be replaced (I think) by CacheNode<F>
+    node_id: NodeId,
 }
 
 impl Client {
@@ -598,6 +691,7 @@ impl Client {
         };
         Ok(Client {
             client: ::aws_sdk_dynamodb::Client::new(&config),
+            node_id: 0, // placeholder
         })
     }
 }
@@ -1553,5 +1647,493 @@ impl TasksBackend for Client {
             .send()
             .await?;
         Ok(())
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[async_trait]
+impl CacheBackend for Client {
+    /// Append log entries
+    #[tracing::instrument(skip(self))]
+    async fn append(&self, entries: Vec<Entry<TypeConfig>>) -> StdResult<(), StorageError<NodeId>> {
+        async fn append1(
+            client: &::aws_sdk_dynamodb::Client,
+            node_id: NodeId,
+            entries: Vec<Entry<TypeConfig>>,
+        ) -> Result<()> {
+            // Map `entries` to a `Vec<WriteRequest>` which we'll submit below:
+            let mut write_reqs = entries
+                .into_iter()
+                .map(|entry| {
+                    WriteRequest::builder()
+                        .put_request(
+                            PutRequest::builder()
+                                .set_item(Some(
+                                    to_item(&RaftLog {
+                                        node_id: NID(node_id),
+                                        log_id: LogIndex(entry.log_id.index),
+                                        entry: to_vec(&entry).context(RaftLogEncodeSnafu)?,
+                                    })
+                                    .context(RaftLogSerSnafu)?,
+                                ))
+                                .build()
+                                .context(OpBuildSnafu)?,
+                        )
+                        .build()
+                        .pipe(Ok)
+                })
+                .collect::<Result<Vec<WriteRequest>>>()?;
+
+            // `BatchWrite` can only handle 25 items at a time.
+            while !write_reqs.is_empty() {
+                let this_batch: Vec<_> = write_reqs.drain(..min(write_reqs.len(), 25)).collect();
+                client
+                    .batch_write_item()
+                    .request_items("raft_log", this_batch)
+                    .send()
+                    .await
+                    .context(BatchWriteSnafu)?;
+            }
+
+            debug!("Append complete");
+
+            Ok(())
+        }
+
+        append1(&self.client, self.node_id, entries)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Write, &err))
+    }
+    /// Drop all rows in `raft_log` and `raft_metadata`
+    #[tracing::instrument(skip(self))]
+    async fn drop_all_rows(&self) -> StdResult<(), StorageError<NodeId>> {
+        // DynamoDB doesn't have a truncate operation, so I'll just scan & batch write
+        // (again, not atomic) At this point, this is only for use with testing, so maybe not a big
+        // deal.
+        async fn drop1(client: &::aws_sdk_dynamodb::Client) -> Result<()> {
+            let mut drop_reqs = client
+                .scan()
+                .table_name("raft_log")
+                .send()
+                .await
+                .context(ScanSnafu)?
+                .items()
+                .to_vec()
+                .into_iter()
+                .map(from_item)
+                .collect::<StdResult<Vec<RaftLog>, _>>()
+                .context(RaftLogDeSnafu)?
+                .into_iter()
+                .map(|log| {
+                    WriteRequest::builder()
+                        .delete_request(
+                            DeleteRequest::builder()
+                                .key("node_id", AttributeValue::N(log.node_id.to_string()))
+                                .key("log_id", AttributeValue::N(log.log_id.to_string()))
+                                .build()
+                                .context(OpBuildSnafu)?,
+                        )
+                        .build()
+                        .pipe(Ok)
+                })
+                .collect::<Result<Vec<WriteRequest>>>()?;
+
+            // `BatchWrite` can only handle 25 items at a time.
+            while !drop_reqs.is_empty() {
+                let this_batch: Vec<_> = drop_reqs.drain(..min(drop_reqs.len(), 25)).collect();
+                client
+                    .batch_write_item()
+                    .request_items("raft_log", this_batch)
+                    .send()
+                    .await
+                    .context(BatchWriteSnafu)?;
+            }
+
+            let mut drop_reqs = client
+                .scan()
+                .table_name("raft_metadata")
+                .send()
+                .await
+                .unwrap()
+                .items()
+                .to_vec()
+                .into_iter()
+                .map(from_item)
+                .collect::<StdResult<Vec<RaftMetadata>, _>>()
+                .unwrap()
+                .into_iter()
+                .map(|log| {
+                    WriteRequest::builder()
+                        .delete_request(
+                            DeleteRequest::builder()
+                                .key("node_id", AttributeValue::N(log.node_id.to_string()))
+                                .key("flavor", AttributeValue::S(log.flavor.to_string()))
+                                .build()
+                                .context(OpBuildSnafu)?,
+                        )
+                        .build()
+                        .pipe(Ok)
+                })
+                .collect::<Result<Vec<WriteRequest>>>()?;
+
+            // `BatchWrite` can only handle 25 items at a time.
+            while !drop_reqs.is_empty() {
+                let this_batch: Vec<_> = drop_reqs.drain(..min(drop_reqs.len(), 25)).collect();
+                client
+                    .batch_write_item()
+                    .request_items("raft_metadata", this_batch)
+                    .send()
+                    .await
+                    .context(BatchWriteSnafu)?;
+            }
+
+            Ok(())
+        }
+
+        drop1(&self.client)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::None, ErrorVerb::Delete, &err))
+    }
+    /// Returns the last deleted log id and the last log id.
+    #[tracing::instrument(skip(self))]
+    async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
+        async fn get_log_state1(
+            client: &::aws_sdk_dynamodb::Client,
+            node_id: NodeId,
+        ) -> Result<LogState<TypeConfig>> {
+            // The logic below _still_ seems awfully prolix; is there no way to refactor the logic
+            // "I've read a thing, I expect it to be zero or one rows of T; resolve the response to
+            // an Option<T>?"
+            let last_purged_log_id = client
+                .get_item()
+                .table_name("raft_metadata")
+                .key("node_id", AttributeValue::N(node_id.to_string()))
+                .key("flavor", AttributeValue::S(Flavor::LastPurged.to_string()))
+                .send()
+                .await
+                .context(LastPurgedGetSnafu)?
+                .item
+                .map(from_item)
+                .transpose()
+                .context(RaftMetaDeSnafu)?
+                .map(|meta: RaftMetadata| {
+                    from_slice::<LogId<NodeId>>(&meta.data).context(RaftMetaDecodeSnafu)
+                })
+                .transpose()?;
+
+            let last_log_id = client
+                .query()
+                .table_name("raft_log")
+                .key_condition_expression("#pk = :pk")
+                .expression_attribute_names("#pk", "node_id")
+                .expression_attribute_values(":pk", AttributeValue::N(node_id.to_string()))
+                .scan_index_forward(false) // i.e. descending order
+                .limit(1)
+                .send()
+                .await
+                .context(QuerySnafu)?
+                .items()
+                .to_vec()
+                .into_iter()
+                .at_most_one()
+                .map_err(|_| AtMostOneRowSnafu.build())?
+                .map(from_item::<HashMap<String, AttributeValue>, RaftLog>)
+                .transpose()
+                .context(RaftLogDeSnafu)?
+                .map(|log| from_slice::<Entry<TypeConfig>>(&log.entry))
+                .transpose()
+                .context(RaftLogDecodeSnafu)?
+                .map(|entry| entry.log_id)
+                .or(last_purged_log_id);
+
+            Ok(LogState {
+                last_purged_log_id,
+                last_log_id,
+            })
+        }
+
+        get_log_state1(&self.client, self.node_id)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
+    }
+    /// Purge logs upto log_id, inclusive
+    // This is particularly painful because, AFAIK, DDB offers no "range delete" operation
+    #[tracing::instrument(skip(self))]
+    async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        async fn purge1(
+            client: &::aws_sdk_dynamodb::Client,
+            node_id: NodeId,
+            log_id: LogId<NodeId>,
+        ) -> Result<()> {
+            // First step; ask for all the items whose hash key is `node_id` and whose sort key is
+            // <= `log_id.index`
+            let mut to_be_rmd = client
+                .query()
+                .table_name("raft_log")
+                .key_condition_expression("#pk = :pk and #sk <= :log_id")
+                .expression_attribute_names("#pk", "node_id")
+                .expression_attribute_names("#sk", "log_id")
+                .expression_attribute_values(":pk", AttributeValue::N(node_id.to_string()))
+                .expression_attribute_values(":log_id", AttributeValue::N(log_id.index.to_string()))
+                .scan_index_forward(true) // i.e. ascending order
+                .send()
+                .await
+                .context(QuerySnafu)?
+                .items()
+                .to_vec()
+                .into_iter()
+                .map(|item| {
+                    from_item::<HashMap<String, AttributeValue>, RaftLog>(item)
+                        .context(RaftLogSerSnafu)
+                })
+                .collect::<Result<Vec<RaftLog>>>()?
+                .into_iter()
+                // .map(|log| log.log_idx)
+                // .collect::<Vec<LogIndex>>(); // At long last, these are the indicies we'll delete
+                .map(|log| {
+                    WriteRequest::builder()
+                        .delete_request(
+                            DeleteRequest::builder()
+                                .key("node_id", AttributeValue::N(node_id.to_string()))
+                                .key("log_id", AttributeValue::N(log.log_id.to_string()))
+                                .build()
+                                .context(OpBuildSnafu)?,
+                        )
+                        .build()
+                        .pipe(Ok)
+                })
+                .collect::<Result<Vec<WriteRequest>>>()?;
+            // At long last, this 👆 is the collection of deletion requests we need to send.
+
+            // `BatchWrite` can only handle 25 items at a time.
+            while !to_be_rmd.is_empty() {
+                let this_batch: Vec<_> = to_be_rmd.drain(..min(to_be_rmd.len(), 25)).collect();
+                client
+                    .batch_write_item()
+                    .request_items("raft_log", this_batch)
+                    .send()
+                    .await
+                    .context(BatchWriteSnafu)?;
+            }
+
+            // Wheh! But we're still not done-- we need to scribble down `log_id`
+            client
+                .put_item()
+                .table_name("raft_metadata")
+                .set_item(Some(
+                    to_item(RaftMetadata {
+                        node_id: NID(node_id),
+                        flavor: Flavor::LastPurged,
+                        data: to_vec(&log_id).context(RaftMetaEncodeSnafu)?,
+                    })
+                    .context(RaftMetaSerSnafu)?,
+                ))
+                .send()
+                .await
+                .context(RaftMetaPutSnafu)
+                .map(|_| ())
+        }
+
+        purge1(&self.client, self.node_id, log_id)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))
+    }
+    #[tracing::instrument(skip(self))]
+    async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
+        async fn read_vote1(
+            client: &::aws_sdk_dynamodb::Client,
+            node_id: NodeId,
+        ) -> Result<Option<Vote<NodeId>>> {
+            client
+                .get_item()
+                .table_name("raft_metadata")
+                .key("node_id", AttributeValue::N(node_id.to_string()))
+                .key("flavor", AttributeValue::S("Vote".to_owned()))
+                .send()
+                .await
+                .context(VoteGetSnafu)?
+                .item
+                .map(from_item)
+                .transpose()
+                .context(RaftMetaDeSnafu)?
+                .map(|meta: RaftMetadata| {
+                    from_slice::<Vote<NodeId>>(meta.data.as_slice()).context(RaftMetaDecodeSnafu)
+                })
+                .transpose()?
+                .pipe(Ok)
+        }
+
+        read_vote1(&self.client, self.node_id)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err))
+    }
+    /// Save vote to storage
+    #[tracing::instrument(skip(self))]
+    async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        async fn save_vote1(
+            client: &::aws_sdk_dynamodb::Client,
+            node_id: NodeId,
+            vote: &Vote<NodeId>,
+        ) -> Result<()> {
+            client
+                .put_item()
+                .table_name("raft_metadata")
+                .set_item(Some(
+                    to_item(&RaftMetadata {
+                        node_id: NID(node_id),
+                        flavor: Flavor::Vote,
+                        data: to_vec(vote).context(RaftMetaEncodeSnafu)?,
+                    })
+                    .context(RaftMetaSerSnafu)?,
+                ))
+                .send()
+                .await
+                .map(|_| ())
+                .context(VotePutSnafu { vote: *vote })
+        }
+
+        save_vote1(&self.client, self.node_id, vote)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))
+    }
+    /// Truncate logs since log_id, inclusive
+    #[tracing::instrument(skip(self))]
+    async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        async fn truncate1(
+            client: &::aws_sdk_dynamodb::Client,
+            node_id: NodeId,
+            log_id: LogId<NodeId>,
+        ) -> Result<()> {
+            // First step; ask for all the items whose hash key is `node_id` and whose sort key is
+            // <= `log_id.index`
+            let mut to_be_rmd = client
+                .query()
+                .table_name("raft_log")
+                // Like... this is the only difference between this method and `purge1`
+                .key_condition_expression("#pk = :pk and #sk >= :log_id")
+                .expression_attribute_names("#pk", "node_id")
+                .expression_attribute_names("#sk", "log_id")
+                .expression_attribute_values(":pk", AttributeValue::N(node_id.to_string()))
+                .expression_attribute_values(":log_id", AttributeValue::N(log_id.index.to_string()))
+                .scan_index_forward(true) // i.e. ascending order
+                .send()
+                .await
+                .context(QuerySnafu)?
+                .items()
+                .to_vec()
+                .into_iter()
+                .map(|item| {
+                    from_item::<HashMap<String, AttributeValue>, RaftLog>(item)
+                        .context(RaftLogSerSnafu)
+                })
+                .collect::<Result<Vec<RaftLog>>>()?
+                .into_iter()
+                .map(|log| {
+                    WriteRequest::builder()
+                        .delete_request(
+                            DeleteRequest::builder()
+                                .key("node_id", AttributeValue::N(node_id.to_string()))
+                                .key("log_id", AttributeValue::N(log.log_id.to_string()))
+                                .build()
+                                .context(OpBuildSnafu)?,
+                        )
+                        .build()
+                        .pipe(Ok)
+                })
+                .collect::<Result<Vec<WriteRequest>>>()?;
+            // At long last, this 👆 is the collection of deletion requests we need to send.
+
+            // `BatchWrite` can only handle 25 items at a time.
+            while !to_be_rmd.is_empty() {
+                let this_batch: Vec<_> = to_be_rmd.drain(..min(to_be_rmd.len(), 25)).collect();
+                client
+                    .batch_write_item()
+                    .request_items("raft_log", this_batch)
+                    .send()
+                    .await
+                    .context(BatchWriteSnafu)?;
+            }
+
+            Ok(())
+        }
+
+        truncate1(&self.client, self.node_id, log_id)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))
+    }
+    /// Get a series of log entries from storage.
+    #[tracing::instrument(skip(self))]
+    async fn try_get_log_entries(
+        &self,
+        lower_bound: Bound<&u64>,
+        upper_bound: Bound<&u64>,
+    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>> {
+        async fn try_get_log_entries1(
+            client: &::aws_sdk_dynamodb::Client,
+            node_id: NodeId,
+            lower_bound: Bound<&u64>,
+            upper_bound: Bound<&u64>,
+        ) -> Result<Vec<Entry<TypeConfig>>> {
+            let key_condition_expr = format!(
+                "#pk = :node_id{}",
+                match (lower_bound, upper_bound) {
+                    (Bound::Included(_), Bound::Included(_)) => " and #sk between :i and :j",
+                    (Bound::Included(_), Bound::Excluded(_)) => " and #sk between :i and :j",
+                    (Bound::Included(_), Bound::Unbounded) => " and #sk >= :i",
+                    (Bound::Excluded(_), Bound::Included(_)) => " and #sk between :i and :j",
+                    (Bound::Excluded(_), Bound::Excluded(_)) => " and #sk between :i and :j",
+                    (Bound::Excluded(_), Bound::Unbounded) => " and #sk > :i",
+                    (Bound::Unbounded, Bound::Included(_)) => " and #sk <= :j",
+                    (Bound::Unbounded, Bound::Excluded(_)) => " and #sk < :j",
+                    (Bound::Unbounded, Bound::Unbounded) => "",
+                }
+            );
+
+            let mut builder = client
+                .query()
+                .table_name("raft_log")
+                .key_condition_expression(key_condition_expr)
+                .expression_attribute_names("#pk", "node_id")
+                .expression_attribute_names("#sk", "log_id")
+                .expression_attribute_values(":node_id", AttributeValue::N(node_id.to_string()));
+
+            builder = match lower_bound {
+                Bound::Included(i) => {
+                    builder.expression_attribute_values(":i", AttributeValue::N(i.to_string()))
+                }
+                Bound::Excluded(i) => builder
+                    .expression_attribute_values(":i", AttributeValue::N((i + 1).to_string())),
+                Bound::Unbounded => builder,
+            };
+
+            builder = match upper_bound {
+                Bound::Included(j) => {
+                    builder.expression_attribute_values(":j", AttributeValue::N(j.to_string()))
+                }
+                Bound::Excluded(j) => builder
+                    .expression_attribute_values(":j", AttributeValue::N((j - 1).to_string())),
+                Bound::Unbounded => builder,
+            };
+
+            builder
+                .send()
+                .await
+                .context(QuerySnafu)?
+                .items()
+                .to_vec()
+                .into_iter()
+                .map(from_item)
+                .collect::<StdResult<Vec<RaftLog>, _>>()
+                .context(RaftLogSerSnafu)?
+                .into_iter()
+                .map(|log| from_slice::<Entry<TypeConfig>>(&log.entry))
+                .collect::<StdResult<Vec<Entry<TypeConfig>>, _>>()
+                .context(RaftLogDecodeSnafu)
+        }
+
+        try_get_log_entries1(&self.client, self.node_id, lower_bound, upper_bound)
+            .await
+            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
     }
 }

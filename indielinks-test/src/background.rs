@@ -33,8 +33,8 @@ use uuid::Uuid;
 
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -187,7 +187,7 @@ pub async fn first_background(
 
     // Even if the processor tried & failed to get a lease before we queued up these two tasks, the
     // default "retry" period is 1s. Let's just sleep for twice that in order to give the Tokio
-    // runtime sufficient time to run both stasks, sequentially, on a single core:
+    // runtime sufficient time to run both tasks, sequentially, on a single core:
     debug!("Tasks sent off; sleeping...");
     tokio::time::sleep(Duration::from_millis(2000)).await;
     debug!("Tasks sent off; sleeping...done.");

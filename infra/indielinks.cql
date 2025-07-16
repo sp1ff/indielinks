@@ -196,3 +196,18 @@ create table tasks (
   done boolean
 );
 
+/* Raft log */
+create table raft_log (
+  node_id varint,
+  log_id varint,
+  entry blob,
+  PRIMARY KEY (node_id, log_id)
+);
+
+/* Raft metadata */
+create table raft_metadata (
+  node_id varint,
+  flavor tinyint,
+  data blob,
+  PRIMARY KEY (node_id, flavor)
+);

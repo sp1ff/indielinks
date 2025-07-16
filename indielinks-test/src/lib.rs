@@ -83,8 +83,8 @@ use picky::key::{PrivateKey, PublicKey};
 use reqwest::Url;
 use secrecy::SecretString;
 use wiremock::{
-    matchers::{method, path},
     Mock, ResponseTemplate,
+    matchers::{method, path},
 };
 
 use indielinks::{
@@ -101,6 +101,7 @@ pub static TEST_USER_AGENT: &str = "indielinks integration tests/0.0.1; +sp1ff@p
 pub mod activity_pub;
 pub mod actor;
 pub mod background;
+pub mod cache;
 pub mod delicious;
 pub mod follow;
 pub mod users;

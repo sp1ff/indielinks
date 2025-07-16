@@ -29,6 +29,7 @@ pub mod ap_entities;
 pub mod authn;
 #[path = "background-tasks.rs"]
 pub mod background_tasks;
+pub mod cache;
 pub mod client;
 pub mod delicious;
 pub mod dynamodb;
