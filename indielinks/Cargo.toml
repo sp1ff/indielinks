@@ -43,6 +43,7 @@ picky = "7.0.0-rc.12"
 pin-project = "1.1.10"
 pkcs8 = "0.10.2"
 prometheus = "0.13.4"
+prost = "0.13.5"
 rand = "0.8.0"
 regex = "1.11.1"
 reqwest = { version = "0.12.12", features = ["json"] }
@@ -61,6 +62,7 @@ snafu = "0.8.5"
 tap = "1.0.1"
 tokio = { version = "1.42.0", features = ["rt-multi-thread", "signal", "sync"] }
 toml = "0.8.19"
+tonic = "0.13.1"
 tower-http = { version = "0.6.2", features = ["auth", "cors", "request-id", "set-header", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
@@ -68,3 +70,7 @@ unicode-segmentation = "1.12.0"
 url = { version = "2.5.4", features = ["serde"] }
 uuid = { version = "1.11.0", features = ["serde"] }
 zxcvbn = "3.1.0"
+
+[build-dependencies]
+prost-build = "0.14.1"
+tonic-build = "0.13.1"

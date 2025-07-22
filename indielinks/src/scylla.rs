@@ -724,7 +724,7 @@ pub struct Session {
     following_statement: PreparedStatement,
     followers_statement: PreparedStatement,
     following_by_actor_statement: PreparedStatement,
-    // This is a placeholder, to be replaced (I think) by CacheNode<F>
+    // Raft node ID
     node_id: NodeId,
 }
 
@@ -747,6 +747,7 @@ impl Session {
     pub async fn new(
         hosts: impl IntoIterator<Item = impl AsRef<str>>,
         credentials: &Option<(SecretString, SecretString)>,
+        node_id: NodeId,
     ) -> Result<Session> {
         let mut builder = SessionBuilder::new().known_nodes(hosts);
         if let Some((user, pass)) = credentials {
@@ -870,7 +871,7 @@ impl Session {
             followers_statement,
             following_statement,
             following_by_actor_statement,
-            node_id: 0, // placeholder
+            node_id,
         })
     }
 }

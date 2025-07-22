@@ -11,4 +11,5 @@ THANKS                                                           -*- outline -*-
     <https://github.com/Devolutions/picky-rs/pull/351>
   - Thanks to Sebastian Jambor <https://seb.jambor.dev/about/> ActivityPub.academy <https://activitypub.academy/auth/sign_up>
   - Thanks to T.J. Telan <https://tjtelan.com> for his post on building custom integration test harnesses <https://tjtelan.com/blog/rust-custom-test-harness/blog/rust-custom-test-harness/>
-   - Thanks to Aleksey Sidorov <https://github.com/alekseysidorov> for the inspiration of wrapping the reqwest Client in a tower compatibility layer
+  - Thanks to Aleksey Sidorov <https://github.com/alekseysidorov> for the inspiration of wrapping the reqwest Client in a tower compatibility layer
+  - Thanks to the openraft contributors for making it so easy to turn a service into a consensus cluster <https://github.com/datafuselabs/openraft>

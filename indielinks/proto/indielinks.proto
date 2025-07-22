@@ -1,0 +1,201 @@
+// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+//
+// This file is part of indielinks.
+//
+// indielinks is free software: you can redistribute it and/or modify it under the terms of the GNU
+// General Public License as published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// indielinks is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+// even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
+// see <http://www.gnu.org/licenses/>.
+
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+// Protocol Buffer definition of the `indielinks` gRPC service &
+// associated types. I'm starting with a single file, tho we'll see
+// how large this gets.
+//
+// This is heavily based on the `raft-kv-memstore-grpc` openraft
+// sample
+package indielinkspb;
+
+// Raft leader identifier
+message LeaderId {
+    uint64 term = 1;
+    uint64 node_id = 2;
+}
+
+// Raft log identifier
+message LogId {
+    LeaderId leader_id = 1;
+    uint64 index = 2;
+}
+
+message MaybeLogId {
+    optional LogId log_id = 1;
+}
+
+// A particular node in the Raft cluster
+message Node {
+    // Regrettably, protobuf offers no type directly mapping to the
+    // Rust `SocketAddr` type, so we'll have to represent it as a
+    // string & parse at the application layer on receipt (ugh)
+    string addr = 1;
+}
+
+message NodeIdSet {
+    // Apparently, protobuf doesn't offer a `set` type, so we'll fall
+    // back on a map of our key type to `()`
+    map<uint64, google.protobuf.Empty> node_ids = 1;
+}
+
+message HashRingInit {
+    // The initial set of nodes to be distributed around the hash ring
+    NodeIdSet nodes = 1;
+    // Cannot be zero!
+    uint64 num_virtual = 2;
+}
+
+message HashRingInsert {
+    NodeIdSet nodes = 1;
+}
+
+message HashRingRemove {
+    NodeIdSet nodes = 1;
+}
+
+// This only exists because you can't nest `oneof` fields in protobufs
+message HashRingRequest {
+    oneof payload {
+	HashRingInit init = 1;
+	HashRingInsert insert = 2;
+	HashRingRemove remove = 3;
+    }
+}
+
+// A Raft log entry
+message Entry {
+    LogId log_id = 1;
+    oneof payload {
+	google.protobuf.Empty empty = 2;
+	HashRingRequest normal = 3;
+	Membership membership = 4;
+    }
+}
+
+// Raft cluster membership configuration
+message Membership {
+    // This is what the original Raft paper called a "joint config"
+    repeated NodeIdSet configs = 1;
+    // A mapping of node identifier to `Node`
+    map<uint64, Node> nodes = 2;
+}
+
+message StoredMembership {
+    LogId log_id = 1;
+    Membership membership = 2;
+}
+
+// A vote in the Raft leader election process
+message Vote {
+    LeaderId leader_id = 1;
+    bool committed = 2;
+}
+
+// The message sent by the cluster leader to followers (and learners,
+// if I'm not mistaken) directing them to append some number of log
+// messages. The openraft implementation also (ab)uses it as a
+// heartbeat.
+message AppendEntriesRequest {
+    // The leader's vote, used to identify the leader, and must be
+    // committed
+    Vote vote = 1;
+    // The previous log ID the leader has sent to the follower
+    LogId prev_log_id = 2;
+    // The entries to be appended to the follower's log; will be empty
+    // in case this message is a heartbeat
+    repeated Entry entries = 3;
+    // The leader's last committed log id
+    LogId leader_commit = 4;
+}
+
+// The message sent in response to an `AppendEntriesRequest`. 
+message AppendEntriesResponse {
+    oneof payload {
+	google.protobuf.Empty success = 1;
+	MaybeLogId partial_success = 2;
+	google.protobuf.Empty conflict = 3;
+	Vote higher_vote = 4;
+    }
+}
+
+message CacheInsertRequest {
+    uint64 cache_id = 1;
+    bytes key = 2;
+    bytes value = 3;
+}
+
+message CacheInsertResponse {
+    uint64 cache_id = 1;
+    bytes value = 2;
+}
+
+message CacheLookupRequest {
+    uint64 cache_id = 1;
+    bytes key = 2;
+}
+
+message CacheLookupResponse {
+    uint64 cache_id = 1;
+    optional bytes value = 2;
+}
+
+message SnapshotMeta {
+    LogId last_log_id = 1;
+    StoredMembership last_membership = 2;
+    string snapshot_id = 3;
+}
+
+// "An RPC sent by the Raft leader to send chunks of a snapshot to a follower"
+message InstallSnapshotRequest {
+    Vote vote = 1;
+    SnapshotMeta meta = 2;
+    uint64 offset = 3;
+    bytes data = 4;
+    bool done = 5;
+}
+
+message InstallSnapshotResponse {
+    Vote vote = 1;
+}
+
+message VoteRequest {
+    Vote vote = 1;
+    LogId last_log_id = 2;
+}
+
+message VoteResponse {
+    Vote vote = 1;
+    bool vote_granted = 2;
+    LogId last_log_id = 3;
+}
+
+service GrpcService {
+    // Append log entries from the cluster lead to this node
+    rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
+    // Install a snapshot-- I believe this can be streamed, but for now
+    // I'm just going to stick with a standard request/response idiom
+    rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse) {}
+    // Submit a vote during leader election
+    rpc Vote(VoteRequest) returns (VoteResponse) {}
+    // Insert a key, value pair into a cache
+    rpc CacheInsert(CacheInsertRequest) returns (CacheInsertResponse) {}
+    // Lookup a value given a key
+    rpc CacheLookup(CacheLookupRequest) returns (CacheLookupResponse) {}
+}

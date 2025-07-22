@@ -38,6 +38,8 @@ pub mod http;
 pub mod metrics;
 pub mod origin;
 pub mod peppers;
+#[path = "protobuf-interop.rs"]
+pub mod protobuf_interop;
 pub mod scylla;
 #[path = "signing-keys.rs"]
 pub mod signing_keys;

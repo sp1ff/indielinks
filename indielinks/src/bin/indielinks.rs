@@ -65,6 +65,7 @@ use tokio::{
     signal::unix::{SignalKind, signal},
     sync::{Notify, mpsc},
 };
+use tonic::transport::Server as TonicServer;
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
@@ -79,17 +80,26 @@ use tracing_subscriber::{
 };
 use url::Url;
 
-use indielinks_cache::raft::Configuration as RaftConfiguration;
+use indielinks_cache::{
+    cache::Cache,
+    raft::{CacheNode, Configuration as RaftConfiguration},
+    types::NodeId,
+};
 
 use indielinks::{
     actor::make_router as make_actor_router,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
+    cache::{
+        Backend as CacheBackend, FOLLOWER_TO_PUBLIC_INBOX, GrpcClientFactory, GrpcService, LogStore,
+    },
     client::make_client,
     delicious::make_router as make_delicious_router,
+    entities::{FollowerId, StorUrl},
     http::Indielinks,
     metrics::Instruments,
     origin::Origin,
     peppers::Peppers,
+    protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
     users::make_router as make_user_router,
@@ -137,6 +147,10 @@ pub enum Error {
     BackgroundTasks { source: background_tasks::Error },
     #[snafu(display("Failed to bind to localhost: {source}"))]
     Bind { source: std::io::Error },
+    #[snafu(display("Failed to create the CacheNode: {source}"))]
+    CacheNode {
+        source: indielinks_cache::raft::Error,
+    },
     #[snafu(display("Failed to change directory: {source}"))]
     Changedir { source: std::io::Error },
     #[snafu(display("Failed to create an HTTP client: {source}"))]
@@ -327,6 +341,9 @@ struct ConfigV1 {
     // See note above RE `SocketAddr`.
     #[serde(rename = "private-address")]
     private_address: SocketAddr,
+    /// Address at which to listen for Raft-related gRPC messages
+    #[serde(rename = "raft-grpc-address")]
+    raft_grpc_address: SocketAddr,
     #[serde(rename = "storage-config")]
     storage_config: StorageConfig,
     /// The address at which this [indielinks] instance may be reached from the public internet
@@ -342,7 +359,7 @@ struct ConfigV1 {
     #[serde(rename = "background-tasks")]
     background_tasks: background_tasks::Config,
     #[serde(rename = "raft-config")]
-    _raft_config: RaftConfiguration,
+    raft_config: RaftConfiguration,
 }
 
 impl ConfigV1 {
@@ -362,7 +379,8 @@ impl Default for ConfigV1 {
         ConfigV1 {
             log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(/* known good */),
             public_address: "0.0.0.0:20673".parse::<SocketAddr>().unwrap(/* known good */),
-            private_address: "127.0.0.1:48351".parse::<SocketAddr>().unwrap(/* known good */),
+            private_address: "127.0.0.1:20674".parse::<SocketAddr>().unwrap(/* known good */),
+            raft_grpc_address: "0.0.0.0:20675".parse::<SocketAddr>().unwrap(/* known good */),
             storage_config: StorageConfig::default(),
             public_origin: "http://localhost:20673".parse::<Origin>().unwrap(/* known good */),
             pepper: Peppers::default(),
@@ -370,7 +388,7 @@ impl Default for ConfigV1 {
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
             collection_page_size: 12, // Copied from Mastodon
             background_tasks: background_tasks::Config::default(),
-            _raft_config: RaftConfiguration::default(),
+            raft_config: RaftConfiguration::default(),
         }
     }
 }
@@ -676,29 +694,31 @@ fn make_local_router(state: Arc<Indielinks>) -> Router {
 
 pub async fn select_storage(
     config: &StorageConfig,
+    node_id: NodeId,
 ) -> Result<(
     Arc<dyn StorageBackend + Send + Sync>,
     Arc<dyn TasksBackend + Send + Sync>,
+    Arc<dyn CacheBackend + Send + Sync>,
 )> {
     match config {
         StorageConfig::Scylla { credentials, hosts } => {
             let x = Arc::new(
-                indielinks::scylla::Session::new(hosts, credentials)
+                indielinks::scylla::Session::new(hosts, credentials, node_id)
                     .await
                     .context(SycllaSnafu)?,
             );
-            Ok((x.clone(), x.clone()))
+            Ok((x.clone(), x.clone(), x.clone()))
         }
         StorageConfig::Dynamo {
             credentials,
             location,
         } => {
             let x = Arc::new(
-                indielinks::dynamodb::Client::new(location, credentials)
+                indielinks::dynamodb::Client::new(location, credentials, node_id)
                     .await
                     .context(DynamoSnafu)?,
             );
-            Ok((x.clone(), x.clone()))
+            Ok((x.clone(), x.clone(), x.clone()))
         }
     }
 }
@@ -722,13 +742,14 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
 
     let instruments = Arc::new(Instruments::new("indielinks"));
 
-    // Loop forever, handling SIGHUPs, until asked to terminate.
+    // Loop forever, handling SIGHUPs, until asked to terminate:
     loop {
         let client =
             make_client(&cfg.user_agent, instruments.clone(), None).context(ClientSnafu)?;
 
         // Re-build our database connections each pass, in case configuration values have changed:
-        let (storage, tasks) = select_storage(&cfg.storage_config).await?;
+        let (storage, tasks, cache) =
+            select_storage(&cfg.storage_config, cfg.raft_config.this_node).await?;
         // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`
         // is a task processing implementation backed by our datastore.
         let nosql_tasks = Arc::new(BackgroundTasks::new(tasks));
@@ -749,6 +770,13 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
             instruments.clone(),
         )
         .context(BackgroundTasksSnafu)?;
+        let cache_node = CacheNode::<GrpcClientFactory>::new(
+            &cfg.raft_config,
+            GrpcClientFactory,
+            LogStore::new(cache),
+        )
+        .await
+        .context(CacheNodeSnafu)?;
         // Alright-- setup shared state for the web service itself:
         let state = Arc::new(Indielinks {
             origin: cfg.public_origin.clone(),
@@ -761,10 +789,16 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
             client,
             collection_page_size: cfg.collection_page_size,
             task_sender,
+            cache_node: cache_node.clone(),
+            first_cache: Cache::<GrpcClientFactory, FollowerId, StorUrl>::new(
+                FOLLOWER_TO_PUBLIC_INBOX,
+                cache_node.clone(),
+            ),
         });
 
         let world_nfy = Arc::new(Notify::new());
         let local_nfy = Arc::new(Notify::new());
+        let grpc_nfy = Arc::new(Notify::new());
 
         let world_server = axum::serve(
             TcpListener::bind(cfg.public_address())
@@ -796,16 +830,24 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
             }
         }
 
+        let mut grpc_server = std::pin::pin!(TonicServer::builder().serve_with_shutdown(
+            cfg.raft_grpc_address,
+            GrpcServiceServer::new(GrpcService::new(cache_node)),
+            grpc_nfy.notified()
+        ));
+
         tokio::select! {
             // Intentionally not handling these-- the servers *should* never shutdown on their own.
             // That said, if I don't move `world_server` into a Future, it never gets polled.
             _ = &mut world_server => unimplemented!(),
             _ = &mut local_server => unimplemented!(),
+            _ = &mut grpc_server => unimplemented!(),
             _ = sighup.recv() => { // Future<Output = Option<()>>
                 info!("Received SIGHUP; closing log file & DB connections to re-read configuration.");
                 // Signal our axum servers to shut-down...
                 world_nfy.notify_one();
                 local_nfy.notify_one();
+                grpc_nfy.notify_one();
                 // & wait for them to complete.
                 log_on_err(world_server.await);
                 log_on_err(local_server.await);
@@ -834,6 +876,7 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
                 // That's it-- we're outta here. Signal our axum servers to shut-down...
                 world_nfy.notify_one();
                 local_nfy.notify_one();
+                grpc_nfy.notify_one();
                 // wait for our axum servers to complete...
                 log_on_err(world_server.await);
                 log_on_err(local_server.await);

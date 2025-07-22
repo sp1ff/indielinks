@@ -643,7 +643,7 @@ where
 #[derive(Clone)]
 pub struct Client {
     client: ::aws_sdk_dynamodb::Client,
-    // This is a placeholder, to be replaced (I think) by CacheNode<F>
+    // Raft node ID
     node_id: NodeId,
 }
 
@@ -651,6 +651,7 @@ impl Client {
     pub async fn new(
         location: &Either<String, Vec<Url>>,
         credentials: &Option<(SecretString, SecretString)>,
+        node_id: NodeId,
     ) -> Result<Client> {
         use secrecy::ExposeSecret;
         let creds = credentials.as_ref().map(|(id, secret)| {
@@ -691,7 +692,7 @@ impl Client {
         };
         Ok(Client {
             client: ::aws_sdk_dynamodb::Client::new(&config),
-            node_id: 0, // placeholder
+            node_id,
         })
     }
 }

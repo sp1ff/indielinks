@@ -31,7 +31,6 @@ use reqwest::Url;
 use serde::Deserialize;
 use snafu::{Backtrace, IntoError, prelude::*};
 use tap::Pipe;
-use tokio::sync::RwLock;
 use tracing::Level;
 
 use std::{env, fs, process::Command, sync::Arc};
@@ -215,8 +214,8 @@ impl Default for Configuration {
             pepper: Peppers::default(),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
-            logging: true,
-            log_level: Level::DEBUG,
+            logging: false,
+            log_level: Level::INFO,
         }
     }
 }
@@ -251,7 +250,8 @@ pub struct CacheTest {
     pub name: &'static str,
     pub test_fn: fn(
         Configuration,
-        Arc<RwLock<dyn CacheBackend + Send + Sync>>,
+        // Arc<RwLock<dyn CacheBackend + Send + Sync>>,
+        Arc<dyn CacheBackend + Send + Sync>,
     ) -> std::result::Result<(), Failed>,
 }
 

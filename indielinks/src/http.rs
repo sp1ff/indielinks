@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use crate::{
     background_tasks::BackgroundTasks,
-    entities::User,
+    cache::GrpcClientFactory,
+    entities::{FollowerId, StorUrl, User},
     metrics::{self},
     origin::Origin,
     peppers::Peppers,
@@ -27,6 +28,7 @@ use crate::{
 
 use axum::Json;
 use chrono::Duration;
+use indielinks_cache::{cache::Cache, raft::CacheNode};
 use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
@@ -169,4 +171,6 @@ pub struct Indielinks {
     pub client: ClientWithMiddleware,
     pub collection_page_size: usize,
     pub task_sender: Arc<BackgroundTasks>,
+    pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
+    pub first_cache: Cache<GrpcClientFactory, FollowerId, StorUrl>,
 }

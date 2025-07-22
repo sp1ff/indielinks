@@ -132,7 +132,7 @@ impl Default for Configuration {
         Configuration {
             no_setup: false,
             no_teardown: false,
-            logging: true,
+            logging: false,
             log_level: Level::INFO,
             base_port: 20800,
         }

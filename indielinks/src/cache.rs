@@ -28,6 +28,7 @@ use num_bigint::BigInt;
 use openraft::{
     Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader, StorageError,
     StorageIOError, Vote,
+    error::NetworkError,
     storage::{LogFlushed, RaftLogStorage},
 };
 use scylla::{
@@ -40,11 +41,21 @@ use scylla::{
         writers::{CellWriter, WrittenCellProof},
     },
 };
-use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, Snafu};
-use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use snafu::{Backtrace, IntoError, ResultExt, Snafu};
+use tap::{Conv, Pipe, TryConv};
+use tonic::Code;
 
-use indielinks_cache::types::{NodeId, TypeConfig};
+use indielinks_cache::{
+    network::{
+        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotError, InstallSnapshotRequest,
+        InstallSnapshotResponse, RPCError, RPCOption, RaftError, VoteRequest, VoteResponse,
+    },
+    raft::CacheNode,
+    types::{CacheId, ClusterNode, NodeId, TypeConfig},
+};
+
+use crate::protobuf_interop::*;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -52,9 +63,31 @@ use indielinks_cache::types::{NodeId, TypeConfig};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Failed to connect to gRPC endpoint: {source}"))]
+    Conn {
+        source: tonic::transport::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Deserialization error: {source}"))]
+    De {
+        source: rmp_serde::decode::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Attempted to deserialize an invalid value for Flavor: {n}"))]
     FlavorDe { n: i8, backtrace: Backtrace },
+    #[snafu(display("openraft/protbuf interoperability error: {source}"))]
+    Interop {
+        source: crate::protobuf_interop::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("gRPC error: {source}"))]
+    Tonic {
+        source: tonic::Status,
+        backtrace: Backtrace,
+    },
 }
+
+type Result<T> = std::result::Result<T, Error>;
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
@@ -168,11 +201,13 @@ pub fn to_storage_io_err(
 // them.
 #[derive(Clone)]
 pub struct LogStore {
-    storage: Arc<RwLock<dyn Backend + Send + Sync>>,
+    // storage: Arc<RwLock<dyn Backend + Send + Sync>>,
+    storage: Arc<dyn Backend + Send + Sync>,
 }
 
 impl LogStore {
-    pub fn new(storage: Arc<RwLock<dyn Backend + Send + Sync>>) -> LogStore {
+    // pub fn new(storage: Arc<RwLock<dyn Backend + Send + Sync>>) -> LogStore {
+    pub fn new(storage: Arc<dyn Backend + Send + Sync>) -> LogStore {
         LogStore { storage }
     }
 }
@@ -186,8 +221,8 @@ impl RaftLogReader<TypeConfig> for LogStore {
         R: RangeBounds<u64> + Clone + Debug + OptionalSend,
     {
         self.storage
-            .read()
-            .await
+            // .read()
+            // .await
             .try_get_log_entries(range.start_bound(), range.end_bound())
             .await
     }
@@ -197,7 +232,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     type LogReader = Self;
 
     async fn get_log_state(&mut self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
-        self.storage.read().await.get_log_state().await
+        self.storage./*read().await.*/get_log_state().await
     }
 
     async fn get_log_reader(&mut self) -> Self::LogReader {
@@ -205,11 +240,11 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
-        self.storage.read().await.save_vote(vote).await
+        self.storage./*read().await.*/save_vote(vote).await
     }
 
     async fn read_vote(&mut self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
-        self.storage.read().await.read_vote().await
+        self.storage./*read().await.*/read_vote().await
     }
 
     async fn append<I>(
@@ -222,8 +257,8 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         I::IntoIter: OptionalSend,
     {
         self.storage
-            .read()
-            .await
+            // .read()
+            // .await
             // This is particularly galling: since we can't use generic parameters in a dyn-safe
             // trait, we need to make this completely useless copy:
             .append(entries.into_iter().collect::<Vec<Entry<TypeConfig>>>())
@@ -233,17 +268,20 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
-        self.storage.read().await.truncate(log_id).await
+        self.storage./*read().await.*/truncate(log_id).await
     }
 
     async fn purge(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
-        self.storage.read().await.purge(log_id).await
+        self.storage./*read().await.*/purge(log_id).await
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                     Raft Log-Related Types                                     //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // New types to work around the orphan trait rule
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct NID(pub NodeId);
 
@@ -323,5 +361,310 @@ impl SerializeValue for LogIndex {
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
         SerializeValue::serialize(&Into::<BigInt>::into(self.0), typ, writer)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          gRPC Service                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+pub struct GrpcService {
+    cache_node: CacheNode<GrpcClientFactory>,
+}
+
+impl GrpcService {
+    pub fn new(cache_node: CacheNode<GrpcClientFactory>) -> GrpcService {
+        GrpcService { cache_node }
+    }
+}
+
+// It seems a shame to lose the original error information, but there isn't a great way to map
+// internal errors to tonic errors.
+fn to_tonic<E: Debug>(err: E) -> tonic::Status {
+    tonic::Status::internal(format!("{err:?}"))
+}
+
+// Need to set this up more systematically, but for now:
+pub static FOLLOWER_TO_PUBLIC_INBOX: u64 = 1000;
+
+#[tonic::async_trait]
+impl protobuf::grpc_service_server::GrpcService for GrpcService {
+    async fn append_entries(
+        &self,
+        req: tonic::Request<protobuf::AppendEntriesRequest>,
+    ) -> StdResult<tonic::Response<protobuf::AppendEntriesResponse>, tonic::Status> {
+        self.cache_node
+            .append_entries(
+                AppendEntriesRequest::<TypeConfig>::try_from(req.into_inner()).map_err(to_tonic)?,
+            )
+            .await
+            .map_err(to_tonic)?
+            .try_conv::<protobuf::AppendEntriesResponse>()
+            .map_err(to_tonic)?
+            .conv::<tonic::Response<protobuf::AppendEntriesResponse>>()
+            .pipe(Ok)
+    }
+    async fn install_snapshot(
+        &self,
+        req: tonic::Request<protobuf::InstallSnapshotRequest>,
+    ) -> StdResult<tonic::Response<protobuf::InstallSnapshotResponse>, tonic::Status> {
+        self.cache_node
+            .install_snapshot(
+                InstallSnapshotRequest::<TypeConfig>::try_from(req.into_inner())
+                    .map_err(to_tonic)?,
+            )
+            .await
+            .map_err(to_tonic)?
+            .conv::<protobuf::InstallSnapshotResponse>()
+            .conv::<tonic::Response<protobuf::InstallSnapshotResponse>>()
+            .pipe(Ok)
+    }
+    /// Submit a vote during leader election
+    async fn vote(
+        &self,
+        req: tonic::Request<protobuf::VoteRequest>,
+    ) -> StdResult<tonic::Response<protobuf::VoteResponse>, tonic::Status> {
+        self.cache_node
+            .vote(VoteRequest::<NodeId>::try_from(req.into_inner()).map_err(to_tonic)?)
+            .await
+            .map_err(to_tonic)?
+            .conv::<protobuf::VoteResponse>()
+            .conv::<tonic::Response<protobuf::VoteResponse>>()
+            .pipe(Ok)
+    }
+    /// Insert a key, value pair into a cache
+    async fn cache_insert(
+        &self,
+        req: tonic::Request<protobuf::CacheInsertRequest>,
+    ) -> StdResult<tonic::Response<protobuf::CacheInsertResponse>, tonic::Status> {
+        let req = req.into_inner();
+
+        // OK-- here is where we need to "just know" the actual types for `K` & `V`, based upon the
+        // `cache_id`:
+        if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
+            let key = rmp_serde::from_slice::<crate::entities::FollowerId>(req.key.as_slice())
+                .map_err(to_tonic)?;
+            let value = rmp_serde::from_slice::<crate::entities::StorUrl>(req.value.as_slice())
+                .map_err(to_tonic)?;
+            self.cache_node
+                .cache_insert::<crate::entities::FollowerId, crate::entities::StorUrl>(
+                    self.cache_node.id().await,
+                    100,
+                    key,
+                    value,
+                )
+                .await
+                .map_err(to_tonic)?;
+
+            Ok(protobuf::CacheInsertResponse {
+                cache_id: req.cache_id,
+                value: req.value,
+            }
+            .into())
+        } else {
+            Err(tonic::Status::invalid_argument(format!(
+                "Unknown cache {}",
+                req.cache_id
+            )))
+        }
+    }
+    /// Lookup a value given a key
+    async fn cache_lookup(
+        &self,
+        req: tonic::Request<protobuf::CacheLookupRequest>,
+    ) -> StdResult<tonic::Response<protobuf::CacheLookupResponse>, tonic::Status> {
+        let req = req.into_inner();
+
+        // OK-- here is where we need to "just know" the actual types for `K` & `V`, based upon the
+        // `cache_id`:
+        if 100 == req.cache_id {
+            let key = rmp_serde::from_slice::<crate::entities::FollowerId>(req.key.as_slice())
+                .map_err(to_tonic)?;
+            let rsp = self
+                .cache_node
+                .cache_lookup::<crate::entities::FollowerId, crate::entities::StorUrl>(
+                    self.cache_node.id().await,
+                    req.cache_id,
+                    key,
+                )
+                .await
+                .map_err(to_tonic)?;
+
+            Ok(protobuf::CacheLookupResponse {
+                cache_id: req.cache_id,
+                value: rsp
+                    .map(|rsp| rmp_serde::to_vec(&rsp).map_err(to_tonic))
+                    .transpose()?,
+            }
+            .into())
+        } else {
+            Err(tonic::Status::invalid_argument(format!(
+                "Unknown cache {}",
+                req.cache_id
+            )))
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          gRPC Client                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug)]
+pub struct GrpcClientFactory;
+
+#[async_trait]
+impl indielinks_cache::network::ClientFactory for GrpcClientFactory {
+    type CacheClient = GrpcClient;
+    // "This function should not create a connection but rather a client that will connect when
+    // required. Therefore there is chance it will build a client that is unable to send out
+    // anything, e.g., in case the Node network address is configured incorrectly. But this method
+    // does not return an error because openraft can only ignore it." (openraft docs)
+    async fn new_client(&mut self, target: NodeId, node: &ClusterNode) -> Self::CacheClient {
+        GrpcClient {
+            _id: target,
+            endpoint: tonic::transport::Uri::builder().scheme("http").authority(node.addr.to_string()).build().unwrap(/* known good */),
+            client: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GrpcClient {
+    _id: NodeId,
+    endpoint: tonic::transport::Uri,
+    client: Option<protobuf::grpc_service_client::GrpcServiceClient<tonic::transport::Channel>>,
+}
+
+impl GrpcClient {
+    async fn ensure_connected(
+        &mut self,
+    ) -> Result<protobuf::grpc_service_client::GrpcServiceClient<tonic::transport::Channel>> {
+        match &self.client {
+            Some(client) => Ok(client.clone()),
+            None => {
+                match protobuf::grpc_service_client::GrpcServiceClient::<tonic::transport::Channel>::connect(self.endpoint.clone()).await {
+                    Ok(client) => {
+                        self.client = Some(client.clone());
+                        Ok(client)
+                    }
+                    Err(err) => {
+                        Err(ConnSnafu.into_error(err))
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn from_status<Err: std::error::Error>(err: tonic::Status) -> RPCError<NodeId, ClusterNode, Err> {
+    match err.code() {
+        Code::Unavailable => indielinks_cache::network::RPCError::Unreachable(
+            openraft::error::Unreachable::new(&err),
+        ),
+        _ => indielinks_cache::network::RPCError::Network(NetworkError::new(&err)),
+    }
+}
+
+fn from_interop<Err: std::error::Error + 'static>(
+    err: crate::protobuf_interop::Error,
+) -> RPCError<NodeId, ClusterNode, Err> {
+    // This seems kinda lame, but then there really isn't a great match
+    indielinks_cache::network::RPCError::Network(NetworkError::new(&err))
+}
+
+fn from_cache<Err: std::error::Error + 'static>(err: Error) -> RPCError<NodeId, ClusterNode, Err> {
+    // This seems kinda lame, but then there really isn't a great match
+    indielinks_cache::network::RPCError::Network(NetworkError::new(&err))
+}
+
+#[async_trait]
+impl indielinks_cache::network::Client for GrpcClient {
+    type ErrorType = Error;
+
+    /// Append Raft log entries to the target node's log store
+    async fn append_entries(
+        &mut self,
+        req: AppendEntriesRequest<TypeConfig>,
+        _option: RPCOption,
+    ) -> StdResult<AppendEntriesResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>>
+    {
+        self.ensure_connected()
+            .await
+            .map_err(from_cache)?
+            .append_entries(protobuf::AppendEntriesRequest::from(req))
+            .await
+            .map_err(from_status)?
+            .into_inner()
+            .try_conv::<AppendEntriesResponse<NodeId>>()
+            .map_err(from_interop)
+    }
+
+    /// Install a state snapshot on the target node
+    async fn install_snapshot(
+        &mut self,
+        req: InstallSnapshotRequest<TypeConfig>,
+        _option: RPCOption,
+    ) -> StdResult<
+        InstallSnapshotResponse<NodeId>,
+        RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>,
+    > {
+        self.ensure_connected()
+            .await
+            .map_err(from_cache)?
+            .install_snapshot(protobuf::InstallSnapshotRequest::from(req))
+            .await
+            .map_err(from_status)?
+            .into_inner()
+            .try_conv::<InstallSnapshotResponse<NodeId>>()
+            .map_err(from_interop)
+    }
+    /// Request a leadership vote from the target node
+    async fn vote(
+        &mut self,
+        req: VoteRequest<NodeId>,
+        _option: RPCOption,
+    ) -> StdResult<VoteResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>> {
+        self.ensure_connected()
+            .await
+            .map_err(from_cache)?
+            .vote(protobuf::VoteRequest::from(req))
+            .await
+            .map_err(from_status)?
+            .into_inner()
+            .try_conv::<VoteResponse<NodeId>>()
+            .map_err(from_interop)
+    }
+    /// Ask the target node to insert a key/value pair into it's LRU cache
+    async fn cache_insert<K: Serialize + Sync, V: Serialize + Sync>(
+        &mut self,
+        cache: CacheId,
+        key: impl Into<K> + Send,
+        value: impl Into<V> + Send,
+    ) -> Result<()> {
+        self.ensure_connected()
+            .await?
+            .cache_insert(try_into_cache_insert_request(cache, key, value).context(InteropSnafu)?)
+            .await
+            .map(|_| ())
+            .context(TonicSnafu)
+    }
+    /// Request a value for a given key from the target node
+    async fn cache_lookup<K: Serialize, V: DeserializeOwned>(
+        &mut self,
+        cache: CacheId,
+        key: impl Into<K> + Send,
+    ) -> Result<Option<V>> {
+        self.ensure_connected()
+            .await?
+            .cache_lookup(try_into_cache_lookup_request(cache, key).context(InteropSnafu)?)
+            .await
+            .context(TonicSnafu)?
+            .into_inner()
+            .pipe(|rsp| {
+                rsp.value
+                    .map(|val| rmp_serde::from_slice::<V>(val.as_slice()).context(DeSnafu))
+            })
+            .transpose()
     }
 }

@@ -545,20 +545,20 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Configuration {
     #[serde(rename = "cluster-name")]
-    cluster_name: String,
+    pub cluster_name: String,
     // The ID for *this* node
     #[serde(rename = "this-node")]
-    this_node: NodeId,
+    pub this_node: NodeId,
     // The interval at which leaders will send heartbeats to followers; this defaults to 50ms, which
     // can make the cluster awfully chatty
     #[serde(rename = "heartbeat-interval")]
-    heartbeat_interval: Duration,
+    pub heartbeat_interval: Duration,
     // The lower bound on the election timeout (defaults to 150ms)
     #[serde(rename = "election-timeout-min")]
-    election_timeout_min: Duration,
+    pub election_timeout_min: Duration,
     // The upper bound on the election timeout (defaults to 300ms)
     #[serde(rename = "election-timeout-max")]
-    election_timeout_max: Duration,
+    pub election_timeout_max: Duration,
 }
 
 /// Suitable for a single-node cluster only
@@ -953,7 +953,7 @@ where
         self.inner.read().await.node_for_key(key).await
     }
     pub async fn cache_insert<K: Serialize + Send + Sync, V: Serialize + Send + Sync>(
-        &mut self,
+        &self,
         node_id: NodeId,
         cache_id: CacheId,
         k: impl Into<K> + Send,
@@ -966,7 +966,7 @@ where
             .await
     }
     pub async fn cache_lookup<K: Serialize + Send + Sync, V: DeserializeOwned>(
-        &mut self,
+        &self,
         node_id: NodeId,
         cache_id: CacheId,
         k: impl Into<K> + Send,

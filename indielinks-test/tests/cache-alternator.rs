@@ -19,7 +19,7 @@ use indielinks_test::cache::openraft_test_suite;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Trial};
 use snafu::prelude::*;
-use tokio::{runtime::Runtime, sync::RwLock};
+use tokio::runtime::Runtime;
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 use common::{CacheTest, Configuration, run};
@@ -62,23 +62,24 @@ fn teardown() -> Result<()> {
 }
 
 struct State {
-    session: Arc<RwLock<indielinks::dynamodb::Client>>,
+    session: Arc<indielinks::dynamodb::Client>,
 }
 
 impl State {
     pub async fn new(cfg: &Configuration) -> Result<State> {
         Ok(State {
-            session: Arc::new(RwLock::new(
+            session: Arc::new(
                 indielinks::dynamodb::Client::new(
                     &cfg.dynamo.location,
                     &cfg.dynamo
                         .credentials
                         .clone()
                         .map(|(x, y)| (x.into(), y.into())),
+                    0,
                 )
                 .await
                 .context(ClientSnafu)?,
-            )),
+            ),
         })
     }
 }
