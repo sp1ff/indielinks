@@ -18,12 +18,21 @@
 //! The [indielinks](crate) interface to [indielinks-cache].
 
 use std::{
+    collections::BTreeMap,
     fmt::Debug,
+    net::SocketAddr,
     ops::{Bound, RangeBounds},
     sync::Arc,
 };
 
 use async_trait::async_trait;
+use axum::{
+    Router,
+    extract::{Json, State},
+    response::IntoResponse,
+    routing::{get, post},
+};
+use http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
 use num_bigint::BigInt;
 use openraft::{
     Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader, StorageError,
@@ -42,6 +51,7 @@ use scylla::{
     },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{from_value, to_value};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Conv, Pipe, TryConv};
 use tonic::Code;
@@ -54,8 +64,14 @@ use indielinks_cache::{
     raft::CacheNode,
     types::{CacheId, ClusterNode, NodeId, TypeConfig},
 };
+use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
+use tracing::{error, info};
 
-use crate::protobuf_interop::*;
+use crate::{
+    entities::{FollowerId, StorUrl},
+    http::Indielinks,
+    protobuf_interop::*,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -63,6 +79,14 @@ use crate::protobuf_interop::*;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Cache error: {source}"))]
+    Cache {
+        // The obvious approach, 👇, creates a cycle!
+        // source: indielinks_cache::cache::Error<GrpcClient>,
+        #[snafu(source(from(indielinks_cache::cache::Error::<GrpcClient>, Box::new)))]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to connect to gRPC endpoint: {source}"))]
     Conn {
         source: tonic::transport::Error,
@@ -75,6 +99,12 @@ pub enum Error {
     },
     #[snafu(display("Attempted to deserialize an invalid value for Flavor: {n}"))]
     FlavorDe { n: i8, backtrace: Backtrace },
+    #[snafu(display("Failed to deserialize {key} as a FollowerId: {source}"))]
+    FollowerId {
+        key: serde_json::Value,
+        source: serde_json::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("openraft/protbuf interoperability error: {source}"))]
     Interop {
         source: crate::protobuf_interop::Error,
@@ -83,6 +113,17 @@ pub enum Error {
     #[snafu(display("gRPC error: {source}"))]
     Tonic {
         source: tonic::Status,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to serialize an URL to JSON: {source}"))]
+    Url {
+        source: serde_json::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize an URL to JSON: {source}"))]
+    UrlDe {
+        value: serde_json::Value,
+        source: serde_json::Error,
         backtrace: Backtrace,
     },
 }
@@ -667,4 +708,193 @@ impl indielinks_cache::network::Client for GrpcClient {
             })
             .transpose()
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                     Cluster Admin Service                                      //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+async fn init_cluster(
+    State(state): State<Arc<Indielinks>>,
+    Json(req): Json<BTreeMap<NodeId, ClusterNode>>,
+) -> axum::response::Response {
+    info!(
+        "Initializing a Raft cluster with members: {:?}",
+        req.iter().collect::<Vec<(&NodeId, &ClusterNode)>>()
+    );
+    // This implementation seems awfully chatty, but I need to drill down into the `Err` variant in
+    // case we just failed because the cluster is already initialized.
+    match state.cache_node.initialize(req).await {
+        Ok(_) => {
+            info!("Successfully initialized your Raft cluster");
+            (StatusCode::OK).into_response()
+        }
+        Err(indielinks_cache::raft::Error::RaftInit { source }) => match *source {
+            RaftError::APIError(err) => match err {
+                openraft::error::InitializeError::NotAllowed(_) => {
+                    info!("Your Raft cluster is already initialized");
+                    (StatusCode::OK).into_response()
+                }
+                openraft::error::InitializeError::NotInMembers(not_in_members) => {
+                    error!("Initialization failed: {not_in_members:#?}");
+                    (StatusCode::BAD_REQUEST, Json(not_in_members)).into_response()
+                }
+            },
+            RaftError::Fatal(fatal) => {
+                error!("While initializing the Raft cluster: {fatal:?}");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(fatal)).into_response()
+            }
+        },
+        Err(err) => {
+            error!("While initializing the Raft cluster: {err:?}");
+            // It would be nice if I could just make `indielinks_cache::raft::Error` serializable,
+            // but various source error types themselves are not.
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response()
+        }
+    }
+}
+
+async fn metrics(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
+    Json(state.cache_node.metrics().await).into_response()
+}
+
+async fn add_learner(
+    State(state): State<Arc<Indielinks>>,
+    Json((id, addr)): Json<(NodeId, SocketAddr)>,
+) -> axum::response::Response {
+    info!("Adding Node ({id}, {addr}) in state 'learning' to the cluster");
+    match state
+        .cache_node
+        .add_learner(id, ClusterNode { addr }, true)
+        .await
+    {
+        Ok(rsp) => {
+            info!("Successfully added the new node as a learner.");
+            (StatusCode::OK, Json(rsp)).into_response()
+        }
+        Err(err) => {
+            error!("Failed to add the new node as a learner: {err:?}");
+            // It might be nice to forward this request to the leader (if we're not the leader), but
+            // for now just fail. Also, this can fail for a few reasons, not all of which are on the
+            // user's side... I should make this more fine-grained.
+            (StatusCode::BAD_REQUEST, Json(err)).into_response()
+        }
+    }
+}
+
+async fn change_membership(
+    State(state): State<Arc<Indielinks>>,
+    Json(req): Json<Vec<NodeId>>,
+) -> axum::response::Response {
+    info!("Changing Raft cluster membership to {:?}", req);
+    match state.cache_node.change_membership(req, false).await {
+        Ok(rsp) => {
+            info!("Successfully changed membership");
+            (StatusCode::OK, Json(rsp)).into_response()
+        }
+        Err(err) => {
+            error!("Failed to change membership: {err:?}");
+            // It might be nice to forward this request to the leader (if we're not the leader), but
+            // for now just fail. Also, this can fail for a few reasons, not all of which are on the
+            // user's side... I should make this more fine-grained.
+            (StatusCode::BAD_REQUEST, format!("{err:#?}")).into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CacheInsertRequest {
+    pub cache: CacheId,
+    pub key: serde_json::Value,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CacheLookupRequest {
+    pub cache: CacheId,
+    pub key: serde_json::Value,
+}
+
+async fn query_cache(
+    State(state): State<Arc<Indielinks>>,
+    Json(req): Json<CacheLookupRequest>,
+) -> axum::response::Response {
+    // Here, we have to "just know" the concrete types for the key & value. We can do this via the
+    // `cache` request parameter. At the time of this writing, there's only one cache.
+    if FOLLOWER_TO_PUBLIC_INBOX != req.cache {
+        return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();
+    }
+
+    async fn internal(
+        state: Arc<Indielinks>,
+        key: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>> {
+        state
+            .first_cache
+            .write()
+            .await
+            .get(&from_value::<FollowerId>(key.clone()).context(FollowerIdSnafu { key })?)
+            .await
+            .context(CacheSnafu)?
+            .map(to_value)
+            .transpose()
+            .context(UrlSnafu)
+    }
+
+    match internal(state, req.key).await {
+        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+        // Really not sure how to map `err` to status codes!
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response(),
+    }
+}
+
+async fn insert_into_cache(
+    State(state): State<Arc<Indielinks>>,
+    Json(req): Json<CacheInsertRequest>,
+) -> axum::response::Response {
+    // Here, we have to "just know" the concrete types for the key & value. We can do this via the
+    // `cache` request parameter. At the time of this writing, there's only one cache.
+    if FOLLOWER_TO_PUBLIC_INBOX != req.cache {
+        return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();
+    }
+
+    async fn internal(
+        state: Arc<Indielinks>,
+        key: serde_json::Value,
+        value: serde_json::Value,
+    ) -> Result<()> {
+        state
+            .first_cache
+            .write()
+            .await
+            .insert(
+                from_value::<FollowerId>(key.clone()).context(FollowerIdSnafu { key })?,
+                from_value::<StorUrl>(value.clone()).context(UrlDeSnafu { value })?,
+            )
+            .await
+            .context(CacheSnafu)
+    }
+
+    match internal(state, req.key, req.value).await {
+        Ok(_) => (StatusCode::CREATED).into_response(),
+        // Really not sure how to map `err` to status codes!
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response(),
+    }
+}
+
+pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
+    // Should probably add logging, maybe request ID?
+    Router::new()
+        .route("/init-cluster", post(init_cluster))
+        .route("/metrics", get(metrics))
+        .route("/add-learner", post(add_learner))
+        .route("/membership", post(change_membership))
+        .route("/cache-query", get(query_cache))
+        .route("/cache-insert", post(insert_into_cache))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/json; charset=utf-8"),
+        ))
+        .layer(CorsLayer::permissive())
+        .with_state(state)
 }

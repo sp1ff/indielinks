@@ -33,6 +33,7 @@ use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
+use tokio::sync::RwLock;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        Error Responses                                         //
@@ -172,5 +173,5 @@ pub struct Indielinks {
     pub collection_page_size: usize,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
-    pub first_cache: Cache<GrpcClientFactory, FollowerId, StorUrl>,
+    pub first_cache: RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>,
 }

@@ -42,11 +42,7 @@ use std::{
     },
 };
 
-use axum::{
-    Router,
-    extract::State,
-    routing::{get, post},
-};
+use axum::{Router, extract::State, routing::get};
 use chrono::Duration;
 use clap::{Arg, ArgAction, Command, crate_authors, crate_version, value_parser};
 use either::Either;
@@ -63,7 +59,7 @@ use tap::Pipe;
 use tokio::{
     net::TcpListener,
     signal::unix::{SignalKind, signal},
-    sync::{Notify, mpsc},
+    sync::{Notify, RwLock, mpsc},
 };
 use tonic::transport::Server as TonicServer;
 use tower_http::{
@@ -90,7 +86,8 @@ use indielinks::{
     actor::make_router as make_actor_router,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
     cache::{
-        Backend as CacheBackend, FOLLOWER_TO_PUBLIC_INBOX, GrpcClientFactory, GrpcService, LogStore,
+        Backend as CacheBackend, FOLLOWER_TO_PUBLIC_INBOX, GrpcClientFactory, GrpcService,
+        LogStore, make_router as make_cache_router,
     },
     client::make_client,
     delicious::make_router as make_delicious_router,
@@ -604,10 +601,6 @@ async fn metrics(State(state): State<Arc<Indielinks>>) -> String {
     String::from_utf8(result).expect("Failed to encode Prom metrics")
 }
 
-async fn dev(State(state): State<Arc<Indielinks>>) -> String {
-    format!("{:#?}", state.storage.user_for_name("sp1ff").await)
-}
-
 /// Counter for generating request IDs; I realize that a u64 gives me a lot less information than a
 /// UUID (the traditional type for request IDs), but I judge it to be enough, as well as more easily
 /// readable, and a useful guage of how long the server's been up.
@@ -683,7 +676,7 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
 /// Make the [Router] that will only be locally accessible
 fn make_local_router(state: Arc<Indielinks>) -> Router {
     Router::new()
-        .route("/dev", post(dev))
+        .nest("/ops/cache", make_cache_router(state.clone()))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -790,10 +783,10 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
             collection_page_size: cfg.collection_page_size,
             task_sender,
             cache_node: cache_node.clone(),
-            first_cache: Cache::<GrpcClientFactory, FollowerId, StorUrl>::new(
+            first_cache: RwLock::new(Cache::<GrpcClientFactory, FollowerId, StorUrl>::new(
                 FOLLOWER_TO_PUBLIC_INBOX,
                 cache_node.clone(),
-            ),
+            )),
         });
 
         let world_nfy = Arc::new(Notify::new());
