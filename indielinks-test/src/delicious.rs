@@ -28,8 +28,8 @@ use indielinks::{
 use chrono::Utc;
 use libtest_mimic::Failed;
 use reqwest::{
-    header::{HeaderMap, HeaderValue},
     StatusCode, Url,
+    header::{HeaderMap, HeaderValue},
 };
 
 use crate::Helper;
@@ -74,7 +74,7 @@ pub async fn delicious_smoke_test(
     let rsp = client.get(url.join("/api/v1/posts/get")?).send().await?;
     assert!(StatusCode::OK == rsp.status());
     let body = rsp.json::<GenericRsp>().await?;
-    assert!(body.result_code == format!("{} has no posts, yet", username));
+    assert!(body.result_code == format!("{username} has no posts, yet"));
 
     // Add our first post...
     let rsp = client.get(url.join("/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&tags=blog,daily,glenn-reynolds")

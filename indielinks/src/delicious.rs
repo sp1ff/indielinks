@@ -570,6 +570,7 @@ inventory::submit! { metrics::Registration::new("delicious.posts.added", Sort::I
 
 /// A deserializable struct representing the query parameters for `/posts/add`
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PostAddReq {
     url: PostUri,
     #[serde(rename = "description")]

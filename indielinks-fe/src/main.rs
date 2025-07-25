@@ -33,7 +33,8 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
-use leptos::{either::Either, html, prelude::*};
+use itertools::Itertools;
+use leptos::{either::Either, html, prelude::*, reactive::spawn_local};
 use leptos_router::{
     components::{ProtectedRoute, Route, Router, Routes},
     hooks::use_location,
@@ -77,8 +78,15 @@ pub struct Post {
 fn Post(post: Post) -> impl IntoView {
     view! {
         <div class="post">
-            <p><a href=move || format!("{}", post.url)>{post.title}</a></p>
-            <p style="font-size: x-small;">{move || format!("{}", post.posted)}</p>
+            <div class="post-title"><a href=move || format!("{}", post.url)>{post.title}</a></div>
+            <div class="post-info">
+                <div class="post-info-left">{move || post.posted.format("%Y-%m-%d %H:%M:%S").to_string()}</div>
+                // I want to make these links, eventually, but let's start with plain text
+                <div class="post-info-right">{move || post.tags.iter().join(" ")}</div>
+            </div>
+            <div class="post-controls">
+                <a href="#">edit</a>" "<a href="#">delete</a>
+            </div>
         </div>
     }
 }
@@ -235,6 +243,49 @@ fn Feeds() -> impl IntoView {
     }
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct LoginReq {
+    username: String,
+    password: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LoginRsp {
+    token: String,
+}
+
+async fn login(
+    client: &reqwest::Client,
+    username: impl Into<String>,
+    password: impl Into<String>,
+) -> Result<String, String> {
+    match client
+        .post("http://127.0.0.1:20673/api/v1/users/login")
+        .json(&LoginReq {
+            username: username.into(),
+            password: password.into(),
+        })
+        .send()
+        .await
+        .and_then(|rsp| rsp.error_for_status())
+    {
+        Ok(rsp) => match rsp.json::<LoginRsp>().await {
+            Ok(rsp) => {
+                info!("Login successful: {rsp:?}");
+                Ok(rsp.token)
+            }
+            Err(err) => {
+                error!("Error deserializing a successful response: {err:?}");
+                Err(format!("{err}"))
+            }
+        },
+        Err(err) => {
+            error!("Error response: {err:?}");
+            Err(format!("{err}"))
+        }
+    }
+}
+
 /// The indielinks login page
 #[component]
 fn SignIn(
@@ -254,17 +305,6 @@ fn SignIn(
     // way to do it:
     let (error, set_error): (ReadSignal<Option<String>>, WriteSignal<Option<String>>) =
         signal(None);
-
-    #[derive(Clone, Debug, Serialize)]
-    struct LoginReq {
-        username: String,
-        password: String,
-    }
-
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    struct LoginRsp {
-        token: String,
-    }
 
     let navigate = leptos_router::hooks::use_navigate();
 
@@ -377,6 +417,14 @@ fn App() -> impl IntoView {
 
     // Not sure if this is required?
     let selected_value = RwSignal::new("instance".to_owned());
+
+    // This is a dev-time optimization-- log my test user in automatically on load:
+    spawn_local(async move {
+        match login(&client.get(), "sp1ff", "f00-b@r-sp1at").await {
+            Ok(token) => set_token.set(Some(token)),
+            Err(err) => error!("Automatic login failed; {err}"),
+        }
+    });
 
     view! {
         // I'm using a thaw component here, `Layout` (https://thawui.vercel.app/components/layout)

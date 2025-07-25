@@ -2,8 +2,8 @@
 
 # Add some posts for test user `sp1ff`
 curl -s -H 'Authorization: Bearer sp1ff:6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873' \
-     'http://localhost:20673/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&shared=true&tag=blog'
+     'http://localhost:20673/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&shared=true&tags=blog,glenn-reynolds'
 curl -s -H 'Authorization: Bearer sp1ff:6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873' \
-     'http://localhost:20673/api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&shared=true&tag=business'
+     'http://localhost:20673/api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&shared=true&tags=business'
 curl -s -H 'Authorization: Bearer sp1ff:6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873' \
-     'http://localhost:20673/api/v1/posts/add?url=https://graydon2.dreamwidth.org/307291.html&description=The%20Rust%20I%20Wanted%20Had%20No%20Future&tag=rust'
+     'http://localhost:20673/api/v1/posts/add?url=https://graydon2.dreamwidth.org/307291.html&description=The%20Rust%20I%20Wanted%20Had%20No%20Future&tags=rust,and,a,lot,of,tags,a,b,c,d,e,f,g,h,i,j,k'

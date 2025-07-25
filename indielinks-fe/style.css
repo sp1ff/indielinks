@@ -43,4 +43,39 @@
     margin: 4px;
     padding: 6px;
     border: 1px solid #ddd;
+    display: flex;
+    flex-direction: column;
+}
+
+.post-title {
+    font-size: large;
+}
+
+.post-title > a:color {
+    color: #007199;
+}
+
+.post-title > a:visited {
+    color: #007eab;
+}
+
+.post-info {
+    display: flex;
+}
+
+.post-info-left {
+    font-size: smaller;
+    flex: 0 0 auto; /* no grow, no shrink; "content-width" */
+    padding: 0.5rem;
+}
+
+.post-info-right {
+    font-size: smaller;
+    padding: 0.5rem;
+    color: #276173;
+}
+
+.post-controls {
+    font-size: smaller;
+    text-align: right;
 }
