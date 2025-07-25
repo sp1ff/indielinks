@@ -2,23 +2,25 @@
 #+DESCRIPTION: Bookmarks in the Fediverse
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-07-08 Tue 17:21>
+#+DATE: <2025-07-24 Thu 21:26>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
 
 * Introduction
 
-Indielinks brings [[https://web.archive.org/web/20080906021806/http://delicious.com/][del.icio.us]]-style bookmarks to the [[https://en.wikipedia.org/wiki/Fediverse][Fediverse]].
+indielinks brings [[https://web.archive.org/web/20080906021806/http://delicious.com/][del.icio.us]]-style bookmarks to the [[https://en.wikipedia.org/wiki/Fediverse][Fediverse]].
 * License
 
-Indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.html][GPL v3.0]].
+indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.html][GPL v3.0]].
 * Pre-requisites
 
-At this time, Indielinks is only available as source. Therefore, the Rust [[https://rustup.rs/][toolchain]] is required. To run Indielinks locally, you'll either need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or [[https://www.docker.com/][Docker]] (to pull & run ScyllaDB images). To run Indielinks in AWS, you'll need an AWS account.
+At this time, indielinks is only available as source. Therefore, the Rust [[https://rustup.rs/][toolchain]] is required (stable only). To run indielinks locally, you'll either need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or [[https://www.docker.com/][Docker]] (to pull & run ScyllaDB images). To run Indielinks in AWS, you'll need an AWS account. 
+
+The integration tests require [[https://www.docker.com/][Docker]], as well as haproxy.
 * Installation
 
 Coming.
 * Status & Roadmap
 
-The initial prototyping can be found on branch =prototypes=, but =master= (and its offshoots) contains production code. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support, and am now adding a cache. I plan on building-out the documentation quite a bit beyond what's available now, starting here.
+The initial prototyping can be found on branch =prototypes=, but =master= (and its offshoots) contains production code. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support, and have made an indielinks cluster into a Raft. I plan on building-out the documentation quite a bit beyond what's available now, starting here.

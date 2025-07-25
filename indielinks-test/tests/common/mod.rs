@@ -20,9 +20,10 @@
 //! Code common to the indielinks integration test framework goes here. See [indielinks_test] for a
 //! full description.
 use indielinks::{
-    background_tasks::Backend as TasksBackend, cache::Backend as CacheBackend, entities::Username,
-    peppers::Peppers, storage::Backend as StorageBackend,
+    background_tasks::Backend as TasksBackend, entities::Username, peppers::Peppers,
+    storage::Backend as StorageBackend,
 };
+use indielinks_cache::types::{ClusterNode, NodeId};
 use indielinks_test::Helper;
 
 use either::Either;
@@ -33,7 +34,7 @@ use snafu::{Backtrace, IntoError, prelude::*};
 use tap::Pipe;
 use tracing::Level;
 
-use std::{env, fs, process::Command, sync::Arc};
+use std::{collections::HashMap, env, fs, process::Command, sync::Arc};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -139,9 +140,61 @@ impl Default for DynamoConfig {
     }
 }
 
+// The "PreConfigured" variants are handy because the test need not be aware (at all) of whether
+// indielinks is running as a single- or multi-node cluster: it can just write requests to a single
+// address.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialOrd, PartialEq)]
+pub enum Fixture {
+    ScyllaSingleNode,
+    SycllaCluster,
+    SycllaClusterPreConfigured,
+    DynamoDBSingleNode,
+    DynamoDBCluster,
+    DynamoDBClusterPreConfigured,
+}
+
+impl std::fmt::Display for Fixture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Fixture::ScyllaSingleNode => "ScyllaDB backend, single-node indielinks",
+                Fixture::SycllaCluster => "ScyllaDB backend, indielinks cluster",
+                Fixture::SycllaClusterPreConfigured =>
+                    "ScyllaDB backend, indielinks cluster, Raft pre-configured",
+                Fixture::DynamoDBSingleNode => "DynamoDB backend, single-node indielinks",
+                Fixture::DynamoDBCluster => "DynamoDB backend, indielinks cluster",
+                Fixture::DynamoDBClusterPreConfigured =>
+                    "DynamoDB backend, indielinks cluster, Raft pre-configured",
+            }
+        )
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Fixtures(Vec<Fixture>);
+
+impl AsRef<Vec<Fixture>> for Fixtures {
+    fn as_ref(&self) -> &Vec<Fixture> {
+        &self.0
+    }
+}
+
+impl Default for Fixtures {
+    fn default() -> Self {
+        Fixtures(vec![
+            Fixture::ScyllaSingleNode,
+            Fixture::SycllaCluster,
+            Fixture::DynamoDBSingleNode,
+            Fixture::DynamoDBCluster,
+        ])
+    }
+}
+
 /// Common test configuration
 ///
-/// Not sure about having all tests share one configuration format, coding speculatively.
+/// Not sure about having all tests share one configuration format; coding speculatively.
 #[derive(Clone, Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct Configuration {
@@ -151,6 +204,11 @@ pub struct Configuration {
     pub no_teardown: bool,
     /// The location at which the indielinks instance under test can be reached from this test
     pub indielinks: Url,
+    /// The network location at which an operational interface can be reached
+    pub ops: Url,
+    /// gRPC endpoints for Raft configuration nodes, when run in cluster mode
+    #[serde(rename = "raft-nodes", deserialize_with = "de_raft_nodes::deserialize")]
+    pub raft_nodes: HashMap<NodeId, ClusterNode>,
     /// The username of the test user that comes "pre-configured" with our integration tests
     // I think I'd like to get rid of this altogether & just have tests create their own test users
     pub username: Username,
@@ -163,6 +221,8 @@ pub struct Configuration {
     pub logging: bool,
     #[serde(deserialize_with = "de_level::deserialize")]
     pub log_level: Level,
+    #[serde(default)]
+    pub fixtures: Fixtures,
 }
 
 mod de_level {
@@ -179,6 +239,32 @@ mod de_level {
         Level::from_str(&s).map_err(|_| {
             serde::de::Error::custom(format!("{} cannot be interepreted as a log level", s))
         })
+    }
+}
+
+mod de_raft_nodes {
+    use std::{collections::HashMap, num::ParseIntError};
+
+    use indielinks_cache::types::{ClusterNode, NodeId};
+    use serde::{Deserialize, Deserializer};
+    use tap::Pipe;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<NodeId, ClusterNode>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        HashMap::<String, ClusterNode>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(k, v)| k.parse::<NodeId>().map(|i| (i, v)))
+            .collect::<Result<Vec<(NodeId, ClusterNode)>, ParseIntError>>()
+            .map_err(|err| {
+                serde::de::Error::custom(format!(
+                    "Found a key that couldn't be parsed as a NodeId: {err}"
+                ))
+            })?
+            .into_iter()
+            .collect::<HashMap<NodeId, ClusterNode>>()
+            .pipe(Ok)
     }
 }
 
@@ -210,12 +296,15 @@ impl Default for Configuration {
             no_teardown: false,
             username: Username::new("sp1ff").unwrap(/* known good */),
             indielinks: Url::parse("http://indiemark.local:20673").unwrap(/* known good */),
+            ops: Url::parse("http://indiemark.local:20675").unwrap(/* known good */),
+            raft_nodes: HashMap::from([(0, "127.0.0.1:20676".parse().unwrap(/* known good */))]),
             api_key: "6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873".to_owned(),
             pepper: Peppers::default(),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
             logging: false,
             log_level: Level::INFO,
+            fixtures: Fixtures::default(),
         }
     }
 }
@@ -244,15 +333,3 @@ pub struct BackgroundTest {
 }
 
 inventory::collect!(BackgroundTest);
-
-#[allow(dead_code)] // not used by all test programs
-pub struct CacheTest {
-    pub name: &'static str,
-    pub test_fn: fn(
-        Configuration,
-        // Arc<RwLock<dyn CacheBackend + Send + Sync>>,
-        Arc<dyn CacheBackend + Send + Sync>,
-    ) -> std::result::Result<(), Failed>,
-}
-
-inventory::collect!(CacheTest);

@@ -58,7 +58,6 @@ use serde_dynamo::{
 };
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
-use tracing::debug;
 use url::Url;
 use uuid::Uuid;
 
@@ -1696,8 +1695,6 @@ impl CacheBackend for Client {
                     .await
                     .context(BatchWriteSnafu)?;
             }
-
-            debug!("Append complete");
 
             Ok(())
         }

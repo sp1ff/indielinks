@@ -54,9 +54,11 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{from_value, to_value};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Conv, Pipe, TryConv};
+use tokio::sync::RwLock;
 use tonic::Code;
 
 use indielinks_cache::{
+    cache::Cache,
     network::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotError, InstallSnapshotRequest,
         InstallSnapshotResponse, RPCError, RPCOption, RaftError, VoteRequest, VoteResponse,
@@ -65,7 +67,7 @@ use indielinks_cache::{
     types::{CacheId, ClusterNode, NodeId, TypeConfig},
 };
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::{
     entities::{FollowerId, StorUrl},
@@ -411,11 +413,18 @@ impl SerializeValue for LogIndex {
 
 pub struct GrpcService {
     cache_node: CacheNode<GrpcClientFactory>,
+    first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
 }
 
 impl GrpcService {
-    pub fn new(cache_node: CacheNode<GrpcClientFactory>) -> GrpcService {
-        GrpcService { cache_node }
+    pub fn new(
+        cache_node: CacheNode<GrpcClientFactory>,
+        first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+    ) -> GrpcService {
+        GrpcService {
+            cache_node,
+            first_cache,
+        }
     }
 }
 
@@ -487,13 +496,10 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                 .map_err(to_tonic)?;
             let value = rmp_serde::from_slice::<crate::entities::StorUrl>(req.value.as_slice())
                 .map_err(to_tonic)?;
-            self.cache_node
-                .cache_insert::<crate::entities::FollowerId, crate::entities::StorUrl>(
-                    self.cache_node.id().await,
-                    100,
-                    key,
-                    value,
-                )
+            self.first_cache
+                .write()
+                .await
+                .insert(key, value)
                 .await
                 .map_err(to_tonic)?;
 
@@ -514,23 +520,21 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         &self,
         req: tonic::Request<protobuf::CacheLookupRequest>,
     ) -> StdResult<tonic::Response<protobuf::CacheLookupResponse>, tonic::Status> {
+        info!("gRPC/cache_lookup: {req:?}");
         let req = req.into_inner();
 
         // OK-- here is where we need to "just know" the actual types for `K` & `V`, based upon the
         // `cache_id`:
-        if 100 == req.cache_id {
+        if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
             let key = rmp_serde::from_slice::<crate::entities::FollowerId>(req.key.as_slice())
                 .map_err(to_tonic)?;
             let rsp = self
-                .cache_node
-                .cache_lookup::<crate::entities::FollowerId, crate::entities::StorUrl>(
-                    self.cache_node.id().await,
-                    req.cache_id,
-                    key,
-                )
+                .first_cache
+                .write()
+                .await
+                .get(&key)
                 .await
                 .map_err(to_tonic)?;
-
             Ok(protobuf::CacheLookupResponse {
                 cache_id: req.cache_id,
                 value: rsp
@@ -564,7 +568,7 @@ impl indielinks_cache::network::ClientFactory for GrpcClientFactory {
     async fn new_client(&mut self, target: NodeId, node: &ClusterNode) -> Self::CacheClient {
         GrpcClient {
             _id: target,
-            endpoint: tonic::transport::Uri::builder().scheme("http").authority(node.addr.to_string()).build().unwrap(/* known good */),
+            endpoint: format!("http://{}", node.addr),
             client: None,
         }
     }
@@ -573,7 +577,7 @@ impl indielinks_cache::network::ClientFactory for GrpcClientFactory {
 #[derive(Clone, Debug)]
 pub struct GrpcClient {
     _id: NodeId,
-    endpoint: tonic::transport::Uri,
+    endpoint: String,
     client: Option<protobuf::grpc_service_client::GrpcServiceClient<tonic::transport::Channel>>,
 }
 
@@ -586,10 +590,12 @@ impl GrpcClient {
             None => {
                 match protobuf::grpc_service_client::GrpcServiceClient::<tonic::transport::Channel>::connect(self.endpoint.clone()).await {
                     Ok(client) => {
+                        debug!("gRPC client connected: {client:?}");
                         self.client = Some(client.clone());
                         Ok(client)
                     }
                     Err(err) => {
+                        error!("gRPC client failed to connect: {err:?}");
                         Err(ConnSnafu.into_error(err))
                     }
                 }
@@ -696,6 +702,20 @@ impl indielinks_cache::network::Client for GrpcClient {
         cache: CacheId,
         key: impl Into<K> + Send,
     ) -> Result<Option<V>> {
+        // let response = self
+        //     .ensure_connected()
+        //     .await?
+        //     .cache_lookup(try_into_cache_lookup_request(cache, key).context(InteropSnafu)?)
+        //     .await;
+        // debug!("cache_lookup(): response: {response:#?}");
+        // panic!();
+        // .context(TonicSnafu)?
+        // .into_inner()
+        // .pipe(|rsp| {
+        //     rsp.value
+        //         .map(|val| rmp_serde::from_slice::<V>(val.as_slice()).context(DeSnafu))
+        // })
+        // .transpose();
         self.ensure_connected()
             .await?
             .cache_lookup(try_into_cache_lookup_request(cache, key).context(InteropSnafu)?)
@@ -741,12 +761,12 @@ async fn init_cluster(
                 }
             },
             RaftError::Fatal(fatal) => {
-                error!("While initializing the Raft cluster: {fatal:?}");
+                error!("Fatal error while initializing the Raft cluster: {fatal:#?}");
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(fatal)).into_response()
             }
         },
         Err(err) => {
-            error!("While initializing the Raft cluster: {err:?}");
+            error!("While initializing the Raft cluster: {err:#?}");
             // It would be nice if I could just make `indielinks_cache::raft::Error` serializable,
             // but various source error types themselves are not.
             (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response()
@@ -819,6 +839,7 @@ async fn query_cache(
     State(state): State<Arc<Indielinks>>,
     Json(req): Json<CacheLookupRequest>,
 ) -> axum::response::Response {
+    info!("Querying cache for: {req:?}");
     // Here, we have to "just know" the concrete types for the key & value. We can do this via the
     // `cache` request parameter. At the time of this writing, there's only one cache.
     if FOLLOWER_TO_PUBLIC_INBOX != req.cache {

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+
+function hc() {
+    local port=$1
+    # curl can fail if the server isn't up, yet
+    set +e
+    status=$(curl -s http://localhost:${port}/healthcheck)
+    set -e
+    ntries=1
+    while [ "${status}" != "GOOD" ]; do
+        sleep 0.5
+        set +e
+        status=$(curl -s http://localhost:${port}/healthcheck)
+        set -e
+        ntries=$(($ntries+1))
+        # Give it five seconds
+        if [ ${ntries} -gt 10 ]; then
+            echo "indielinks failed to come up on port ${port}" >&2
+            return "1"
+        fi
+    done
+    return "0"
+}
+
+if [ $# -ne 2 ]; then
+    echo "Invoke as 'indielinks-cluster-up CONFIG-FILE-BASE-NAME' 3|5" >&2
+    exit 2
+fi
+
+config="$1"
+nodes="$2"
+
+set -ex
+
+here=$(dirname $(realpath $0))
+cd $here/../indielinks
+
+[ -d /tmp/indielinks-0/run ] || mkdir -p /tmp/indielinks-0/run
+[ -d /tmp/indielinks-1/run ] || mkdir -p /tmp/indielinks-1/run
+[ -d /tmp/indielinks-2/run ] || mkdir -p /tmp/indielinks-2/run
+if [ "${nodes}" == "5" ]; then
+    [ -d /tmp/indielinks-3/run ] || mkdir -p /tmp/indielinks-3/run
+    [ -d /tmp/indielinks-4/run ] || mkdir -p /tmp/indielinks-4/run
+fi
+
+# Run five copies of the `indielinks` daemon
+RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-0 -c ${here}/../indielinks-test/${config}-0.toml
+RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-1 -c ${here}/../indielinks-test/${config}-1.toml
+RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-2 -c ${here}/../indielinks-test/${config}-2.toml
+if [ "${nodes}" == "5" ]; then
+    RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-3 -c ${here}/../indielinks-test/${config}-3.toml
+    RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smihty_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-4 -c ${here}/../indielinks-test/${config}-4.toml
+fi
+
+# Wait for the entire cluster to healthcheck
+hc 20674 || exit 1
+hc 20677 || exit 1
+hc 20680 || exit 1
+if [ "${nodes}" == "5" ]; then
+    hc 20683 || exit 1
+    hc 20686 || exit 1
+fi
+
+# If I don't place my `haproxy` invocation into a sub-shell, `Command::output()` hangs.
+(haproxy -f ${here}/../indielinks-test/haproxy-${nodes}-nodes.conf) > /tmp/haproxy.log 2>&1 < /dev/null &
+sleep 0.5
+
+echo "indielinks up & fronted by haproxy."

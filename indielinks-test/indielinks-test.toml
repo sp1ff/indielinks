@@ -1,11 +1,19 @@
-no-setup = false
+no-setup = true
 no-teardown = false
 # The URL at which indielinks can be reached from *within* a test
 indielinks = "http://indiemark.local:20673"
+ops = "http://127.0.0.1:20675"
 username = "sp1ff"
 api_key = "6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873"
 logging = false
 log_level = "INFO"
+
+[raft-nodes]
+"0" = { addr = "127.0.0.1:20676" }
+"1" = { addr = "127.0.0.1:20679" }
+"2" = { addr = "127.0.0.1:20682" }
+"3" = { addr = "127.0.0.1:20685" }
+"4" = { addr = "127.0.0.1:20688" }
 
 # Regrettably, this must match exactly the indielinks configuration item of the same name
 [pepper.peppers]

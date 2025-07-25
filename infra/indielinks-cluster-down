@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+
+function instance() {
+    local id="$1"
+    if [ -r /tmp/indielinks-${id}/run/indielinks.pid ]; then
+        local pid=$(cat /tmp/indielinks-${id}/run/indielinks.pid)
+        if [ -n "${pid}" ]; then
+            set +e
+            kill ${pid}
+            set -e
+        fi
+    fi
+    return "0"
+}
+
+set -ex
+here=$(dirname $(realpath $0))
+cd $here
+
+instance 0
+instance 1
+instance 2
+instance 3
+instance 4
+
+sleep 0.5
+
+ps aux|grep indielinks
+for pid in $(ps aux|grep 'target/debug/indielinks'|grep -vE 'tmux|grep|bash|cargo|cache'|awk '{print $2}'); do
+    kill "${pid}"
+done
+
+rm -rf /tmp/indielinks-0
+rm -rf /tmp/indielinks-1
+rm -rf /tmp/indielinks-2
+rm -rf /tmp/indielinks-3
+rm -rf /tmp/indielinks-4
+
+pid=$(ps aux|grep 'haproxy -f.*conf'|grep -v grep|awk '{print $2}')
+if [ -n "${pid}" ]; then
+    kill $pid
+fi
+
+echo "indielinks cluster down; all logs & pid files removed."

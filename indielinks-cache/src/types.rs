@@ -83,6 +83,16 @@ pub struct ClusterNode {
     pub addr: SocketAddr,
 }
 
+impl FromStr for ClusterNode {
+    type Err = std::net::AddrParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(ClusterNode {
+            addr: s.parse::<SocketAddr>()?,
+        })
+    }
+}
+
 // Not sure about this... `openraft` demands that our `Node` implementation implement `Default`,
 // which doesn't make a lot of sense to me, if we're going to include the network location of the
 // node in tye type-- their implemetnation of `Default` just provisions the instance with the empty

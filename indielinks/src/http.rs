@@ -173,5 +173,5 @@ pub struct Indielinks {
     pub collection_page_size: usize,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
-    pub first_cache: RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>,
+    pub first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
 }

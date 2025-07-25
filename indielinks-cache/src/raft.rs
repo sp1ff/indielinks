@@ -461,7 +461,6 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 }
             };
         }
-        info!("Returning {:?} from `apply()`", res);
         Ok(res)
     }
 
@@ -744,7 +743,9 @@ where
         cache_id: CacheId,
         k: impl Into<K> + Send,
     ) -> StdResult<Option<V>, CacheError<F::CacheClient>> {
+        debug!("Inner CacheNode assert: {node_id} != {}", self.id);
         assert!(node_id != self.id); // I think this is panic-worthy
+        debug!("cache_lookup: Querying node {node_id} for cache {cache_id}");
         self.client_for_id(node_id)
             .await
             .context(BadIdSnafu)?
@@ -793,6 +794,7 @@ where
             Entry::Occupied(occupied_entry) => occupied_entry.get().clone(),
             Entry::Vacant(vacant_entry) => {
                 let client = self.factory.new_client(node_id, &node).await;
+                debug!("Creating a gRPC client for node {node_id}");
                 vacant_entry.insert(client.clone());
                 client
             }
@@ -971,11 +973,15 @@ where
         cache_id: CacheId,
         k: impl Into<K> + Send,
     ) -> StdResult<Option<V>, CacheError<F::CacheClient>> {
-        self.inner
-            .write()
-            .await
-            .cache_lookup(node_id, cache_id, k)
-            .await
+        debug!("Outer CacheNode {node_id}: cache_lookup-- calling inner.");
+        let mut x = self.inner.write().await;
+        debug!("CP100");
+        x.cache_lookup(node_id, cache_id, k).await
+        // self.inner
+        //     .write()
+        //     .await
+        //     .cache_lookup(node_id, cache_id, k)
+        //     .await
     }
     pub async fn append_entries(
         &self,

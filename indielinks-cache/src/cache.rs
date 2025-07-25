@@ -166,6 +166,7 @@ where
         if self.node.id().await == nodeid {
             Ok(self.map.get(k).cloned())
         } else {
+            debug!("Querying node {nodeid} for the key");
             Ok(self
                 .node
                 .cache_lookup::<K, V>(nodeid, self.id, k)

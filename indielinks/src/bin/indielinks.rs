@@ -771,6 +771,15 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
         .await
         .context(CacheNodeSnafu)?;
         // Alright-- setup shared state for the web service itself:
+        let first_cache = Arc::new(RwLock::new(
+            Cache::<GrpcClientFactory, FollowerId, StorUrl>::new(
+                FOLLOWER_TO_PUBLIC_INBOX,
+                cache_node.clone(),
+            ),
+        ));
+
+        // This will need to be re-thought as the number (and types) of caches grows, but for now:
+
         let state = Arc::new(Indielinks {
             origin: cfg.public_origin.clone(),
             registry: registry.clone(),
@@ -783,10 +792,7 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
             collection_page_size: cfg.collection_page_size,
             task_sender,
             cache_node: cache_node.clone(),
-            first_cache: RwLock::new(Cache::<GrpcClientFactory, FollowerId, StorUrl>::new(
-                FOLLOWER_TO_PUBLIC_INBOX,
-                cache_node.clone(),
-            )),
+            first_cache: first_cache.clone(),
         });
 
         let world_nfy = Arc::new(Notify::new());
@@ -825,7 +831,7 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
 
         let mut grpc_server = std::pin::pin!(TonicServer::builder().serve_with_shutdown(
             cfg.raft_grpc_address,
-            GrpcServiceServer::new(GrpcService::new(cache_node)),
+            GrpcServiceServer::new(GrpcService::new(cache_node, first_cache)),
             grpc_nfy.notified()
         ));
 

@@ -10,8 +10,8 @@ function hc {
         sleep 0.5
         status=$(curl -s http://localhost:${port}/healthcheck)
         ntries=$(($ntries+1))
-        # Give it ten seconds
-        if [ ${ntries} -gt 20 ]; then
+        # Give it thirty seconds, out of an abundance of caution
+        if [ ${ntries} -gt 60 ]; then
             echo "${bin}:${port} failed to come up" >&2
             set -e
             return "1"
