@@ -760,12 +760,13 @@ async fn delete_post(
 inventory::submit! { metrics::Registration::new("delicious.posts.retrieved", Sort::IntegralCounter) }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PostsGetReq {
     dt: Option<NaiveDate>,
     #[serde(rename = "url")]
     uri: Option<PostUri>,
     #[serde(default, rename = "tag")]
-    tags: Option<String>,
+    tag: Option<String>,
     #[serde(rename = "meta")]
     _meta: Option<String>,
 }
@@ -829,7 +830,7 @@ async fn get_posts(
                 posts: Vec::new(),
             }),
             Some(dt) => {
-                let tags = UpToThree::new(parse_tag_parameter(&posts_get_req.tags)?.into_iter())
+                let tags = UpToThree::new(parse_tag_parameter(&posts_get_req.tag)?.into_iter())
                     .context(NoMoreThanThreeTagsSnafu)?;
                 let posts = storage
                     .get_posts(user, &tags, &dt.into(), &posts_get_req.uri)
@@ -871,6 +872,7 @@ async fn get_posts(
 inventory::submit! { metrics::Registration::new("delicious.posts.recents", Sort::IntegralCounter) }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PostsRecentReq {
     tag: Option<String>,
     count: Option<usize>,
@@ -1011,6 +1013,7 @@ async fn posts_dates(
 inventory::submit! { metrics::Registration::new("delicious.posts.all", Sort::IntegralCounter) }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PostsAllReq {
     pub tag: Option<String>,
     pub start: Option<usize>,

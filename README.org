@@ -2,7 +2,7 @@
 #+DESCRIPTION: Bookmarks in the Fediverse
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-07-24 Thu 21:26>
+#+DATE: <2025-07-29 Tue 16:17>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -15,12 +15,14 @@ indielinks brings [[https://web.archive.org/web/20080906021806/http://delicious.
 indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.html][GPL v3.0]].
 * Pre-requisites
 
-At this time, indielinks is only available as source. Therefore, the Rust [[https://rustup.rs/][toolchain]] is required (stable only). To run indielinks locally, you'll either need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or [[https://www.docker.com/][Docker]] (to pull & run ScyllaDB images). To run Indielinks in AWS, you'll need an AWS account. 
+At this time, indielinks is only available as source. Therefore, the Rust [[https://rustup.rs/][toolchain]] is required (stable only). To run indielinks locally, you'll either need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or [[https://www.docker.com/][Docker]] (to pull & run ScyllaDB images). To run Indielinks in AWS, you'll of course need an AWS account. 
 
 The integration tests require [[https://www.docker.com/][Docker]], as well as haproxy.
+
+You'll probably want [[https://trunkrs.dev/][trunk]] for development purposes.
 * Installation
 
 Coming.
 * Status & Roadmap
 
-The initial prototyping can be found on branch =prototypes=, but =master= (and its offshoots) contains production code. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support, and have made an indielinks cluster into a Raft. I plan on building-out the documentation quite a bit beyond what's available now, starting here.
+The initial prototyping can be found on branch =prototypes=, but =master= (and its offshoots) contains production code. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support, have made an indielinks cluster into a Raft consensus cluster, and am currently working on a web front-end. I plan on building-out the documentation quite a bit beyond what's available now, starting here.

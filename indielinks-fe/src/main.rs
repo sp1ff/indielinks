@@ -33,10 +33,9 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
-use itertools::Itertools;
 use leptos::{either::Either, html, prelude::*, reactive::spawn_local};
 use leptos_router::{
-    components::{ProtectedRoute, Route, Router, Routes},
+    components::{A, ProtectedRoute, Route, Router, Routes},
     hooks::use_location,
     path,
 };
@@ -75,14 +74,24 @@ pub struct Post {
 }
 
 #[component]
-fn Post(post: Post) -> impl IntoView {
+fn Post(post: Post, set_tag: WriteSignal<Option<String>>) -> impl IntoView {
     view! {
         <div class="post">
             <div class="post-title"><a href=move || format!("{}", post.url)>{post.title}</a></div>
             <div class="post-info">
                 <div class="post-info-left">{move || post.posted.format("%Y-%m-%d %H:%M:%S").to_string()}</div>
                 // I want to make these links, eventually, but let's start with plain text
-                <div class="post-info-right">{move || post.tags.iter().join(" ")}</div>
+                <div class="post-info-right">
+                    {
+                        post.tags.into_iter().map(|tag| {
+                            let setter = set_tag;
+                            let tag1 = tag.clone();
+                            view! {
+                                <A href="/t" on:click=move |_| setter.set(Some(tag1.clone()))> { tag } </A> " "
+                            }
+                        }).collect::<Vec<_>>()
+                    }
+                </div>
             </div>
             <div class="post-controls">
                 <a href="#">edit</a>" "<a href="#">delete</a>
@@ -93,7 +102,7 @@ fn Post(post: Post) -> impl IntoView {
 
 /// The indielinks' user "home" page
 #[component]
-fn Home(token: ReadSignal<Option<String>>) -> impl IntoView {
+fn Home(token: ReadSignal<Option<String>>, set_tag: WriteSignal<Option<String>>) -> impl IntoView {
     // RE posts: we can be in one of three situations:
     // 1. zero posts-- the user just signed-up & hasn't posted anything; don't display the
     // pagination controls & show an explanatory message in the list div
@@ -126,17 +135,6 @@ fn Home(token: ReadSignal<Option<String>>) -> impl IntoView {
     // dependencies that don't support the wasm32 target (?) I may need to factor types like this
     // out into their own crate that can be shared by the front-end & back-end.
     #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct PostsAllReq {
-        tag: Option<String>,
-        start: Option<usize>,
-        results: Option<usize>,
-        fromdt: Option<DateTime<Utc>>,
-        todt: Option<DateTime<Utc>>,
-        #[serde(rename = "meta")]
-        _meta: Option<bool>,
-    }
-
-    #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct PostsAllRsp {
         pub user: String, /*Username*/
         pub tag: String,
@@ -150,16 +148,11 @@ fn Home(token: ReadSignal<Option<String>>) -> impl IntoView {
     // returns an `Option`, simply logging any errors it encounters before returning `None`.
     async fn load_data(client: reqwest::Client, token: String, page: usize) -> Option<Vec<Post>> {
         client
-            .post("http://127.0.0.1:20673/api/v1/posts/all")
+            .post(format!(
+                "http://127.0.0.1:20673/api/v1/posts/all?start={}&results=6",
+                page * 6
+            ))
             .bearer_auth(token)
-            .json(&PostsAllReq {
-                tag: None,
-                start: Some(page * 6),
-                results: Some(6),
-                fromdt: None,
-                todt: None,
-                _meta: None,
-            })
             .send()
             .await
             .and_then(|rsp| rsp.error_for_status())
@@ -218,7 +211,7 @@ fn Home(token: ReadSignal<Option<String>>) -> impl IntoView {
                             <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
                                  key=|post| post.id
                                  let:post>
-                              <Post post/>
+                              <Post post set_tag/>
                             </For>
                         </Transition>
                     </div>
@@ -230,6 +223,121 @@ fn Home(token: ReadSignal<Option<String>>) -> impl IntoView {
               <span>"Tags will go here!"</span>
             </div>
         </div>
+    }
+}
+
+/// The "tags view" variant of Home
+#[component]
+fn Tags(
+    token: ReadSignal<Option<String>>,
+    tag: ReadSignal<Option<String>>,
+    set_tag: WriteSignal<Option<String>>,
+) -> impl IntoView {
+    let client =
+        use_context::<ReadSignal<reqwest::Client>>().expect("Failed to retrieve the HTTP client");
+
+    let (page, set_page) = signal(0usize);
+
+    // Ugh-- next on my list is to factor-out a crate that just contains these sorts of entities and
+    // builds for all targets.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct PostsAllReq {
+        tag: Option<String>,
+        start: Option<usize>,
+        results: Option<usize>,
+        fromdt: Option<DateTime<Utc>>,
+        todt: Option<DateTime<Utc>>,
+        #[serde(rename = "meta")]
+        _meta: Option<bool>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct PostsAllRsp {
+        pub user: String, /*Username*/
+        pub tag: String,
+        pub posts: Vec<Post>,
+    }
+
+    // Again, I'd really prefer to return a `Result<Vec<Post>>`, but I can't use this as a
+    // `LocalResource` unless the return type is `Clone`, which errors generally are not.
+    async fn load_data(
+        client: reqwest::Client,
+        token: String,
+        tag: String,
+        page: usize,
+    ) -> Option<Vec<Post>> {
+        client
+            .post(format!(
+                "http://127.0.0.1:20673/api/v1/posts/all?tag={tag}&start={}&results=6",
+                page * 6
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .and_then(|rsp| rsp.error_for_status())
+            .map_err(|err| error!("Requesting a page's worth of posts: {err:?}"))
+            .ok()?
+            .json::<PostsAllRsp>()
+            .await
+            .map_err(|err| error!("Deserializing a page's worth of posts; {err:?}"))
+            .ok()?
+            .pipe(|rsp| Some(rsp.posts))
+    }
+
+    let page_data = LocalResource::new(move || {
+        load_data(
+            client.get().clone(),
+            token.get().clone().expect("Missing token"),
+            tag.get().expect("Trying to show tags with no tag!?"),
+            page.get(),
+        )
+    });
+
+    view! {
+        <p> "Posts tagged " {tag.get()} ":" </p>
+        <div class="posts-view">
+            <div class="posts-nav" style="display: flex; font-size: smaller; color: #888">
+                <span style="padding: 2px 6px;">
+                    {move || {
+                        if page.get() > 0 {
+                            Either::Left(view!{
+                                <a href="#" on:click=move |_| set_page.update(|n| *n -= 1)>"< prev"</a>
+                            })
+                        } else {
+                            Either::Right(view!{"< prev"})
+                        }
+                    }}
+                </span>
+                <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=move |_| {
+                    let p = page.get();
+                    set_page.set(p); // Touch, don't change value-- seems to work
+                }>"    refresh"</a></span>
+                <span style="padding: 2px 6px;">
+                    {move || {
+                      match page_data.get() {
+                          Some(Some(posts)) if posts.len() == 6 => Either::Left(view!{
+                              <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
+                          }),
+                          _ => Either::Right(view!{"next >"})
+                      }}
+                    }
+                </span>
+        </div>
+        {move || {
+            view! {
+                <div class="post-list">
+                    <Transition fallback=move || view!{ <p>"Loading..."</p> }>
+                        <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
+                             key=|post| post.id
+                             let:post>
+                          <Post post set_tag/>
+                        </For>
+                    </Transition>
+                </div>
+            }
+        }}
+        </div>
+
     }
 }
 
@@ -411,12 +519,15 @@ fn App() -> impl IntoView {
     // this a parameter into every single `View` setup function below us):
     provide_context(client);
 
-    // OK-- we store the access token here. Perhaps make this into a context, as well?
+    // OK-- we store the access token here. Perhaps make this into a context, as well? Yeah... on
+    // further reflection, this ("token") and "tag" should really be provided by a context.
     let (token, set_token): (ReadSignal<Option<String>>, WriteSignal<Option<String>>) =
         signal(None);
 
+    let (tag, set_tag): (ReadSignal<Option<String>>, WriteSignal<Option<String>>) = signal(None);
+
     // Not sure if this is required?
-    let selected_value = RwSignal::new("instance".to_owned());
+    let selected_value = RwSignal::new("home".to_owned());
 
     // This is a dev-time optimization-- log my test user in automatically on load:
     spawn_local(async move {
@@ -466,7 +577,15 @@ fn App() -> impl IntoView {
                                 // None means that this information is still loading
                                 condition = move || Some(token.get().is_some())
                                 redirect_path = || "/"
-                                view=move || view! { <Home token=token/>}
+                                view=move || view! { <Home token=token set_tag=set_tag/>}
+                            />
+                            <ProtectedRoute
+                                path=path!("/t")
+                                // Some(true) means display, Some(false) means do *not* display, and
+                                // None means that this information is still loading
+                                condition = move || Some(token.get().is_some())
+                                redirect_path = || "/"
+                                view=move || view! { <Tags token=token tag=tag set_tag=set_tag/>}
                             />
                             <ProtectedRoute
                                 path=path!("/f")
