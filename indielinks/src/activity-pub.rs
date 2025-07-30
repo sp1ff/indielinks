@@ -302,7 +302,7 @@ where
             match recipient {
                 Recipient::Direct(username) => {
                     let id = *storage
-                        .user_for_name(username)
+                        .user_for_name(username.as_ref())
                         .await
                         .context(StorageSnafu)?
                         .context(NoUserNameSnafu { username })?

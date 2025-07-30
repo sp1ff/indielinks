@@ -39,7 +39,7 @@ pub async fn webfinger_smoke(url: Url, username: Username, origin: Origin) -> Re
     .status();
     assert_eq!(rsp, StatusCode::NOT_FOUND);
 
-    let acct = Account::from_user_and_host(&username, origin.host())?;
+    let acct = Account::from_user_and_host(username.as_ref(), origin.host())?;
 
     let rsp = reqwest::get(url.join(&format!(
         "/.well-known/webfinger?resource={}",

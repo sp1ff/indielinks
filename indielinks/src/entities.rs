@@ -27,30 +27,30 @@ use axum::http::Uri;
 use chrono::{DateTime, NaiveDate, Utc};
 use email_address::EmailAddress;
 use lazy_static::lazy_static;
-use password_hash::{rand_core::OsRng, PasswordHashString, SaltString};
+use password_hash::{PasswordHashString, SaltString, rand_core::OsRng};
 use picky::key::{PrivateKey, PublicKey};
-use pkcs8::{spki, EncodePrivateKey};
+use pkcs8::{EncodePrivateKey, spki};
 use regex::Regex;
 use scylla::{
+    DeserializeRow, SerializeRow,
     cluster::metadata::NativeType,
-    deserialize::{value::DeserializeValue, DeserializationError, FrameSlice, TypeCheckError},
+    deserialize::{DeserializationError, FrameSlice, TypeCheckError, value::DeserializeValue},
     frame::response::result::ColumnType,
     serialize::{
+        SerializationError,
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
-        SerializationError,
     },
-    DeserializeRow, SerializeRow,
 };
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Deserializer, Serialize};
-use snafu::{prelude::*, Backtrace, IntoError};
+use snafu::{Backtrace, IntoError, prelude::*};
 use tap::{conv::Conv, pipe::Pipe};
 use tracing::debug;
 use unicode_segmentation::UnicodeSegmentation;
 use url::Url;
 use uuid::Uuid;
-use zxcvbn::{feedback::Feedback, zxcvbn, Score};
+use zxcvbn::{Score, feedback::Feedback, zxcvbn};
 
 use crate::peppers::{self, Pepper, Peppers, Version as PepperVersion};
 
@@ -366,15 +366,7 @@ impl Username {
 
 impl AsRef<str> for Username {
     fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Deref for Username {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+        self.0.as_ref()
     }
 }
 
@@ -1060,12 +1052,12 @@ impl User {
         validate_password(password, &[username.as_ref(), email.as_ref()])?;
         let (pub_key, priv_key) = generate_rsa_keypair()?;
         let password_hash = User::hash_password(pepper_key, password)?;
-        let _ = display_name.unwrap_or(username).to_string();
+        let _ = display_name.unwrap_or(username.as_ref()).to_string();
         Ok(User {
             id: UserId::default(),
             username: username.clone(),
             discoverable: discoverable.unwrap_or(true),
-            display_name: display_name.unwrap_or(username).to_string(),
+            display_name: display_name.unwrap_or(username.as_ref()).to_string(),
             summary: summary.unwrap_or("").to_string(),
             pub_key_pem: pub_key,
             priv_key_pem: priv_key,

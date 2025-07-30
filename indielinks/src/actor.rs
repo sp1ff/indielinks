@@ -538,7 +538,7 @@ async fn accept_create(
             );
 
             let user = storage
-                .user_for_name(&username)
+                .user_for_name(username.as_ref())
                 .await
                 .map_err(|err| StorageSnafu.into_error(err))?
                 .ok_or(
@@ -631,7 +631,7 @@ async fn accept_share(
     );
 
     let user = storage
-        .user_for_name(&username)
+        .user_for_name(username.as_ref())
         .await
         .map_err(|err| StorageSnafu.into_error(err))?
         .ok_or(
@@ -761,7 +761,7 @@ async fn actor(
         let accept =
             crate::http::Accept::lookup_from_header_map(headers).context(AcceptLookupSnafu)?;
         let user = storage
-            .user_for_name(username)
+            .user_for_name(username.as_ref())
             .await
             .map_err(|err| StorageSnafu.into_error(err))?
             .ok_or(
@@ -1036,7 +1036,7 @@ async fn inbox(
         instruments: &metrics::Instruments,
     ) -> Result<()> {
         let user = storage
-            .user_for_name(username)
+            .user_for_name(username.as_ref())
             .await
             .context(StorageSnafu)?
             .context(NoUserSnafu {
@@ -1142,7 +1142,7 @@ async fn followers(
     ) -> Result<CollectionPage> {
         // Lookup the User by username...
         let user = storage
-            .user_for_name(username)
+            .user_for_name(username.as_ref())
             .await
             .map_err(|err| StorageSnafu.into_error(err))?
             .ok_or(
@@ -1245,7 +1245,7 @@ async fn following(
     ) -> Result<CollectionPage> {
         // Factor this out (shared by `followers()`, above, at the least):
         let user = storage
-            .user_for_name(username)
+            .user_for_name(username.as_ref())
             .await
             .map_err(|err| StorageSnafu.into_error(err))?
             .ok_or(
@@ -1342,7 +1342,7 @@ async fn get_post(
         let accept =
             crate::http::Accept::lookup_from_header_map(headers).context(AcceptLookupSnafu)?;
         let user = storage
-            .user_for_name(username)
+            .user_for_name(username.as_ref())
             .await
             .context(StorageSnafu)?
             .ok_or(

@@ -344,7 +344,7 @@ mod test_locations {
         );
         assert!(res.is_ok());
         let username = res.unwrap();
-        assert!(*"sp1ff" == *username);
+        assert!("sp1ff" == username.as_ref());
     }
 
     #[test]
@@ -354,7 +354,7 @@ mod test_locations {
         let res = username_and_postid_from_url(&origin, &url);
         assert!(res.is_ok());
         let (username, postid) = res.unwrap();
-        assert!(*"sp1ff" == *username);
+        assert!("sp1ff" == username.as_ref());
         assert!(
             Uuid::parse_str("36bbef8b-9922-4f6b-916b-2b2241797964").unwrap(/* known good */)
                 == *postid
