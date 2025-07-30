@@ -54,11 +54,6 @@
 //! [libtest-mimic]: https://docs.rs/libtest-mimic/latest/libtest_mimic/index.html
 //!
 //! For all that guidance, I'm still feeling my way, and already this implementation has grown
-use std::{
-    collections::HashSet,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-
 /// far beyond what I'd envisioned when I started down this path. My general idea is to build a set of
 /// integration test programs, each exercising some aspect of indielinks. For now, I'm going to
 /// treat each integration test program as a fixture unto itself. I don't really see a lot of
@@ -75,6 +70,11 @@ use std::{
 ///
 /// Code relating to the test framework itself (e.g. the `Test` struct) belongs in `tests/common`.
 /// Integration test programs themselves go in `tests`.
+use std::{
+    collections::HashSet,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
 use async_trait::async_trait;
 use chrono::Utc;
 use libtest_mimic::Failed;
@@ -87,10 +87,12 @@ use wiremock::{
     matchers::{method, path},
 };
 
+use indielinks_shared::StorUrl;
+
 use indielinks::{
     ap_entities::{self, make_user_id},
     authn::{ensure_sha_256, sign_request},
-    entities::{FollowId, StorUrl, Username},
+    entities::{FollowId, Username},
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
 };

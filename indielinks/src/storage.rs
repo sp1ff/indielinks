@@ -19,16 +19,17 @@
 
 use crate::{
     entities::{
-        ActivityPubPost, FollowId, Follower, Following, Like, Post, PostDay, PostId, PostUri,
-        Reply, Share, StorUrl, Tagname, User, UserId, Username,
+        ActivityPubPost, FollowId, Follower, Following, Like, Reply, Share, User, Username,
     },
     util::UpToThree,
 };
 
+use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId};
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, prelude::*};
 
 use std::collections::{HashMap, HashSet};
 
@@ -95,7 +96,7 @@ pub trait Backend {
         &self,
         user: &User,
         replace: bool,
-        uri: &PostUri,
+        uri: &StorUrl,
         id: &PostId,
         title: &str,
         dt: &DateTime<Utc>,
@@ -119,7 +120,7 @@ pub trait Backend {
     /// Confirm a follow for a user
     async fn confirm_following(&self, user: &User, following: &StorUrl) -> Result<(), Error>;
     /// Remove a post-- return true if a [Post] was actually removed, false else
-    async fn delete_post(&self, user: &User, url: &PostUri) -> Result<bool, Error>;
+    async fn delete_post(&self, user: &User, url: &StorUrl) -> Result<bool, Error>;
     /// Delete a tag for a user; since we've denormalized the tags (i.e. we store them along with the
     /// posts to avoid a join), this is likely to be an inefficient operation. I might want to consider
     /// special logic here for rate-limiting.
@@ -146,7 +147,7 @@ pub trait Backend {
         user: &User,
         tags: &UpToThree<Tagname>,
         day: &PostDay,
-        uri: &Option<PostUri>,
+        uri: &Option<StorUrl>,
     ) -> Result<Vec<Post>, Error>;
     async fn get_posts_by_day(
         &self,

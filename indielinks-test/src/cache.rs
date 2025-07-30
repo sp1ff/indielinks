@@ -21,6 +21,8 @@ use libtest_mimic::Failed;
 use reqwest::{Url, blocking::Client};
 use tracing::{debug, error};
 
+use indielinks_shared::StorUrl;
+
 use indielinks_cache::{
     raft::StorageError,
     types::{ClusterNode, NodeId},
@@ -28,7 +30,7 @@ use indielinks_cache::{
 
 use indielinks::{
     cache::{Backend, CacheInsertRequest, CacheLookupRequest, LogStore},
-    entities::{FollowerId, StorUrl},
+    entities::FollowerId,
 };
 
 struct Dropper {

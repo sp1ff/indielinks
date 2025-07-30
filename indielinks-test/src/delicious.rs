@@ -16,23 +16,25 @@
 //! Integration tests for the del.icio.us API.
 //!
 //! Backend-agnostic test logic for the del.icio.us API goes here.
-use std::sync::Arc;
+
+use crate::Helper;
 
 use indielinks::{
     delicious::{
         GenericRsp, PostsAllRsp, PostsDatesRsp, PostsGetRsp, PostsRecentRsp, TagsGetRsp, UpdateRsp,
     },
-    entities::{Post, Tagname, Username},
+    entities::Username,
 };
 
 use chrono::Utc;
+use indielinks_shared::{Post, Tagname};
 use libtest_mimic::Failed;
 use reqwest::{
     StatusCode, Url,
     header::{HeaderMap, HeaderValue},
 };
 
-use crate::Helper;
+use std::sync::Arc;
 
 /// Exercise the delicious API in a few simple ways (i.e. a "smoke test"); panic on failure.
 pub async fn delicious_smoke_test(

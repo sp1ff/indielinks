@@ -16,22 +16,23 @@
 /// # delicious-scylla
 ///
 /// Integration tests run against an indielinks configured with the Scylla storage back-end.
-use common::{run, Configuration, IndielinksTest};
+use common::{Configuration, IndielinksTest, run};
 use crypto_common::rand_core::{OsRng, RngCore};
 use indielinks::{
-    entities::{FollowId, StorUrl, User, UserEmail, UserId, Username},
+    entities::{FollowId, User, UserEmail, Username},
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
     scylla::{add_followers, add_following, add_user},
 };
+use indielinks_shared::{StorUrl, UserId};
 use indielinks_test::{
+    Helper,
     activity_pub::{as_follower, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
     users::test_signup,
     webfinger::webfinger_smoke,
-    Helper,
 };
 
 use async_trait::async_trait;
@@ -39,9 +40,9 @@ use itertools::Itertools;
 use libtest_mimic::{Arguments, Failed, Trial};
 use scylla::client::session_builder::SessionBuilder;
 use secrecy::SecretString;
-use snafu::{prelude::*, Backtrace, Snafu};
+use snafu::{Backtrace, Snafu, prelude::*};
 use tokio::runtime::Runtime;
-use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 use std::{collections::HashSet, fmt::Display, io, sync::Arc};
 

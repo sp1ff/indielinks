@@ -19,89 +19,56 @@
 //!
 //! [Storage]: crate::storage
 
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::ops::Bound;
 use std::pin::Pin;
 use std::task::Poll;
 
 use async_trait::async_trait;
-use chrono::DateTime;
-use chrono::Duration;
-use chrono::Utc;
-use enum_map::Enum;
-use enum_map::EnumMap;
-use futures::Stream;
-use futures::stream::BoxStream;
-use futures::stream::{self};
-use indielinks_cache::types::NodeId;
-use indielinks_cache::types::TypeConfig;
+use chrono::{DateTime, Duration, Utc};
+use enum_map::{Enum, EnumMap};
+use futures::{
+    Stream,
+    stream::{self, BoxStream},
+};
+use indielinks_cache::types::{NodeId, TypeConfig};
 use itertools::Itertools;
 use num_bigint::BigInt;
-use openraft::Entry;
-use openraft::ErrorSubject;
-use openraft::ErrorVerb;
-use openraft::LogId;
-use openraft::LogState;
-use openraft::RaftLogId;
-use openraft::StorageError;
-use openraft::StorageIOError;
-use openraft::Vote;
+use openraft::{
+    Entry, ErrorSubject, ErrorVerb, LogId, LogState, RaftLogId, StorageError, StorageIOError, Vote,
+};
 use pin_project::pin_project;
-use rmp_serde::from_slice;
-use rmp_serde::to_vec;
-use scylla::client::session::Session as InnerSession;
-use scylla::client::session_builder::SessionBuilder;
-use scylla::response::PagingState;
-use scylla::response::PagingStateResponse;
-use scylla::statement::Statement;
-use scylla::statement::batch::Batch;
-use scylla::statement::batch::BatchStatement;
-use scylla::statement::batch::BatchType;
-use scylla::statement::prepared::PreparedStatement;
-use secrecy::ExposeSecret;
-use secrecy::SecretString;
-use snafu::Backtrace;
-use snafu::IntoError;
-use snafu::ResultExt;
-use snafu::Snafu;
+use rmp_serde::{from_slice, to_vec};
+use scylla::{
+    client::{session::Session as InnerSession, session_builder::SessionBuilder},
+    response::{PagingState, PagingStateResponse},
+    statement::{
+        Statement,
+        batch::{Batch, BatchStatement, BatchType},
+        prepared::PreparedStatement,
+    },
+};
+use secrecy::{ExposeSecret, SecretString};
+use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::background_tasks::Backend as TasksBackend;
-use crate::background_tasks::Error as BckError;
-use crate::background_tasks::FlatTask;
-use crate::cache::Backend as CacheBackend;
-use crate::cache::Flavor;
-use crate::cache::LogIndex;
-use crate::cache::NID;
-use crate::cache::RaftLog;
-use crate::cache::RaftMetadata;
-use crate::cache::to_storage_io_err;
-use crate::entities::ActivityPubPost;
-use crate::entities::FollowId;
-use crate::entities::Follower;
-use crate::entities::FollowerId;
-use crate::entities::Following;
-use crate::entities::Like;
-use crate::entities::Post;
-use crate::entities::PostDay;
-use crate::entities::PostId;
-use crate::entities::PostUri;
-use crate::entities::Reply;
-use crate::entities::Share;
-use crate::entities::StorUrl;
-use crate::entities::Tagname;
-use crate::entities::User;
-use crate::entities::UserId;
-use crate::entities::Username;
-use crate::storage::DateRange;
-use crate::storage::UsernameClaimedSnafu;
-use crate::storage::{self};
-use crate::util::UpToThree;
+use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId};
+
+use crate::{
+    background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
+    cache::{
+        Backend as CacheBackend, Flavor, LogIndex, NID, RaftLog, RaftMetadata, to_storage_io_err,
+    },
+    entities::{
+        ActivityPubPost, FollowId, Follower, FollowerId, Following, Like, Reply, Share, User,
+        Username,
+    },
+    storage::{self, DateRange, UsernameClaimedSnafu},
+    util::UpToThree,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -998,7 +965,7 @@ impl storage::Backend for Session {
         &self,
         user: &User,
         replace: bool,
-        uri: &PostUri,
+        uri: &StorUrl,
         id: &PostId,
         title: &str,
         dt: &DateTime<Utc>,
@@ -1097,7 +1064,7 @@ impl storage::Backend for Session {
         Ok(())
     }
 
-    async fn delete_post(&self, user: &User, url: &PostUri) -> StdResult<bool, StorError> {
+    async fn delete_post(&self, user: &User, url: &StorUrl) -> StdResult<bool, StorError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::DeletePost],
@@ -1111,7 +1078,7 @@ impl storage::Backend for Session {
             .first_row::<(
                 bool,
                 Option<UserId>,           // user_id
-                Option<PostUri>,          // url
+                Option<StorUrl>,          // url
                 Option<PostDay>,          // day
                 Option<PostId>,           // id
                 Option<String>,           // title
@@ -1133,7 +1100,7 @@ impl storage::Backend for Session {
         // a corner case, and it won't leave the system in an invalid state, so I'm prepared to live
         // with it.
         let mut batch = Batch::default();
-        let mut batch_values: Vec<(HashSet<Tagname>, UserId, PostUri)> = Vec::new();
+        let mut batch_values: Vec<(HashSet<Tagname>, UserId, StorUrl)> = Vec::new();
 
         self.session
             .execute_unpaged(
@@ -1238,7 +1205,7 @@ impl storage::Backend for Session {
         user: &User,
         tags: &UpToThree<Tagname>,
         day: &PostDay,
-        uri: &Option<PostUri>,
+        uri: &Option<StorUrl>,
     ) -> StdResult<Vec<Post>, StorError> {
         match (uri, tags) {
             (None, UpToThree::None) => {
@@ -1589,7 +1556,7 @@ impl storage::Backend for Session {
         // a corner case, and it won't leave the system in an invalid state, so I'm prepared to live
         // with it.
         let mut batch = Batch::default();
-        let mut batch_values: Vec<(HashSet<Tagname>, UserId, PostUri)> = Vec::new();
+        let mut batch_values: Vec<(HashSet<Tagname>, UserId, StorUrl)> = Vec::new();
 
         self.session
             .execute_unpaged(

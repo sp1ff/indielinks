@@ -76,6 +76,8 @@ use tracing_subscriber::{
 };
 use url::Url;
 
+use indielinks_shared::StorUrl;
+
 use indielinks_cache::{
     cache::Cache,
     raft::{CacheNode, Configuration as RaftConfiguration},
@@ -91,7 +93,7 @@ use indielinks::{
     },
     client::make_client,
     delicious::make_router as make_delicious_router,
-    entities::{FollowerId, StorUrl},
+    entities::FollowerId,
     http::Indielinks,
     metrics::Instruments,
     origin::Origin,

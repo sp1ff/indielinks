@@ -57,6 +57,8 @@ use tap::{Conv, Pipe, TryConv};
 use tokio::sync::RwLock;
 use tonic::Code;
 
+use indielinks_shared::StorUrl;
+
 use indielinks_cache::{
     cache::Cache,
     network::{
@@ -69,11 +71,7 @@ use indielinks_cache::{
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 
-use crate::{
-    entities::{FollowerId, StorUrl},
-    http::Indielinks,
-    protobuf_interop::*,
-};
+use crate::{entities::FollowerId, http::Indielinks, protobuf_interop::*};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -494,8 +492,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
             let key = rmp_serde::from_slice::<crate::entities::FollowerId>(req.key.as_slice())
                 .map_err(to_tonic)?;
-            let value = rmp_serde::from_slice::<crate::entities::StorUrl>(req.value.as_slice())
-                .map_err(to_tonic)?;
+            let value = rmp_serde::from_slice::<StorUrl>(req.value.as_slice()).map_err(to_tonic)?;
             self.first_cache
                 .write()
                 .await

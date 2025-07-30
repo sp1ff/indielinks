@@ -128,8 +128,10 @@ use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use url::Url;
 
+use indielinks_shared::{Post, PostId};
+
 use crate::{
-    entities::{self, FollowId, Post, PostId, User, Username},
+    entities::{self, FollowId, User, Username},
     origin::Origin,
 };
 
@@ -1324,11 +1326,13 @@ mod twitter_text {
 
     use super::Html;
 
-    use crate::{entities::PostUri, origin::Origin};
+    use indielinks_shared::StorUrl;
+
+    use crate::origin::Origin;
 
     pub fn parse_post<I: Iterator<Item: AsRef<str>>>(
         origin: &Origin,
-        url: &PostUri,
+        url: &StorUrl,
         title: &str,
         notes: Option<&str>,
         tags: I,

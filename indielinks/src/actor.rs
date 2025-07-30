@@ -40,6 +40,8 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
+use indielinks_shared::{PostId, StorUrl};
+
 use crate::{
     activity_pub::{derive_visibility, resolve_recipients, send_activity_pub_no_response},
     ap_entities::{
@@ -51,8 +53,8 @@ use crate::{
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     counter_add,
     entities::{
-        self, ActivityPubPost, ActivityPubPostFlavor, Follower, Following, PostId, Reply, Share,
-        StorUrl, User, Username,
+        self, ActivityPubPost, ActivityPubPostFlavor, Follower, Following, Reply, Share, User,
+        Username,
     },
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},

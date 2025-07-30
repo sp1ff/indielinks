@@ -30,8 +30,6 @@
 //!
 //! [Leptos]: https://book.leptos.dev
 
-use std::collections::HashSet;
-
 use chrono::{DateTime, Utc};
 use leptos::{either::Either, html, prelude::*, reactive::spawn_local};
 use leptos_router::{
@@ -45,8 +43,8 @@ use thaw::{Layout, LayoutHeader, Link, Tab, TabList};
 use tracing::{error, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
-use url::Url;
-use uuid::Uuid;
+
+use indielinks_shared::Post;
 
 /// indielinks "instance" page
 #[component]
@@ -59,35 +57,25 @@ fn Instance() -> impl IntoView {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, /*DeserializeRow, */ Eq, PartialEq, Serialize)]
-pub struct Post {
-    url: Url,      /*PostUri*/
-    user_id: Uuid, /*UserId*/
-    id: Uuid,      /*PostId*/
-    posted: DateTime<Utc>,
-    day: String, /*PostDay*/
-    title: String,
-    notes: Option<String>,
-    tags: HashSet<String /*Tagname*/>,
-    public: bool,
-    unread: bool,
-}
-
 #[component]
 fn Post(post: Post, set_tag: WriteSignal<Option<String>>) -> impl IntoView {
+    let title = post.title().to_owned();
+    let posted = post.posted().format("%Y-%m-%d %H:%M:%S").to_string();
+    let url = post.url().to_string();
     view! {
         <div class="post">
-            <div class="post-title"><a href=move || format!("{}", post.url)>{post.title}</a></div>
+            <div class="post-title"><a href={ url }> { title } </a></div>
             <div class="post-info">
-                <div class="post-info-left">{move || post.posted.format("%Y-%m-%d %H:%M:%S").to_string()}</div>
+                <div class="post-info-left"> { posted }</div>
                 // I want to make these links, eventually, but let's start with plain text
                 <div class="post-info-right">
                     {
-                        post.tags.into_iter().map(|tag| {
+                        post.tags().map(|tag| {
                             let setter = set_tag;
-                            let tag1 = tag.clone();
+                            let s0: String = tag.clone().into();
+                            let s1 = s0.clone();
                             view! {
-                                <A href="/t" on:click=move |_| setter.set(Some(tag1.clone()))> { tag } </A> " "
+                                <A href="/t" on:click=move |_| setter.set(Some(s1.clone()))> { s0 } </A> " "
                             }
                         }).collect::<Vec<_>>()
                     }
@@ -209,7 +197,7 @@ fn Home(token: ReadSignal<Option<String>>, set_tag: WriteSignal<Option<String>>)
                     <div class="post-list">
                         <Transition fallback=move || view!{ <p>"Loading..."</p> }>
                             <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
-                                 key=|post| post.id
+                                 key=|post| post.id()
                                  let:post>
                               <Post post set_tag/>
                             </For>
@@ -328,7 +316,7 @@ fn Tags(
                 <div class="post-list">
                     <Transition fallback=move || view!{ <p>"Loading..."</p> }>
                         <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
-                             key=|post| post.id
+                             key=|post| post.id()
                              let:post>
                           <Post post set_tag/>
                         </For>

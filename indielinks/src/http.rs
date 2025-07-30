@@ -13,18 +13,18 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
-
 use crate::{
     background_tasks::BackgroundTasks,
     cache::GrpcClientFactory,
-    entities::{FollowerId, StorUrl, User},
+    entities::{FollowerId, User},
     metrics::{self},
     origin::Origin,
     peppers::Peppers,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
 };
+
+use indielinks_shared::StorUrl;
 
 use axum::Json;
 use chrono::Duration;
@@ -34,6 +34,8 @@ use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::sync::RwLock;
+
+use std::sync::Arc;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        Error Responses                                         //

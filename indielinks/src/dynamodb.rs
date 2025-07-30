@@ -25,12 +25,13 @@ use crate::{
         Backend as CacheBackend, Flavor, LogIndex, NID, RaftLog, RaftMetadata, to_storage_io_err,
     },
     entities::{
-        ActivityPubPost, FollowId, Follower, Following, Like, Post, PostDay, PostId, PostUri,
-        Reply, Share, StorUrl, Tagname, User, UserId, Username,
+        ActivityPubPost, FollowId, Follower, Following, Like, Reply, Share, User, Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
+
+use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId};
 
 use async_trait::async_trait;
 use aws_config::{BehaviorVersion, Region, meta::region::RegionProviderChain};
@@ -842,7 +843,7 @@ impl storage::Backend for Client {
         &self,
         user: &User,
         replace: bool,
-        uri: &PostUri,
+        uri: &StorUrl,
         id: &PostId,
         title: &str,
         dt: &DateTime<Utc>,
@@ -964,7 +965,7 @@ impl storage::Backend for Client {
         Ok(())
     }
 
-    async fn delete_post(&self, user: &User, url: &PostUri) -> StdResult<bool, StorError> {
+    async fn delete_post(&self, user: &User, url: &StorUrl) -> StdResult<bool, StorError> {
         self.client
             .delete_item()
             .table_name("posts")
@@ -1109,7 +1110,7 @@ impl storage::Backend for Client {
         user: &User,
         tags: &UpToThree<Tagname>,
         day: &PostDay,
-        uri: &Option<PostUri>,
+        uri: &Option<StorUrl>,
     ) -> StdResult<Vec<Post>, StorError> {
         let mut query = self
             .client

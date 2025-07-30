@@ -27,6 +27,7 @@ hmac = "0.12.1"
 http = "1.2.0"
 http-serde = "2.1.1"
 indielinks-cache = { path = "../indielinks-cache" }
+indielinks-shared = { path = "../indielinks-shared", features = ["backend"] }
 inventory = "0.3.19"
 itertools = "0.13.0"
 jwt = "0.16.0"

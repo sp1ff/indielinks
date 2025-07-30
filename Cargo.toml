@@ -1,5 +1,5 @@
 [workspace]
-members = ["indielinks", "indielinks-cache", "indielinks-cache-test", "indielinks-test", "indielinks-fe"]
+members = ["indielinks-shared", "indielinks-cache", "indielinks-cache-test", "indielinks", "indielinks-test", "indielinks-fe"]
 resolver = "2"
 
 [patch.crates-io]

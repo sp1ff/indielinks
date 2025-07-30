@@ -35,7 +35,7 @@ use crate::{
     authn::{self, AuthnScheme, check_api_key, check_password, check_token},
     background_tasks::{BackgroundTasks, Sender},
     counter_add,
-    entities::{self, Post, PostDay, PostId, PostUri, Tagname, User, UserApiKey, Username},
+    entities::{User, UserApiKey, Username},
     http::{ErrorResponseBody, Indielinks, user_for_request},
     metrics::{self, Sort},
     origin::Origin,
@@ -44,6 +44,8 @@ use crate::{
     storage::{self, Backend as StorageBackend, DateRange},
     util::UpToThree,
 };
+
+use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname};
 
 use axum::{
     Router,
@@ -102,7 +104,7 @@ pub enum Error {
     },
     #[snafu(display("Bad tag name: {source}"))]
     BadTagName {
-        source: entities::Error,
+        source: indielinks_shared::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("{username} is not a valid username"))]
@@ -113,7 +115,7 @@ pub enum Error {
     },
     #[snafu(display("Failed to delete post {uri}: {source}"))]
     DeletePosts {
-        uri: PostUri,
+        uri: StorUrl,
         source: crate::storage::Error,
         backtrace: Backtrace,
     },
@@ -170,7 +172,7 @@ pub enum Error {
     },
     #[snafu(display("Failed to fetch posts by URI {uri}: {source}"))]
     PostByUri {
-        uri: PostUri,
+        uri: StorUrl,
         source: storage::Error,
         backtrace: Backtrace,
     },
@@ -191,7 +193,7 @@ pub enum Error {
     },
     #[snafu(display("Failed to fetch the tag cloud for {uri}: {source}"))]
     TagCloudForUri {
-        uri: PostUri,
+        uri: StorUrl,
         source: storage::Error,
         backtrace: Backtrace,
     },
@@ -572,7 +574,7 @@ inventory::submit! { metrics::Registration::new("delicious.posts.added", Sort::I
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PostAddReq {
-    url: PostUri,
+    url: StorUrl,
     #[serde(rename = "description")]
     title: String,
     #[serde(rename = "extended")]
@@ -702,7 +704,7 @@ inventory::submit! { metrics::Registration::new("delicious.posts.deleted", Sort:
 
 #[derive(Clone, Debug, Deserialize)]
 struct PostsDeleteReq {
-    url: PostUri,
+    url: StorUrl,
 }
 
 async fn delete_post(
@@ -712,7 +714,7 @@ async fn delete_post(
 ) -> axum::response::Response {
     async fn delete_post1(
         storage: &(dyn StorageBackend + Send + Sync),
-        uri: PostUri,
+        uri: StorUrl,
         request: axum::extract::Request,
     ) -> Result<bool> {
         let user = user_for_request(&request, "/posts/delete").context(UnauthorizedSnafu)?;
@@ -764,7 +766,7 @@ inventory::submit! { metrics::Registration::new("delicious.posts.retrieved", Sor
 struct PostsGetReq {
     dt: Option<NaiveDate>,
     #[serde(rename = "url")]
-    uri: Option<PostUri>,
+    uri: Option<StorUrl>,
     #[serde(default, rename = "tag")]
     tag: Option<String>,
     #[serde(rename = "meta")]
