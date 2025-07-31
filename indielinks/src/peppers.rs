@@ -52,16 +52,16 @@ use std::{collections::BTreeMap, ops::Deref, str::FromStr};
 use lazy_static::lazy_static;
 use regex::Regex;
 use scylla::{
-    deserialize::{value::DeserializeValue, DeserializationError, FrameSlice, TypeCheckError},
+    deserialize::{DeserializationError, FrameSlice, TypeCheckError, value::DeserializeValue},
     frame::response::result::ColumnType,
     serialize::{
+        SerializationError,
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
-        SerializationError,
     },
 };
 use serde::{Deserialize, Serialize};
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, prelude::*};
 
 use crate::util::Key;
 
@@ -118,14 +118,6 @@ impl FromStr for Version {
 
 impl AsRef<str> for Version {
     fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Deref for Version {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
@@ -197,14 +189,6 @@ impl TryFrom<Key> for Pepper {
 
 impl AsRef<Key> for Pepper {
     fn as_ref(&self) -> &Key {
-        self.deref()
-    }
-}
-
-impl Deref for Pepper {
-    type Target = Key;
-
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }

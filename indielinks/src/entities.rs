@@ -20,7 +20,7 @@
 //! I hate these sort of "catch-all" modules named "models" or "entities", but these types are truly
 //! foundational.
 
-use std::{collections::HashSet, fmt::Display, ops::Deref, str::FromStr};
+use std::{collections::HashSet, fmt::Display, str::FromStr};
 
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use chrono::{DateTime, Utc};
@@ -322,14 +322,6 @@ impl UserEmail {
 
 impl AsRef<str> for UserEmail {
     fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Deref for UserEmail {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }

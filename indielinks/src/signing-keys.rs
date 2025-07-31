@@ -45,12 +45,12 @@
 //! point; just terminate their sessions? Coordinate the token TTL with the rotation cadence (so
 //! that any tokens that can now no longer be verified are expired anyway)?
 
-use std::{collections::BTreeMap, fmt::Display, ops::Deref, str::FromStr};
+use std::{collections::BTreeMap, fmt::Display, str::FromStr};
 
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::Deserialize;
-use snafu::{prelude::*, Backtrace, Snafu};
+use snafu::{Backtrace, Snafu, prelude::*};
 
 use crate::util::Key;
 
@@ -104,14 +104,6 @@ impl FromStr for KeyId {
 
 impl AsRef<str> for KeyId {
     fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Deref for KeyId {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
@@ -152,14 +144,6 @@ impl Default for SigningKey {
 
 impl AsRef<Key> for SigningKey {
     fn as_ref(&self) -> &Key {
-        self.deref()
-    }
-}
-
-impl Deref for SigningKey {
-    type Target = Key;
-
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }

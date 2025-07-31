@@ -60,7 +60,7 @@ use crate::{acct::Account, http::ErrorResponseBody};
 use crate::{counter_add, metrics};
 
 use axum::extract::{Query, State};
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tracing::{error, info};
@@ -248,7 +248,7 @@ pub async fn webfinger(
         }
 
         match storage
-            .user_for_name(account.user())
+            .user_for_name(account.user().as_ref())
             .await
             .context(StorageSnafu)?
         {

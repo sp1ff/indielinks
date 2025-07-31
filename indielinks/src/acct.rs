@@ -114,13 +114,13 @@
 //! find), but I surmise that it's up to the application to handle the subsequent round of
 //! %-decoding.
 
-use std::{collections::HashSet, fmt::Display, ops::Deref, str::FromStr};
+use std::{collections::HashSet, fmt::Display, str::FromStr};
 
 use lazy_static::lazy_static;
 use pct_str::{Encoder, PctStr, PctString};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, prelude::*};
 
 use crate::{origin::Host, util::exactly_two};
 
@@ -251,14 +251,6 @@ impl FromStr for Username {
 
 impl AsRef<str> for Username {
     fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Deref for Username {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }

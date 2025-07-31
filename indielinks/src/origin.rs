@@ -99,7 +99,6 @@ use std::{
     convert::{AsRef, TryFrom},
     fmt::Display,
     net::{Ipv4Addr, Ipv6Addr},
-    ops::Deref,
     str::FromStr,
 };
 
@@ -217,14 +216,6 @@ impl FromStr for RegName {
 
 impl AsRef<str> for RegName {
     fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Deref for RegName {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }

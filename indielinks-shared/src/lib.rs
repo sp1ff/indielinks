@@ -211,13 +211,6 @@ macro_rules! define_id {
         }
         impl AsRef<Uuid> for $type_name {
             fn as_ref(&self) -> &Uuid {
-                self.deref()
-            }
-        }
-        impl Deref for $type_name {
-            type Target = Uuid;
-
-            fn deref(&self) -> &Self::Target {
                 &self.0
             }
         }
@@ -386,14 +379,6 @@ impl Tagname {
 
 impl AsRef<str> for Tagname {
     fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Deref for Tagname {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
@@ -516,14 +501,6 @@ impl PostDay {
 
 impl AsRef<str> for PostDay {
     fn as_ref(&self) -> &str {
-        self.deref()
-    }
-}
-
-impl Deref for PostDay {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }

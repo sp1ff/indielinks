@@ -116,7 +116,7 @@
 //! compatibility with as many other apps as possible.
 //!
 
-use std::{collections::HashMap, fmt::Display, ops::Deref};
+use std::{collections::HashMap, fmt::Display};
 
 use chrono::{DateTime, FixedOffset, Utc};
 use lazy_static::lazy_static;
@@ -358,8 +358,8 @@ mod test_locations {
         let (username, postid) = res.unwrap();
         assert!("sp1ff" == username.as_ref());
         assert!(
-            Uuid::parse_str("36bbef8b-9922-4f6b-916b-2b2241797964").unwrap(/* known good */)
-                == *postid
+            &Uuid::parse_str("36bbef8b-9922-4f6b-916b-2b2241797964").unwrap(/* known good */)
+                == postid.as_ref()
         );
     }
 }
@@ -1492,17 +1492,9 @@ impl Display for Jld {
     }
 }
 
-impl Deref for Jld {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref()
-    }
-}
-
 impl AsRef<str> for Jld {
     fn as_ref(&self) -> &str {
-        self.deref()
+        &self.0
     }
 }
 

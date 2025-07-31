@@ -141,6 +141,8 @@ impl AsRef<SecretSlice<u8>> for Key {
     }
 }
 
+// I'm OK implementing `Deref` here, since `Key` really just exists so I can implement `Deserialize`
+// on it.
 impl Deref for Key {
     type Target = SecretSlice<u8>;
 
