@@ -27,10 +27,11 @@
 //! ignore the binary create. I should probably rename this file.
 
 use std::{
+    collections::HashMap,
     env,
-    ffi::CString,
+    ffi::{CString, OsString},
     fmt::Display,
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     future::IntoFuture,
     io,
     net::SocketAddr,
@@ -42,19 +43,20 @@ use std::{
     },
 };
 
-use axum::{Router, extract::State, routing::get};
+use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use chrono::Duration;
 use clap::{Arg, ArgAction, Command, crate_authors, crate_version, value_parser};
 use either::Either;
 use http::{HeaderName, HeaderValue};
+use lazy_static::lazy_static;
 use libc::{
     F_TLOCK, close, dup, exit, fork, getdtablesize, getpid, lockf, open, setsid, umask, write,
 };
-use opentelemetry::global;
+use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use secrecy::SecretString;
 use serde::Deserialize;
-use snafu::prelude::*;
+use snafu::{IntoError, prelude::*};
 use tap::Pipe;
 use tokio::{
     net::TcpListener,
@@ -92,10 +94,11 @@ use indielinks::{
         LogStore, make_router as make_cache_router,
     },
     client::make_client,
+    counter_add,
     delicious::make_router as make_delicious_router,
     entities::FollowerId,
     http::Indielinks,
-    metrics::Instruments,
+    metrics::{self, Instruments, Sort},
     origin::Origin,
     peppers::Peppers,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
@@ -140,6 +143,13 @@ use indielinks::{
 /// type implementing Termination".
 #[derive(Snafu)]
 pub enum Error {
+    #[snafu(display("While serving {asset:?}: {source}"))]
+    Asset {
+        asset: PathBuf,
+        source: std::io::Error,
+    },
+    #[snafu(display("{asset:?} was requested, but not found"))]
+    AssetNotFound { asset: PathBuf },
     #[snafu(display("Failed to shut-down background task processing: {source}"))]
     BackgroundShutdown { source: background_tasks::Error },
     #[snafu(display("Failed to setup background task processing: {source}"))]
@@ -603,6 +613,98 @@ async fn metrics(State(state): State<Arc<Indielinks>>) -> String {
     String::from_utf8(result).expect("Failed to encode Prom metrics")
 }
 
+lazy_static! {
+    static ref CONTENT_TYPES: HashMap<OsString, HeaderValue> = {
+        HashMap::from([
+            (
+                "html".to_owned().into(),
+                HeaderValue::from_static("text/html"),
+            ),
+            (
+                "css".to_owned().into(),
+                HeaderValue::from_static("text/css"),
+            ),
+            (
+                "js".to_owned().into(),
+                HeaderValue::from_static("text/javascript"),
+            ),
+            (
+                "wasm".to_owned().into(),
+                HeaderValue::from_static("application/wasm"),
+            ),
+        ])
+    };
+    static ref ASSETS: OsString = "assets".to_owned().into();
+}
+
+inventory::submit! { metrics::Registration::new("frontend.asset.successes", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("frontend.asset.404s", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("frontend.asset.failures", Sort::IntegralCounter) }
+
+async fn frontend(
+    State(state): State<Arc<Indielinks>>,
+    file: Option<axum::extract::Path<PathBuf>>,
+) -> axum::response::Response {
+    fn frontend1(file: &PathBuf) -> Result<Vec<u8>> {
+        fs::read(
+            [ASSETS.as_os_str(), file.as_os_str()]
+                .iter()
+                .collect::<PathBuf>(),
+        )
+        .map_err(|err| {
+            if err.kind() == io::ErrorKind::NotFound {
+                Error::AssetNotFound {
+                    asset: file.clone(),
+                }
+            } else {
+                AssetSnafu { asset: file }.into_error(err)
+            }
+        })?
+        .pipe(Ok)
+    }
+
+    let file = file
+        .unwrap_or(axum::extract::Path(PathBuf::from("index.html")))
+        .0;
+
+    match frontend1(&file) {
+        Ok(body) => {
+            let mut rsp = axum::response::Response::builder().status(http::StatusCode::OK);
+            if let Some(Some(header_value)) = file.extension().map(|ext| CONTENT_TYPES.get(ext)) {
+                rsp = rsp.header(http::header::CONTENT_TYPE, header_value);
+            }
+            counter_add!(
+                state.instruments,
+                "frontend.asset.successes",
+                1,
+                &[KeyValue::new("asset", file.to_string_lossy().into_owned())]
+            );
+            rsp.status(http::StatusCode::OK).body(body.into()).expect(
+                "Failed to construct a response from /fe. This is a bug & should be investigated",
+            )
+        }
+        Err(Error::AssetNotFound { .. }) => {
+            counter_add!(
+                state.instruments,
+                "frontend.asset.404s",
+                1,
+                &[KeyValue::new("asset", file.to_string_lossy().into_owned())]
+            );
+            http::StatusCode::NOT_FOUND.into_response()
+        }
+        Err(err) => {
+            error!("{err:?}");
+            counter_add!(
+                state.instruments,
+                "frontend.asset.failures",
+                1,
+                &[KeyValue::new("asset", file.to_string_lossy().into_owned())]
+            );
+            http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 /// Counter for generating request IDs; I realize that a u64 gives me a lot less information than a
 /// UUID (the traditional type for request IDs), but I judge it to be enough, as well as more easily
 /// readable, and a useful guage of how long the server's been up.
@@ -626,6 +728,11 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
     Router::new()
         .route("/healthcheck", get(healthcheck))
         .route("/metrics", get(metrics))
+        // It's *really* irritating that I need to specify three separate routes to handle each of
+        // these cases, but here we are. At least I only need to implement one handler.
+        .route("/fe", get(frontend))
+        .route("/fe/", get(frontend))
+        .route("/fe/{file}", get(frontend))
         .route(
             "/.well-known/webfinger",
             get(webfinger).layer(CorsLayer::permissive()),
