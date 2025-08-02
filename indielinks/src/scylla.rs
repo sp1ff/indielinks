@@ -673,6 +673,24 @@ enum PreparedStatements {
     AddLike,
     CountFollowingByActor,
     AddActivityPubPost,
+    InsertIntoRaftLog,
+    TruncateRaftLog,
+    TruncateRaftMeta,
+    SelectRaftMeta1,
+    SelectRaftLog1,
+    DeleteRaftLog1,
+    SelectRaftMeta2,
+    InsertRaftMeta1,
+    DeleteRaftLog2,
+    GetRaftLogEntries1,
+    GetRaftLogEntries2,
+    GetRaftLogEntries3,
+    GetRaftLogEntries4,
+    GetRaftLogEntries5,
+    GetRaftLogEntries6,
+    GetRaftLogEntries7,
+    GetRaftLogEntries8,
+    GetRaftLogEntries9,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -789,7 +807,25 @@ impl Session {
             "select count(*) from following where user_id = ?", // CountFollowing
             "insert into likes (user_id, url, id, created, like_id) values (?, ?, ?, ?, ?) if not exists",
             "select count(*) from following where actor_id = ?", // CountFollowingByActor
-            "insert into activity_pub_posts (user_id, post_id, posted, flavor, visibility) values (?, ?, ?, ?, ?) if not exists"
+            "insert into activity_pub_posts (user_id, post_id, posted, flavor, visibility) values (?, ?, ?, ?, ?) if not exists",
+            "insert into raft_log (node_id, log_id, entry) values (?, ?, ?)",
+            "truncate raft_log",
+            "truncate raft_metadata",
+            "select * from raft_metadata where node_id = ? and flavor = ?",
+            "select * from raft_log where node_id = ? order by log_id desc limit 1",
+            "delete from raft_log where node_id = ? and log_id <= ?",
+            "select * from raft_metadata where node_id=? and flavor=?",
+            "insert into raft_metadata (node_id, flavor, data) values (?, ?, ?)",
+            "delete from raft_log where node_id = ? and log_id >= ?",
+            "select * from raft_log where node_id = ? and log_id >= ? and log_id <= ?",
+            "select * from raft_log where node_id = ? and log_id >= ? and log_id < ?",
+            "select * from raft_log where node_id = ? and log_id >= ?",
+            "select * from raft_log where node_id = ? and log_id > ? and log_id <= ?",
+            "select * from raft_log where node_id = ? and log_id > ? and log_id < ?",
+            "select * from raft_log where node_id = ? and log_id > ?",
+            "select * from raft_log where node_id = ? and log_id <= ?",
+            "select * from raft_log where node_id = ? and log_id < ?",
+            "select * from raft_log where node_id = ?"
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -806,7 +842,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 57] = prepared_statements
+        let prepared_statements: [PreparedStatement; 75] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -1755,9 +1791,9 @@ impl CacheBackend for Session {
             .into_iter()
             .map(|entry| match to_vec(&entry) {
                 Ok(buf) => Ok((
-                    BatchStatement::Query(Statement::new(
-                        "insert into raft_log (node_id, log_id, entry) values (?, ?, ?)",
-                    )),
+                    BatchStatement::PreparedStatement(
+                        self.prepared_statements[PreparedStatements::InsertIntoRaftLog].clone(),
+                    ),
                     RaftLog {
                         node_id: NID(self.node_id),
                         log_id: LogIndex(entry.log_id.index),
@@ -1781,14 +1817,20 @@ impl CacheBackend for Session {
     #[tracing::instrument(skip(self))]
     async fn drop_all_rows(&self) -> StdResult<(), StorageError<NodeId>> {
         self.session
-            .query_unpaged("truncate raft_log", ())
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::TruncateRaftLog],
+                (),
+            )
             .await
             .map_err(|err| {
                 to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
             })?;
 
         self.session
-            .query_unpaged("truncate raft_metadata", ())
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::TruncateRaftMeta],
+                (),
+            )
             .await
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::None, ErrorVerb::Delete, &err))
             .map(|_| ())
@@ -1798,11 +1840,12 @@ impl CacheBackend for Session {
     async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
         async fn get_log_state1(
             session: &InnerSession,
+            prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
             node_id: NodeId,
         ) -> Result<LogState<TypeConfig>> {
             let last_purged_log_id = session
-                .query_unpaged(
-                    "select * from raft_metadata where node_id = ? and flavor = ?",
+                .execute_unpaged(
+                    &prepared_statements[PreparedStatements::SelectRaftMeta1],
                     (Into::<BigInt>::into(node_id), Flavor::LastPurged),
                 )
                 .await
@@ -1820,8 +1863,8 @@ impl CacheBackend for Session {
                 .transpose()?;
 
             let last_log_id = session
-                .query_unpaged(
-                    "select * from raft_log where node_id = ? order by log_id desc limit 1",
+                .execute_unpaged(
+                    &prepared_statements[PreparedStatements::SelectRaftLog1],
                     (Into::<BigInt>::into(node_id),),
                 )
                 .await
@@ -1851,7 +1894,7 @@ impl CacheBackend for Session {
             })
         }
 
-        get_log_state1(&self.session, self.node_id)
+        get_log_state1(&self.session, &self.prepared_statements, self.node_id)
             .await
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
     }
@@ -1860,12 +1903,13 @@ impl CacheBackend for Session {
     async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
         async fn purge1(
             session: &InnerSession,
+            prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
             node_id: NodeId,
             log_id: LogId<NodeId>,
         ) -> Result<()> {
             session
-                .query_unpaged(
-                    "delete from raft_log where node_id = ? and log_id <= ?",
+                .execute_unpaged(
+                    &prepared_statements[PreparedStatements::DeleteRaftLog1],
                     (
                         Into::<BigInt>::into(node_id),
                         Into::<BigInt>::into(log_id.index),
@@ -1889,20 +1933,26 @@ impl CacheBackend for Session {
                 .map(|_| ())
         }
 
-        purge1(&self.session, self.node_id, log_id)
-            .await
-            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))
+        purge1(
+            &self.session,
+            &self.prepared_statements,
+            self.node_id,
+            log_id,
+        )
+        .await
+        .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))
     }
     /// Return the last saved vote by [Self::save_vote] (if any)
     #[tracing::instrument(skip(self))]
     async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
         async fn read_vote1(
             session: &InnerSession,
+            prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
             node_id: NodeId,
         ) -> Result<Option<Vote<NodeId>>> {
             session
-                .query_unpaged(
-                    "select * from raft_metadata where node_id=? and flavor=?",
+                .execute_unpaged(
+                    &prepared_statements[PreparedStatements::SelectRaftMeta2],
                     (Into::<BigInt>::into(node_id), Flavor::Vote),
                 )
                 .await
@@ -1921,7 +1971,7 @@ impl CacheBackend for Session {
                 .pipe(Ok)
         }
 
-        read_vote1(&self.session, self.node_id)
+        read_vote1(&self.session, &self.prepared_statements, self.node_id)
             .await
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err))
     }
@@ -1930,12 +1980,13 @@ impl CacheBackend for Session {
     async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
         async fn save_vote1(
             session: &InnerSession,
+            prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
             node_id: NodeId,
             vote: &Vote<NodeId>,
         ) -> Result<()> {
             session
-                .query_unpaged(
-                    "insert into raft_metadata (node_id, flavor, data) values (?, ?, ?)",
+                .execute_unpaged(
+                    &prepared_statements[PreparedStatements::InsertRaftMeta1],
                     RaftMetadata {
                         node_id: NID(node_id),
                         flavor: Flavor::Vote,
@@ -1947,7 +1998,7 @@ impl CacheBackend for Session {
                 .map(|_| ())
         }
 
-        save_vote1(&self.session, self.node_id, vote)
+        save_vote1(&self.session, &self.prepared_statements, self.node_id, vote)
             .await
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))
     }
@@ -1955,8 +2006,8 @@ impl CacheBackend for Session {
     #[tracing::instrument(skip(self))]
     async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
         self.session
-            .query_unpaged(
-                "delete from raft_log where node_id = ? and log_id >= ?",
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::DeleteRaftLog2],
                 (
                     Into::<BigInt>::into(self.node_id),
                     Into::<BigInt>::into(log_id.index),
@@ -1975,6 +2026,7 @@ impl CacheBackend for Session {
     ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>> {
         async fn try_get_log_entries1(
             session: &InnerSession,
+            prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
             node_id: NodeId,
             lower_bound: Bound<&u64>,
             upper_bound: Bound<&u64>,
@@ -1986,8 +2038,8 @@ impl CacheBackend for Session {
                     let i = Into::<BigInt>::into(*i);
                     let j = Into::<BigInt>::into(*j);
                     session
-                        .query_unpaged(
-                            "select * from raft_log where node_id = ? and log_id >= ? and log_id <= ?",
+                        .execute_unpaged(
+                            &prepared_statements[PreparedStatements::GetRaftLogEntries1],
                             (node_id, i, j),
                         )
                         .await
@@ -1996,8 +2048,8 @@ impl CacheBackend for Session {
                     let i = Into::<BigInt>::into(*i);
                     let j = Into::<BigInt>::into(*j);
                     session
-                        .query_unpaged(
-                            "select * from raft_log where node_id = ? and log_id >= ? and log_id < ?",
+                        .execute_unpaged(
+                            &prepared_statements[PreparedStatements::GetRaftLogEntries2],
                             (node_id, i, j),
                         )
                         .await
@@ -2005,15 +2057,18 @@ impl CacheBackend for Session {
                 (Bound::Included(i), Bound::Unbounded) => {
                     let i = Into::<BigInt>::into(*i);
                     session
-                        .query_unpaged("select * from raft_log where node_id = ? and log_id >= ?", (node_id, i))
+                        .execute_unpaged(
+                            &prepared_statements[PreparedStatements::GetRaftLogEntries3],
+                            (node_id, i),
+                        )
                         .await
                 }
                 (Bound::Excluded(i), Bound::Included(j)) => {
                     let i = Into::<BigInt>::into(*i);
                     let j = Into::<BigInt>::into(*j);
                     session
-                        .query_unpaged(
-                            "select * from raft_log where node_id = and log_id > ? and log_id <= ?",
+                        .execute_unpaged(
+                            &prepared_statements[PreparedStatements::GetRaftLogEntries4],
                             (node_id, i, j),
                         )
                         .await
@@ -2022,26 +2077,46 @@ impl CacheBackend for Session {
                     let i = Into::<BigInt>::into(*i);
                     let j = Into::<BigInt>::into(*j);
                     session
-                        .query_unpaged(
-                            "select * from raft_log where node_id = and log_id > ? and log_id < ?",
+                        .execute_unpaged(
+                            &prepared_statements[PreparedStatements::GetRaftLogEntries5],
                             (node_id, i, j),
                         )
                         .await
                 }
                 (Bound::Excluded(i), Bound::Unbounded) => {
                     let i = Into::<BigInt>::into(*i);
-                    session.query_unpaged("select * from raft_log where node_id = and log_id > ?", (node_id, i)).await
+                    session
+                        .execute_unpaged(
+                            &prepared_statements[PreparedStatements::GetRaftLogEntries6],
+                            (node_id, i),
+                        )
+                        .await
                 }
                 (Bound::Unbounded, Bound::Included(j)) => {
                     let j = Into::<BigInt>::into(*j);
-                    session.query_unpaged("select * from raft_log where node_id = and log_id <= ?", (node_id, j)).await
+                    session
+                        .execute_unpaged(
+                            &prepared_statements[PreparedStatements::GetRaftLogEntries7],
+                            (node_id, j),
+                        )
+                        .await
                 }
                 (Bound::Unbounded, Bound::Excluded(j)) => {
                     let j = Into::<BigInt>::into(*j);
-                    session.query_unpaged("select * from raft_log where node_id = and log_id < ?", (node_id, j)).await
+                    session
+                        .execute_unpaged(
+                            &prepared_statements[PreparedStatements::GetRaftLogEntries8],
+                            (node_id, j),
+                        )
+                        .await
                 }
                 (Bound::Unbounded, Bound::Unbounded) => {
-                    session.query_unpaged("select * from raft_log where node_id = and ", (node_id,)).await
+                    session
+                        .execute_unpaged(
+                            &prepared_statements[PreparedStatements::GetRaftLogEntries9],
+                            (node_id,),
+                        )
+                        .await
                 }
             }
             .context(ExecutionSnafu)?
@@ -2053,14 +2128,21 @@ impl CacheBackend for Session {
             // I need to fallibly deserialize the `entry` field to an `Entry<TypeConfig>`. I guess
             // I'd prefer to do one pass, at the cost of a more complex lambda:
             .map(|res| {
-                res.context(RaftLogDeSnafu)
-                    .and_then(|log| from_slice::<Entry<TypeConfig>>(log.entry.as_slice()).context(EntryDeSnafu))
+                res.context(RaftLogDeSnafu).and_then(|log| {
+                    from_slice::<Entry<TypeConfig>>(log.entry.as_slice()).context(EntryDeSnafu)
+                })
             })
             .collect::<Result<Vec<Entry<TypeConfig>>>>()
         }
 
-        try_get_log_entries1(&self.session, self.node_id, lower_bound, upper_bound)
-            .await
-            .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
+        try_get_log_entries1(
+            &self.session,
+            &self.prepared_statements,
+            self.node_id,
+            lower_bound,
+            upper_bound,
+        )
+        .await
+        .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
     }
 }
