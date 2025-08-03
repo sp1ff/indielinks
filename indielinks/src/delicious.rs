@@ -36,7 +36,7 @@ use crate::{
     background_tasks::{BackgroundTasks, Sender},
     counter_add,
     entities::{User, UserApiKey, Username},
-    http::{ErrorResponseBody, Indielinks, user_for_request},
+    http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
     peppers::Peppers,
@@ -48,7 +48,7 @@ use crate::{
 use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname};
 
 use axum::{
-    Router,
+    Extension, Router,
     extract::{Json, State},
     http::{HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::IntoResponse,
@@ -536,10 +536,9 @@ pub struct UpdateRsp {
 
 async fn update(
     State(state): State<Arc<Indielinks>>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
-    async fn update1(request: axum::extract::Request) -> Result<UpdateRsp> {
-        let user = user_for_request(&request, "/posts/update").context(UnauthorizedSnafu)?;
+    async fn update1(user: User) -> Result<UpdateRsp> {
         let update_time = user.last_update().context(NoPostsSnafu {
             username: user.username().clone(),
         })?;
@@ -549,7 +548,7 @@ async fn update(
         })
     }
 
-    match update1(request).await {
+    match update1(user).await {
         Ok(rsp) => {
             counter_add!(state.instruments, "delicious.updates", 1, &[]);
             (StatusCode::OK, Json(rsp)).into_response()
@@ -606,18 +605,14 @@ struct PostAddReq {
 async fn add_post(
     State(state): State<Arc<Indielinks>>,
     Query(post_add_req): Query<PostAddReq>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn add_post1(
+        user: User,
         req: PostAddReq,
-        request: axum::extract::Request,
         storage: &(dyn StorageBackend + Send + Sync),
         sender: &Arc<BackgroundTasks>,
     ) -> Result<bool> {
-        // I'm torn as to how to handle this; given the API offered by axum, there's no way to
-        // enforce this at compile-time. OTOH, it's tough to do anything in this API *without* the
-        // current user, so I don't see how I can forget this:
-        let user = user_for_request(&request, "/posts/add").context(UnauthorizedSnafu)?;
         // Pull the `tag` parameter out of the request, separate the individual tags by comma, and
         // check that they're all legit `Tagname`s:
         let tags = parse_tag_parameter(&req.tags)?;
@@ -628,7 +623,7 @@ async fn add_post(
         let shared = req.shared.unwrap_or(false);
         let added = storage
             .add_post(
-                user,
+                &user,
                 // Question: should we resolve defaults here, or in the storage backend?
                 req.replace.unwrap_or(true),
                 &req.url,
@@ -644,7 +639,7 @@ async fn add_post(
             .context(AddPostSnafu)?;
         if added {
             storage
-                .update_user_post_times(user, &dt)
+                .update_user_post_times(&user, &dt)
                 .await
                 .context(UpdateUserPostTimesSnafu)?;
             if shared {
@@ -667,8 +662,8 @@ async fn add_post(
     // seems unfortunate, so for now at least, I'm going to break backwards compatibility & actually
     // return an HTTP status code suitable to the result.
     let (status_code, status) = match add_post1(
+        user,
         post_add_req,
-        request,
         state.storage.as_ref(),
         &state.task_sender,
     )
@@ -710,21 +705,20 @@ struct PostsDeleteReq {
 async fn delete_post(
     State(state): State<Arc<Indielinks>>,
     Query(post_delete_req): Query<PostsDeleteReq>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn delete_post1(
         storage: &(dyn StorageBackend + Send + Sync),
+        user: User,
         uri: StorUrl,
-        request: axum::extract::Request,
     ) -> Result<bool> {
-        let user = user_for_request(&request, "/posts/delete").context(UnauthorizedSnafu)?;
         let deleted = storage
-            .delete_post(user, &uri)
+            .delete_post(&user, &uri)
             .await
             .context(DeletePostsSnafu { uri })?;
         if deleted {
             storage
-                .update_user_post_times(user, &Utc::now())
+                .update_user_post_times(&user, &Utc::now())
                 .await
                 .context(UpdateUserPostTimesSnafu)?;
         }
@@ -732,7 +726,7 @@ async fn delete_post(
     }
 
     let (status_code, status) =
-        match delete_post1(state.storage.as_ref(), post_delete_req.url, request).await {
+        match delete_post1(state.storage.as_ref(), user, post_delete_req.url).await {
             Ok(true) => {
                 counter_add!(state.instruments, "delicious.posts.deleted", 1, &[]);
                 (StatusCode::OK, "done".to_string())
@@ -809,14 +803,13 @@ pub struct PostsGetRsp {
 async fn get_posts(
     State(state): State<Arc<Indielinks>>,
     Query(post_get_req): Query<PostsGetReq>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn get_posts1(
         storage: &(dyn StorageBackend + Send + Sync),
+        user: User,
         posts_get_req: PostsGetReq,
-        request: axum::extract::Request,
     ) -> Result<PostsGetRsp> {
-        let user = user_for_request(&request, "/posts/get").context(UnauthorizedSnafu)?;
         // If the user has never made any posts, we're done:
         let last_dt = user.last_update().ok_or(
             NoPostsSnafu {
@@ -835,7 +828,7 @@ async fn get_posts(
                 let tags = UpToThree::new(parse_tag_parameter(&posts_get_req.tag)?.into_iter())
                     .context(NoMoreThanThreeTagsSnafu)?;
                 let posts = storage
-                    .get_posts(user, &tags, &dt.into(), &posts_get_req.uri)
+                    .get_posts(&user, &tags, &dt.into(), &posts_get_req.uri)
                     .await
                     .context(GetPostsSnafu)?;
                 Ok(PostsGetRsp {
@@ -847,7 +840,7 @@ async fn get_posts(
         }
     }
 
-    match get_posts1(state.storage.as_ref(), post_get_req, request).await {
+    match get_posts1(state.storage.as_ref(), user, post_get_req).await {
         Ok(rsp) => {
             counter_add!(
                 state.instruments,
@@ -895,14 +888,13 @@ pub struct PostsRecentRsp {
 async fn get_recent(
     State(state): State<Arc<Indielinks>>,
     Query(post_recent_req): Query<PostsRecentReq>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn get_recent1(
         storage: &(dyn StorageBackend + Send + Sync),
+        user: User,
         posts_recent_req: PostsRecentReq,
-        request: axum::extract::Request,
     ) -> Result<PostsRecentRsp> {
-        let user = user_for_request(&request, "/posts/recent").context(UnauthorizedSnafu)?;
         let tags = UpToThree::new(parse_tag_parameter(&posts_recent_req.tag)?.into_iter())
             .context(NoMoreThanThreeTagsSnafu)?;
         let count = posts_recent_req.count.unwrap_or(10);
@@ -913,13 +905,13 @@ async fn get_recent(
             date: *update_time,
             user: user.username().clone(),
             posts: storage
-                .get_recent_posts(user, &tags, count)
+                .get_recent_posts(&user, &tags, count)
                 .await
                 .context(RecentPostsSnafu)?,
         })
     }
 
-    match get_recent1(state.storage.as_ref(), post_recent_req, request).await {
+    match get_recent1(state.storage.as_ref(), user, post_recent_req).await {
         Ok(rsp) => {
             counter_add!(
                 state.instruments,
@@ -964,21 +956,20 @@ pub struct PostsDatesRsp {
 async fn posts_dates(
     State(state): State<Arc<Indielinks>>,
     Query(posts_dates_req): Query<PostsDatesReq>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn posts_dates1(
         storage: &(dyn StorageBackend + Send + Sync),
+        user: User,
         posts_dates_req: PostsDatesReq,
-        request: axum::extract::Request,
     ) -> Result<PostsDatesRsp> {
-        let user = user_for_request(&request, "/posts/dates").context(UnauthorizedSnafu)?;
         let tags = UpToThree::new(parse_tag_parameter(&posts_dates_req.tag)?.into_iter())
             .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsDatesRsp {
             user: user.username().clone(),
             tag: posts_dates_req.tag.unwrap_or("".to_string()),
             dates: storage
-                .get_posts_by_day(user, &tags)
+                .get_posts_by_day(&user, &tags)
                 .await
                 .context(PostsByDaySnafu)?
                 .iter()
@@ -990,7 +981,7 @@ async fn posts_dates(
         })
     }
 
-    match posts_dates1(state.storage.as_ref(), posts_dates_req, request).await {
+    match posts_dates1(state.storage.as_ref(), user, posts_dates_req).await {
         Ok(rsp) => {
             counter_add!(
                 state.instruments,
@@ -1088,14 +1079,13 @@ fn apply_pagination(posts: Vec<Post>, start: Option<usize>, size: Option<usize>)
 async fn all_posts(
     State(state): State<Arc<Indielinks>>,
     Query(posts_all_req): Query<PostsAllReq>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn all_posts1(
         storage: &(dyn StorageBackend + Send + Sync),
+        user: User,
         posts_all_req: PostsAllReq,
-        request: axum::extract::Request,
     ) -> Result<PostsAllRsp> {
-        let user = user_for_request(&request, "/posts/all").context(UnauthorizedSnafu)?;
         let tags = UpToThree::new(parse_tag_parameter(&posts_all_req.tag)?.into_iter())
             .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsAllRsp {
@@ -1104,7 +1094,7 @@ async fn all_posts(
             posts: apply_pagination(
                 storage
                     .get_all_posts(
-                        user,
+                        &user,
                         &tags,
                         &DateRange::new(posts_all_req.fromdt, posts_all_req.todt),
                     )
@@ -1116,7 +1106,7 @@ async fn all_posts(
         })
     }
 
-    match all_posts1(state.storage.as_ref(), posts_all_req, request).await {
+    match all_posts1(state.storage.as_ref(), user, posts_all_req).await {
         Ok(rsp) => {
             counter_add!(
                 state.instruments,
@@ -1134,7 +1124,7 @@ async fn all_posts(
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////;
 //                                           `tags/get`                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1151,16 +1141,15 @@ pub struct TagsGetRsp {
 /// Retrieve a complete list of the user's tags along with their use counts.
 async fn tags_get(
     State(state): State<Arc<Indielinks>>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn tags_get1(
         storage: &(dyn StorageBackend + Send + Sync),
-        request: axum::extract::Request,
+        user: User,
     ) -> Result<TagsGetRsp> {
-        let user = user_for_request(&request, "/tags/get").context(UnauthorizedSnafu)?;
         Ok(TagsGetRsp {
             map: storage
-                .get_tag_cloud(user)
+                .get_tag_cloud(&user)
                 .await
                 .context(BadTagCloudSnafu {
                     username: user.username().clone(),
@@ -1168,7 +1157,7 @@ async fn tags_get(
         })
     }
 
-    match tags_get1(state.storage.as_ref(), request).await {
+    match tags_get1(state.storage.as_ref(), user).await {
         Ok(rsp) => {
             counter_add!(
                 state.instruments,
@@ -1201,16 +1190,15 @@ struct TagsRenameReq {
 async fn tags_rename(
     State(state): State<Arc<Indielinks>>,
     Query(tags_rename_req): Query<TagsRenameReq>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn tags_rename1(
         storage: &(dyn StorageBackend + Send + Sync),
+        user: User,
         tags_rename_req: TagsRenameReq,
-        request: axum::extract::Request,
     ) -> Result<()> {
-        let user = user_for_request(&request, "/tags/rename").context(UnauthorizedSnafu)?;
         storage
-            .rename_tag(user, &tags_rename_req.old, &tags_rename_req.new)
+            .rename_tag(&user, &tags_rename_req.old, &tags_rename_req.new)
             .await
             .context(RenameTagSnafu {
                 old: tags_rename_req.old,
@@ -1218,7 +1206,7 @@ async fn tags_rename(
             })
     }
 
-    match tags_rename1(state.storage.as_ref(), tags_rename_req, request).await {
+    match tags_rename1(state.storage.as_ref(), user, tags_rename_req).await {
         Ok(_) => {
             counter_add!(state.instruments, "delicious.tags.renames", 1, &[]);
             (
@@ -1251,23 +1239,22 @@ struct TagsDeleteReq {
 async fn tags_delete(
     State(state): State<Arc<Indielinks>>,
     Query(tags_delete_req): Query<TagsDeleteReq>,
-    request: axum::extract::Request,
+    Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn tags_delete1(
         storage: &(dyn StorageBackend + Send + Sync),
+        user: User,
         tags_delete_req: TagsDeleteReq,
-        request: axum::extract::Request,
     ) -> Result<()> {
-        let user = user_for_request(&request, "/tags/delete").context(UnauthorizedSnafu)?;
         storage
-            .delete_tag(user, &tags_delete_req.tag)
+            .delete_tag(&user, &tags_delete_req.tag)
             .await
             .context(DeleteTagSnafu {
                 tag: tags_delete_req.tag,
             })
     }
 
-    match tags_delete1(state.storage.as_ref(), tags_delete_req, request).await {
+    match tags_delete1(state.storage.as_ref(), user, tags_delete_req).await {
         Ok(_) => {
             counter_add!(state.instruments, "delicious.tags.deleted", 1, &[]);
             (
