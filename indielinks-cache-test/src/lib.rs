@@ -24,12 +24,6 @@ pub struct CacheInsertRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct CacheInsertResponse {
-    pub cache: CacheId,
-    pub key: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 pub struct CacheLookupRequest {
     pub cache: CacheId,
     pub key: serde_json::Value,
@@ -37,7 +31,5 @@ pub struct CacheLookupRequest {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CacheLookupResponse {
-    pub cache: CacheId,
-    pub key: serde_json::Value,
     pub value: Option<serde_json::Value>,
 }

@@ -19,9 +19,7 @@ use libtest_mimic::Failed;
 use reqwest::blocking::{Client, ClientBuilder};
 use tracing::debug;
 
-use indielinks_cache_test::{
-    CacheInsertRequest, CacheInsertResponse, CacheLookupRequest, CacheLookupResponse,
-};
+use indielinks_cache_test::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
 
 fn get_metrics(client: &Client, port: u16) -> Result<Metrics, Failed> {
     Ok(client
@@ -69,11 +67,10 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
         .send()?
         .error_for_status()?
         .json::<CacheLookupResponse>()?;
-    assert_eq!(rsp.cache, 1);
     assert_eq!(rsp.value, None);
 
     debug!("Insert \"foo\" :=> 11");
-    let rsp = client
+    client
         .post(format!("http://127.0.0.1:{}/cache/insert", base_port + 2))
         .header(CONTENT_TYPE, "application/json")
         .json(&CacheInsertRequest {
@@ -83,9 +80,7 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
         })
         .send()?
         .error_for_status()?
-        .json::<CacheInsertResponse>()?;
-    assert_eq!(rsp.cache, 1);
-
+        .json::<()>()?;
     debug!("Lookup the value corresponding to key \"foo\"");
     let rsp = client
         .get(format!("http://127.0.0.1:{}/cache/lookup", base_port))
@@ -97,7 +92,6 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
         .send()?
         .error_for_status()?
         .json::<CacheLookupResponse>()?;
-    assert_eq!(rsp.cache, 1);
     assert_eq!(
         rsp.value
             .map(|val| serde_json::from_value::<usize>(val))
@@ -142,7 +136,6 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
         .send()?
         .error_for_status()?
         .json::<CacheLookupResponse>()?;
-    assert_eq!(rsp.cache, 1);
     // This will invalidate the cache
     assert_eq!(
         rsp.value
@@ -186,11 +179,10 @@ pub fn single_node(port: u16) -> Result<(), Failed> {
         .send()?
         .error_for_status()?
         .json::<CacheLookupResponse>()?;
-    assert_eq!(rsp.cache, 1);
     assert_eq!(rsp.value, None);
 
     debug!("Insert \"foo\" :=> 11");
-    let rsp = client
+    client
         .post(format!("http://127.0.0.1:{port}/cache/insert"))
         .header(CONTENT_TYPE, "application/json")
         .json(&CacheInsertRequest {
@@ -200,8 +192,7 @@ pub fn single_node(port: u16) -> Result<(), Failed> {
         })
         .send()?
         .error_for_status()?
-        .json::<CacheInsertResponse>()?;
-    assert_eq!(rsp.cache, 1);
+        .json::<()>()?;
 
     debug!("Lookup the value corresponding to key \"foo\"");
     let rsp = client
@@ -214,7 +205,6 @@ pub fn single_node(port: u16) -> Result<(), Failed> {
         .send()?
         .error_for_status()?
         .json::<CacheLookupResponse>()?;
-    assert_eq!(rsp.cache, 1);
     assert_eq!(
         rsp.value
             .map(|val| serde_json::from_value::<usize>(val))

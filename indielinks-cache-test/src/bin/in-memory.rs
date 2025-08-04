@@ -67,9 +67,7 @@ use indielinks_cache::{
     types::{CacheId, ClusterNode, NodeId, TypeConfig},
 };
 
-use indielinks_cache_test::{
-    CacheInsertRequest, CacheInsertResponse, CacheLookupRequest, CacheLookupResponse,
-};
+use indielinks_cache_test::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -251,7 +249,7 @@ impl indielinks_cache::network::Client for Client {
         key: impl Into<K> + Send,
         value: impl Into<V> + Send,
     ) -> Result<()> {
-        let rsp: CacheInsertResponse = self
+        let _: () = self
             .send_cache_rpc(
                 reqwest::Method::POST,
                 &CacheInsertRequest {
@@ -262,7 +260,6 @@ impl indielinks_cache::network::Client for Client {
                 "cache/insert",
             )
             .await?;
-        debug!("Cache insert :=> {rsp:?}");
         Ok(())
     }
     /// Request a value for a given key from the target node
@@ -501,10 +498,7 @@ async fn cache_insert(
     State(state): State<AppState>,
     Json(req): Json<CacheInsertRequest>,
 ) -> axum::response::Response {
-    async fn cache_insert1(
-        state: AppState,
-        req: CacheInsertRequest,
-    ) -> Result<CacheInsertResponse> {
+    async fn cache_insert1(state: AppState, req: CacheInsertRequest) -> Result<()> {
         if req.cache != 1 {
             return CacheIdSnafu { id: req.cache }.fail();
         }
@@ -521,10 +515,7 @@ async fn cache_insert(
             .await
             .context(CacheSnafu)?;
 
-        Ok(CacheInsertResponse {
-            cache: req.cache,
-            key: req.key,
-        })
+        Ok(())
     }
 
     // It's kind of cool that the raft handlers (above) just return the entire `StdResult`, but they
@@ -561,11 +552,7 @@ async fn cache_lookup(
             .map(|n| to_value(n).context(JsonSerSnafu))
             .transpose()?;
 
-        Ok(CacheLookupResponse {
-            cache: req.cache,
-            key: req.key,
-            value,
-        })
+        Ok(CacheLookupResponse { value })
     }
 
     // It's kind of cool that the raft handlers (above) just return the entire `StdResult`, but they
@@ -669,21 +656,6 @@ async fn admin_change_membership(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                        application API                                         //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// async fn get_hash_ring(State(state): State<NodeState>) -> axum::response::Response {
-//     Json(state.state_machine.get_hash_ring()).into_response()
-// }
-
-// async fn update_hash_ring(
-//     State(state): State<NodeState>,
-//     Json((_shard, node)): Json<(u64, NodeId)>,
-// ) -> axum::response::Response {
-//     Json(state.raft.client_write(Request::InsertNode { node }).await).into_response()
-// }
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                             main()                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -710,7 +682,6 @@ struct AppState {
     id: NodeId,
     addr: SocketAddrV4,
     node: CacheNode<ClientFactory>,
-    // I don't think `Cache` needs to be wrapped this way, since the inner is already
     cache: Arc<RwLock<Cache<ClientFactory, String, usize>>>,
 }
 
