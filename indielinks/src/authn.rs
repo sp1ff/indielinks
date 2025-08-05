@@ -22,12 +22,12 @@
 use std::{str::FromStr, string::FromUtf8Error};
 
 use axum::http::HeaderValue;
-use base64::{prelude::BASE64_STANDARD, Engine};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use http::header;
 use itertools::Itertools;
 use picky::{
     hash::HashAlgorithm,
-    http::{http_signature::HttpSignatureBuilder, HttpSignature},
+    http::{HttpSignature, http_signature::HttpSignatureBuilder},
     signature::SignatureAlgorithm,
 };
 use secrecy::SecretString;
@@ -35,8 +35,10 @@ use sha2::Digest;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 
+use indielinks_shared::Username;
+
 use crate::{
-    entities::{self, User, UserApiKey, Username},
+    entities::{self, User, UserApiKey},
     origin::Host,
     peppers::Peppers,
     signing_keys::SigningKeys,
@@ -73,7 +75,7 @@ pub enum Error {
     #[snafu(display("{username} is not a valid username"))]
     BadUsername {
         username: String,
-        source: crate::entities::Error,
+        source: indielinks_shared::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Computed digest did not match the reported digest"))]
@@ -630,13 +632,13 @@ pub fn sign_request(
 mod http_signature_tests {
     use std::str::FromStr;
 
-    use base64::prelude::{Engine, BASE64_STANDARD};
+    use base64::prelude::{BASE64_STANDARD, Engine};
     use http::method::Method;
-    use http::{header, request, HeaderValue, Request, Uri};
-    use picky::http::http_signature::HttpSignatureBuilder;
+    use http::{HeaderValue, Request, Uri, header, request};
     use picky::http::HttpSignature;
+    use picky::http::http_signature::HttpSignatureBuilder;
     use picky::key::{PrivateKey, PublicKey};
-    use rsa::{pkcs1v15, RsaPrivateKey, RsaPublicKey};
+    use rsa::{RsaPrivateKey, RsaPublicKey, pkcs1v15};
     use sha2::Digest;
 
     use super::*;

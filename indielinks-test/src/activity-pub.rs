@@ -28,13 +28,14 @@ use wiremock::{
     matchers::{method, path},
 };
 
+use indielinks_shared::{FollowReq, Username};
+
 use indielinks::{
     actor::CollectionPage,
     ap_entities::{Accept, ActorField, Create, Jld, Like, Note, ObjectField},
-    entities::{FollowId, Username},
+    entities::FollowId,
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
-    users::FollowReq,
 };
 
 use crate::{Helper, PeerUser, make_signed_request, peer_actor};

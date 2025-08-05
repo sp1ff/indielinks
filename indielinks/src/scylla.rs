@@ -55,7 +55,7 @@ use tap::Pipe;
 use tracing::debug;
 use uuid::Uuid;
 
-use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId};
+use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
@@ -64,7 +64,6 @@ use crate::{
     },
     entities::{
         ActivityPubPost, FollowId, Follower, FollowerId, Following, Like, Reply, Share, User,
-        Username,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,

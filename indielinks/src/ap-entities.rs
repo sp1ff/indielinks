@@ -128,10 +128,10 @@ use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use url::Url;
 
-use indielinks_shared::{Post, PostId};
+use indielinks_shared::{Post, PostId, Username};
 
 use crate::{
-    entities::{self, FollowId, User, Username},
+    entities::{self, FollowId, User},
     origin::Origin,
 };
 
@@ -170,7 +170,7 @@ pub enum Error {
     InvalidRecipient { url: Box<Url>, backtrace: Backtrace },
     #[snafu(display("We parsed a username out of an Actor ID, but it was invalid: {source}"))]
     InvalidUsername {
-        source: crate::entities::Error,
+        source: indielinks_shared::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("JSON serialization error: {source}"))]

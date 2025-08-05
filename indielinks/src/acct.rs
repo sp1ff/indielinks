@@ -31,7 +31,7 @@
 //! stack.
 //!
 //! [RFC]: https://datatracker.ietf.org/doc/html/rfc7565
-//! [Username]: crate::entities::Username
+//! [Username]: indielinks_shared::Username
 //!
 //! # Syntax
 //!

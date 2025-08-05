@@ -30,22 +30,12 @@
 //! I've chosen to have all the handlers just return an [axum::response::Response] so that I can use
 //! different structures to represent responses. This has resulted in a little more boilerplate.
 
-use crate::{
-    activity_pub::SendCreate,
-    authn::{self, AuthnScheme, check_api_key, check_password, check_token},
-    background_tasks::{BackgroundTasks, Sender},
-    counter_add,
-    entities::{User, UserApiKey, Username},
-    http::{ErrorResponseBody, Indielinks},
-    metrics::{self, Sort},
-    origin::Origin,
-    peppers::Peppers,
-    signing_keys::SigningKeys,
-    storage::{self, Backend as StorageBackend, DateRange},
-    util::UpToThree,
+use std::{
+    backtrace::Backtrace,
+    collections::{HashMap, HashSet},
+    string::FromUtf8Error,
+    sync::Arc,
 };
-
-use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname};
 
 use axum::{
     Extension, Router,
@@ -55,7 +45,7 @@ use axum::{
     routing::{get, post},
 };
 use axum_extra::extract::Query;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use snafu::prelude::*;
@@ -63,11 +53,25 @@ use tap::Pipe;
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error};
 
-use std::{
-    backtrace::Backtrace,
-    collections::{HashMap, HashSet},
-    string::FromUtf8Error,
-    sync::Arc,
+use indielinks_shared::{
+    Post, PostId, PostsAllReq, PostsAllRsp, PostsDate, PostsDatesReq, PostsDatesRsp,
+    PostsDeleteReq, PostsGetReq, PostsGetRsp, PostsRecentReq, PostsRecentRsp, StorUrl, Tagname,
+    TagsDeleteReq, TagsGetRsp, TagsRenameReq, UpdateRsp, Username,
+};
+
+use crate::{
+    activity_pub::SendCreate,
+    authn::{self, AuthnScheme, check_api_key, check_password, check_token},
+    background_tasks::{BackgroundTasks, Sender},
+    counter_add,
+    entities::{User, UserApiKey},
+    http::{ErrorResponseBody, Indielinks},
+    metrics::{self, Sort},
+    origin::Origin,
+    peppers::Peppers,
+    signing_keys::SigningKeys,
+    storage::{self, Backend as StorageBackend, DateRange},
+    util::UpToThree,
 };
 
 /// del.icio.us module error type
@@ -529,11 +533,6 @@ fn parse_tag_parameter(tags: &Option<String>) -> Result<HashSet<Tagname>> {
 
 inventory::submit! { metrics::Registration::new("delicious.updates", Sort::IntegralCounter) }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct UpdateRsp {
-    pub update_time: DateTime<Utc>,
-}
-
 async fn update(
     State(state): State<Arc<Indielinks>>,
     Extension(user): Extension<User>,
@@ -697,11 +696,6 @@ async fn add_post(
 
 inventory::submit! { metrics::Registration::new("delicious.posts.deleted", Sort::IntegralCounter) }
 
-#[derive(Clone, Debug, Deserialize)]
-struct PostsDeleteReq {
-    url: StorUrl,
-}
-
 async fn delete_post(
     State(state): State<Arc<Indielinks>>,
     Query(post_delete_req): Query<PostsDeleteReq>,
@@ -754,25 +748,6 @@ async fn delete_post(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("delicious.posts.retrieved", Sort::IntegralCounter) }
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PostsGetReq {
-    dt: Option<NaiveDate>,
-    #[serde(rename = "url")]
-    uri: Option<StorUrl>,
-    #[serde(default, rename = "tag")]
-    tag: Option<String>,
-    #[serde(rename = "meta")]
-    _meta: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PostsGetRsp {
-    pub date: DateTime<Utc>,
-    pub user: Username,
-    pub posts: Vec<Post>,
-}
 
 /// `/posts/get` handler
 ///
@@ -866,20 +841,6 @@ async fn get_posts(
 
 inventory::submit! { metrics::Registration::new("delicious.posts.recents", Sort::IntegralCounter) }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PostsRecentReq {
-    tag: Option<String>,
-    count: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct PostsRecentRsp {
-    pub date: DateTime<Utc>,
-    pub user: Username,
-    pub posts: Vec<Post>,
-}
-
 /// Retrieve a list of the user's most recent posts
 ///
 /// The user may filter the results by up to three tags (which will operate as a conjunction; i.e. a
@@ -935,24 +896,6 @@ async fn get_recent(
 
 inventory::submit! { metrics::Registration::new("delicious.posts.dates", Sort::IntegralCounter) }
 
-#[derive(Debug, Deserialize)]
-pub struct PostsDatesReq {
-    pub tag: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct PostsDate {
-    pub count: usize,
-    pub date: PostDay,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PostsDatesRsp {
-    pub user: Username,
-    pub tag: String,
-    pub dates: Vec<PostsDate>,
-}
-
 async fn posts_dates(
     State(state): State<Arc<Indielinks>>,
     Query(posts_dates_req): Query<PostsDatesReq>,
@@ -1004,25 +947,6 @@ async fn posts_dates(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("delicious.posts.all", Sort::IntegralCounter) }
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PostsAllReq {
-    pub tag: Option<String>,
-    pub start: Option<usize>,
-    pub results: Option<usize>,
-    pub fromdt: Option<DateTime<Utc>>,
-    pub todt: Option<DateTime<Utc>>,
-    #[serde(rename = "meta")]
-    pub _meta: Option<bool>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PostsAllRsp {
-    pub user: Username,
-    pub tag: String,
-    pub posts: Vec<Post>,
-}
 
 fn apply_pagination(posts: Vec<Post>, start: Option<usize>, size: Option<usize>) -> Vec<Post> {
     match (start, size) {
@@ -1130,12 +1054,6 @@ async fn all_posts(
 
 inventory::submit! { metrics::Registration::new("delicious.posts.tags", Sort::IntegralCounter) }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(transparent)]
-pub struct TagsGetRsp {
-    pub map: HashMap<Tagname, usize>,
-}
-
 /// `tags/get` handler
 ///
 /// Retrieve a complete list of the user's tags along with their use counts.
@@ -1181,12 +1099,6 @@ async fn tags_get(
 
 inventory::submit! { metrics::Registration::new("delicious.tags.renames", Sort::IntegralCounter) }
 
-#[derive(Debug, Deserialize)]
-struct TagsRenameReq {
-    old: Tagname,
-    new: Tagname,
-}
-
 async fn tags_rename(
     State(state): State<Arc<Indielinks>>,
     Query(tags_rename_req): Query<TagsRenameReq>,
@@ -1230,11 +1142,6 @@ async fn tags_rename(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("delicious.tags.deleted", Sort::IntegralCounter) }
-
-#[derive(Debug, Deserialize)]
-struct TagsDeleteReq {
-    tag: Tagname,
-}
 
 async fn tags_delete(
     State(state): State<Arc<Indielinks>>,

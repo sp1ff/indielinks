@@ -19,12 +19,11 @@
 
 use crate::Helper;
 
-use indielinks::{
-    delicious::{
-        GenericRsp, PostsAllRsp, PostsDatesRsp, PostsGetRsp, PostsRecentRsp, TagsGetRsp, UpdateRsp,
-    },
-    entities::Username,
+use indielinks_shared::{
+    PostsAllRsp, PostsDatesRsp, PostsGetRsp, PostsRecentRsp, TagsGetRsp, UpdateRsp, Username,
 };
+
+use indielinks::delicious::GenericRsp;
 
 use chrono::Utc;
 use indielinks_shared::{Post, Tagname};

@@ -21,21 +21,22 @@
 
 use std::time::Duration;
 
+use indielinks_shared::Username;
+
 use indielinks::{
     actor::CollectionPage,
     ap_entities::{self, Jld},
-    entities::Username,
     origin::Origin,
 };
 use libtest_mimic::Failed;
 use reqwest::{Client, Url};
 use uuid::Uuid;
 use wiremock::{
-    matchers::{method, path},
     Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
 };
 
-use crate::{make_signed_request, peer_actor, PeerUser, TEST_USER_AGENT};
+use crate::{PeerUser, TEST_USER_AGENT, make_signed_request, peer_actor};
 
 /// First integration test for ActivityPub [Follow]s.
 ///

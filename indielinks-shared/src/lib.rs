@@ -14,6 +14,7 @@
 // see <http://www.gnu.org/licenses/>.
 
 use chrono::{DateTime, NaiveDate, Utc};
+use email_address::EmailAddress;
 use lazy_static::lazy_static;
 use regex::Regex;
 #[cfg(feature = "backend")]
@@ -28,6 +29,7 @@ use scylla::{
         writers::{CellWriter, WrittenCellProof},
     },
 };
+use secrecy::SecretString;
 use serde::{Deserialize, Deserializer, Serialize};
 use snafu::{Backtrace, prelude::*};
 #[cfg(feature = "backend")]
@@ -36,7 +38,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use url::Url;
 use uuid::Uuid;
 
-use std::{collections::HashSet, fmt::Display, ops::Deref, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    ops::Deref,
+    str::FromStr,
+};
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
@@ -46,6 +53,10 @@ type StdResult<T, E> = std::result::Result<T, E>;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("{email} is not a valid e-mail address"))]
+    BadEmail { email: String, backtrace: Backtrace },
+    #[snafu(display("{name} is not a valid indielinks username"))]
+    BadUsername { name: String },
     #[cfg(feature = "backend")]
     #[snafu(display("{col_name} expected type {expected:?}; got {actual:?}"))]
     ColumnTypeMismatch {
@@ -230,6 +241,221 @@ macro_rules! define_id {
 
 define_id!(UserId, "userid");
 define_id!(PostId, "postid");
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            Username                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// indielinks usernames must be ASCII, may be from five to sixty-four chacacters in length, and
+// must match the regex "^[a-zA-Z][-_.a-zA-Z0-9]+$".
+const MIN_USERNAME_LENGTH: usize = 5;
+const MAX_USERNAME_LENGTH: usize = 64;
+
+lazy_static! {
+    static ref USERNAME: Regex = Regex::new("^[a-zA-Z][-_.a-zA-Z0-9]+$").unwrap(/* known good */);
+    static ref BANNED_USERNAMES: HashSet<&'static str> = HashSet::from(["login", "signup", "mint-key"]);
+}
+
+fn check_username(s: &str) -> bool {
+    s.is_ascii()
+        && s.len() >= MIN_USERNAME_LENGTH
+        && s.len() <= MAX_USERNAME_LENGTH
+        && USERNAME.is_match(s)
+        && (!BANNED_USERNAMES.contains(s))
+}
+
+/// A refined type representing an indielinks username
+// Boy... writing refined types in Rust involves a *lot* of boilerplate. I have to wonder if there
+// isn't a better way...
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct Username(String);
+
+impl Username {
+    /// Construct a [Username] from a `&str`
+    ///
+    /// indielinks usernames must be ASCII, may be from six to sixty-four chacacters in length, and
+    /// must match the regex "^[a-zA-Z][-_.a-zA-Z0-9]+$". Use this constructor to create a [Username] instance
+    /// by copying from a reference to [str]. To *move* a [String] into a [Username] (with validity checking)
+    /// use [TryFrom::try_from()]
+    pub fn new(name: &str) -> Result<Username> {
+        check_username(name)
+            .then_some(Username(name.to_owned()))
+            .ok_or(
+                BadUsernameSnafu {
+                    name: name.to_owned(),
+                }
+                .build(),
+            )
+    }
+}
+
+impl AsRef<str> for Username {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl From<Username> for String {
+    fn from(value: Username) -> Self {
+        value.0
+    }
+}
+
+// Implement `Deserialize` by hand to fail if the serialized value isn't a legit `Username`
+impl<'de> Deserialize<'de> for Username {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Username::try_from(s).map_err(mk_serde_de_err::<'de, D>)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Username {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        String::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        Username::try_from(<String as DeserializeValue>::deserialize(typ, v)?).map_err(mk_de_err)
+    }
+}
+
+impl Display for Username {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for Username {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Username::new(s)
+    }
+}
+
+impl SerializeValue for Username {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&self.0, typ, writer)
+    }
+}
+
+impl TryFrom<String> for Username {
+    type Error = Error;
+
+    fn try_from(name: String) -> std::result::Result<Self, Self::Error> {
+        if check_username(&name) {
+            Ok(Username(name))
+        } else {
+            BadUsernameSnafu { name }.fail()
+        }
+    }
+}
+
+impl From<&Username> for Username {
+    fn from(value: &Username) -> Self {
+        value.clone()
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           UserEmail                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A refiend type representing an e-mail address
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct UserEmail(String);
+
+impl UserEmail {
+    pub fn new(email: &str) -> Result<UserEmail> {
+        EmailAddress::is_valid(email)
+            .then_some(UserEmail(email.to_string()))
+            .context(BadEmailSnafu {
+                email: email.to_string(),
+            })
+    }
+}
+
+impl AsRef<str> for UserEmail {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<UserEmail> for String {
+    fn from(value: UserEmail) -> Self {
+        value.0
+    }
+}
+// Implement `Deserialize` by hand to fail if the serialized value isn't a legit `Username`
+impl<'de> Deserialize<'de> for UserEmail {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        UserEmail::try_from(s).map_err(mk_serde_de_err::<'de, D>)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserEmail {
+    fn type_check(typ: &ColumnType) -> std::result::Result<(), TypeCheckError> {
+        String::type_check(typ)
+    }
+
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> std::result::Result<Self, DeserializationError> {
+        UserEmail::try_from(<String as DeserializeValue>::deserialize(typ, v)?).map_err(mk_de_err)
+    }
+}
+
+impl Display for UserEmail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for UserEmail {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        UserEmail::new(s)
+    }
+}
+
+impl SerializeValue for UserEmail {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType,
+        writer: CellWriter<'b>,
+    ) -> std::result::Result<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&self.0, typ, writer)
+    }
+}
+
+impl TryFrom<String> for UserEmail {
+    type Error = Error;
+
+    fn try_from(email: String) -> std::result::Result<Self, Self::Error> {
+        if EmailAddress::is_valid(&email) {
+            Ok(UserEmail(email))
+        } else {
+            BadEmailSnafu { email }.fail()
+        }
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                            StorUrl                                             //
@@ -685,4 +911,156 @@ impl Post {
     pub fn user_id(&self) -> UserId {
         self.user_id
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                          Requests & Response for the del.icio.us API                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRsp {
+    pub update_time: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsDeleteReq {
+    pub url: StorUrl,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsGetReq {
+    pub dt: Option<NaiveDate>,
+    #[serde(rename = "url")]
+    pub uri: Option<StorUrl>,
+    #[serde(default, rename = "tag")]
+    pub tag: Option<String>,
+    #[serde(rename = "meta")]
+    _meta: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsGetRsp {
+    pub date: DateTime<Utc>,
+    pub user: Username,
+    pub posts: Vec<Post>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsRecentReq {
+    pub tag: Option<String>,
+    pub count: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsRecentRsp {
+    pub date: DateTime<Utc>,
+    pub user: Username,
+    pub posts: Vec<Post>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsDatesReq {
+    pub tag: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsDate {
+    pub count: usize,
+    pub date: PostDay,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsDatesRsp {
+    pub user: Username,
+    pub tag: String,
+    pub dates: Vec<PostsDate>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsAllReq {
+    pub tag: Option<String>,
+    pub start: Option<usize>,
+    pub results: Option<usize>,
+    pub fromdt: Option<DateTime<Utc>>,
+    pub todt: Option<DateTime<Utc>>,
+    #[serde(rename = "meta")]
+    pub _meta: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostsAllRsp {
+    pub user: Username,
+    pub tag: String,
+    pub posts: Vec<Post>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(transparent, deny_unknown_fields)]
+pub struct TagsGetRsp {
+    pub map: HashMap<Tagname, usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TagsRenameReq {
+    pub old: Tagname,
+    pub new: Tagname,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TagsDeleteReq {
+    pub tag: Tagname,
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                             Requests & Response for the users API                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignupReq {
+    pub username: Username,
+    pub password: SecretString,
+    pub email: UserEmail,
+    pub discoverable: Option<bool>,
+    #[serde(rename = "display-name")]
+    pub display_name: Option<String>,
+    pub summary: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignupRsp {
+    pub greeting: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginReq {
+    pub username: Username,
+    pub password: SecretString,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginRsp {
+    pub token: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FollowReq {
+    pub id: Url,
 }

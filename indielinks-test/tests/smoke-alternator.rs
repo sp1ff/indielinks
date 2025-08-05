@@ -19,10 +19,10 @@
 use common::{Configuration, IndielinksTest, run};
 use indielinks::{
     dynamodb::{add_followers, add_following, add_user},
-    entities::{FollowId, User, UserEmail, Username},
+    entities::{FollowId, User},
     peppers::{Pepper, Version as PepperVersion},
 };
-use indielinks_shared::{Post, StorUrl, UserId};
+use indielinks_shared::{Post, StorUrl, UserEmail, UserId, Username};
 use indielinks_test::{
     Helper,
     activity_pub::{as_follower, posting_creates_note, send_follow},

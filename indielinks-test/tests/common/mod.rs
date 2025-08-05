@@ -19,12 +19,7 @@
 //!
 //! Code common to the indielinks integration test framework goes here. See [indielinks_test] for a
 //! full description.
-use indielinks::{
-    background_tasks::Backend as TasksBackend, entities::Username, peppers::Peppers,
-    storage::Backend as StorageBackend,
-};
-use indielinks_cache::types::{ClusterNode, NodeId};
-use indielinks_test::Helper;
+use std::{collections::HashMap, env, fs, process::Command, sync::Arc};
 
 use either::Either;
 use libtest_mimic::Failed;
@@ -34,7 +29,15 @@ use snafu::{Backtrace, IntoError, prelude::*};
 use tap::Pipe;
 use tracing::Level;
 
-use std::{collections::HashMap, env, fs, process::Command, sync::Arc};
+use indielinks_shared::Username;
+
+use indielinks_cache::types::{ClusterNode, NodeId};
+
+use indielinks::{
+    background_tasks::Backend as TasksBackend, peppers::Peppers, storage::Backend as StorageBackend,
+};
+
+use indielinks_test::Helper;
 
 #[derive(Debug, Snafu)]
 pub enum Error {

@@ -15,25 +15,27 @@
 
 //! # indielinks as an HTTP client
 
-use crate::{
-    ap_entities::make_key_id,
-    authn::{ensure_sha_256, sign_request},
-    counter_add,
-    entities::{User, Username},
-    metrics::{self, Sort},
-    origin::Origin,
-};
+use std::sync::Arc;
 
 use http::{HeaderValue, Method};
 use opentelemetry::KeyValue;
 use reqwest::IntoUrl;
 use reqwest_middleware::{ClientWithMiddleware, Middleware, RequestBuilder};
-use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tracing::error;
 
-use std::sync::Arc;
+use indielinks_shared::Username;
+
+use crate::{
+    ap_entities::make_key_id,
+    authn::{ensure_sha_256, sign_request},
+    counter_add,
+    entities::User,
+    metrics::{self, Sort},
+    origin::Origin,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //

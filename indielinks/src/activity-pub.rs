@@ -46,7 +46,7 @@ use tracing::{debug, warn};
 use url::Url;
 use uuid::Uuid;
 
-use indielinks_shared::{PostId, StorUrl, UserId};
+use indielinks_shared::{PostId, StorUrl, UserId, Username};
 
 use crate::{
     ap_entities::{
@@ -55,7 +55,7 @@ use crate::{
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
     client::request_builder,
-    entities::{FollowId, User, Username, Visibility},
+    entities::{FollowId, User, Visibility},
     origin::Origin,
     storage::Backend as StorageBackend,
 };

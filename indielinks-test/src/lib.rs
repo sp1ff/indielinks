@@ -87,12 +87,12 @@ use wiremock::{
     matchers::{method, path},
 };
 
-use indielinks_shared::StorUrl;
+use indielinks_shared::{StorUrl, Username};
 
 use indielinks::{
     ap_entities::{self, make_user_id},
     authn::{ensure_sha_256, sign_request},
-    entities::{FollowId, Username},
+    entities::FollowId,
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
 };

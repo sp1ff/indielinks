@@ -30,18 +30,19 @@ use chrono::Duration;
 use itertools::Itertools;
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
-use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, prelude::*};
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 use url::Url;
+
+use indielinks_shared::{FollowReq, LoginReq, LoginRsp, SignupReq, SignupRsp, Username};
 
 use crate::{
     activity_pub::SendFollow,
     authn::{self, AuthnScheme, check_api_key, check_password, check_token},
     background_tasks::{self, BackgroundTasks, Sender},
     counter_add,
-    entities::{self, FollowId, User, UserApiKey, UserEmail, Username},
+    entities::{self, FollowId, User, UserApiKey},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
@@ -355,22 +356,6 @@ async fn authenticate(
 inventory::submit! { metrics::Registration::new("user.signups.successful", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("user.signups.failures", Sort::IntegralCounter) }
 
-#[derive(Clone, Debug, Deserialize)]
-struct SignupReq {
-    username: Username,
-    password: SecretString,
-    email: UserEmail,
-    discoverable: Option<bool>,
-    #[serde(rename = "display-name")]
-    display_name: Option<String>,
-    summary: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SignupRsp {
-    pub greeting: String,
-}
-
 /// Signup as a new user
 ///
 /// Parameters:
@@ -495,17 +480,6 @@ async fn signup(
 inventory::submit! { metrics::Registration::new("user.logins.successful", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("user.logins.failures", Sort::IntegralCounter) }
 
-#[derive(Clone, Debug, Deserialize)]
-struct LoginReq {
-    username: Username,
-    password: SecretString,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct LoginRsp {
-    token: String,
-}
-
 /// Login as an existing user
 ///
 /// This endpoint will vend a time-limited JWT that can be supplied in the Authorization header
@@ -608,11 +582,6 @@ async fn login(
 
 inventory::submit! { metrics::Registration::new("user.follows.successful", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("user.follows.failures", Sort::IntegralCounter) }
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct FollowReq {
-    pub id: Url,
-}
 
 type StdResult<T, E> = std::result::Result<T, E>;
 

@@ -24,14 +24,12 @@ use crate::{
     cache::{
         Backend as CacheBackend, Flavor, LogIndex, NID, RaftLog, RaftMetadata, to_storage_io_err,
     },
-    entities::{
-        ActivityPubPost, FollowId, Follower, Following, Like, Reply, Share, User, Username,
-    },
+    entities::{ActivityPubPost, FollowId, Follower, Following, Like, Reply, Share, User},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
 
-use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId};
+use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
 use async_trait::async_trait;
 use aws_config::{BehaviorVersion, Region, meta::region::RegionProviderChain};

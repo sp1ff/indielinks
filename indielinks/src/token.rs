@@ -27,13 +27,14 @@ use jwt::{Header, SignWithKey, Token, VerifyWithKey};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, prelude::*};
 
 use crate::{
-    entities::Username,
     origin::Host,
     signing_keys::{self, KeyId, SigningKey, SigningKeys},
 };
+
+use indielinks_shared::Username;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //

@@ -18,13 +18,11 @@
 //! Abstractions for the indielinks storage layer.
 
 use crate::{
-    entities::{
-        ActivityPubPost, FollowId, Follower, Following, Like, Reply, Share, User, Username,
-    },
+    entities::{ActivityPubPost, FollowId, Follower, Following, Like, Reply, Share, User},
     util::UpToThree,
 };
 
-use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId};
+use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

@@ -19,10 +19,13 @@
 
 use std::sync::Arc;
 
-use indielinks::{entities::Username, http::ErrorResponseBody, users::SignupRsp};
 use libtest_mimic::Failed;
 use reqwest::{Client, StatusCode, Url};
 use serde_json::json;
+
+use indielinks_shared::{SignupRsp, Username};
+
+use indielinks::http::ErrorResponseBody;
 
 use crate::Helper;
 
