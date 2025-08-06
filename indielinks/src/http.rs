@@ -35,7 +35,7 @@ use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::sync::RwLock;
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        Error Responses                                         //
@@ -148,6 +148,7 @@ pub struct Indielinks {
     pub signing_keys: SigningKeys,
     pub client: ClientWithMiddleware,
     pub collection_page_size: usize,
+    pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
     pub first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,

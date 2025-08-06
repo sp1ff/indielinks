@@ -365,6 +365,7 @@ struct ConfigV1 {
     user_agent: String,
     #[serde(rename = "collection-page-size")]
     collection_page_size: usize,
+    assets: Option<PathBuf>,
     #[serde(rename = "background-tasks")]
     background_tasks: background_tasks::Config,
     #[serde(rename = "raft-config")]
@@ -396,6 +397,7 @@ impl Default for ConfigV1 {
             signing_keys: SigningKeysConfig::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
             collection_page_size: 12, // Copied from Mastodon
+            assets: None,
             background_tasks: background_tasks::Config::default(),
             raft_config: RaftConfiguration::default(),
         }
@@ -634,7 +636,6 @@ lazy_static! {
             ),
         ])
     };
-    static ref ASSETS: OsString = "assets".to_owned().into();
 }
 
 inventory::submit! { metrics::Registration::new("frontend.asset.successes", Sort::IntegralCounter) }
@@ -645,9 +646,9 @@ async fn frontend(
     State(state): State<Arc<Indielinks>>,
     file: Option<axum::extract::Path<PathBuf>>,
 ) -> axum::response::Response {
-    fn frontend1(file: &PathBuf) -> Result<Vec<u8>> {
+    fn frontend1(assets: &Path, file: &PathBuf) -> Result<Vec<u8>> {
         fs::read(
-            [ASSETS.as_os_str(), file.as_os_str()]
+            [assets.as_os_str(), file.as_os_str()]
                 .iter()
                 .collect::<PathBuf>(),
         )
@@ -667,7 +668,7 @@ async fn frontend(
         .unwrap_or(axum::extract::Path(PathBuf::from("index.html")))
         .0;
 
-    match frontend1(&file) {
+    match frontend1(&state.assets, &file) {
         Ok(body) => {
             let mut rsp = axum::response::Response::builder().status(http::StatusCode::OK);
             if let Some(Some(header_value)) = file.extension().map(|ext| CONTENT_TYPES.get(ext)) {
@@ -899,6 +900,7 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
             signing_keys: cfg.signing_keys.signing_keys.clone(),
             client,
             collection_page_size: cfg.collection_page_size,
+            assets: cfg.assets.clone().unwrap_or(PathBuf::from("assets")),
             task_sender,
             cache_node: cache_node.clone(),
             first_cache: first_cache.clone(),
