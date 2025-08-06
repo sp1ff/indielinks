@@ -107,7 +107,7 @@ impl Default for ScyllaConfig {
     fn default() -> Self {
         ScyllaConfig {
             credentials: None,
-            hosts: vec![String::from("localhost:9042")],
+            hosts: vec![String::from("localhost:9043")],
         }
     }
 }
@@ -135,9 +135,9 @@ impl Default for DynamoConfig {
         DynamoConfig {
             credentials: None,
             location: Either::Right(vec![
-                Url::parse("http://127.0.0.1:8042").unwrap(),
                 Url::parse("http://127.0.0.1:8043").unwrap(),
                 Url::parse("http://127.0.0.1:8044").unwrap(),
+                Url::parse("http://127.0.0.1:8045").unwrap(),
             ]),
         }
     }

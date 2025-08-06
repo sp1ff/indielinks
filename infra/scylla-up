@@ -24,16 +24,4 @@ docker cp dev-charge.cql scylla-node-1:/dev-charge.cql
 docker exec -i scylla-node-1 cqlsh -f /indielinks.cql
 docker exec -i scylla-node-1 cqlsh -f /dev-charge.cql
 RUST_LOG="debug,scylla::transport=debug" cargo run --bin indielinks-ddb -- \
-        -p -D http://localhost:8042
-
-# aws --endpoint-url=http://localhost:8042 dynamodb put-item \
-#   --table-name posts \
-#   --item '{"user_id":{"S":"9a1df092cd694c6491f7b8fb4022ea49"},
-#     "url":{"S":"https://instapundit.com"}, 
-#     "posted":{"S":"2025-02-04T13:41:15Z"}, 
-#     "day":{"S":"2025-02-04"}, 
-#     "title":{"S":"Instapundit"}, 
-#     "notes":{"S":"notes"}, 
-#     "tags":{"SS":["blog","politics"]}, 
-#     "public":{"BOOL":false}, 
-#     "toread":{"BOOL":false}}'
+        -p -D http://localhost:8043

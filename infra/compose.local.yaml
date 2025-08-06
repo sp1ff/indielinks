@@ -14,17 +14,18 @@ services:
     container_name: scylla-node-1
     image: scylladb/scylla:latest
     command: --smp 1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt # always_use_lwt?
+    # Port numbers chosen so as not to collide with my local SycllaDB instance
     ports:
-      - 9042:9042 # Cassandra native protocol
-      - 8042:8042 # Alternator port
+      - 9043:9042 # Cassandra native protocol
+      - 8043:8042 # Alternator port
 
   scylla-node-2:
     container_name: scylla-node-2
     image: scylladb/scylla:latest
     command: --smp 1 --seeds=scylla-node-1  --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt
     ports:
-      - 9043:9042 # Cassandra native protocol
-      - 8043:8042 # Alternator port
+      - 9044:9042 # Cassandra native protocol
+      - 8044:8042 # Alternator port
     depends_on:
       - scylla-node-1
 
@@ -33,8 +34,8 @@ services:
     image: scylladb/scylla:latest
     command: --smp 1 --seeds=scylla-node-1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt
     ports:
-      - 9044:9042 # Cassandra native protocol
-      - 8044:8042 # Alternator port
+      - 9045:9042 # Cassandra native protocol
+      - 8045:8042 # Alternator port
     depends_on:
       - scylla-node-1
 
