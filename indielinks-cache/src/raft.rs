@@ -140,7 +140,8 @@ where
     },
     #[snafu(display("Network error: {source}"))]
     Network {
-        source: C::ErrorType,
+        #[snafu(source(from(C::ErrorType, Box::new)))]
+        source: Box<C::ErrorType>,
         backtrace: Backtrace,
     },
 }

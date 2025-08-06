@@ -73,8 +73,7 @@ use indielinks_cache_test::{CacheInsertRequest, CacheLookupRequest, CacheLookupR
 pub enum Error {
     #[snafu(display("Cache error {source}"))]
     Cache {
-        #[snafu(source(from(indielinks_cache::cache::Error<Client>, Box::new)))]
-        source: Box<indielinks_cache::cache::Error<Client>>,
+        source: indielinks_cache::cache::Error<Client>,
         backtrace: Backtrace,
     },
     #[snafu(display("Unknown cache ID {id}"))]
@@ -560,9 +559,20 @@ async fn cache_lookup(
     // don't care to do that for this module's `Error` type.
     match cache_lookup1(state, req).await {
         Ok(rsp) => (StatusCode::OK, Json(rsp)).into_response(),
+        Err(ref err @ Error::Cache { ref source, .. }) => {
+            error!("{err:?}");
+            if matches!(
+                source,
+                indielinks_cache::cache::Error::<Client>::Uninit { .. }
+            ) {
+                StatusCode::SERVICE_UNAVAILABLE.into_response()
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
         Err(err) => {
             error!("{err:?}");
-            StatusCode::BAD_REQUEST.into_response()
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }

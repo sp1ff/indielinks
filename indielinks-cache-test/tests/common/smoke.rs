@@ -13,7 +13,9 @@
 // You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use http::header::CONTENT_TYPE;
+use std::{thread::sleep, time::Duration};
+
+use http::{StatusCode, header::CONTENT_TYPE};
 use indielinks_cache::raft::Metrics;
 use libtest_mimic::Failed;
 use reqwest::blocking::{Client, ClientBuilder};
@@ -57,16 +59,29 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
     // Pretty-sure Raft initialization is taking place async-- may need to wait here until the
     // metrics report a non-None leader.
     debug!("Lookup the value corresponding to key \"foo\"");
-    let rsp = client
+    let mut rsp = client
         .get(format!("http://127.0.0.1:{}/cache/lookup", base_port + 1))
         .header(CONTENT_TYPE, "application/json")
         .json(&CacheLookupRequest {
             cache: 1,
             key: serde_json::to_value("foo")?,
         })
-        .send()?
-        .error_for_status()?
-        .json::<CacheLookupResponse>()?;
+        .send()?;
+    // It happens occasionally that the initialization log message hasn't made it & been applied to
+    // our target node; that's fine-- we just sleep a bit & retry:
+    if StatusCode::SERVICE_UNAVAILABLE == rsp.status() {
+        sleep(Duration::from_millis(250));
+        rsp = client
+            .get(format!("http://127.0.0.1:{}/cache/lookup", base_port + 1))
+            .header(CONTENT_TYPE, "application/json")
+            .json(&CacheLookupRequest {
+                cache: 1,
+                key: serde_json::to_value("foo")?,
+            })
+            .send()?;
+    }
+
+    let rsp = rsp.error_for_status()?.json::<CacheLookupResponse>()?;
     assert_eq!(rsp.value, None);
 
     debug!("Insert \"foo\" :=> 11");

@@ -1,0 +1,5 @@
+no-setup = false
+no-teardown = false
+logging = false
+log_level = "DEBUG"
+base_port = 20800
