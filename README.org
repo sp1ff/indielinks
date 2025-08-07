@@ -2,7 +2,7 @@
 #+DESCRIPTION: Bookmarks in the Fediverse
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-07-29 Tue 16:17>
+#+DATE: <2025-08-07 Thu 17:14>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -17,12 +17,40 @@ indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.ht
 
 At this time, indielinks is only available as source. Therefore, the Rust [[https://rustup.rs/][toolchain]] is required (stable only). To run indielinks locally, you'll either need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or [[https://www.docker.com/][Docker]] (to pull & run ScyllaDB images). To run Indielinks in AWS, you'll of course need an AWS account. 
 
-The integration tests require [[https://www.docker.com/][Docker]], as well as haproxy.
+The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]].
 
-You'll probably want [[https://trunkrs.dev/][trunk]] for development purposes.
+Finally, you'll want [[https://trunkrs.dev/][trunk]] for frontend development purposes.
 * Installation
 
-Coming.
+Presently, indielinks can only be installed locally, running against ScyllaDB. 
+
+Installation process:
+
+  1. install [[https://www.scylladb.com/][ScyllaDB]] using your distribution's package manager
+     - on Arch, I did:
+       #+BEGIN_SRC bash
+         yay -S scylla-bin
+         sudo scylla_io_setup
+         sudo systemctl start scylla-server
+       #+END_SRC
+  2. install [[https://pypi.org/project/cqlsh/][cqlsh]]
+     - =cqlsh= is, regrettably, implemented in Python:
+       #+BEGIN_SRC bash
+         mkdir ~/venvs && cd ~/venvs
+         python -m env cqlsh
+         source cqlsh/bin/activate
+         pip install scylla-cqlsh
+         deactivate
+       #+END_SRC
+  3. the above are the only prerequisites; now, at any time, you can invoke =proto-install= to make builds of the front- and backends and install them under your home directory:
+     #+BEGIN_SRC bash
+       cd ~/code/projects/indielinks
+       admin/proto-install
+     #+END_SRC
+
+The author realizes that this process is tedious & error-prone-- Arch and Debian packages & OpenTofu scripts will be provided in the not-too-distant future.
 * Status & Roadmap
 
-The initial prototyping can be found on branch =prototypes=, but =master= (and its offshoots) contains production code. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support, have made an indielinks cluster into a Raft consensus cluster, and am currently working on a web front-end. I plan on building-out the documentation quite a bit beyond what's available now, starting here.
+The project is currently in what I'm calling "pre-\alpha", meaning that it can be run locally on one's development machine, perhaps side-by-side with Pinboard. The project is approaching \alpha status, which I'm defining to be publicly available, but with signups disabled (invited, or limited "walk-up" signups will be what I'm calling \beta).
+
+I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support, have made an indielinks cluster into a Raft consensus cluster, and am currently working on a web frontend. I plan on building-out the documentation quite a bit beyond what's available now, starting here.

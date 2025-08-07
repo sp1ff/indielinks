@@ -7,11 +7,6 @@
 
    I'll write a second script to load some initial data. */
 
-create keyspace indielinks
-  with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3}
-  and tablets = {'enabled': false}
-  ;
-
 use indielinks;
 
 /* Paritition key is the user *ID* (not the username). Should give
@@ -27,7 +22,7 @@ use indielinks;
 
   first_update exists to help me put a lower bound on a search of a
   user's complete history. */
-create table users (
+create table if not exists users (
   id uuid PRIMARY KEY,
   username ascii,
   discoverable boolean,
@@ -42,9 +37,9 @@ create table users (
   pepper_version ascii,
 );
 
-create index users_by_username on users (username);
+create index if not exists users_by_username on users (username);
 
-create table unique_usernames (
+create table if not exists unique_usernames (
   username ascii PRIMARY KEY,
   id uuid
 );
@@ -53,7 +48,7 @@ create table unique_usernames (
    We wouldn't even *have* an `id` field if it weren't for the fact
    that ActivityPub activities need it. If I do decide to actually
    serve `Follow`s, I can always add an index in `id`. */
-create table following (
+create table if not exists following (
   user_id uuid,
   actor_id ascii,
   id uuid,
@@ -62,12 +57,12 @@ create table following (
   PRIMARY KEY (user_id, actor_id)
 );
 
-create index following_by_actor on following (actor_id);
+create index if not exists following_by_actor on following (actor_id);
 
 /* Similarly, here (cf. table `following`, above). I considered
    keeping both followers & followings in one table, but decided to
    reserve the option to represent them differently. */
-create table followers (
+create table if not exists followers (
   user_id uuid,
   actor_id ascii,
   id uuid,
@@ -76,7 +71,7 @@ create table followers (
   PRIMARY KEY (user_id, actor_id)
 );
 
-create index followers_by_actor on followers (actor_id);
+create index if not exists followers_by_actor on followers (actor_id);
 
 /* I've gone through a good deal of churn on representing posts. Given
    that I'm always accessing posts by user, `user_id` needs to be
@@ -114,7 +109,7 @@ create index followers_by_actor on followers (actor_id);
    but I decided I was overthinking this.
 */
 
-create table posts (
+create table if not exists posts (
   user_id uuid,
   url ascii,
   id uuid,
@@ -128,22 +123,22 @@ create table posts (
   PRIMARY KEY (user_id, url)
 );
 
-create index day_idx on posts (day);
+create index if not exists day_idx on posts (day);
 
-create index tags_idx on posts (tags);
+create index if not exists tags_idx on posts (tags);
 
-create materialized view posts_by_posted as
+create materialized view if not exists posts_by_posted as
   select * from posts where url is not null and posted is not null
   primary key (user_id, posted, url) -- user_id is the partition key
   with clustering order by (posted desc);
 
-create materialized view posts_by_day as
+create materialized view if not exists posts_by_day as
   select * from posts where url is not null and day is not null
   primary key (user_id, day, url);
 
-create index post_id_idx on posts (id);
+create index if not exists post_id_idx on posts (id);
 
-create table likes (
+create table if not exists likes (
   user_id uuid,
   url ascii,
   id uuid,
@@ -152,7 +147,7 @@ create table likes (
   PRIMARY KEY ((user_id, url), like_id)
 );
 
-create table replies (
+create table if not exists replies (
   user_id uuid,
   url ascii,
   id uuid,
@@ -162,7 +157,7 @@ create table replies (
   PRIMARY KEY ((user_id, url), reply_id)
 );
 
-create table shares (
+create table if not exists shares (
   user_id uuid,
   url ascii,
   id uuid,
@@ -172,7 +167,7 @@ create table shares (
   PRIMARY KEY ((user_id, url), share_id)
 );
 
-create table activity_pub_posts (
+create table if not exists activity_pub_posts (
   user_id uuid,
   post_id ascii,
   posted timestamp,
@@ -181,13 +176,13 @@ create table activity_pub_posts (
   PRIMARY KEY (user_id, post_id)
 );
 
-create materialized view activity_pub_posts_by_posted as
+create materialized view if not exists activity_pub_posts_by_posted as
   select * from activity_pub_posts where post_id is not null and posted is not null
   primary key (user_id, posted, post_id) -- user_id is still the partition key
   with clustering order by (posted desc);
 
 /* Background tasks */
-create table tasks (
+create table if not exists tasks (
   id uuid PRIMARY KEY,
   created timestamp,
   task blob,
@@ -197,7 +192,7 @@ create table tasks (
 );
 
 /* Raft log */
-create table raft_log (
+create table if not exists raft_log (
   node_id varint,
   log_id varint,
   entry blob,
@@ -205,7 +200,7 @@ create table raft_log (
 );
 
 /* Raft metadata */
-create table raft_metadata (
+create table if not exists raft_metadata (
   node_id varint,
   flavor tinyint,
   data blob,

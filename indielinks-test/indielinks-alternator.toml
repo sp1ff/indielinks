@@ -1,15 +1,16 @@
 # indielinks configuration file for dev use with a ScyllaDB/Alternator (test) backend
 version = "1"
 log-file = "/tmp/indielinks.log"
-public-address = "0.0.0.0:20673"
-private-address = "127.0.0.1:20674"
-raft-grpc-address = "127.0.0.1:20675"
+# Regrettably, it's important that these ports match those in indielinks-alternator-0.toml
+public-address = "0.0.0.0:20679"
+private-address = "127.0.0.1:20680"
+raft-grpc-address = "127.0.0.1:20681"
 user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
 collection-page-size = 64
 
 [public-origin]
 scheme = "http"
-port = 20673
+port = 20679
 
 [public-origin.host]
 RegName = "indiemark.local"

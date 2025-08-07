@@ -225,3 +225,9 @@
 //! wrote more about that [here](https://www.unwoundstack.com/blog/rust-client-middleware.html).
 //!
 //! [tower]: https://docs.rs/tower/0.5.2/tower/
+//!
+//! # Developers' Documentation
+//!
+//! I spent the best part of a year (on & off) "picking at" the problem of implementing an
+//! ActivityPub server. That initial prototyping can be found on branch `prototypes`, but `master`
+//! (and its offshoots) contains the production code.

@@ -21,6 +21,7 @@ done
 docker cp indielinks.cql scylla-node-1:/indielinks.cql
 docker cp dev-charge.cql scylla-node-1:/dev-charge.cql
 
+docker exec -i scylla-node-1 cqlsh -e "create keyspace if not exists indielinks with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3} and tablets = {'enabled': false};"
 docker exec -i scylla-node-1 cqlsh -f /indielinks.cql
 docker exec -i scylla-node-1 cqlsh -f /dev-charge.cql
 RUST_LOG="debug,scylla::transport=debug" cargo run --bin indielinks-ddb -- \

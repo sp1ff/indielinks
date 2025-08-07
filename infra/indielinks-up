@@ -18,7 +18,7 @@ status=$(curl -s http://localhost:20673/healthcheck)
 ntries=1
 while [ "${status}" != "GOOD" ]; do
     sleep 0.5
-    status=$(curl -s http://localhost:20673/healthcheck)
+    status=$(curl -s http://localhost:20679/healthcheck)
     ntries=$(($ntries+1))
     # Give it five seconds
     if [ ${ntries} -gt 10 ]; then

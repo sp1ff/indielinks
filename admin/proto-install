@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+
+# This is a start on an installation procedure. I hope to eventually produce
+# Arch and Debian packages, as well as an OpenTofu script, but for now I just
+# want to begin running indielinks locally on my desktop. Even when I move to
+# Arch or Debian packaging, the packaging step will need some scripting to
+# build & configure the installation, anyway.
+
+###########################################################################
+#                                     main                                #
+###########################################################################
+
+example_with_value=
+help=
+nargs=0
+prev_option=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -e | --ex | --example-with-value)
+	        nargs=$(($nargs+1));
+            prev_option=example_with_value;;
+        -e=* | --ex=* | --example-with-value=*)
+	        nargs=$(($nargs+1));
+            example_with_value=$optarg;;
+        -h | --he | --hel | --help)
+	        nargs=$(($nargs+1));
+            help=yes;;
+        -v | --verb | --verbose)
+	        nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+	        nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try 'proto-install --help' for more information.
+EOF
+            exit 2;;
+	    *)
+	        # $@ now contains the arguments, $# the number of arguments
+	        shift $nargs;
+	        break;;
+    esac
+
+done
+
+if test -n "${help}"; then
+    cat <<EOF
+proto-install -- First indielinks installation script
+
+Usage:
+
+    $0 [OPTION...] ARGUMENT...
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+proto-install 0.0.1
+EOF
+    exit 0
+fi
+
+if test -n "${verbose}"; then
+    set -x
+fi
+
+set -e
+
+here=$(dirname $(realpath $0))
+cd $here/..
+cargo build --release
+cd indielinks-fe
+INDIELINKS_FE_API="http://127.0.0.1:20676" trunk build --release
+cd ..
+
+install -C target/release/indielinks /home/$USER/bin
+
+cd indielinks-fe/dist
+wasm=$(ls -1 indielinks-fe*.wasm)
+js=$(ls -1 indielinks-fe*.js)
+css=$(ls -1 style-*.css)
+mv -v $wasm indielinks-fe.wasm
+mv -v $js indielinks-fe.js
+mv -v $css style.css
+sed -i -e s@$wasm@fe/indielinks-fe.wasm@g index.html
+sed -i -e s@$js@fe/indielinks-fe.js@g index.html
+sed -i -e s@$css@fe/style.css@g index.html
+
+install -D -C index.html      /home/$USER/share/indielinks/assets/index.html
+install -C indielinks-fe.js   /home/$USER/share/indielinks/assets/indielinks-fe.js
+install -C style.css          /home/$USER/share/indielinks/assets/style.css
+install -C indielinks-fe.wasm /home/$USER/share/indielinks/assets/indielinks-fe.wasm
+cd ../..
+
+# This is particularly awful: `cqlsh` is, regrettably, implemented in Python,
+# meaning that it's essentially impossible to install. There's an AUR package,
+# cqlsh-bin, but it's broken. There are no packages, AFAIK, that install it. I
+# resorted to setting-up a virtual environment & installing it from PyPi.
+source /home/$USER/venvs/cqlsh/bin/activate
+cqlsh -e "create keyspace if not exists indielinks with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor':1} and tablets = {'enabled': false};"
+cqlsh -f infra/indielinks.cql
+deactivate
+
+install indielinks/proto-indielinks.toml /home/$USER/etc/indielinks.toml
+
+if test -r /home/$USER/var/run/indielinks.pid; then
+    pid=$(cat /home/$USER/var/run/indielinks.pid)
+    set +e # Failure here is not fatal
+    kill ${pid}
+    set -e
+    sleep 0.5
+    rm /home/$USER/var/run/indielinks.pid
+fi
+
+RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info /home/$USER/bin/indielinks \
+    -c /home/$USER/etc/indielinks.toml \
+    -L /home/$USER/var \
+    --debug \
+    --plain

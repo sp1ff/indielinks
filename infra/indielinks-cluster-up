@@ -53,12 +53,12 @@ if [ "${nodes}" == "5" ]; then
 fi
 
 # Wait for the entire cluster to healthcheck
-hc 20674 || exit 1
-hc 20677 || exit 1
-hc 20680 || exit 1
+hc 20679 || exit 1
+hc 20682 || exit 1
+hc 20685 || exit 1
 if [ "${nodes}" == "5" ]; then
-    hc 20683 || exit 1
-    hc 20686 || exit 1
+    hc 20688 || exit 1
+    hc 20691 || exit 1
 fi
 
 # If I don't place my `haproxy` invocation into a sub-shell, `Command::output()` hangs.

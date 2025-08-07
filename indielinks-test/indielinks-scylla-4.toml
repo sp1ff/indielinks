@@ -1,8 +1,8 @@
 version = "1"
 log-file = "/tmp/indielinks-4/indielinks.log"
-public-address = "0.0.0.0:20686"
-private-address = "127.0.0.1:20687"
-raft-grpc-address = "127.0.0.1:20688"
+public-address = "0.0.0.0:20691"
+private-address = "127.0.0.1:20692"
+raft-grpc-address = "127.0.0.1:20693"
 user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
 collection-page-size = 64
 

@@ -118,6 +118,8 @@ fn Home(token: ReadSignal<Option<String>>, set_tag: WriteSignal<Option<String>>)
 
     let (page, set_page) = signal(0usize);
 
+    let api = use_context::<String>().expect("Failed to rerieve the API net location");
+
     // Ugh-- copied from `indielinks`; if I take a dependency on the indielinks crate, I get a ton
     // of error messages when I try to build *this* one-- I suspect because `indielinks` has
     // dependencies that don't support the wasm32 target (?) I may need to factor types like this
@@ -134,10 +136,15 @@ fn Home(token: ReadSignal<Option<String>>, set_tag: WriteSignal<Option<String>>)
     // type to box all source errors and so be `Clone`, but before I go to that length, I want to be
     // sure I'm actually going to *use* the returned error. The hackernews example, for instance,
     // returns an `Option`, simply logging any errors it encounters before returning `None`.
-    async fn load_data(client: reqwest::Client, token: String, page: usize) -> Option<Vec<Post>> {
+    async fn load_data(
+        client: reqwest::Client,
+        api: String,
+        token: String,
+        page: usize,
+    ) -> Option<Vec<Post>> {
         client
             .post(format!(
-                "http://127.0.0.1:20673/api/v1/posts/all?start={}&results=6",
+                "{api}/api/v1/posts/all?start={}&results=6",
                 page * 6
             ))
             .bearer_auth(token)
@@ -156,6 +163,7 @@ fn Home(token: ReadSignal<Option<String>>, set_tag: WriteSignal<Option<String>>)
     let page_data = LocalResource::new(move || {
         load_data(
             client.get().clone(),
+            api.clone(),
             token.get().clone().expect("Missing token"),
             page.get(),
         )
@@ -224,6 +232,8 @@ fn Tags(
     let client =
         use_context::<ReadSignal<reqwest::Client>>().expect("Failed to retrieve the HTTP client");
 
+    let api = use_context::<String>().expect("Failed to rerieve the API net location");
+
     let (page, set_page) = signal(0usize);
 
     // Ugh-- next on my list is to factor-out a crate that just contains these sorts of entities and
@@ -250,13 +260,14 @@ fn Tags(
     // `LocalResource` unless the return type is `Clone`, which errors generally are not.
     async fn load_data(
         client: reqwest::Client,
+        api: String,
         token: String,
         tag: String,
         page: usize,
     ) -> Option<Vec<Post>> {
         client
             .post(format!(
-                "http://127.0.0.1:20673/api/v1/posts/all?tag={tag}&start={}&results=6",
+                "{api}/api/v1/posts/all?tag={tag}&start={}&results=6",
                 page * 6
             ))
             .bearer_auth(token)
@@ -275,6 +286,7 @@ fn Tags(
     let page_data = LocalResource::new(move || {
         load_data(
             client.get().clone(),
+            api.clone(),
             token.get().clone().expect("Missing token"),
             tag.get().expect("Trying to show tags with no tag!?"),
             page.get(),
@@ -393,6 +405,8 @@ fn SignIn(
     let client =
         use_context::<ReadSignal<reqwest::Client>>().expect("Failed to retrieve the HTTP client");
 
+    let api = use_context::<String>().expect("Failed to rerieve the API net location");
+
     // TBH, I have *no* idea what this does:
     let username_element: NodeRef<html::Input> = NodeRef::new();
     let password_element: NodeRef<html::Input> = NodeRef::new();
@@ -414,11 +428,12 @@ fn SignIn(
             .expect("<password> should be mounted")
             .value();
         let req = LoginReq { username, password };
+        let api_val = api.clone();
         async move {
             // This still feels prolix to me...
             match client
                 .get()
-                .post("http://127.0.0.1:20673/api/v1/users/login")
+                .post(format!("{api_val}/api/v1/users/login"))
                 .json(&req)
                 .send()
                 .await
@@ -506,6 +521,25 @@ fn App() -> impl IntoView {
     // Make the client available to any of our sub-components (avoiding "prop drilling"-- making
     // this a parameter into every single `View` setup function below us):
     provide_context(client);
+
+    // Next, I'm going to setup the network location at which we can reach indielinks. In my world,
+    // this would typically be a configuration item, typically provided by something as
+    // sophisticated as a parameter management system, or as simple as a configuration file. In this
+    // world (frontend/CSR/SPA) there are a few options, including fetching, at runtime a
+    // configuration file from the same endpoint at which this WASM bundle is being served.
+
+    // For now, I'm going to go with the simplest option, which is to read environment variables;
+    // the read happens at *compile* time, meaning that this can be configured as part of the build.
+    // let (api, _) = signal(
+    //     option_env!("INDIELINKS_FE_API")
+    //         .unwrap_or("http://127.0.0.1:20673")
+    //         .to_owned(),
+    // );
+    provide_context(
+        option_env!("INDIELINKS_FE_API")
+            .unwrap_or("http://127.0.0.1:20673")
+            .to_owned(),
+    );
 
     // OK-- we store the access token here. Perhaps make this into a context, as well? Yeah... on
     // further reflection, this ("token") and "tag" should really be provided by a context.

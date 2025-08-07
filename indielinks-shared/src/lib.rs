@@ -313,6 +313,7 @@ impl<'de> Deserialize<'de> for Username {
     }
 }
 
+#[cfg(feature = "backend")]
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Username {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
         String::type_check(typ)
@@ -339,6 +340,7 @@ impl FromStr for Username {
     }
 }
 
+#[cfg(feature = "backend")]
 impl SerializeValue for Username {
     fn serialize<'b>(
         &self,
@@ -408,6 +410,7 @@ impl<'de> Deserialize<'de> for UserEmail {
     }
 }
 
+#[cfg(feature = "backend")]
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserEmail {
     fn type_check(typ: &ColumnType) -> std::result::Result<(), TypeCheckError> {
         String::type_check(typ)
@@ -435,6 +438,7 @@ impl FromStr for UserEmail {
     }
 }
 
+#[cfg(feature = "backend")]
 impl SerializeValue for UserEmail {
     fn serialize<'b>(
         &self,
