@@ -30,7 +30,7 @@ create table if not exists users (
   summary text,
   pub_key_pem ascii,
   priv_key_pem ascii,
-  api_key blob,
+  api_keys blob,
   first_update timestamp,
   last_update timestamp,
   password_hash ascii,

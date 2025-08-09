@@ -24,7 +24,7 @@ use crate::{
     cache::{
         Backend as CacheBackend, Flavor, LogIndex, NID, RaftLog, RaftMetadata, to_storage_io_err,
     },
-    entities::{ActivityPubPost, FollowId, Follower, Following, Like, Reply, Share, User},
+    entities::{ActivityPubPost, ApiKeys, FollowId, Follower, Following, Like, Reply, Share, User},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
@@ -258,6 +258,13 @@ pub enum Error {
         source: SdkError<ScanError, HttpResponse>,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to serialize API keys {keys:?} for {user:?}: {source}"))]
+    SerApiKeys {
+        user: User,
+        keys: ApiKeys,
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to serialize to an AttributeValue: {source}"))]
     TAV {
         source: serde_dynamo::Error,
@@ -282,6 +289,16 @@ pub enum Error {
     #[snafu(display("Failed to update a tag: {source}"))]
     UpdateTag {
         source: aws_smithy_runtime_api::client::result::SdkError<
+            aws_sdk_dynamodb::operation::update_item::UpdateItemError,
+            aws_sdk_dynamodb::config::http::HttpResponse,
+        >,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to update API keys {keys:?} for {user:?}: {source}"))]
+    UpdateUserApiKeys {
+        user: User,
+        keys: ApiKeys,
+        source: SdkError<
             aws_sdk_dynamodb::operation::update_item::UpdateItemError,
             aws_sdk_dynamodb::config::http::HttpResponse,
         >,
@@ -386,7 +403,7 @@ pub async fn add_user(client: &::aws_sdk_dynamodb::Client, user: &User) -> Resul
     // I first thought to serialize the `User` via `serde_dynamo::to_item`, but serde_dynamo makes
     // some... odd choices (serializing an empty `HashSet<String>` to `L: []`, for instance). I want
     // to use `to_attribute_value()` wherever I can to avoid exposing implementation details and
-    // duplicating serialization logic.
+    // duplicating serialization logic. That said, I'd like to reconsider this:
 
     use serde_dynamo::to_attribute_value as tav;
     let item = HashMap::from([
@@ -416,8 +433,8 @@ pub async fn add_user(client: &::aws_sdk_dynamodb::Client, user: &User) -> Resul
             tav(user.priv_key()).context(TAVSnafu)?,
         ),
         (
-            "api_key".to_string(),
-            tav(user.api_key()).context(TAVSnafu)?,
+            "api_keys".to_string(),
+            tav(user.api_keys()).context(TAVSnafu)?,
         ),
         (
             "password_hash".to_string(),
@@ -1493,6 +1510,38 @@ impl storage::Backend for Client {
         }
 
         Ok(())
+    }
+
+    async fn update_user_api_keys(&self, user: &User, keys: &ApiKeys) -> StdResult<(), StorError> {
+        self.client
+            .update_item()
+            .table_name("users")
+            .key("id", AttributeValue::S(user.id().to_string()))
+            .update_expression("set api_keys=:k")
+            .expression_attribute_values(
+                ":k",
+                AttributeValue::M(to_item(keys).map_err(|err| {
+                    StorError::new(
+                        SerApiKeysSnafu {
+                            user: user.clone(),
+                            keys: keys.clone(),
+                        }
+                        .into_error(err),
+                    )
+                })?),
+            )
+            .send()
+            .await
+            .map_err(|err| {
+                StorError::new(
+                    UpdateUserApiKeysSnafu {
+                        user: user.clone(),
+                        keys: keys.clone(),
+                    }
+                    .into_error(err),
+                )
+            })
+            .map(|_| ())
     }
 
     async fn update_user_post_times(

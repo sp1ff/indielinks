@@ -30,15 +30,15 @@ use picky::{
     http::{HttpSignature, http_signature::HttpSignatureBuilder},
     signature::SignatureAlgorithm,
 };
-use secrecy::SecretString;
+use secrecy::{SecretSlice, SecretString};
 use sha2::Digest;
-use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
+use snafu::{Backtrace, OptionExt, ResultExt, Snafu, ensure};
 use tap::Pipe;
 
 use indielinks_shared::Username;
 
 use crate::{
-    entities::{self, User, UserApiKey},
+    entities::{self, User},
     origin::Host,
     peppers::Peppers,
     signing_keys::SigningKeys,
@@ -105,19 +105,24 @@ pub enum Error {
         username: Username,
         backtrace: Backtrace,
     },
-    #[snafu(display("Invalid API key"))]
-    InvalidApiKey {
-        key: UserApiKey,
-        source: entities::Error,
-    },
     #[snafu(display("An Authorization header had a non-textual value: {source}"))]
     InvalidAuthHeaderValue {
         value: HeaderValue,
         source: axum::http::header::ToStrError,
         backtrace: Backtrace,
     },
+    #[snafu(display("Invalid API key: {source}"))]
+    InvalidKey {
+        source: entities::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to find a colon in '{text}'"))]
     MissingColon { text: String, backtrace: Backtrace },
+    #[snafu(display("{payload} contains no version marker"))]
+    MissingVersion {
+        payload: String,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Multiple sha-256 Digest headers found"))]
     MultipleContentDigests,
     #[snafu(display("In order to sign a request, it must contain a Content-Type header"))]
@@ -187,9 +192,9 @@ type StdResult<T, E> = std::result::Result<T, E>;
 /// API keys. Finally, I've implemented the more modern JWT support.
 #[derive(Clone, Debug)]
 pub enum AuthnScheme {
-    // Authorization: Bearer <username>:<key>:: should probably impose a little more structure on
-    // the key-- versioning, e.g.
-    BearerApiKey((Username, UserApiKey)),
+    // Authorization: Bearer <username>:v1:<key material>. In a really irritating turn of events,
+    // `SecretSlice<u8>` = `SecretBox<[u8]>` is Clonable, but `SecretBox<[u8; 28]>` is *not*.
+    BearerApiKey((Username, SecretSlice<u8>)),
     // Authorization: Bearer base64.base64.base64:: should probably impose a little more structure
     // there-- deserialize, perhaps? I can't verify without the signing key, but I *can*
     // base64-decode it and deserialize to a (n unverified) Token, at least
@@ -222,17 +227,24 @@ impl AuthnScheme {
             password.into(),
         )))
     }
-    /// Create an AuthnScheme instance from the the plain text "username:key-in-hex"
+    /// Create an AuthnScheme instance from the the plain text "username:key-in-hex" or
+    /// "username:v1:key-material-in-hex"
     pub fn from_api_key(payload: &str) -> Result<AuthnScheme> {
         // `payload` should be the plain text "username:key-in-hex"
         let (username, key) = payload.split_once(':').context(MissingColonSnafu {
             text: payload.to_string(),
         })?;
+        ensure!(
+            key.starts_with("v1:"),
+            MissingVersionSnafu {
+                payload: payload.to_owned()
+            }
+        );
         Ok(AuthnScheme::BearerApiKey((
             Username::from_str(username).context(BadUsernameSnafu {
                 username: username.to_owned(),
             })?,
-            hex::decode(key.as_bytes())
+            hex::decode(&key[3..])
                 .context(BadApiKeySnafu {
                     key: key.to_owned(),
                 })?
@@ -294,7 +306,7 @@ impl TryFrom<&HeaderValue> for AuthnScheme {
 pub async fn check_api_key(
     storage: &(dyn StorageBackend + Send + Sync),
     username: &Username,
-    key: &UserApiKey,
+    key: &SecretSlice<u8>,
 ) -> Result<User> {
     let user = storage
         .user_for_name(username.as_ref())
@@ -305,8 +317,7 @@ pub async fn check_api_key(
         .context(UnknownUserSnafu {
             username: username.clone(),
         })?;
-    user.check_key(key)
-        .context(InvalidApiKeySnafu { key: key.clone() })?;
+    user.check_key(key).context(InvalidKeySnafu)?;
     Ok(user)
 }
 
@@ -477,59 +488,6 @@ pub fn check_sha_256_content_digest(
 
     Ok(())
 }
-
-// /// Maybe add a SHA-256 digest to a request
-// ///
-// /// Take an axum [Request]. If there is already a digest header present, do nothing. If there is no
-// /// digest header, compute the SHA-256 digest of the body & add a digest header. If there are more
-// /// than one digest headers, fail.
-// ///
-// /// [Request]: https://docs.rs/axum/latest/axum/extract/type.Request.html
-// ///
-// /// In case of success, return the input request decomposed into [Parts] and the body bytes.
-// ///
-// /// [Parts]: https://docs.rs/http/latest/http/request/struct.Parts.html
-// pub async fn maybe_add_sha_256(
-//     request: axum::extract::Request,
-// ) -> Result<(http::request::Parts, bytes::Bytes)> {
-//     // If the request doesn't already have a Digest, generate one one:
-//     let content_digests = request
-//         .headers()
-//         .get_all("digest")
-//         .iter()
-//         .filter_map(|h| match h.to_str() {
-//             Ok(s) => {
-//                 if s.to_lowercase().starts_with("sha-256=") {
-//                     Some(s.to_owned())
-//                 } else {
-//                     None
-//                 }
-//             }
-//             Err(_) => None,
-//         })
-//         .collect::<Vec<String>>();
-
-//     // Break the request up into its parts:
-//     let (mut parts, body) = request.into_parts();
-//     let bytes = axum::body::to_bytes(body, 16384)
-//         .await
-//         .context(ToBytesSnafu)?;
-
-//     if content_digests.is_empty() {
-//         let mut hasher = sha2::Sha256::new();
-//         hasher.update(&bytes);
-//         let sha_256_result = format!(
-//             "sha-256={}",
-//             BASE64_STANDARD.encode(hasher.finalize().as_slice())
-//         );
-//         let digest = HeaderValue::from_str(&sha_256_result).context(DigestToHeaderValueSnafu)?;
-//         parts.headers.append("digest", digest);
-//     } else if 1 != content_digests.len() {
-//         return Err(Error::MultipleContentDigests);
-//     }
-
-//     Ok((parts, bytes))
-// }
 
 pub fn ensure_sha_256(
     request: http::Request<reqwest::Body>,

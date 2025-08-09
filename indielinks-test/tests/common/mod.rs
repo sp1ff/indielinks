@@ -199,6 +199,7 @@ impl Default for Fixtures {
 ///
 /// Not sure about having all tests share one configuration format; coding speculatively.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[allow(dead_code)]
 pub struct Configuration {
     #[serde(rename = "no-setup")]
@@ -216,13 +217,16 @@ pub struct Configuration {
     // I think I'd like to get rid of this altogether & just have tests create their own test users
     pub username: Username,
     /// The API key of test user that comes "pre-configured" with our integration tests
-    // I think I'd like to get rid of this altogether & just have tests create their own test users
+    // I think I'd like to get rid of this altogether & just have tests create their own test users,
+    // but this is thoroughly woven into the test suite, at this point. I think I'd like to make
+    // that a separate issue.
+    #[serde(rename = "api-key")]
     pub api_key: String,
     pub pepper: Peppers,
     pub scylla: ScyllaConfig,
     pub dynamo: DynamoConfig,
     pub logging: bool,
-    #[serde(deserialize_with = "de_level::deserialize")]
+    #[serde(deserialize_with = "de_level::deserialize", rename = "log-level")]
     pub log_level: Level,
     #[serde(default)]
     pub fixtures: Fixtures,
@@ -299,9 +303,9 @@ impl Default for Configuration {
             no_teardown: false,
             username: Username::new("sp1ff").unwrap(/* known good */),
             indielinks: Url::parse("http://indiemark.local:20679").unwrap(/* known good */),
-            ops: Url::parse("http://indiemark.local:20680").unwrap(/* known good */),
+            ops: Url::parse("http://127.0.0.1:20680").unwrap(/* known good */),
             raft_nodes: HashMap::from([(0, "127.0.0.1:20681".parse().unwrap(/* known good */))]),
-            api_key: "6caf392688cc6b164fe88b786acb6ab6ed4eda6e4b1a0c1daf09aa9da3c89873".to_owned(),
+            api_key: "v1:5eb56ceebb7425aafe36eabca8b923054b4907d9375acd0b9950c51b57b201fb73e437428050f451b57632f99a3bbd5bed1c0f51cc0df752147090ed26e975f4".to_owned(),
             pepper: Peppers::default(),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),

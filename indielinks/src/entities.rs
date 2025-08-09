@@ -38,10 +38,11 @@ use scylla::{
         writers::{CellWriter, WrittenCellProof},
     },
 };
-use secrecy::{ExposeSecret, SecretSlice, SecretString};
+use secrecy::{ExposeSecret, SecretBox, SecretSlice, SecretString};
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha512_224};
 use snafu::{Backtrace, IntoError, prelude::*};
-use tap::{conv::Conv, pipe::Pipe};
+use tap::pipe::Pipe;
 use tracing::debug;
 use url::Url;
 use uuid::Uuid;
@@ -73,6 +74,13 @@ pub enum Error {
         col_name: String,
         actual: ColumnType<'static>,
         expected: ColumnType<'static>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display(
+        "Attempting to mint a key that expires at {expiry}; this is in the past or too soon in the future"
+    ))]
+    Expiry {
+        expiry: DateTime<Utc>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to import an RSA key from PKCS8 format: {source}"))]
@@ -137,6 +145,16 @@ pub enum Error {
     },
     #[snafu(display("Attempted to deserialize an invalid value for Visibility: {n}"))]
     VisibilityDe { n: i8, backtrace: Backtrace },
+    #[snafu(display("{key_material:?} doesn't match"))]
+    WrongKey {
+        key_material: SecretSlice<u8>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Incorrect key length: {source}"))]
+    WrongKeyLength {
+        source: std::array::TryFromSliceError,
+        backtrace: Backtrace,
+    },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -338,17 +356,145 @@ mod serde_privatekey {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                           UserApiKey                                           //
+//                                             ApiKey                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Newtype idiom to work around Rust's orphaned trait rule
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(transparent)]
-pub struct UserApiKey(#[serde(with = "serde_apikey")] SecretSlice<u8>);
+/// An indielinks API key, version 1
+///
+/// About the only thing this, the first version of an indielinks API key offers beyond raw key
+/// material is an optional expiration date. We could, of course, track status, but for now I'm
+/// going to model revocation by simply deleting the key from the datastore. Something like scope or
+/// permissions would make no sense because we have no RBAC right now-- possesion of a key gives the
+/// holder full permissions on the account of the user to whom it was issued.
+///
+/// Note that we don't store the key material in this struct: rather, we only store a *hash* of the
+/// key material. See [new](ApiKeyV1::new) for details.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ApiKeyV1 {
+    /// SHA-512/224 hash of the key material
+    key_material_hash: [u8; 28],
+    /// Date this key expires; None means it lives forever
+    expiry: Option<DateTime<Utc>>,
+}
 
-impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserApiKey {
+impl ApiKeyV1 {
+    /// Create a new API key; return an [ApiKeyV1] instance along with the raw key material. The
+    /// intent is that the caller will transmit or display the key material to the user and then
+    /// drop it.
+    pub fn new(expiry: Option<DateTime<Utc>>) -> Result<(ApiKeyV1, SecretBox<[u8]>)> {
+        // Let's start with the key material
+        use rand::RngCore;
+        use std::ops::DerefMut;
+
+        if let Some(expiry) = expiry {
+            ensure!(
+                expiry - Utc::now() >= chrono::Duration::seconds(30),
+                ExpirySnafu { expiry }
+            );
+        }
+
+        let mut rng = OsRng;
+        let mut key_material = Box::new([0u8; 64]);
+        rng.fill_bytes(key_material.deref_mut());
+
+        Ok((
+            ApiKeyV1 {
+                key_material_hash: Self::hash_key_material(&key_material),
+                expiry,
+            },
+            SecretBox::new(key_material),
+        ))
+    }
+    /// Create a new key with infinite lifetime from pre-allocated key material
+    pub fn from_key_material(key_material: &[u8; 64]) -> ApiKeyV1 {
+        ApiKeyV1 {
+            key_material_hash: Self::hash_key_material(key_material),
+            expiry: None,
+        }
+    }
+    /// Check `key_material` against this key
+    pub fn check(&self, key_material: &SecretSlice<u8>) -> Result<()> {
+        use secrecy::ExposeSecret;
+        ensure!(
+            self.key_material_hash
+                == Self::hash_key_material(
+                    key_material
+                        .expose_secret()
+                        .try_into()
+                        .context(WrongKeyLengthSnafu)?,
+                ),
+            WrongKeySnafu {
+                key_material: key_material.clone()
+            }
+        );
+        Ok(())
+    }
+    /// Compute a SHA-512/224 hash of the provided key material
+    fn hash_key_material(key_material: &[u8; 64]) -> [u8; 28] {
+        let mut hasher = Sha512_224::default();
+        hasher.update(key_material);
+        *hasher.finalize().as_mut()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "version")] // tag "internally"
+pub enum ApiKey {
+    #[serde(rename = "1")]
+    V1(ApiKeyV1),
+}
+
+impl ApiKey {
+    pub fn new(expiry: Option<DateTime<Utc>>) -> Result<(ApiKey, String)> {
+        let (key, key_material) = ApiKeyV1::new(expiry)?;
+        Ok((
+            ApiKey::V1(key),
+            format!("v1:{}", hex::encode(key_material.expose_secret())),
+        ))
+    }
+    /// Validate this API key against the provided key material
+    pub fn check(&self, key_material: &SecretSlice<u8>) -> Result<()> {
+        match self {
+            ApiKey::V1(api_key_v1) => Ok(api_key_v1.check(key_material)?),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ApiKeys {
+    Zero,
+    One(ApiKey),
+    Two((ApiKey, ApiKey)),
+}
+
+impl ApiKeys {
+    pub fn check(&self, key_material: &SecretSlice<u8>) -> Result<()> {
+        match &self {
+            ApiKeys::Zero => panic!("This user has no API keys!"),
+            ApiKeys::One(api_key) => api_key.check(key_material),
+            ApiKeys::Two((api_key1, api_key2)) => api_key1
+                .check(key_material)
+                .or_else(|_| api_key2.check(key_material)),
+        }
+    }
+}
+
+// For ScyllaDB, we're just going to use MessagePack for serde, and store the keys in a column of type `blob`
+impl SerializeValue for ApiKeys {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        native_type_check!(typ, Blob, SerializationError, "ApiKeys")?;
+        let buf = rmp_serde::to_vec(&self).map_err(mk_ser_err)?;
+        writer.set_value(buf.as_slice()).map_err(mk_ser_err)
+    }
+}
+
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for ApiKeys {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        native_type_check!(typ, Blob, TypeCheckError, "ApiKey")
+        native_type_check!(typ, Blob, TypeCheckError, "ApiKeys")
     }
     fn deserialize(
         _: &'metadata ColumnType<'metadata>,
@@ -356,76 +502,16 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserApiKey {
     ) -> StdResult<Self, DeserializationError> {
         v.ok_or(
             NoFrameSliceSnafu {
-                typ: "ApiKey".to_owned(),
+                typ: "ApiKeys".to_owned(),
             }
             .build(),
         )
         .map_err(mk_de_err)?
         .as_slice()
-        .conv::<Vec<u8>>()
-        .conv::<SecretSlice<u8>>()
-        .pipe(UserApiKey)
-        .pipe(Ok)
+        .pipe(rmp_serde::from_slice::<ApiKeys>)
+        .map_err(mk_de_err)
     }
 }
-
-impl SerializeValue for UserApiKey {
-    fn serialize<'b>(
-        &self,
-        typ: &ColumnType<'_>,
-        writer: CellWriter<'b>,
-    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        use secrecy::ExposeSecret;
-        native_type_check!(typ, Blob, SerializationError, "ApiKey")?;
-        self.0
-            .expose_secret()
-            .pipe(|x| writer.set_value(x))
-            .map_err(mk_ser_err)?
-            .pipe(Ok)
-    }
-}
-
-mod serde_apikey {
-    use super::*;
-    use serde::{Deserializer, Serializer};
-    use serde_bytes::ByteBuf;
-
-    pub fn serialize<S: Serializer>(
-        api_key: &SecretSlice<u8>,
-        ser: S,
-    ) -> StdResult<S::Ok, S::Error> {
-        use secrecy::ExposeSecret;
-        <ByteBuf as serde::Serialize>::serialize(&ByteBuf::from(api_key.expose_secret()), ser)
-    }
-
-    pub fn deserialize<'de, D>(de: D) -> StdResult<SecretSlice<u8>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        <ByteBuf as serde::Deserialize>::deserialize(de)
-            .map_err(mk_serde_de_err::<'de, D>)?
-            .pipe(|x| x.into_vec())
-            .conv::<SecretSlice<u8>>()
-            .pipe(Ok)
-    }
-}
-
-// I had originally intended to just implement serde for this time, but wound-up needing a few more
-// traits
-impl From<Vec<u8>> for UserApiKey {
-    fn from(value: Vec<u8>) -> Self {
-        UserApiKey(value.into())
-    }
-}
-
-impl PartialEq for UserApiKey {
-    fn eq(&self, other: &Self) -> bool {
-        use secrecy::ExposeSecret;
-        self.0.expose_secret().eq(other.0.expose_secret())
-    }
-}
-
-impl secrecy::SerializableSecret for UserApiKey {}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         UserHashString                                         //
@@ -525,7 +611,7 @@ pub struct User {
     summary: String,
     pub_key_pem: UserPublicKey,
     priv_key_pem: UserPrivateKey,
-    api_key: Option<UserApiKey>,
+    api_keys: ApiKeys,
     // Will be null until the first post
     first_update: Option<DateTime<Utc>>,
     // Will be null until the first post
@@ -598,20 +684,22 @@ fn generate_rsa_keypair() -> Result<(UserPublicKey, UserPrivateKey)> {
 }
 
 impl User {
-    pub fn api_key(&self) -> Option<&UserApiKey> {
-        self.api_key.as_ref()
+    /// Mint a new key & add it to this users's collection, ejecting an earlier key if need be
+    pub fn add_key(&self, expiry: Option<DateTime<Utc>>) -> Result<(ApiKeys, String)> {
+        let (api_key, key_text) = ApiKey::new(expiry)?;
+        let new_keys = match &self.api_keys {
+            ApiKeys::Zero => ApiKeys::One(api_key),
+            ApiKeys::One(first_api_key) => ApiKeys::Two((first_api_key.clone(), api_key)),
+            ApiKeys::Two((_, last_api_key)) => ApiKeys::Two((last_api_key.clone(), api_key)),
+        };
+        Ok((new_keys, key_text))
     }
-    /// Validate an API key
-    pub fn check_key(&self, key: &UserApiKey) -> Result<()> {
-        use secrecy::ExposeSecret;
-        match self
-            .api_key
-            .as_ref()
-            .map(|k| k.0.expose_secret() == key.0.expose_secret())
-        {
-            Some(true) => Ok(()),
-            _ => BadApiKeySnafu.fail(),
-        }
+    pub fn api_keys(&self) -> &ApiKeys {
+        &self.api_keys
+    }
+    /// Validate key material against this users API key(s)
+    pub fn check_key(&self, key_material: &SecretSlice<u8>) -> Result<()> {
+        self.api_keys.check(key_material)
     }
     /// Validate a password
     ///
@@ -674,7 +762,7 @@ impl User {
         username: &Username,
         password: &SecretString,
         email: &UserEmail,
-        api_key: Option<&UserApiKey>,
+        api_key: Option<Box<[u8; 64]>>,
         discoverable: Option<bool>,
         display_name: Option<&str>,
         summary: Option<&str>,
@@ -691,7 +779,12 @@ impl User {
             summary: summary.unwrap_or("").to_string(),
             pub_key_pem: pub_key,
             priv_key_pem: priv_key,
-            api_key: api_key.cloned(),
+            api_keys: match api_key {
+                Some(key_material) => {
+                    ApiKeys::One(ApiKey::V1(ApiKeyV1::from_key_material(&key_material)))
+                }
+                None => ApiKeys::Zero,
+            },
             first_update: None,
             last_update: None,
             password_hash: UserHashString(password_hash),
@@ -724,7 +817,7 @@ impl User {
     /// are one of the recommended configurations for this algorithm.
     ///
     /// [Cheat Sheet]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#password-hashing-algorithms
-    fn create_password_hasher(pepper: &Pepper) -> Result<Argon2> {
+    fn create_password_hasher(pepper: &Pepper) -> Result<Argon2<'_>> {
         Argon2::new_with_secret(
             pepper.as_ref().expose_secret(),
             Algorithm::Argon2id,

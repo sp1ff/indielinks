@@ -64,7 +64,7 @@ use crate::{
     authn::{self, AuthnScheme, check_api_key, check_password, check_token},
     background_tasks::{BackgroundTasks, Sender},
     counter_add,
-    entities::{User, UserApiKey},
+    entities::User,
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
@@ -142,8 +142,6 @@ pub enum Error {
     },
     #[snafu(display("Invalid credentials: {source}"))]
     InvalidCredentials { source: authn::Error },
-    #[snafu(display("Invalid API key"))]
-    InvalidApiKey { key: UserApiKey },
     #[snafu(display("The token {value} couldn't be interpreted as an API key: {source}"))]
     InvalidQueryToken { value: String, source: authn::Error },
     #[snafu(display("Failed to find a colon in '{text}'"))]
@@ -281,7 +279,6 @@ impl Error {
             ////////////////////////////////////////////////////////////////////////////////////////
             Error::BadApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::BadUsername { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            Error::InvalidApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::InvalidCredentials { .. } => {
                 (StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
             }
@@ -400,7 +397,7 @@ inventory::submit! { metrics::Registration::new("delicious.auth.failures", Sort:
 /// I'm going to remain backward compatible with both but also accept the API token in the
 /// Authorization header (using the "Bearer" scheme).
 ///
-/// Insert the user id (as a [UserId]) into the request's extensions on success.
+/// Insert the [User] into the request's extensions on success.
 ///
 /// # Middleware
 ///
@@ -497,7 +494,7 @@ async fn authenticate(
         }
         // I want to be careful about what sort of information we reveal to our caller...
         Err(err) => {
-            error!("indielinks failed to authenticate this request");
+            error!("indielinks failed to authenticate this request: {err}");
             counter_add!(state.instruments, "delicious.auth.failures", 1, &[]);
             err.into_response()
         }

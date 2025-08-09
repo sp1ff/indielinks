@@ -57,6 +57,7 @@ use uuid::Uuid;
 
 use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
+use crate::entities::ApiKeys;
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     cache::{
@@ -316,7 +317,7 @@ pub async fn add_user(
         user.summary(),
         user.pub_key(),
         user.priv_key(),
-        user.api_key(),
+        user.api_keys(),
         user.hash(),
         user.pepper_version(),
     );
@@ -326,7 +327,7 @@ pub async fn add_user(
             session
                 .query_unpaged(
                     "insert into users (id, username, discoverable, display_name, \
-                                       summary, pub_key_pem, priv_key_pem, api_key, first_update, \
+                                       summary, pub_key_pem, priv_key_pem, api_keys, first_update, \
                                        last_update, password_hash, pepper_version) values \
                                        (?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)",
                     params,
@@ -690,6 +691,7 @@ enum PreparedStatements {
     GetRaftLogEntries7,
     GetRaftLogEntries8,
     GetRaftLogEntries9,
+    UpdateApiKeys,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -749,7 +751,7 @@ impl Session {
             // the same order as [PreparedStatements].
             "select * from users where username=?",
             "insert into unique_usernames (username, id) values (?, ?) if not exists",
-            "insert into users (id, username, discoverable, display_name, summary, pub_key_pem, priv_key_pem, api_key, first_update, last_update, password_hash, pepper_version) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)",
+            "insert into users (id, username, discoverable, display_name, summary, pub_key_pem, priv_key_pem, api_keys, first_update, last_update, password_hash, pepper_version) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)",
             "update users set first_update=? where id=?",
             "update users set last_update=? where id=?", // UpdateLoastPost
             "select tags from posts where user_id=?", // TagCloud
@@ -824,7 +826,8 @@ impl Session {
             "select * from raft_log where node_id = ? and log_id > ?",
             "select * from raft_log where node_id = ? and log_id <= ?",
             "select * from raft_log where node_id = ? and log_id < ?",
-            "select * from raft_log where node_id = ?"
+            "select * from raft_log where node_id = ?",
+            "update users set api_keys=? where id=?",
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -841,7 +844,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 75] = prepared_statements
+        let prepared_statements: [PreparedStatement; 76] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -1617,6 +1620,17 @@ impl storage::Backend for Session {
 
         self.session.batch(&batch, batch_values).await?;
         Ok(())
+    }
+
+    async fn update_user_api_keys(&self, user: &User, keys: &ApiKeys) -> StdResult<(), StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::UpdateApiKeys],
+                (keys, user.id()),
+            )
+            .await
+            .map_err(|err| StorError::new(ExecutionSnafu.into_error(err)))
+            .map(|_| ())
     }
 
     async fn update_user_post_times(

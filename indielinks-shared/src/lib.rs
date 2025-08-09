@@ -1068,3 +1068,15 @@ pub struct LoginRsp {
 pub struct FollowReq {
     pub id: Url,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MintKeyReq {
+    pub expiry: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MintKeyRsp {
+    pub key_text: String,
+}

@@ -23,7 +23,7 @@ use libtest_mimic::Failed;
 use reqwest::{Client, StatusCode, Url};
 use serde_json::json;
 
-use indielinks_shared::{SignupRsp, Username};
+use indielinks_shared::{LoginRsp, MintKeyRsp, SignupRsp, Username};
 
 use indielinks::http::ErrorResponseBody;
 
@@ -64,6 +64,85 @@ pub async fn test_signup(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Resu
     let rsp = client
         .get(url.join("/api/v1/users/login")?)
         .json(&json!({"username": "johndoe", "password": "f00 b@r sp1at"}))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::OK, rsp.status());
+
+    Ok(())
+}
+
+/// Test `/users/mint-key`
+pub async fn test_mint_key(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Result<(), Failed> {
+    // Cleanup the test user we'll create if he's around from a previous test
+    let _ = utils.remove_user(&Username::new("johndoe").unwrap()).await;
+
+    let client = Client::new();
+
+    // Alright-- let's create a user...
+    let rsp = client
+        .post(url.join("/api/v1/users/signup")?)
+        .json(
+            &json!({"username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"}),
+        )
+        .send()
+        .await?;
+    assert_eq!(StatusCode::CREATED, rsp.status());
+    let body = rsp.json::<SignupRsp>().await?;
+    assert_eq!("Welcome to indielinks!", body.greeting);
+
+    // authenticate him...
+    let rsp = client
+        .post(url.join("/api/v1/users/login")?)
+        .json(&json!({"username":"johndoe","password":"f00 b@r sp1at"}))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::OK, rsp.status());
+    let token = rsp.json::<LoginRsp>().await?.token;
+
+    // and mint a key...
+    let rsp = client
+        .get(url.join("/api/v1/users/mint-key")?)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::CREATED, rsp.status());
+    let key_text0 = rsp.json::<MintKeyRsp>().await?.key_text;
+
+    // and a second key...
+    let rsp = client
+        .get(url.join("/api/v1/users/mint-key")?)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::CREATED, rsp.status());
+    let key_text1 = rsp.json::<MintKeyRsp>().await?.key_text;
+
+    // and a third-- this should push the first key off the end of the list.
+    let rsp = client
+        .get(url.join("/api/v1/users/mint-key")?)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::CREATED, rsp.status());
+    let key_text2 = rsp.json::<MintKeyRsp>().await?.key_text;
+
+    let rsp = client
+        .get(url.join("/api/v1/posts/update")?)
+        .header("Authorization", format!("Bearer johndoe:{key_text0}"))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::UNAUTHORIZED, rsp.status());
+
+    let rsp = client
+        .get(url.join("/api/v1/posts/update")?)
+        .header("Authorization", format!("Bearer johndoe:{key_text1}"))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::OK, rsp.status());
+
+    let rsp = client
+        .get(url.join("/api/v1/posts/update")?)
+        .header("Authorization", format!("Bearer johndoe:{key_text2}"))
         .send()
         .await?;
     assert_eq!(StatusCode::OK, rsp.status());

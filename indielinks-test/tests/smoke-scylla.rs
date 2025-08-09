@@ -31,7 +31,7 @@ use indielinks_test::{
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
-    users::test_signup,
+    users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
 };
 
@@ -208,16 +208,16 @@ impl Helper for State {
         followers: &HashSet<StorUrl>,
         following: &HashSet<(StorUrl, FollowId)>,
     ) -> std::result::Result<String, Failed> {
-        let mut api_key: Vec<u8> = Vec::with_capacity(32);
+        let mut api_key = [0u8; 64];
         OsRng.fill_bytes(api_key.as_mut_slice());
-        let textual_api_key = hex::encode(&api_key);
+        let textual_api_key = format!("v1:{}", hex::encode(&api_key));
         let user = User::new(
             pepper_version,
             pepper_key,
             username,
             password,
             &UserEmail::new(&format!("{}@example.com", username)).unwrap(/* known good */),
-            Some(&api_key.into()),
+            Some(Box::new(api_key)),
             None,
             None,
             None,
@@ -345,6 +345,11 @@ inventory::submit!(IndielinksTest {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(as_follower(cfg.indielinks, version, pepper, helper))
     },
+});
+
+inventory::submit!(IndielinksTest {
+    name: "080user_test_mint_key",
+    test_fn: |cfg: Configuration, helper| { Box::pin(test_mint_key(cfg.indielinks, helper)) },
 });
 
 fn main() -> Result<()> {

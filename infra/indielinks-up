@@ -14,7 +14,7 @@ RUST_BACKTRACE=1 RUST_LOG="debug,aws_config=warn,aws_runtime=info,aws_sdk_sts=in
 sleep=0.5
 # curl can fail if the server isn't up, yet
 set +e
-status=$(curl -s http://localhost:20673/healthcheck)
+status=$(curl -s http://localhost:20679/healthcheck)
 ntries=1
 while [ "${status}" != "GOOD" ]; do
     sleep 0.5

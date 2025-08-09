@@ -26,7 +26,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use chrono::Duration;
+use chrono::{DateTime, Duration, Utc};
 use itertools::Itertools;
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
@@ -35,14 +35,16 @@ use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 use url::Url;
 
-use indielinks_shared::{FollowReq, LoginReq, LoginRsp, SignupReq, SignupRsp, Username};
+use indielinks_shared::{
+    FollowReq, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, SignupReq, SignupRsp, Username,
+};
 
 use crate::{
     activity_pub::SendFollow,
     authn::{self, AuthnScheme, check_api_key, check_password, check_token},
     background_tasks::{self, BackgroundTasks, Sender},
     counter_add,
-    entities::{self, FollowId, User, UserApiKey},
+    entities::{self, FollowId, User},
     http::{ErrorResponseBody, Indielinks},
     metrics::{self, Sort},
     origin::Origin,
@@ -54,6 +56,12 @@ use crate::{
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Failed to add a key to {user:?}: {source}"))]
+    AddKey {
+        user: User,
+        source: entities::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to add user: {source}"))]
     AddUser { source: storage::Error },
     #[snafu(display("The supplied API key couldn't be parsed"))]
@@ -78,8 +86,11 @@ pub enum Error {
         source: crate::entities::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("Invalid API key"))]
-    InvalidApiKey { key: UserApiKey },
+    #[snafu(display("Invalid API key: {source}"))]
+    InvalidApiKey {
+        source: authn::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("An Authorization header had a non-textual value: {source}"))]
     InvalidAuthHeaderValue {
         value: HeaderValue,
@@ -124,6 +135,12 @@ pub enum Error {
     #[snafu(display("Authorization scheme {scheme} not supported"))]
     UnsupportedAuthScheme {
         scheme: String,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to write a new key for {user:?}: {source}"))]
+    UpdateKey {
+        user: User,
+        source: crate::storage::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to lookup user {username}: {source}"))]
@@ -185,6 +202,12 @@ impl Error {
             ////////////////////////////////////////////////////////////////////////////////////////
             // Internal failure-- own up to it:
             ////////////////////////////////////////////////////////////////////////////////////////
+            Error::AddKey {
+                user: _, source, ..
+            } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to add key: {source}"),
+            ),
             Error::AddUser { source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to add user: {source}"),
@@ -215,6 +238,12 @@ impl Error {
             } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to mint a token for {}: {}", username, source),
+            ),
+            Error::UpdateKey {
+                user: _, source, ..
+            } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to update key: {source}"),
             ),
             Error::User { username, source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -306,7 +335,7 @@ async fn authenticate(
         match scheme {
             AuthnScheme::BearerApiKey((username, key)) => check_api_key(storage, &username, &key)
                 .await
-                .context(InvalidCredentialsSnafu),
+                .context(InvalidApiKeySnafu),
             AuthnScheme::BearerToken(token_string) => {
                 check_token(storage, &token_string, keys, origin.host())
                     .await
@@ -634,6 +663,64 @@ async fn follow(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        `/usrs/mint-key`                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("user.mint-key.successful", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("user.mint-key.failures", Sort::IntegralCounter) }
+
+async fn mint_key(
+    State(state): State<Arc<Indielinks>>,
+    mut user: StdResult<Extension<User>, ExtensionRejection>,
+    req: Option<Json<MintKeyReq>>,
+) -> axum::response::Response {
+    async fn mint_key1(
+        storage: &(dyn StorageBackend + Send + Sync),
+        user: &User,
+        expiry: Option<DateTime<Utc>>,
+    ) -> Result<MintKeyRsp> {
+        let (keys, key_text) = user
+            .add_key(expiry)
+            .context(AddKeySnafu { user: user.clone() })?;
+        storage
+            .update_user_api_keys(user, &keys)
+            .await
+            .context(UpdateKeySnafu { user: user.clone() })?;
+        Ok(MintKeyRsp { key_text })
+    }
+
+    let req = req.map(|req| req.expiry);
+    match &mut user {
+        Ok(Extension(user)) => match mint_key1(state.storage.as_ref(), user, req).await {
+            Ok(rsp) => {
+                info!(
+                    "Minted an API key expiring {} for user {}",
+                    req.map(|dt| format!("at {dt}"))
+                        .unwrap_or("never".to_owned()),
+                    user.username()
+                );
+                counter_add!(state.instruments, "user.mint-key.successful", 1, &[]);
+                (StatusCode::CREATED, Json(rsp)).into_response()
+            }
+            Err(err) => {
+                counter_add!(state.instruments, "user.mint-key.failures", 1, &[]);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorResponseBody {
+                        error: format!("{}", err),
+                    },
+                )
+                    .into_response()
+            }
+        },
+        Err(_) => {
+            counter_add!(state.instruments, "user.mint-key.failures", 1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -649,6 +736,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route("/users/signup", post(signup))
         .route("/users/login", get(login).merge(post(login)))
         .route("/users/follow", post(follow))
+        .route("/users/mint-key", get(mint_key))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             authenticate,
