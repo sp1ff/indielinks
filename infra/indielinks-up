@@ -26,4 +26,6 @@ while [ "${status}" != "GOOD" ]; do
         exit 1
     fi
 done
-    
+
+# Initialize this instance as a single-node Raft cluster
+curl -v -H 'Content-Type: application/json' http://localhost:20680/ops/cache/init-cluster --data '{"0":{"addr":"127.0.0.1:20681"}}'

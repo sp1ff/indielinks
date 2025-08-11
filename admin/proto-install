@@ -146,3 +146,25 @@ RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_st
     -L /home/$USER/var \
     --debug \
     --plain
+
+echo "Waiting for your indielinks server to healthcheck..."
+sleep=0.5
+# curl can fail if the server isn't up, yet
+set +e
+status=$(curl -s http://localhost:20676/healthcheck)
+ntries=1
+while [ "${status}" != "GOOD" ]; do
+    sleep 0.5
+    status=$(curl -s http://localhost:20676/healthcheck)
+    ntries=$(($ntries+1))
+    # Give it five seconds
+    if [ ${ntries} -gt 10 ]; then
+        echo "indielinks failed to come up!" >&2
+        exit 1
+    fi
+done
+echo "Waiting for your indielinks server to healthcheck...done."
+
+echo "Initializing the indielinks instance as a single-node Raft cluster..."
+curl -v -H 'Content-Type: application/json' http://localhost:20677/ops/cache/init-cluster --data '{"0":{"addr":"127.0.0.1:20678"}}'
+echo "Initializing the indielinks instance as a single-node Raft cluster...done."

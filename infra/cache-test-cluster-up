@@ -56,4 +56,6 @@ hc "${bin}" $(($base_port+2))
 hc "${bin}" $(($base_port+3))
 hc "${bin}" $(($base_port+4))
 
+# Note that we do *not* initialize the Raft cluster-- leave that for the integration tests.
+
 exit 0
