@@ -353,6 +353,8 @@ impl LogStore {
             .collect::<Vec<PathBuf>>();
         Ok(BTreeSet::from_iter(entries))
     }
+    // `StorageError` is outside my control, and `NodeId` is just a u64, so... 🤷
+    #[allow(clippy::result_large_err)]
     fn read_entry<P: AsRef<Path>>(path: P) -> StdResult<Entry<TypeConfig>, StorageError<NodeId>> {
         let file = File::open(path)
             .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?;

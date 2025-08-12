@@ -75,7 +75,8 @@ pub enum Error {
     #[snafu(display("The account name {name} is not a valid username: {source}"))]
     BadUsername {
         name: String,
-        source: crate::entities::Error,
+        #[snafu(source(from(crate::entities::Error, Box::new)))]
+        source: Box<crate::entities::Error>,
     },
     #[snafu(display("Could not interpret {domain} as an acct host: {source}"))]
     Domain {
@@ -96,7 +97,8 @@ pub enum Error {
     #[snafu(display("Failed to create an AP user ID from the account {name}: {source}"))]
     UserId {
         name: String,
-        source: crate::ap_entities::Error,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
 }
 

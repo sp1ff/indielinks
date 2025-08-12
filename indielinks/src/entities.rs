@@ -48,7 +48,10 @@ use url::Url;
 use uuid::Uuid;
 use zxcvbn::{Score, feedback::Feedback, zxcvbn};
 
-use indielinks_shared::{Post, StorUrl, UserEmail, UserId, Username, define_id, native_type_check};
+use indielinks_shared::{
+    ColumnTypeMismatchSnafu, Post, StorUrl, UserEmail, UserId, Username, define_id,
+    native_type_check,
+};
 
 use crate::peppers::{self, Pepper, Peppers, Version as PepperVersion};
 
@@ -67,13 +70,6 @@ pub enum Error {
     CheckPassword {
         username: Username,
         source: password_hash::errors::Error,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("{col_name} expected type {expected:?}; got {actual:?}"))]
-    ColumnTypeMismatch {
-        col_name: String,
-        actual: ColumnType<'static>,
-        expected: ColumnType<'static>,
         backtrace: Backtrace,
     },
     #[snafu(display(

@@ -170,7 +170,8 @@ pub enum Error {
     InvalidRecipient { url: Box<Url>, backtrace: Backtrace },
     #[snafu(display("We parsed a username out of an Actor ID, but it was invalid: {source}"))]
     InvalidUsername {
-        source: indielinks_shared::Error,
+        #[snafu(source(from(indielinks_shared::Error, Box::new)))]
+        source: Box<indielinks_shared::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("JSON serialization error: {source}"))]

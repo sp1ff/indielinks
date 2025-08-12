@@ -199,7 +199,10 @@ pub enum Error {
         source: opentelemetry_sdk::metrics::MetricError,
     },
     #[snafu(display("Failed to connect to SycllaDB: {source}"))]
-    Syclla { source: indielinks::scylla::Error },
+    Syclla {
+        #[snafu(source(from(indielinks::scylla::Error, Box::new)))]
+        source: Box<indielinks::scylla::Error>,
+    },
     #[snafu(display("Failed to fork the indielinks process a second time: errno={errno}"))]
     SecondFork { errno: errno::Errno },
     #[snafu(display("Failed to set the tracing subscriber: {source}"))]

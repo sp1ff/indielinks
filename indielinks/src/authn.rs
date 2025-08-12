@@ -70,12 +70,14 @@ pub enum Error {
     #[snafu(display("Failed to validate password for {username}: {source}"))]
     BadPassword {
         username: Username,
-        source: entities::Error,
+        #[snafu(source(from(entities::Error, Box::new)))]
+        source: Box<entities::Error>,
     },
     #[snafu(display("{username} is not a valid username"))]
     BadUsername {
         username: String,
-        source: indielinks_shared::Error,
+        #[snafu(source(from(indielinks_shared::Error, Box::new)))]
+        source: Box<indielinks_shared::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Computed digest did not match the reported digest"))]
@@ -113,7 +115,8 @@ pub enum Error {
     },
     #[snafu(display("Invalid API key: {source}"))]
     InvalidKey {
-        source: entities::Error,
+        #[snafu(source(from(entities::Error, Box::new)))]
+        source: Box<entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to find a colon in '{text}'"))]

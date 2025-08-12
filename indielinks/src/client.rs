@@ -46,7 +46,8 @@ pub enum Error {
     #[snafu(display("Failed to create a KeyId for user {username}: {source}"))]
     KeyId {
         username: Username,
-        source: crate::ap_entities::Error,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("Failed to create an HTTP client: {source}"))]
     ReqwestClient {

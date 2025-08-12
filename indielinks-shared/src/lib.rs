@@ -52,6 +52,10 @@ type StdResult<T, E> = std::result::Result<T, E>;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
+// The `native_type_check!` macro, defined below, uses the Snafu "context selector" for the
+// `ColumnTypeMismatch` variant below. In order to be able to invoke that macro in other crates, I
+// need to make the context selectors public:
+#[snafu(visibility(pub))]
 pub enum Error {
     #[snafu(display("{email} is not a valid e-mail address"))]
     BadEmail { email: String, backtrace: Backtrace },
@@ -61,8 +65,8 @@ pub enum Error {
     #[snafu(display("{col_name} expected type {expected:?}; got {actual:?}"))]
     ColumnTypeMismatch {
         col_name: String,
-        actual: ColumnType<'static>,
-        expected: ColumnType<'static>,
+        actual: Box<ColumnType<'static>>,
+        expected: Box<ColumnType<'static>>,
         backtrace: Backtrace,
     },
     #[cfg(feature = "backend")]
@@ -99,8 +103,8 @@ macro_rules! native_type_check {
             .ok_or(<$err_type>::new(
                 ColumnTypeMismatchSnafu {
                     col_name: $column_name.to_owned(),
-                    actual: $var_name.clone().into_owned(),
-                    expected: ColumnType::Native(NativeType::$native_type),
+                    actual: Box::new($var_name.clone().into_owned()),
+                    expected: Box::new(ColumnType::Native(NativeType::$native_type)),
                 }
                 .build(),
             ))

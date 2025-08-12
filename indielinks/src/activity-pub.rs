@@ -82,18 +82,20 @@ pub enum Error {
     #[snafu(display("Failed to build a Create activity from a Note for Post {postid}: {source}"))]
     Create {
         postid: PostId,
-        source: crate::ap_entities::Error,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("ActivityPub request failed: {rsp:?}"))]
     FailedAp {
-        rsp: reqwest::Response,
+        rsp: Box<reqwest::Response>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to form an URL for follow of {id} for {username}"))]
     FollowId {
         username: Username,
         id: FollowId,
-        source: crate::ap_entities::Error,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("Failed to obtain a follow: {source}"))]
     Following { source: crate::storage::Error },
@@ -103,11 +105,15 @@ pub enum Error {
         source: crate::storage::Error,
     },
     #[snafu(display("Failed to serialize entity to JSON-LD: {source}"))]
-    Jld { source: crate::ap_entities::Error },
+    Jld {
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
+    },
     #[snafu(display("Failed to create a KeyId for user {username}: {source}"))]
     KeyId {
         username: Username,
-        source: crate::ap_entities::Error,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("No Post for Post ID {postid}"))]
     NoPost {
@@ -137,7 +143,8 @@ pub enum Error {
     #[snafu(display("Failed to convert Post ID {postid} into a Note: {source}"))]
     Note {
         postid: PostId,
-        source: crate::ap_entities::Error,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("Failed to lookup Post ID {postid}: {source}"))]
     Post {
@@ -162,7 +169,8 @@ pub enum Error {
     #[snafu(display("Failed to sign a request for {keyid}: {source}"))]
     Signature {
         keyid: String,
-        source: crate::authn::Error,
+        #[snafu(source(from(crate::authn::Error, Box::new)))]
+        source: Box<crate::authn::Error>,
     },
     #[snafu(display("Datastore error: {source}"))]
     Storage { source: crate::storage::Error },
@@ -181,7 +189,8 @@ pub enum Error {
     #[snafu(display("Failed to form an URL for user {username}: {source}"))]
     UserId {
         username: Username,
-        source: crate::ap_entities::Error,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("Unable to derive visibility"))]
     Visibility { backtrace: Backtrace },
@@ -255,7 +264,10 @@ pub async fn send_activity_pub_no_response<U: IntoUrl, B: ToJld + std::fmt::Debu
     debug!("Got a response of {:?}", response);
 
     if !response.status().is_success() {
-        return FailedApSnafu { rsp: response }.fail();
+        return FailedApSnafu {
+            rsp: Box::new(response),
+        }
+        .fail();
     }
 
     Ok(())

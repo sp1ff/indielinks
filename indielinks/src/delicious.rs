@@ -108,19 +108,22 @@ pub enum Error {
     },
     #[snafu(display("Bad tag name: {source}"))]
     BadTagName {
-        source: indielinks_shared::Error,
+        #[snafu(source(from(indielinks_shared::Error, Box::new)))]
+        source: Box<indielinks_shared::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("{username} is not a valid username"))]
     BadUsername {
         username: String,
-        source: crate::entities::Error,
+        #[snafu(source(from(crate::entities::Error, Box::new)))]
+        source: Box<crate::entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to delete post {uri}: {source}"))]
     DeletePosts {
-        uri: StorUrl,
-        source: crate::storage::Error,
+        uri: Box<StorUrl>,
+        #[snafu(source(from(crate::storage::Error, Box::new)))]
+        source: Box<crate::storage::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to delete tag {tag}: {source}"))]
@@ -138,12 +141,17 @@ pub enum Error {
     #[snafu(display("An Authorization header had a non-textual value: {source}"))]
     InvalidAuthHeaderValue {
         value: HeaderValue,
-        source: authn::Error,
+        #[snafu(source(from(authn::Error, Box::new)))]
+        source: Box<authn::Error>,
     },
     #[snafu(display("Invalid credentials: {source}"))]
     InvalidCredentials { source: authn::Error },
     #[snafu(display("The token {value} couldn't be interpreted as an API key: {source}"))]
-    InvalidQueryToken { value: String, source: authn::Error },
+    InvalidQueryToken {
+        value: String,
+        #[snafu(source(from(authn::Error, Box::new)))]
+        source: Box<authn::Error>,
+    },
     #[snafu(display("Failed to find a colon in '{text}'"))]
     MissingColon { text: String, backtrace: Backtrace },
     #[snafu(display("No query parameters: this method has required query parameters"))]
@@ -174,8 +182,9 @@ pub enum Error {
     },
     #[snafu(display("Failed to fetch posts by URI {uri}: {source}"))]
     PostByUri {
-        uri: StorUrl,
-        source: storage::Error,
+        uri: Box<StorUrl>,
+        #[snafu(source(from(storage::Error, Box::new)))]
+        source: Box<storage::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to fetch recent posts; {source}"))]
@@ -195,8 +204,9 @@ pub enum Error {
     },
     #[snafu(display("Failed to fetch the tag cloud for {uri}: {source}"))]
     TagCloudForUri {
-        uri: StorUrl,
-        source: storage::Error,
+        uri: Box<StorUrl>,
+        #[snafu(source(from(storage::Error, Box::new)))]
+        source: Box<storage::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Unauthorized: {source}"))]

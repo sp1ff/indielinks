@@ -262,6 +262,8 @@ pub mod test {
     /// Run the openraft test
     /// [suite](https://docs.rs/openraft/latest/openraft/testing/struct.Suite.html) against our
     /// caller's [RaftLogStorage] implementation and our state machine.
+    // `StorageError` is outside my control, and NodeId is just a u64... 🤷
+    #[allow(clippy::result_large_err)]
     pub fn test_storage<LS, G, F>(f: F) -> std::result::Result<(), StorageError<NodeId>>
     where
         LS: RaftLogStorage<TypeConfig>,

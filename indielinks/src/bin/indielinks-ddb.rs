@@ -63,12 +63,14 @@ pub enum Error {
     #[snafu(display("Failed to charge table {name}: {source:#?}"))]
     ChargeTable {
         name: String,
-        source: SdkError<PutItemError, aws_sdk_dynamodb::config::http::HttpResponse>,
+        #[snafu(source(from(SdkError<PutItemError, aws_sdk_dynamodb::config::http::HttpResponse>, Box::new)))]
+        source: Box<SdkError<PutItemError, aws_sdk_dynamodb::config::http::HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to create table: {source}"))]
     CreateTable {
-        source: SdkError<CreateTableError, aws_sdk_dynamodb::config::http::HttpResponse>,
+        #[snafu(source(from(SdkError<CreateTableError, aws_sdk_dynamodb::config::http::HttpResponse>, Box::new)))]
+        source: Box<SdkError<CreateTableError, aws_sdk_dynamodb::config::http::HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to parse RUST_LOG: {source}"))]

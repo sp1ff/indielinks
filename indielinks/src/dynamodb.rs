@@ -76,14 +76,16 @@ use std::{
 pub enum Error {
     #[snafu(display("Failed to add follows {follows:?}: {source}"))]
     AddFollow {
-        follows: HashSet<StorUrl>,
-        source: SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>,
+        follows: Box<HashSet<StorUrl>>,
+        #[snafu(source(from(SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>, Box::new)))]
+        source: Box<SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to add followers {followers:?}: {source}"))]
     AddFollower {
         followers: HashSet<StorUrl>,
-        source: SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>,
+        #[snafu(source(from(SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>, Box::new)))]
+        source: Box<SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>>,
         backtrace: Backtrace,
     },
     #[snafu(display("A query was expected to prodce at most one row & did not."))]
@@ -110,19 +112,27 @@ pub enum Error {
     },
     #[snafu(display("A batch write failed: {source}"))]
     BatchWrite {
-        source: SdkError<BatchWriteItemError, HttpResponse>,
+        #[snafu(source(from(SdkError<BatchWriteItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<BatchWriteItemError, HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("When counting items: {source}"))]
     Count {
-        source: SdkError<QueryError, HttpResponse>,
+        #[snafu(source(from(SdkError<QueryError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<QueryError, HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to delete a post: {source}"))]
     DeletePosts {
-        source: aws_smithy_runtime_api::client::result::SdkError<
+        #[snafu(source(from(aws_smithy_runtime_api::client::result::SdkError<
             aws_sdk_dynamodb::operation::delete_item::DeleteItemError,
             aws_sdk_dynamodb::config::http::HttpResponse,
+        >, Box::new)))]
+        source: Box<
+            aws_smithy_runtime_api::client::result::SdkError<
+                aws_sdk_dynamodb::operation::delete_item::DeleteItemError,
+                aws_sdk_dynamodb::config::http::HttpResponse,
+            >,
         >,
     },
     #[snafu(display("Failed to deserialize items: {source}"))]
@@ -152,7 +162,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to read last-purged from the database: {source}"))]
     LastPurgedGet {
-        source: SdkError<GetItemError, HttpResponse>,
+        #[snafu(source(from(SdkError<GetItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<GetItemError, HttpResponse>>,
     },
     #[snafu(display("Read {in_count} tags in, produced {out_count} TagIds"))]
     MismatchedTagCounts {
@@ -202,9 +213,15 @@ pub enum Error {
     },
     #[snafu(display("DynamoDB query failed: {source}"))]
     Query {
-        source: aws_smithy_runtime_api::client::result::SdkError<
+        #[snafu(source(from(aws_smithy_runtime_api::client::result::SdkError<
             aws_sdk_dynamodb::operation::query::QueryError,
             aws_sdk_dynamodb::config::http::HttpResponse,
+        >, Box::new)))]
+        source: Box<
+            aws_smithy_runtime_api::client::result::SdkError<
+                aws_sdk_dynamodb::operation::query::QueryError,
+                aws_sdk_dynamodb::config::http::HttpResponse,
+            >,
         >,
         backtrace: Backtrace,
     },
@@ -250,19 +267,22 @@ pub enum Error {
     },
     #[snafu(display("Failed to write Raft metadata to the database: {source}"))]
     RaftMetaPut {
-        source: SdkError<PutItemError, HttpResponse>,
+        #[snafu(source(from(SdkError<PutItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<PutItemError, HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("A scan failed: {source}"))]
     Scan {
-        source: SdkError<ScanError, HttpResponse>,
+        #[snafu(source(from(SdkError<ScanError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<ScanError, HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to serialize API keys {keys:?} for {user:?}: {source}"))]
     SerApiKeys {
-        user: User,
-        keys: ApiKeys,
-        source: serde_dynamo::Error,
+        user: Box<User>,
+        keys: Box<ApiKeys>,
+        #[snafu(source(from(serde_dynamo::Error, Box::new)))]
+        source: Box<serde_dynamo::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to serialize to an AttributeValue: {source}"))]
@@ -272,57 +292,85 @@ pub enum Error {
     },
     #[snafu(display("Failed to update post counts: {source}"))]
     UpdatePostCounts {
-        source: aws_smithy_runtime_api::client::result::SdkError<
+        #[snafu(source(from(aws_smithy_runtime_api::client::result::SdkError<
             aws_sdk_dynamodb::operation::update_item::UpdateItemError,
             aws_sdk_dynamodb::config::http::HttpResponse,
+        >, Box::new)))]
+        source: Box<
+            aws_smithy_runtime_api::client::result::SdkError<
+                aws_sdk_dynamodb::operation::update_item::UpdateItemError,
+                aws_sdk_dynamodb::config::http::HttpResponse,
+            >,
         >,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to update a post time: {source}"))]
     UpdatePostTime {
-        source: aws_smithy_runtime_api::client::result::SdkError<
+        #[snafu(source(from(aws_smithy_runtime_api::client::result::SdkError<
             aws_sdk_dynamodb::operation::update_item::UpdateItemError,
             aws_sdk_dynamodb::config::http::HttpResponse,
+        >, Box::new)))]
+        source: Box<
+            aws_smithy_runtime_api::client::result::SdkError<
+                aws_sdk_dynamodb::operation::update_item::UpdateItemError,
+                aws_sdk_dynamodb::config::http::HttpResponse,
+            >,
         >,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to update a tag: {source}"))]
     UpdateTag {
-        source: aws_smithy_runtime_api::client::result::SdkError<
+        #[snafu(source(from(aws_smithy_runtime_api::client::result::SdkError<
             aws_sdk_dynamodb::operation::update_item::UpdateItemError,
             aws_sdk_dynamodb::config::http::HttpResponse,
+        >, Box::new)))]
+        source: Box<
+            aws_smithy_runtime_api::client::result::SdkError<
+                aws_sdk_dynamodb::operation::update_item::UpdateItemError,
+                aws_sdk_dynamodb::config::http::HttpResponse,
+            >,
         >,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to update API keys {keys:?} for {user:?}: {source}"))]
     UpdateUserApiKeys {
-        user: User,
-        keys: ApiKeys,
-        source: SdkError<
+        user: Box<User>,
+        keys: Box<ApiKeys>,
+        #[snafu(source(from(SdkError<
             aws_sdk_dynamodb::operation::update_item::UpdateItemError,
             aws_sdk_dynamodb::config::http::HttpResponse,
+        >, Box::new)))]
+        source: Box<
+            SdkError<
+                aws_sdk_dynamodb::operation::update_item::UpdateItemError,
+                aws_sdk_dynamodb::config::http::HttpResponse,
+            >,
         >,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to write user {user:?} to the database: {source}"))]
     User {
         user: Box<User>,
-        source: SdkError<PutItemError, HttpResponse>,
+        #[snafu(source(from(SdkError<PutItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<PutItemError, HttpResponse>>,
     },
     #[snafu(display("Failed to check whether the username was claimed: {source}"))]
     Username {
         username: Username,
-        source: SdkError<PutItemError, HttpResponse>,
+        #[snafu(source(from(SdkError<PutItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<PutItemError, HttpResponse>>,
     },
     #[snafu(display("Failed to read a vote from the database: {source}"))]
     VoteGet {
-        source: SdkError<GetItemError, HttpResponse>,
+        #[snafu(source(from(SdkError<GetItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<GetItemError, HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to write vote {vote:?} to the database: {source}"))]
     VotePut {
         vote: Vote<NodeId>,
-        source: SdkError<PutItemError, HttpResponse>,
+        #[snafu(source(from(SdkError<PutItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<PutItemError, HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to serialize a Raft Vote: {source}"))]
