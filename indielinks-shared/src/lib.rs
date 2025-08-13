@@ -902,6 +902,9 @@ impl Post {
     pub fn posted(&self) -> DateTime<Utc> {
         self.posted
     }
+    pub fn public(&self) -> bool {
+        self.public
+    }
     pub fn rename_tag(&mut self, from: &Tagname, to: &Tagname) {
         if self.tags.remove(from) {
             self.tags.insert(to.clone());
@@ -912,6 +915,9 @@ impl Post {
     }
     pub fn title(&self) -> &str {
         &self.title
+    }
+    pub fn unread(&self) -> bool {
+        self.unread
     }
     pub fn url(&self) -> &StorUrl {
         &self.url
@@ -929,6 +935,23 @@ impl Post {
 #[serde(deny_unknown_fields)]
 pub struct UpdateRsp {
     pub update_time: DateTime<Utc>,
+}
+
+/// A deserializable struct representing the query parameters for `/posts/add`
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostAddReq {
+    pub url: StorUrl,
+    #[serde(rename = "description")]
+    pub title: String,
+    #[serde(rename = "extended")]
+    pub notes: Option<String>,
+    pub tags: Option<String>,
+    pub dt: Option<DateTime<Utc>>,
+    pub replace: Option<bool>,
+    pub shared: Option<bool>,
+    #[serde(rename = "toread")]
+    pub to_read: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -30,8 +30,12 @@
 //!
 //! [Leptos]: https://book.leptos.dev
 
-use chrono::{DateTime, Utc};
-use leptos::{either::Either, html, prelude::*, reactive::spawn_local};
+use leptos::{
+    either::Either,
+    html::{self},
+    prelude::*,
+    reactive::spawn_local,
+};
 use leptos_router::{
     components::{A, ProtectedRoute, Route, Router, Routes},
     hooks::use_location,
@@ -40,11 +44,18 @@ use leptos_router::{
 use serde::{Deserialize, Serialize};
 use tap::prelude::*;
 use thaw::{Layout, LayoutHeader, Link, Tab, TabList};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 
-use indielinks_shared::Post;
+use indielinks_shared::{Post, PostAddReq, PostsAllRsp, StorUrl};
+
+// This file is long overdue for a re-factor!
+
+#[derive(Clone, Debug)]
+pub struct Api(pub String);
+#[derive(Clone, Debug)]
+pub struct Token(pub String);
 
 /// indielinks "instance" page
 #[component]
@@ -58,39 +69,269 @@ fn Instance() -> impl IntoView {
 }
 
 #[component]
-fn Post(post: Post, set_tag: WriteSignal<Option<String>>) -> impl IntoView {
+/// Render a `Post` in "view" mode (as opposed to "edit" mode)
+///
+/// We expect the HTTP client, indielinks API location, and the login token to be available in the context.
+fn Post(
+    post: Post,
+    set_tag: WriteSignal<Option<String>>,
+    set_editing: WriteSignal<Option<StorUrl>>,
+    rerender: ArcTrigger,
+) -> impl IntoView {
+    debug!("Post invoked.");
+
+    let client = use_context::<reqwest::Client>().expect("Failed to retrieve the HTTP client");
+    let api = use_context::<Api>().expect("No context for the API location!?");
+    let token = use_context::<Token>().expect("No token!");
+
     let title = post.title().to_owned();
     let posted = post.posted().format("%Y-%m-%d %H:%M:%S").to_string();
-    let url = post.url().to_string();
+    let url = post.url().clone();
+
+    #[derive(Clone, Debug)]
+    pub struct EditParams {
+        pub url: StorUrl,
+        pub set_editing: WriteSignal<Option<StorUrl>>,
+        pub rerender: ArcTrigger,
+    }
+
+    let edit_url = url.clone();
+    let on_edit = move |_| {
+        info!("Now editing {edit_url}");
+        set_editing.set(Some(edit_url.clone()));
+    };
+
+    #[derive(Clone, Debug)]
+    pub struct DeleteParams {
+        pub client: reqwest::Client,
+        pub api: Api,
+        pub token: Token,
+        pub rerender: ArcTrigger,
+        pub url: StorUrl,
+    }
+
+    let on_delete = Action::new_unsync(move |params: &DeleteParams| {
+        let params = params.clone();
+        let mut full_url =
+            url::Url::parse(&format!("{}/api/v1/posts/delete", params.api.0)).expect("Bad URL!?");
+        full_url.query_pairs_mut().append_pair("url", &params.url);
+        info!("Sending: {full_url}");
+        async move {
+            let _ = params
+                .client
+                .post(full_url)
+                .bearer_auth(params.token.0)
+                .send()
+                .await
+                .and_then(|rsp| rsp.error_for_status())
+                .map_err(|err| error!("Deleting post: {err:?}"));
+            params.rerender.notify();
+        }
+    });
+
+    // These clones are getting out of hand... I understand I need to move them into the `View`, but
+    // why do they need to be cloned *again* in closures inside the `View`?
+    let c1 = client.clone();
+    let a1 = api.clone();
+    let t1 = token.clone();
+    let r1 = rerender.clone();
+    let u0 = url.clone().to_string();
     view! {
         <div class="post">
-            <div class="post-title"><a href={ url }> { title } </a></div>
+            <div class="post-title"><a href={ u0.clone() }> { title } </a></div>
             <div class="post-info">
                 <div class="post-info-left"> { posted }</div>
-                // I want to make these links, eventually, but let's start with plain text
                 <div class="post-info-right">
                     {
                         post.tags().map(|tag| {
-                            let setter = set_tag;
-                            let s0: String = tag.clone().into();
-                            let s1 = s0.clone();
+                            // Man, this involves a *lot* of cloning-- needed?
+                            let tag: String = tag.clone().into();
+                            let tag0 = tag.clone();
                             view! {
-                                <A href="/t" on:click=move |_| setter.set(Some(s1.clone()))> { s0 } </A> " "
+                                <A href="/t" on:click=move |_| set_tag.set(Some(tag0.clone()))> { tag } </A> " "
                             }
                         }).collect::<Vec<_>>()
                     }
                 </div>
             </div>
             <div class="post-controls">
-                <a href="#">edit</a>" "<a href="#">delete</a>
+            <a href="#" on:click=on_edit>edit</a>
+            " "
+            <a href="#" on:click=move |_| {
+                on_delete.dispatch(DeleteParams {
+                    client: c1.clone(), api: a1.clone(), token: t1.clone(), rerender: r1.clone(), url: url.clone(),
+                });
+            }>delete</a>
             </div>
         </div>
     }
 }
 
+#[component]
+fn EditPost(
+    post: Post,
+    set_editing: WriteSignal<Option<StorUrl>>,
+    rerender: ArcTrigger,
+) -> impl IntoView {
+    debug!("EditPost invoked.");
+
+    let client = use_context::<reqwest::Client>().expect("Failed to retrieve the HTTP client");
+    let api = use_context::<Api>().expect("No context for the API location!?");
+    let token = use_context::<Token>().expect("No token!");
+
+    // TBH, I have *no* idea what this does:
+    let url_element: NodeRef<html::Input> = NodeRef::new();
+    let title_element: NodeRef<html::Input> = NodeRef::new();
+    let notes_element: NodeRef<html::Input> = NodeRef::new();
+    let tags_element: NodeRef<html::Input> = NodeRef::new();
+    let private_element: NodeRef<html::Input> = NodeRef::new();
+    let unread_element: NodeRef<html::Input> = NodeRef::new();
+
+    let url = post.url().to_string();
+    let title = post.title().to_owned();
+    let notes = post.notes().map(|s| s.to_owned());
+    let tags = post
+        .tags()
+        .cloned()
+        .map(|tag_name| tag_name.into())
+        .collect::<Vec<String>>()
+        .join(" ");
+    let private = !post.public();
+    let unread = post.unread();
+
+    let on_submit = Action::new_local(move |_: &()| {
+        let api = api.0.clone();
+        let token = token.0.clone();
+        let client = client.clone();
+        let rerender = rerender.clone();
+        async move {
+            // This seems *really* painful... is there no way to make this more elegant?
+            let url: StorUrl = match url_element
+                .get()
+                .expect("url should be mounted")
+                .value()
+                .try_into()
+            {
+                Ok(url) => url,
+                Err(err) => {
+                    error!("{err:?}");
+                    window().alert_with_message("Invalid URL").unwrap();
+                    return;
+                }
+            };
+            let title = title_element
+                .get()
+                .expect("title should be mounted")
+                .value();
+            let notes = notes_element
+                .get()
+                .expect("notes should be mounted")
+                .value();
+            let tags = tags_element
+                .get()
+                .expect("tags should be mounted")
+                .value()
+                .split(' ')
+                .map(|s| s.to_owned())
+                .collect::<Vec<String>>()
+                .join(",");
+            let shared = !private_element
+                .get()
+                .expect("shared should be mounted")
+                .checked();
+            let to_read = unread_element
+                .get()
+                .expect("unread should be mounted")
+                .checked();
+
+            let url = reqwest::Url::parse(&format!(
+                "{}/api/v1/posts/add?{}",
+                api,
+                serde_urlencoded::to_string(&PostAddReq {
+                    url,
+                    title,
+                    notes: if notes.is_empty() { None } else { Some(notes) },
+                    tags: if tags.is_empty() { None } else { Some(tags) },
+                    dt: None,
+                    replace: Some(true),
+                    shared: Some(shared),
+                    to_read: Some(to_read),
+                })
+                .expect("Bad query!?")
+            ))
+            .expect("Bad URL!?");
+            info!("Sending {url}");
+            match client
+                .post(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .and_then(|rsp| rsp.error_for_status())
+            {
+                Ok(_) => {
+                    info!("Updated post successfully!");
+                    set_editing.set(None);
+                    rerender.notify();
+                }
+                Err(err) => {
+                    error!("{err:?}");
+                }
+            }
+        }
+    });
+
+    use leptos::prelude::window;
+
+    view! {
+        <div class="post">
+            <form style="padding; 1em;" on:submit = move |ev| { // leptos::tachys::html::event::Event
+                ev.prevent_default();
+                on_submit.dispatch(());
+            }>
+            <div style="margin-bottom: 8px;">
+                <input type="text" id="url" name="url" value={ url } node_ref=url_element required/>
+            </div>
+            <div style="margin-bottom: 8px;">
+                <input type="text" id="title" name="title" value={ title } node_ref=title_element required/>
+            </div>
+            <div style="margin-bottom: 3px;">
+                <label for="notes" style="font-size: smaller; color: #276173">notes</label>
+            </div>
+            <div style="margin-bottom: 8px;">
+                <input type="textarea" id="notes" name="notes" value={ notes } node_ref=notes_element/>
+            </div>
+            <div style="margin-bottom: 3px;">
+                <label for="tags" style="font-size: smaller; color: #276173">tags</label>
+            </div>
+            <div style="margin-bottom: 8px;">
+                <input type="text" id="tags" name="tags" value={ tags } node_ref=tags_element/>
+            </div>
+            <div style="margin-bottom: 8px; font-size: smaller;">
+                <label>
+                    <input type="checkbox" id="private" name="private" value={ private } node_ref=private_element/> private
+                </label>
+                " "
+                <label>
+                    <input type="checkbox" id="unread" name="unread" value={ unread } node_ref=unread_element/> unread
+                </label>
+            </div>
+            <div>
+                <input type="submit" value="save"/>
+                <button type="button" on:click=move |_| {
+                    set_editing.set(None);
+                }>"cancel"</button>
+            </div>
+            </form>
+        </div>
+    }
+}
+
 /// The indielinks' user "home" page
+///
+/// We expect the HTTP client & the indielinks API location to be available as context.
 #[component]
 fn Home(token: ReadSignal<Option<String>>, set_tag: WriteSignal<Option<String>>) -> impl IntoView {
+    debug!("Home invoked.");
     // RE posts: we can be in one of three situations:
     // 1. zero posts-- the user just signed-up & hasn't posted anything; don't display the
     // pagination controls & show an explanatory message in the list div
@@ -113,23 +354,29 @@ fn Home(token: ReadSignal<Option<String>>, set_tag: WriteSignal<Option<String>>)
     // when the page is changed, not when we discover that the server-side state has changed-out
     // beneath us. I'm not sure how to force a render; for now I'm planning on just adding a
     // "refresh" button.
-    let client =
-        use_context::<ReadSignal<reqwest::Client>>().expect("Failed to retrieve the HTTP client");
 
+    // Pull a few standard items from context:
+    let client = use_context::<reqwest::Client>().expect("Failed to retrieve the HTTP client");
+    let api = use_context::<Api>()
+        .expect("Failed to rerieve the API net location")
+        .0;
+
+    // I'm still confused on how & when these `View` constructing functions are invoked, but it
+    // seems that this function won't be invoked until after sign-in, so we can extract the token &
+    // provide it to all our subordinate components via context rather than prop drilling.
+    let token = token.get_untracked().expect("No token in Home!");
+    provide_context(Token(token.clone()));
+
+    // Create a bit of reactive state for the current page...
     let (page, set_page) = signal(0usize);
-
-    let api = use_context::<String>().expect("Failed to rerieve the API net location");
-
-    // Ugh-- copied from `indielinks`; if I take a dependency on the indielinks crate, I get a ton
-    // of error messages when I try to build *this* one-- I suspect because `indielinks` has
-    // dependencies that don't support the wasm32 target (?) I may need to factor types like this
-    // out into their own crate that can be shared by the front-end & back-end.
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct PostsAllRsp {
-        pub user: String, /*Username*/
-        pub tag: String,
-        pub posts: Vec<Post>,
-    }
+    // and whether & which `Post` is currently being edited.
+    let (editing, set_editing): (ReadSignal<Option<StorUrl>>, WriteSignal<Option<StorUrl>>) =
+        signal(None);
+    // Finally, setup a mechanism by which we can force this view to be re-rendered. A signal won't
+    // really do it because there are places (say, after a delete) where we want to *force* a
+    // re-render programmatically. "A trigger is a data-less signal with the sole purpose of
+    // notifying other reactive code of a change."
+    let rerender = ArcTrigger::new();
 
     // I'd really prefer to return a `Result<Vec<Post>>`, but I can't use this as a `LocalResource`
     // unless the return type is `Clone`, which errors generally are not. I *could* change my error
@@ -160,101 +407,102 @@ fn Home(token: ReadSignal<Option<String>>, set_tag: WriteSignal<Option<String>>)
             .pipe(|rsp| Some(rsp.posts))
     }
 
+    let tracker = rerender.clone();
     let page_data = LocalResource::new(move || {
-        load_data(
-            client.get().clone(),
-            api.clone(),
-            token.get().clone().expect("Missing token"),
-            page.get(),
-        )
+        tracker.track();
+        load_data(client.clone(), api.clone(), token.clone(), page.get())
     });
+
+    let on_click = {
+        let trig = rerender.clone();
+        move |_| trig.notify()
+    };
 
     view! {
         <div class="user-view" style="display: flex;">
             // User's posts
             <div class="posts-view">
-                <div class="posts-nav" style="display: flex; font-size: smaller; color: #888">
-                    <span style="padding: 2px 6px;">
-                        {move || {
-                            if page.get() > 0 {
-                                Either::Left(view!{
-                                    <a href="#" on:click=move |_| set_page.update(|n| *n -= 1)>"< prev"</a>
-                                })
-                            } else {
-                                Either::Right(view!{"< prev"})
-                            }
-                        }}
-                    </span>
-                    <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=move |_| {
-                        let p = page.get();
-                        set_page.set(p); // Touch, don't change value-- seems to work
-                    }>"    refresh"</a></span>
-                    <span style="padding: 2px 6px;">
-                        {move || {
-                          match page_data.get() {
-                              Some(Some(posts)) if posts.len() == 6 => Either::Left(view!{
-                                  <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
-                              }),
-                              _ => Either::Right(view!{"next >"})
-                          }}
-                        }
-                    </span>
-            </div>
-            {move || {
-                view! {
-                    <div class="post-list">
-                        <Transition fallback=move || view!{ <p>"Loading..."</p> }>
-                            <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
-                                 key=|post| post.id()
-                                 let:post>
-                              <Post post set_tag/>
-                            </For>
-                        </Transition>
-                    </div>
+            <div class="posts-nav" style="display: flex; font-size: smaller; color: #888">
+            <span style="padding: 2px 6px;">
+                {
+                    if page.get() > 0 {
+                        Either::Left(view!{
+                            <a href="#" on:click=move |_| set_page.update(|n| *n -= 1)>"< prev"</a>
+                        })
+                    } else {
+                        Either::Right(view!{"< prev"})
+                    }
                 }
-            }}
-            </div>
-            // User's tags
-            <div style="flex: 1; margin: 6px; border: 1px solid #ccc; display: flex; align-items: center; justify-content: space-around;">
-              <span>"Tags will go here!"</span>
-            </div>
+            </span>
+            <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=on_click >"    refresh"</a></span>
+            <span style="padding: 2px 6px;">
+                {
+                    match page_data.get() {
+                        Some(Some(posts)) if posts.len() == 6 => Either::Left(view!{
+                            <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
+                        }),
+                        _ => Either::Right(view!{"next >"})
+                    }}
+            </span>
+        </div>
+        <div class="post-list">
+            <Transition fallback=move || view!{ <p>"Loading..."</p> }>
+            <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
+                 key=|post| post.id()
+                 let:post>
+                {
+                    let r0 = rerender.clone();
+                    let r1 = rerender.clone();
+                    move || {
+                        info!("{} ==? {:?}", post.url(), editing.get());
+                        if Some(post.url()) == editing.get().as_ref() {
+                            Either::Left(view!{<EditPost post=post.clone() set_editing rerender=r0.clone()/>})
+                        } else {
+                            Either::Right(view!{<Post post=post.clone() set_tag set_editing rerender=r1.clone()/>})
+                        }
+                }}
+            </For>
+            </Transition>
+        </div>
+        </div>
+        // User's tags
+        <div style="flex: 1; margin: 6px; border: 1px solid #ccc; display: flex; align-items: center; justify-content: space-around;">
+        <span>"Tags will go here!"</span>
+        </div>
         </div>
     }
 }
 
 /// The "tags view" variant of Home
+// This duplicates a lot of the code in `Home`-- should probably be refactored. However, I want to
+// wait until I implement query parameters in the URL to do that.
 #[component]
 fn Tags(
     token: ReadSignal<Option<String>>,
     tag: ReadSignal<Option<String>>,
     set_tag: WriteSignal<Option<String>>,
 ) -> impl IntoView {
-    let client =
-        use_context::<ReadSignal<reqwest::Client>>().expect("Failed to retrieve the HTTP client");
+    debug!("Tags invoked.");
 
-    let api = use_context::<String>().expect("Failed to rerieve the API net location");
+    let client = use_context::<reqwest::Client>().expect("Failed to retrieve the HTTP client");
+    let api = use_context::<Api>()
+        .expect("Failed to rerieve the API net location")
+        .0;
+
+    // It seems that this function won't be invoked until after sign-in, so we can extract the token
+    // & provide it to all our subordinate components via context rather than prop drilling.
+    let token = token.get().expect("No token in Home!");
+    provide_context(Token(token.clone()));
 
     let (page, set_page) = signal(0usize);
+    let (editing, set_editing): (ReadSignal<Option<StorUrl>>, WriteSignal<Option<StorUrl>>) =
+        signal(None);
 
-    // Ugh-- next on my list is to factor-out a crate that just contains these sorts of entities and
-    // builds for all targets.
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct PostsAllReq {
-        tag: Option<String>,
-        start: Option<usize>,
-        results: Option<usize>,
-        fromdt: Option<DateTime<Utc>>,
-        todt: Option<DateTime<Utc>>,
-        #[serde(rename = "meta")]
-        _meta: Option<bool>,
-    }
-
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct PostsAllRsp {
-        pub user: String, /*Username*/
-        pub tag: String,
-        pub posts: Vec<Post>,
-    }
+    // Finally, setup a mechanism by which we can force this view to be re-rendered. A signal won't
+    // really do it because there are places (say, after a delete) where we want to *force* a
+    // re-render programmatically. "A trigger is a data-less signal with the sole purpose of
+    // notifying other reactive code of a change."
+    let rerender = ArcTrigger::new();
 
     // Again, I'd really prefer to return a `Result<Vec<Post>>`, but I can't use this as a
     // `LocalResource` unless the return type is `Clone`, which errors generally are not.
@@ -283,22 +531,29 @@ fn Tags(
             .pipe(|rsp| Some(rsp.posts))
     }
 
+    let tracker = rerender.clone();
     let page_data = LocalResource::new(move || {
+        tracker.track();
         load_data(
-            client.get().clone(),
+            client.clone(),
             api.clone(),
-            token.get().clone().expect("Missing token"),
+            token.clone(),
             tag.get().expect("Trying to show tags with no tag!?"),
             page.get(),
         )
     });
+
+    let on_click = {
+        let trig = rerender.clone();
+        move |_| trig.notify()
+    };
 
     view! {
         <p> "Posts tagged " {tag.get()} ":" </p>
         <div class="posts-view">
             <div class="posts-nav" style="display: flex; font-size: smaller; color: #888">
                 <span style="padding: 2px 6px;">
-                    {move || {
+                    {
                         if page.get() > 0 {
                             Either::Left(view!{
                                 <a href="#" on:click=move |_| set_page.update(|n| *n -= 1)>"< prev"</a>
@@ -306,36 +561,39 @@ fn Tags(
                         } else {
                             Either::Right(view!{"< prev"})
                         }
-                    }}
+                    }
                 </span>
-                <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=move |_| {
-                    let p = page.get();
-                    set_page.set(p); // Touch, don't change value-- seems to work
-                }>"    refresh"</a></span>
+                <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=on_click>"    refresh"</a></span>
                 <span style="padding: 2px 6px;">
-                    {move || {
+                    {
                       match page_data.get() {
                           Some(Some(posts)) if posts.len() == 6 => Either::Left(view!{
                               <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
                           }),
                           _ => Either::Right(view!{"next >"})
-                      }}
+                      }
                     }
                 </span>
         </div>
-        {move || {
-            view! {
-                <div class="post-list">
-                    <Transition fallback=move || view!{ <p>"Loading..."</p> }>
-                        <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
-                             key=|post| post.id()
-                             let:post>
-                          <Post post set_tag/>
-                        </For>
-                    </Transition>
-                </div>
-            }
-        }}
+        <div class="post-list">
+            <Transition fallback=move || view!{ <p>"Loading..."</p> }>
+                <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
+                     key=|post| post.id()
+                     let:post>
+                    {
+                        let r0 = rerender.clone();
+                        let r1 = rerender.clone();
+                        move || {
+                            if Some(post.url()) == editing.get().as_ref() {
+                                Either::Left(view!{<EditPost post=post.clone() set_editing rerender=r0.clone()/>})
+                            } else {
+                                Either::Right(view!{<Post post=post.clone() set_tag set_editing rerender=r1.clone()/>})
+                            }
+                        }
+                    }
+                </For>
+            </Transition>
+        </div>
         </div>
 
     }
@@ -351,6 +609,7 @@ fn Feeds() -> impl IntoView {
     }
 }
 
+// Ugh-- need to move to the indielinks_shared implementations of these two:
 #[derive(Clone, Debug, Serialize)]
 struct LoginReq {
     username: String,
@@ -364,11 +623,12 @@ struct LoginRsp {
 
 async fn login(
     client: &reqwest::Client,
+    api: &str,
     username: impl Into<String>,
     password: impl Into<String>,
 ) -> Result<String, String> {
     match client
-        .post("http://127.0.0.1:20673/api/v1/users/login")
+        .post(format!("{api}/api/v1/users/login"))
         .json(&LoginReq {
             username: username.into(),
             password: password.into(),
@@ -400,12 +660,13 @@ fn SignIn(
     _token: ReadSignal<Option<String>>,
     set_token: WriteSignal<Option<String>>,
 ) -> impl IntoView {
+    debug!("SignIn invoked.");
     // I think this is one of those things that "should never fail"; or where failure indicates a
     // coding error.
-    let client =
-        use_context::<ReadSignal<reqwest::Client>>().expect("Failed to retrieve the HTTP client");
-
-    let api = use_context::<String>().expect("Failed to rerieve the API net location");
+    let client = use_context::<reqwest::Client>().expect("Failed to retrieve the HTTP client");
+    let api = use_context::<Api>()
+        .expect("No context for the API location!?")
+        .0;
 
     // TBH, I have *no* idea what this does:
     let username_element: NodeRef<html::Input> = NodeRef::new();
@@ -429,10 +690,10 @@ fn SignIn(
             .value();
         let req = LoginReq { username, password };
         let api_val = api.clone();
+        let client = client.clone();
         async move {
             // This still feels prolix to me...
             match client
-                .get()
                 .post(format!("{api_val}/api/v1/users/login"))
                 .json(&req)
                 .send()
@@ -506,61 +767,59 @@ fn SignIn(
 // which I gather is the reactive entity that gets rendered & re-rendered as needed.
 #[component]
 fn App() -> impl IntoView {
+    debug!("App invoked.");
     // We setup our HTTP client here, and make it avaiable throughout the app through context. Not
     // really sure how to handle failure; if we can't construct the `Client` then there's not much
     // we can really do-- I guess I need a fallback page of some sort, but I want to see some other
     // failure opportunities before I set this up.
     //
-    // In particular, I'm interseted in the `ErrorBoundary` component as a means of error handling.
-    let (client, _) = signal(
+    // In particular, I'm interested in the `ErrorBoundary` component as a means of error handling.
+    //
+    // Make the client available to any of our sub-components (avoiding "prop drilling"-- making
+    // this a parameter into every single `View` setup function below us):
+    provide_context(
         reqwest::Client::builder()
             .user_agent("indielinks-fe/0.0.1 (+sp1ff@pobox.com)")
             .build()
             .expect("Failed to build an HTTP client!"),
     );
-    // Make the client available to any of our sub-components (avoiding "prop drilling"-- making
-    // this a parameter into every single `View` setup function below us):
-    provide_context(client);
 
     // Next, I'm going to setup the network location at which we can reach indielinks. In my world,
-    // this would typically be a configuration item, typically provided by something as
-    // sophisticated as a parameter management system, or as simple as a configuration file. In this
-    // world (frontend/CSR/SPA) there are a few options, including fetching, at runtime a
-    // configuration file from the same endpoint at which this WASM bundle is being served.
-
+    // this would be a configuration item, typically provided by something as sophisticated as a
+    // parameter management system, or as simple as a configuration file. In this world
+    // (frontend/CSR/SPA) there are a few options, including fetching, at runtime a configuration
+    // file from the same endpoint at which this WASM bundle is being served.
+    //
     // For now, I'm going to go with the simplest option, which is to read environment variables;
     // the read happens at *compile* time, meaning that this can be configured as part of the build.
-    // let (api, _) = signal(
-    //     option_env!("INDIELINKS_FE_API")
-    //         .unwrap_or("http://127.0.0.1:20673")
-    //         .to_owned(),
-    // );
-    provide_context(
-        option_env!("INDIELINKS_FE_API")
-            .unwrap_or("http://127.0.0.1:20673")
-            .to_owned(),
-    );
+    provide_context(Api(option_env!("INDIELINKS_FE_API")
+        .unwrap_or("http://127.0.0.1:20679")
+        .to_owned()));
 
-    // OK-- we store the access token here. Perhaps make this into a context, as well? Yeah... on
-    // further reflection, this ("token") and "tag" should really be provided by a context.
+    // OK-- we store the access token here. Perhaps make this into a context, as well? At this
+    // level, we need R/W access, but in subordinate `View`s, perhaps the accessor could be provided
+    // via context.
     let (token, set_token): (ReadSignal<Option<String>>, WriteSignal<Option<String>>) =
         signal(None);
-
     let (tag, set_tag): (ReadSignal<Option<String>>, WriteSignal<Option<String>>) = signal(None);
 
     // Not sure if this is required?
     let selected_value = RwSignal::new("home".to_owned());
 
     // This is a dev-time optimization-- log my test user in automatically on load:
+    let client = use_context::<reqwest::Client>().expect("No context for the client?");
+    let api = use_context::<Api>()
+        .expect("No context for the API location!?")
+        .0;
     spawn_local(async move {
-        match login(&client.get(), "sp1ff", "f00-b@r-sp1at").await {
+        match login(&client, &api, "sp1ff", "f00-b@r-sp1at").await {
             Ok(token) => set_token.set(Some(token)),
             Err(err) => error!("Automatic login failed; {err}"),
         }
     });
 
     view! {
-        // I'm using a thaw component here, `Layout` (https://thawui.vercel.app/components/layout)
+        // I'm using a `thaw` component here, `Layout` (https://thawui.vercel.app/components/layout)
         <Layout>
             <LayoutHeader class="banner">
                 <h1 class="logo">indielinks</h1>

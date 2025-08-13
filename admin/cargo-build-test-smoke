@@ -1,5 +1,11 @@
 #!/bin/bash
 
 set -ex
-cargo build
-cargo test
+
+nproc=$(nproc)
+nproc=$(($nproc/4))
+if [ $nproc -eq 0 ]; then
+    nproc=1
+fi
+cargo build -j $nproc
+cargo test -j $nproc

@@ -45,7 +45,7 @@ use axum::{
     routing::{get, post},
 };
 use axum_extra::extract::Query;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use snafu::prelude::*;
@@ -54,7 +54,7 @@ use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error};
 
 use indielinks_shared::{
-    Post, PostId, PostsAllReq, PostsAllRsp, PostsDate, PostsDatesReq, PostsDatesRsp,
+    Post, PostAddReq, PostId, PostsAllReq, PostsAllRsp, PostsDate, PostsDatesReq, PostsDatesRsp,
     PostsDeleteReq, PostsGetReq, PostsGetRsp, PostsRecentReq, PostsRecentRsp, StorUrl, Tagname,
     TagsDeleteReq, TagsGetRsp, TagsRenameReq, UpdateRsp, Username,
 };
@@ -574,23 +574,6 @@ async fn update(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("delicious.posts.added", Sort::IntegralCounter) }
-
-/// A deserializable struct representing the query parameters for `/posts/add`
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PostAddReq {
-    url: StorUrl,
-    #[serde(rename = "description")]
-    title: String,
-    #[serde(rename = "extended")]
-    notes: Option<String>,
-    tags: Option<String>,
-    dt: Option<DateTime<Utc>>,
-    replace: Option<bool>,
-    shared: Option<bool>,
-    #[serde(rename = "toread")]
-    to_read: Option<bool>,
-}
 
 /// `/posts/add` handler
 ///
