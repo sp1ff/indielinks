@@ -1,14 +1,14 @@
 version = "1"
-log-file = "/tmp/indielinks-0/indielinks.log"
-public-address = "0.0.0.0:20679"
-private-address = "127.0.0.1:20680"
-raft-grpc-address = "127.0.0.1:20681"
-user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
+log-file = "/tmp/indielinksd-3/indielinksd.log"
+public-address = "0.0.0.0:20688"
+private-address = "127.0.0.1:20689"
+raft-grpc-address = "127.0.0.1:20690"
+user-agent = "indielinksd/0.0.1; +sp1ff@pobox.com"
 collection-page-size = 64
 
 [public-origin]
 scheme = "http"
-port = 20673
+port = 20682
 
 [public-origin.host]
 RegName = "indiemark.local"
@@ -34,7 +34,7 @@ pickup-timeout = { secs = 1, nanos = 0 }
 
 [raft-config]
 cluster-name = "indielinks"
-this-node = 0
+this-node = 3
 heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
 election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
 election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms

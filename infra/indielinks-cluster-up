@@ -29,27 +29,28 @@ fi
 
 config="$1"
 nodes="$2"
+rust_log="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info"
 
 set -ex
 
 here=$(dirname $(realpath $0))
 cd $here/../indielinks
 
-[ -d /tmp/indielinks-0/run ] || mkdir -p /tmp/indielinks-0/run
-[ -d /tmp/indielinks-1/run ] || mkdir -p /tmp/indielinks-1/run
-[ -d /tmp/indielinks-2/run ] || mkdir -p /tmp/indielinks-2/run
+[ -d /tmp/indielinksd-0/run ] || mkdir -p /tmp/indielinksd-0/run
+[ -d /tmp/indielinksd-1/run ] || mkdir -p /tmp/indielinksd-1/run
+[ -d /tmp/indielinksd-2/run ] || mkdir -p /tmp/indielinksd-2/run
 if [ "${nodes}" == "5" ]; then
-    [ -d /tmp/indielinks-3/run ] || mkdir -p /tmp/indielinks-3/run
-    [ -d /tmp/indielinks-4/run ] || mkdir -p /tmp/indielinks-4/run
+    [ -d /tmp/indielinksd-3/run ] || mkdir -p /tmp/indielinksd-3/run
+    [ -d /tmp/indielinksd-4/run ] || mkdir -p /tmp/indielinksd-4/run
 fi
 
-# Run five copies of the `indielinks` daemon
-RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-0 -c ${here}/../indielinks-test/${config}-0.toml
-RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-1 -c ${here}/../indielinks-test/${config}-1.toml
-RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-2 -c ${here}/../indielinks-test/${config}-2.toml
+# Run five copies of the `indielinksd` daemon
+RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-0 -c ${here}/../indielinks-test/${config}-0.toml
+RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-1 -c ${here}/../indielinks-test/${config}-1.toml
+RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-2 -c ${here}/../indielinks-test/${config}-2.toml
 if [ "${nodes}" == "5" ]; then
-    RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-3 -c ${here}/../indielinks-test/${config}-3.toml
-    RUST_BACKTRACE=1 RUST_LOG="debug,tower=info,h2=info,tower_http=info,aws_smihty_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info" cargo run --bin indielinks -- -D -p -L /tmp/indielinks-4 -c ${here}/../indielinks-test/${config}-4.toml
+    RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-3 -c ${here}/../indielinks-test/${config}-3.toml
+    RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-4 -c ${here}/../indielinks-test/${config}-4.toml
 fi
 
 # Wait for the entire cluster to healthcheck
@@ -65,4 +66,4 @@ fi
 (haproxy -f ${here}/../indielinks-test/haproxy-${nodes}-nodes.conf) > /tmp/haproxy.log 2>&1 < /dev/null &
 sleep 0.5
 
-echo "indielinks up & fronted by haproxy."
+echo "indielinksd up & fronted by haproxy."

@@ -142,7 +142,7 @@ fn setup_indielinks_cluster_alternator() -> Result<()> {
     teardown_indielinks_cluster()?;
     run(
         "../infra/indielinks-cluster-up",
-        &["indielinks-alternator", "5"],
+        &["indielinksd-alternator", "5"],
     )
     .context(CommandSnafu {
         cmd: "indielinks-cluster-up".to_owned(),

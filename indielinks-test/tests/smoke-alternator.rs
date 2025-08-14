@@ -119,7 +119,7 @@ fn setup() -> Result<()> {
     run("../infra/scylla-up", &[]).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
     })?;
-    run("../infra/indielinks-up", &["indielinks-alternator.toml"]).context(CommandSnafu {
+    run("../infra/indielinks-up", &["indielinksd-alternator.toml"]).context(CommandSnafu {
         cmd: "indielinks-up".to_string(),
     })
 }

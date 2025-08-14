@@ -1,9 +1,9 @@
 version = "1"
-log-file = "/tmp/indielinks-2/indielinks.log"
+log-file = "/tmp/indielinksd-2/indielinksd.log"
 public-address = "0.0.0.0:20685"
 private-address = "127.0.0.1:20686"
 raft-grpc-address = "127.0.0.1:20687"
-user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
+user-agent = "indielinksd/0.0.1; +sp1ff@pobox.com"
 collection-page-size = 64
 
 [public-origin]
@@ -13,8 +13,8 @@ port = 20679
 [public-origin.host]
 RegName = "indiemark.local"
 
-[storage-config.Scylla]
-hosts = ["127.0.0.1:9043"]
+[storage-config.Dynamo]
+location = ["http://127.0.0.1:8043", "http://127.0.0.1:8044", "http://127.0.0.1:8045"]
 
 [pepper.peppers]
 "pepper-ver:20250213" = [0xb2, 0x91, 0x48, 0x34, 0x4d, 0x5f, 0xd3, 0x7e, 0x59, 0x71, 0x57, 0x91, 0xdd, 0x00, 0x32, 0x92, 0x62, 0xe9, 0x19, 0x77, 0x6d, 0xae, 0x4b, 0x5b, 0x6a, 0xab, 0x00, 0x67, 0x0e, 0x8c, 0xf4, 54]

@@ -527,7 +527,8 @@ impl io::Write for MyMutexGuardWriter<'_> {
 /// If we're logging to file, return the sender side of a channel that can be used to signal the
 /// file to close & re-open itself (in response to a `SIGHUP`, presumably).
 ///
-/// This method can only be invoked once (as it, in turn, calls tracing's [set_global_default]).
+/// This method can only be invoked once (as it, in turn, calls tracing's
+/// [set_global_default](tracing::subscriber::set_global_default)).
 fn configure_logging(logopts: &LogOpts, logfile: &Path) -> Result<Option<mpsc::Sender<PathBuf>>> {
     let filter = EnvFilter::builder()
         .with_default_directive(logopts.level.into())
