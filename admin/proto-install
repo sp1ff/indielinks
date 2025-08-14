@@ -95,14 +95,20 @@ fi
 
 set -e
 
+nproc=$(nproc)
+nproc=$(($nproc/4))
+if [ $nproc -eq 0 ]; then
+    nproc=1
+fi
+
 here=$(dirname $(realpath $0))
 cd $here/..
-cargo build --release
+cargo build --release -j ${nproc}
 cd indielinks-fe
-INDIELINKS_FE_API="http://127.0.0.1:20676" trunk build --release
+INDIELINKS_FE_API="http://127.0.0.1:20676" INDIELINKS_BASE="/fe" trunk build --release
 cd ..
 
-install -C target/release/indielinks /home/$USER/bin
+install -C target/release/indielinksd /home/$USER/bin
 
 cd indielinks-fe/dist
 wasm=$(ls -1 indielinks-fe*.wasm)
@@ -141,7 +147,7 @@ if test -r /home/$USER/var/run/indielinks.pid; then
     rm /home/$USER/var/run/indielinks.pid
 fi
 
-RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info /home/$USER/bin/indielinks \
+RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info /home/$USER/bin/indielinksd \
     -c /home/$USER/etc/indielinks.toml \
     -L /home/$USER/var \
     --debug \

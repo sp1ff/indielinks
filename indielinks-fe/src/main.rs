@@ -56,14 +56,17 @@ use indielinks_shared::{Post, PostAddReq, PostsAllRsp, StorUrl};
 pub struct Api(pub String);
 #[derive(Clone, Debug)]
 pub struct Token(pub String);
+#[derive(Clone, Debug)]
+pub struct Base(pub String);
 
 /// indielinks "instance" page
 #[component]
 fn Instance() -> impl IntoView {
+    let base = use_context::<Base>().expect("No API base!?").0;
     view! {
         <div style="padding: 8px;">
         "This will be the \"instance\" page; it will be the only visible page unless you're "
-        <a href="/s">"logged-in"</a>"."
+        <a href={format!("{base}/s")}>"logged-in"</a>"."
         </div>
     }
 }
@@ -129,6 +132,7 @@ fn Post(
         }
     });
 
+    let base = use_context::<Base>().expect("No base!?").0;
     // These clones are getting out of hand... I understand I need to move them into the `View`, but
     // why do they need to be cloned *again* in closures inside the `View`?
     let c1 = client.clone();
@@ -136,6 +140,7 @@ fn Post(
     let t1 = token.clone();
     let r1 = rerender.clone();
     let u0 = url.clone().to_string();
+    let t = format!("{base}/t");
     view! {
         <div class="post">
             <div class="post-title"><a href={ u0.clone() }> { title } </a></div>
@@ -148,7 +153,7 @@ fn Post(
                             let tag: String = tag.clone().into();
                             let tag0 = tag.clone();
                             view! {
-                                <A href="/t" on:click=move |_| set_tag.set(Some(tag0.clone()))> { tag } </A> " "
+                                <A href={ t.clone() } on:click=move |_| set_tag.set(Some(tag0.clone()))> { tag } </A> " "
                             }
                         }).collect::<Vec<_>>()
                     }
@@ -366,6 +371,8 @@ fn Home(token: ReadSignal<Option<String>>, set_tag: WriteSignal<Option<String>>)
     // provide it to all our subordinate components via context rather than prop drilling.
     let token = token.get_untracked().expect("No token in Home!");
     provide_context(Token(token.clone()));
+
+    // Later: recognize some basic query parameters <https://book.leptos.dev/router/18_params_and_queries.html>
 
     // Create a bit of reactive state for the current page...
     let (page, set_page) = signal(0usize);
@@ -719,10 +726,11 @@ fn SignIn(
         }
     });
 
+    let base = use_context::<Base>().expect("No API base!?").0;
     Effect::new(move |_| {
         // Still figuring this out...
         match on_submit.value().get() {
-            Some(Ok(_)) => navigate("/h", Default::default()),
+            Some(Ok(_)) => navigate(&format!("{}/h", base), Default::default()),
             Some(Err(err)) => {
                 info!("My effect has been invoked with an error value of {err:?}");
                 set_error.set(Some(err))
@@ -796,6 +804,12 @@ fn App() -> impl IntoView {
         .unwrap_or("http://127.0.0.1:20679")
         .to_owned()));
 
+    // Finally, this is where we "mount" this frontend. When developing against Trunk, this will
+    // just be "", but as of the time of this writing, it is served by the backend at "/fe"
+    provide_context(Base(
+        option_env!("INDIELINKS_BASE").unwrap_or("").to_owned(),
+    ));
+
     // OK-- we store the access token here. Perhaps make this into a context, as well? At this
     // level, we need R/W access, but in subordinate `View`s, perhaps the accessor could be provided
     // via context.
@@ -818,6 +832,13 @@ fn App() -> impl IntoView {
         }
     });
 
+    let base = use_context::<Base>().expect("No base for the API!?").0;
+    let s = format!("{base}/s");
+    let u = format!("{base}/u");
+    // I have *no idea* why I need to use these, here.
+    let i = StoredValue::new(format!("{base}/"));
+    let h = StoredValue::new(format!("{base}/h"));
+    let f = StoredValue::new(format!("{base}/f"));
     view! {
         // I'm using a `thaw` component here, `Layout` (https://thawui.vercel.app/components/layout)
         <Layout>
@@ -825,30 +846,32 @@ fn App() -> impl IntoView {
                 <h1 class="logo">indielinks</h1>
                 <Show when=move || token.get().is_some() >
                     <TabList selected_value class="tab-list">
-                        <Tab value="instance" class="tab"><Link href="/">"Instance"</Link></Tab>
-                        <Tab value="home" class="tab"><Link href="/h">"Home"</Link></Tab>
-                        <Tab value="feeds" class="tab"><Link href="/f">"Feeds"</Link></Tab>
+                        // Should I really be using `Link` here?
+                        <Tab value="instance" class="tab"><Link href={ i.read_value().clone() }>"Instance"</Link></Tab>
+                        <Tab value="home" class="tab"><Link href={ h.read_value().clone() }>"Home"</Link></Tab>
+                        <Tab value="feeds" class="tab"><Link href={ f.read_value().clone() }>"Feeds"</Link></Tab>
                     </TabList>
                 </Show>
                 <Show when = move || token.get().is_none() && use_location().pathname.get() != "/s" >
                     <div class="uath-actions">
                         <ul style="list-style-type: none; font-size: smaller;">
-                        <li><Link href="/s">"sign-in"</Link></li>
-                        <li><Link href="/u">"sign-up"</Link></li>
+                        <li><Link href={ s.clone() }>"sign-in"</Link></li>
+                        <li><Link href={ u.clone() }>"sign-up"</Link></li>
                         </ul>
                     </div>
                 </Show>
                 <Show when = move || token.get().is_some() && use_location().pathname.get() != "/s" >
                     <div class="uath-actions">
                         <ul style="list-style-type: none; font-size: smaller;">
-                        <li><Link href="/s">"sign-out"</Link></li>
+                        // To be implemented...
+                        <li><Link href="#">"sign-out"</Link></li>
                         </ul>
                     </div>
                 </Show>
             </LayoutHeader>
             <Layout>
                 <main>
-                    <Router>
+                    <Router base>
                         <Routes fallback=Instance>
                             <Route path=path!("/") view=Instance />
                             <Route path=path!("/s") view=move || view!{ <SignIn _token=token set_token /> } />
