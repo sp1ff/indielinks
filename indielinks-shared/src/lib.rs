@@ -1059,6 +1059,12 @@ pub struct TagsDeleteReq {
 //                             Requests & Response for the users API                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+pub const REFRESH_COOKIE: &str = "indielinks-refresh";
+
+pub const REFRESH_CSRF_COOKIE: &str = "indielinks-refresh-csrf";
+
+pub const REFRESH_CSRF_HEADER_NAME: &str = "X-Indielinks-Refresh-Csrf";
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignupReq {

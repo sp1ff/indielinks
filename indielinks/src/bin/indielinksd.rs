@@ -22,9 +22,6 @@
 //! indielinks is a federated bookmarking service that supports [ActivityPub].
 //!
 //! [ActivityPub]: https://www.w3.org/TR/activitypub/#server-to-server-interactions
-//!
-//! Right now, the library crate has the same name as the binary, meaning that `rustdoc` will
-//! ignore the binary create. I should probably rename this file.
 
 use std::{
     collections::HashMap,
@@ -104,7 +101,7 @@ use indielinks::{
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
-    users::make_router as make_user_router,
+    users::{Configuration as UsersConfiguration, make_router as make_user_router},
     webfinger::webfinger,
 };
 
@@ -326,6 +323,8 @@ impl Default for StorageConfig {
 pub struct SigningKeysConfig {
     #[serde(rename = "token-lifetime")]
     token_lifetime: Duration,
+    #[serde(rename = "refresh-token-lifetime")]
+    refresh_token_lifetime: Duration,
     #[serde(rename = "signing-keys")]
     signing_keys: SigningKeys,
 }
@@ -333,7 +332,8 @@ pub struct SigningKeysConfig {
 impl Default for SigningKeysConfig {
     fn default() -> Self {
         SigningKeysConfig {
-            token_lifetime: Duration::hours(1),
+            token_lifetime: Duration::minutes(5),
+            refresh_token_lifetime: Duration::hours(36),
             signing_keys: SigningKeys::default(),
         }
     }
@@ -364,6 +364,8 @@ struct ConfigV1 {
     pepper: Peppers,
     #[serde(rename = "signing-keys")]
     signing_keys: SigningKeysConfig,
+    #[serde(rename = "users-config")]
+    users_config: UsersConfiguration,
     #[serde(rename = "user-agent")]
     user_agent: String,
     #[serde(rename = "collection-page-size")]
@@ -391,13 +393,14 @@ impl Default for ConfigV1 {
     fn default() -> Self {
         ConfigV1 {
             log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(/* known good */),
-            public_address: "0.0.0.0:20673".parse::<SocketAddr>().unwrap(/* known good */),
-            private_address: "127.0.0.1:20674".parse::<SocketAddr>().unwrap(/* known good */),
-            raft_grpc_address: "0.0.0.0:20675".parse::<SocketAddr>().unwrap(/* known good */),
+            public_address: "0.0.0.0:20679".parse::<SocketAddr>().unwrap(/* known good */),
+            private_address: "127.0.0.1:20680".parse::<SocketAddr>().unwrap(/* known good */),
+            raft_grpc_address: "0.0.0.0:20681".parse::<SocketAddr>().unwrap(/* known good */),
             storage_config: StorageConfig::default(),
-            public_origin: "http://localhost:20673".parse::<Origin>().unwrap(/* known good */),
+            public_origin: "http://localhost:20679".parse::<Origin>().unwrap(/* known good */),
             pepper: Peppers::default(),
             signing_keys: SigningKeysConfig::default(),
+            users_config: UsersConfiguration::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
             collection_page_size: 12, // Copied from Mastodon
             assets: None,
@@ -901,7 +904,11 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
             instruments: instruments.clone(),
             pepper: cfg.pepper.clone(),
             token_lifetime: cfg.signing_keys.token_lifetime,
+            refresh_token_lifetime: cfg.signing_keys.refresh_token_lifetime,
             signing_keys: cfg.signing_keys.signing_keys.clone(),
+            users_same_site: cfg.users_config.same_site.clone(),
+            users_secure_cookies: cfg.users_config.secure_cookies,
+            allowed_origins: cfg.users_config.allowed_origins.clone(),
             client,
             collection_page_size: cfg.collection_page_size,
             assets: cfg.assets.clone().unwrap_or(PathBuf::from("assets")),

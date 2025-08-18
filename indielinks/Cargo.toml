@@ -11,7 +11,7 @@ aws-sdk-dynamodb = "1.57.0"
 aws-smithy-async = { version = "1.2.5", features = ["rt-tokio"] }
 aws-smithy-runtime-api = { version = "1.7.3", features = ["client"] }
 axum = { version = "0.8.1", features = ["macros", "tracing"] }
-axum-extra = { version = "0.10.0", features = ["query"] }
+axum-extra = { version = "0.10.0", features = ["cookie", "query", "typed-header"] }
 base64 = "0.22.1"
 bytes = "1.10.0"
 chrono = { version = "0.4.39", features = ["serde"] }

@@ -179,3 +179,11 @@ impl Default for SigningKeys {
         }
     }
 }
+
+impl<const N: usize> From<[(KeyId, SigningKey); N]> for SigningKeys {
+    fn from(value: [(KeyId, SigningKey); N]) -> Self {
+        Self {
+            keys: BTreeMap::from(value),
+        }
+    }
+}

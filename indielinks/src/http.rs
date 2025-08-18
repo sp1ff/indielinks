@@ -22,6 +22,7 @@ use crate::{
     peppers::Peppers,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
+    users::SameSite,
 };
 
 use indielinks_shared::StorUrl;
@@ -145,7 +146,11 @@ pub struct Indielinks {
     pub instruments: Arc<metrics::Instruments>,
     pub pepper: Peppers,
     pub token_lifetime: Duration,
+    pub refresh_token_lifetime: Duration,
     pub signing_keys: SigningKeys,
+    pub users_same_site: SameSite,
+    pub users_secure_cookies: bool,
+    pub allowed_origins: Vec<Origin>,
     pub client: ClientWithMiddleware,
     pub collection_page_size: usize,
     pub assets: PathBuf,

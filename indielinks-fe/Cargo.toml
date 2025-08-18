@@ -7,11 +7,11 @@ edition = "2024"
 chrono = { version = "0.4.41", features = ["serde"] }
 console_error_panic_hook = "0.1.7"
 futures = "0.3.31"
+gloo-net = { version = "0.6.0", features = ["http"] }
 indielinks-shared = { path = "../indielinks-shared" }
 itertools = "0.14.0"
 leptos = { version = "0.8.2", features = ["csr"] }
 leptos_router = "0.8.2"
-reqwest = { version = "0.12.21", features = ["json"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_urlencoded = "0.7.1"
 snafu = "0.8.6"
@@ -23,4 +23,5 @@ tracing-subscriber-wasm = "0.1.0"
 url = { version = "2.5.4", features = ["serde"] }
 uuid = { version = "1.17.0", features = ["v4", "serde"] }
 wasm-bindgen = "0.2.100"
+wasm-cookies = "0.2.1"
 web-sys = "0.3.77"

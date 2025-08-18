@@ -8,4 +8,5 @@ if [ $nproc -eq 0 ]; then
     nproc=1
 fi
 cargo build -j $nproc
+cargo build -j $nproc -p indielinks-fe --target=wasm32-unknown-unknown
 cargo test -j $nproc

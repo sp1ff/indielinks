@@ -16,6 +16,68 @@
 //! # User API
 //!
 //! API for sign-up, minting API keys, and so forth.
+//!
+//! ## indielinks Front End Authentication
+//!
+//! indielinks uses what I believe to be a fairly standard approach to authenticating browser-based
+//! web front ends: authentication is performed by having the client transmit the username &
+//! password in the body of a request to `/usrs/login` (this is presumably done over TLS, so that's
+//! secure). The password is then salted, peppered, hashed and compared against the stored hash (so
+//! that the password need never be stored on the server). On success, the `/users/login` endpoint
+//! vends a short-lived token in the response payload meant to be used by the front end
+//! implementation (by including it in an Authorization header in subsequent requests).
+//!
+//! Keeping the token in memory leaves us vulnerable to XSS attacks, but since the token is short
+//! lived the window of vulnerability is short. When the token expires, or when the user executes a
+//! reload (say, by manually navigating to an URL), the front end will need to refresh the token.
+//! This is done by means of a refresh token, also vended by `/users/login` but this time set as an
+//! HttpOnly cookie. The cookie will be sent along with the request to `/users/refresh` and serve to
+//! validate the request. Since it's HttpOnly, we're safe from XSS, but we're now vulnerable to
+//! CSRF: if an attacker can induce us to click a link to `/users/refresh` in our browser, the
+//! refresh cookie will be sent along with any other cookies on that domain, and the attacker could
+//! harvest the access token.
+//!
+//! In general, the `/usrers/refresh` endpoint may be cross-origin from the front end, so SameSite
+//! settings will be of no help-- we need to mitigate CSRF on this one endpoint. There are two
+//! general approaches: the [Synchronizer Token Pattern] & the [Double-Submit Cookie Pattern]. The
+//! former require us to store per-session state on the server, which I would prefer not to do. The
+//! second comes in two flavors: naive & signed. Naive is worth considering, even if it's no longer
+//! recommended. In the naive approach, a CSRF token is transmitted from the server to the client
+//! in a Secure, but *not* Http-Only cookie. When the client makes a request, it must read the CSRF
+//! token from the cookie, then add it to the request in a custom header. Since in a strictly CSRF
+//! attack, the attacker can't read the cookie, all the server need do is verify the two values (the
+//! custom header value and the cookie value) match.
+//!
+//! [Synchronizer Token Pattern]: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html#token-based-mitigation
+//! [Double-Submit Cookie Pattern]: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html#alternative-using-a-double-submit-cookie-pattern
+//!
+//! However, there are attacks in which the attacker can *set* cookies (see [here]); in this case,
+//! the attacker can pick any value for the CSRF token, set the cookie and set the custom header &
+//! bypass the check on the server side.
+//!
+//! The signed variant blocks this by picking a *per-session* value, a nonce, and *signing* them.
+//! The per-session value condition is important to prevent an attacker from logging in, collecting
+//! the CSRF token he gets & reusing it in an attack on my account.
+//!
+//! [here]: https://owasp.org/www-chapter-london/assets/slides/David_Johansson-Double_Defeat_of_Double-Submit_Cookie.pdf
+//!
+//! So: login does the following:
+//!
+//!   - returns a short-lived JWT in the response body
+//!   - returns a long-lived "refresh" token (another JWT) in a Secure, HttpOnly cookie; we'll
+//!     include a UUID here to "name" the user's session (since when the refresh token expires, the
+//!     user will be required to login again)
+//!   - returns a CSRF token in a Secure cookie; this token is just an HMAC on the refresh token
+//!     nonce using a secret key known only to the server
+//!
+//! When it's time to refresh the access token, the front end will send a request to the
+//! `/users/refresh` endpoint, with the refresh token & CSRF token in the cookies, and copying the
+//! CSRF token from the cookie into a custom header. The duplicated CSRF token proves the caller can
+//! copy cookies into requests. The CSRF token contents proves that the caller obtained it (the CSRF
+//! token) for the proferred refresh token, and that it obtained it from this server.
+//!
+//! Finally, note that this is designed to defend against CSRF. If an attacker has a successful
+//! XSS exploit, they can refresh the token as long as they'd like!
 
 use std::sync::Arc;
 
@@ -26,17 +88,21 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Duration, Utc};
+use http::{HeaderMap, header::SET_COOKIE};
 use itertools::Itertools;
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
+use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, prelude::*};
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 use url::Url;
 
 use indielinks_shared::{
-    FollowReq, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, SignupReq, SignupRsp, Username,
+    FollowReq, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
+    SignupReq, SignupRsp, Username,
 };
 
 use crate::{
@@ -51,8 +117,12 @@ use crate::{
     peppers::{self, Peppers},
     signing_keys::{self, SigningKeys},
     storage::{self, Backend as StorageBackend},
-    token::{self, mint_token},
+    token::{self, mint_refresh_and_csrf_tokens, mint_token, refresh_token},
 };
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module Error type                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -100,6 +170,10 @@ pub enum Error {
     InvalidCredentials { source: authn::Error },
     #[snafu(display("Failed to find a colon in '{text}'"))]
     MissingColon { text: String, backtrace: Backtrace },
+    #[snafu(display("A required authentication cookie was missing from the request"))]
+    MissingCookie { backtrace: Backtrace },
+    #[snafu(display("A required authentication header was missing from the request"))]
+    MissingHeader { backtrace: Backtrace },
     #[snafu(display("Multiple Authorization headers were supplied; only one is accepted."))]
     MultipleAuthnHeaders,
     #[snafu(display("No authorization token found in the query string"))]
@@ -109,12 +183,22 @@ pub enum Error {
         source: signing_keys::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("The authorization header was not UTF-8: {source}"))]
+    NonUtf8Header {
+        source: http::header::ToStrError,
+        backtrace: Backtrace,
+    },
     #[snafu(display("{source}"))]
     NoPepper { source: peppers::Error },
     #[snafu(display("Couldn't validate password for user {username}: {source}"))]
     Password {
         username: Username,
         source: entities::Error,
+    },
+    #[snafu(display("Failed to mint refresh and/or CSRF tokens: {source}"))]
+    Refresh {
+        source: crate::token::Error,
+        backtrace: Backtrace,
     },
     #[snafu(display(
         "Couldn't create background task for {username} following {actorid}: {source}"
@@ -170,6 +254,7 @@ impl Error {
                 StatusCode::BAD_REQUEST,
                 format!("Missing colon in {}", text),
             ),
+            Error::NonUtf8Header { source, .. } => (StatusCode::BAD_REQUEST, format!("{source:?}")),
             Error::MultipleAuthnHeaders => (
                 StatusCode::BAD_REQUEST,
                 "Multiple authorization headers".to_string(),
@@ -184,6 +269,8 @@ impl Error {
             Error::InvalidCredentials { .. } => {
                 (StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
             }
+            Error::MissingCookie { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            Error::MissingHeader { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::NoAuthToken { .. } => (
                 StatusCode::UNAUTHORIZED,
                 "No Authorization header or auth_token".to_string(),
@@ -221,6 +308,10 @@ impl Error {
             } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Couldn't validate password for {}: {}", username, source),
+            ),
+            Error::Refresh { .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Couldn't mint refresh and/or CSRF tokens".to_owned(),
             ),
             Error::SendFollow {
                 username,
@@ -268,7 +359,63 @@ impl axum::response::IntoResponse for Error {
         (code, Json(ErrorResponseBody { error: msg })).into_response()
     }
 }
+
 type Result<T> = std::result::Result<T, Error>;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         Configuration                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// I suppose I could pull-in the `cookie` crate... but c'mon: it's a few cookies.
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SameSite {
+    Strict,
+    Lax,
+    None,
+}
+
+impl std::fmt::Display for SameSite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                SameSite::Strict => "Strict",
+                SameSite::Lax => "Lax",
+                SameSite::None => "None",
+            }
+        )
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Configuration {
+    #[serde(rename = "same-site")]
+    pub same_site: SameSite,
+    #[serde(rename = "secure-cookies")]
+    pub secure_cookies: bool,
+    #[serde(rename = "allowed-origins")]
+    pub allowed_origins: Vec<Origin>,
+}
+
+/// Return a configuration suitable for non-same-origin, http
+impl Default for Configuration {
+    fn default() -> Self {
+        Configuration {
+            same_site: SameSite::None,
+            secure_cookies: false,
+            allowed_origins: vec![
+                Origin::try_from("http://localhost:18080".to_owned()).unwrap(/* known good */),
+                Origin::try_from("http://localhost:20676".to_owned()).unwrap(/* known good */),
+                Origin::try_from("http://127.0.0.1:18080".to_owned()).unwrap(/* known good */),
+                Origin::try_from("http://127.0.0.1:20676".to_owned()).unwrap(/* known good */),
+                Origin::try_from("http://localhost:18443".to_owned()).unwrap(/* known good */),
+                Origin::try_from("http://127.0.0.1:18443".to_owned()).unwrap(/* known good */),
+            ],
+        }
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         Authorization                                          //
@@ -517,15 +664,17 @@ async fn login(
     State(state): State<Arc<Indielinks>>,
     Json(login_req): Json<LoginReq>,
 ) -> axum::response::Response {
+    #[allow(clippy::too_many_arguments)]
     async fn login1(
         storage: &(dyn StorageBackend + Send + Sync),
         peppers: &Peppers,
         token_lifetime: &Duration,
+        refresh_token_lifetime: &Duration,
         signing_keys: &SigningKeys,
         origin: &Origin,
         username: &Username,
         password: SecretString,
-    ) -> Result<LoginRsp> {
+    ) -> Result<(LoginRsp, String, String)> {
         let user = storage
             .user_for_name(username.as_ref())
             .await
@@ -551,13 +700,22 @@ async fn login(
         .context(TokenSnafu {
             username: username.clone(),
         })?;
-        Ok(LoginRsp { token })
+        let (refresh_token, csrf_token) = mint_refresh_and_csrf_tokens(
+            username,
+            &keyid,
+            &signing_key,
+            origin.host(),
+            refresh_token_lifetime,
+        )
+        .context(RefreshSnafu)?;
+        Ok((LoginRsp { token }, refresh_token, csrf_token))
     }
 
     match login1(
         state.storage.as_ref(),
         &state.pepper,
         &state.token_lifetime,
+        &state.refresh_token_lifetime,
         &state.signing_keys,
         &state.origin,
         &login_req.username,
@@ -565,15 +723,35 @@ async fn login(
     )
     .await
     {
-        Ok(rsp) => {
+        Ok((rsp, refresh_token, csrf_token)) => {
             info!("Logged-in user {}", login_req.username);
+
             counter_add!(
                 state.instruments,
                 "user.logins.successful",
                 1,
                 &[KeyValue::new("username", login_req.username.to_string())]
             );
-            (StatusCode::OK, Json(rsp)).into_response()
+
+            let mut refresh_cookie = format!(
+                "{}={}; Path=/; HttpOnly; Same-Site={};",
+                REFRESH_COOKIE, refresh_token, state.users_same_site
+            );
+            let mut csrf_cookie = format!(
+                "{}={}; Path=/; Same-Site={};",
+                REFRESH_CSRF_COOKIE, csrf_token, state.users_same_site
+            );
+            if state.users_secure_cookies {
+                refresh_cookie += " Secure;";
+                csrf_cookie += " Secure;";
+            }
+
+            axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header(SET_COOKIE, refresh_cookie)
+                .header(SET_COOKIE, csrf_cookie)
+                .body(axum::body::Body::from(serde_json::to_string(&rsp).unwrap()))
+                .unwrap()
         }
         Err(Error::BadPassword { username, .. }) => {
             error!("Bad password for user {}", username);
@@ -599,6 +777,83 @@ async fn login(
                 1,
                 &[KeyValue::new("username", login_req.username.to_string())]
             );
+            let (status, msg) = err.as_status_and_msg();
+            (status, Json(ErrorResponseBody { error: msg })).into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        `/user/refresh`                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("user.refreshes.successful", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("user.refreshes.failures", Sort::IntegralCounter) }
+
+/// Refresh an expired or lost access token vended from `/user/login`
+///
+/// We expect the refresh token & corresponding CSRF token in the request cookies, and that the CSRF
+/// token has been copied to the "x-indielinks-refresh-csrf" header.
+#[axum::debug_handler]
+async fn refresh(
+    State(state): State<Arc<Indielinks>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    fn refresh1(
+        jar: &CookieJar,
+        headers: &HeaderMap,
+        token_lifetime: &Duration,
+        signing_keys: &SigningKeys,
+        origin: &Origin,
+    ) -> Result<(LoginRsp, Username)> {
+        let csrf_header_str = headers
+            .get("X-Indielinks-Refresh-Csrf")
+            .context(MissingHeaderSnafu)?
+            .to_str()
+            .context(NonUtf8HeaderSnafu)?;
+        let refresh_token_str = jar
+            .get("indielinks-refresh")
+            .context(MissingCookieSnafu)?
+            .value_trimmed();
+        let csrf_token_str = jar
+            .get("indielinks-refresh-csrf")
+            .context(MissingCookieSnafu)?
+            .value_trimmed();
+        if csrf_token_str != csrf_header_str {
+            panic!("Wut?");
+        }
+        let (token, username) = refresh_token(
+            refresh_token_str,
+            csrf_token_str,
+            signing_keys,
+            origin.host(),
+            token_lifetime,
+        )
+        .context(RefreshSnafu)?;
+        Ok((LoginRsp { token }, username))
+    }
+
+    match refresh1(
+        &jar,
+        &headers,
+        &state.token_lifetime,
+        &state.signing_keys,
+        &state.origin,
+    ) {
+        Ok((rsp, username)) => {
+            info!("Successfully refreshed an access token for {username}.");
+            counter_add!(
+                state.instruments,
+                "user.refreshes.successful",
+                1,
+                &[KeyValue::new("username", username.to_string())]
+            );
+            (StatusCode::OK, Json(rsp)).into_response()
+        }
+        Err(err) => {
+            error!("{:#?}", err);
+            counter_add!(state.instruments, "user.refreshes.failures", 1, &[]);
             let (status, msg) = err.as_status_and_msg();
             (status, Json(ErrorResponseBody { error: msg })).into_response()
         }
@@ -733,10 +988,118 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         // perform this action by POSTing to it (they could retrieve a user via GETting
         // `user/users/:username`), but that model doesn't really map to the set of things one can
         // do via this API (how would we model minting a new API key, for instance? Or loggig-in?)
-        .route("/users/signup", post(signup))
-        .route("/users/login", get(login).merge(post(login)))
-        .route("/users/follow", post(follow))
-        .route("/users/mint-key", get(mint_key))
+        .route(
+            "/users/signup",
+            post(signup)
+                // It might be nice to allow people to sign-up programmatically, but I think for now
+                // I'm giong to restrict this to the front end
+                .layer(
+                    CorsLayer::new()
+                        .allow_private_network(true)
+                        .allow_headers([
+                            CONTENT_TYPE,
+                            http::header::USER_AGENT,
+                            http::header::REFERER,
+                        ])
+                        .allow_methods([http::Method::POST])
+                        .allow_origin(
+                            state
+                                .allowed_origins
+                                .iter()
+                                .map(|o| o.to_string().parse().unwrap())
+                                .collect::<Vec<HeaderValue>>(),
+                        ),
+                ),
+        )
+        .route(
+            "/users/login",
+            get(login).merge(post(login)).layer(
+                CorsLayer::new()
+                    .allow_credentials(true)
+                    .allow_private_network(true)
+                    .allow_headers([
+                        CONTENT_TYPE,
+                        http::header::USER_AGENT,
+                        http::header::REFERER,
+                    ])
+                    .allow_methods([http::Method::GET, http::Method::POST])
+                    .allow_origin(
+                        state
+                            .allowed_origins
+                            .iter()
+                            .map(|o| o.to_string().parse().unwrap())
+                            .collect::<Vec<HeaderValue>>(),
+                    ),
+            ),
+        )
+        .route(
+            "/users/refresh",
+            post(refresh).layer(
+                CorsLayer::new()
+                    .allow_credentials(true)
+                    .allow_private_network(true)
+                    .allow_headers([
+                        CONTENT_TYPE,
+                        http::header::USER_AGENT,
+                        http::header::REFERER,
+                        http::header::HeaderName::from_static("x-indielinks-refresh-csrf"),
+                    ])
+                    .allow_methods([http::Method::POST])
+                    .allow_origin(
+                        state
+                            .allowed_origins
+                            .iter()
+                            .map(|o| o.to_string().parse().unwrap())
+                            .collect::<Vec<HeaderValue>>(),
+                    ),
+            ),
+        )
+        .route(
+            "/users/follow",
+            post(follow)
+                // Likewise, for now I think I'll limit this to the front end
+                .layer(
+                    CorsLayer::new()
+                        .allow_credentials(true)
+                        .allow_private_network(true)
+                        .allow_headers([
+                            CONTENT_TYPE,
+                            http::header::USER_AGENT,
+                            http::header::REFERER,
+                        ])
+                        .allow_methods([http::Method::POST])
+                        .allow_origin(
+                            state
+                                .allowed_origins
+                                .iter()
+                                .map(|o| o.to_string().parse().unwrap())
+                                .collect::<Vec<HeaderValue>>(),
+                        ),
+                ),
+        )
+        .route(
+            "/users/mint-key",
+            get(mint_key)
+                // Likewise, for now I think I'll limit this to the front end
+                .layer(
+                    CorsLayer::new()
+                        .allow_credentials(true)
+                        .allow_private_network(true)
+                        .allow_headers([
+                            CONTENT_TYPE,
+                            http::header::USER_AGENT,
+                            http::header::REFERER,
+                        ])
+                        .allow_methods([http::Method::GET])
+                        .allow_origin(
+                            state
+                                .allowed_origins
+                                .iter()
+                                .map(|o| o.to_string().parse().unwrap())
+                                .collect::<Vec<HeaderValue>>(),
+                        ),
+                ),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             authenticate,
@@ -747,6 +1110,6 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             CONTENT_TYPE,
             HeaderValue::from_static("text/json; charset=utf-8"),
         ))
-        .layer(CorsLayer::permissive())
+        // .layer(CorsLayer::permissive())
         .with_state(state)
 }
