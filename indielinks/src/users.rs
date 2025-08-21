@@ -96,13 +96,16 @@ use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, prelude::*};
-use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
+use tower_http::{
+    cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
+    set_header::SetResponseHeaderLayer,
+};
 use tracing::{debug, error, info};
 use url::Url;
 
 use indielinks_shared::{
     FollowReq, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
-    SignupReq, SignupRsp, Username,
+    REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC, SignupReq, SignupRsp, Username,
 };
 
 use crate::{
@@ -111,7 +114,7 @@ use crate::{
     background_tasks::{self, BackgroundTasks, Sender},
     counter_add,
     entities::{self, FollowId, User},
-    http::{ErrorResponseBody, Indielinks},
+    http::{ErrorResponseBody, Indielinks, SameSite},
     metrics::{self, Sort},
     origin::Origin,
     peppers::{self, Peppers},
@@ -154,6 +157,14 @@ pub enum Error {
     BadUsername {
         username: String,
         source: crate::entities::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display(
+        "The CSRF token {token} doesn't match the CSRF header {header}; this is likely a bug, but could also result from a CSRF attack"
+    ))]
+    CsrfMismatch {
+        token: String,
+        header: String,
         backtrace: Backtrace,
     },
     #[snafu(display("Invalid API key: {source}"))]
@@ -245,6 +256,10 @@ impl Error {
             Error::BadAuthHeaderParse { value, .. } => (
                 StatusCode::BAD_REQUEST,
                 format!("Bad Authorization header: {:?}", value),
+            ),
+            Error::CsrfMismatch { .. } => (
+                StatusCode::BAD_REQUEST,
+                "The refresh CSRF token didn't match the CSRF header value".to_owned(),
             ),
             Error::InvalidAuthHeaderValue { value, source, .. } => (
                 StatusCode::BAD_REQUEST,
@@ -367,27 +382,6 @@ type Result<T> = std::result::Result<T, Error>;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // I suppose I could pull-in the `cookie` crate... but c'mon: it's a few cookies.
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum SameSite {
-    Strict,
-    Lax,
-    None,
-}
-
-impl std::fmt::Display for SameSite {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                SameSite::Strict => "Strict",
-                SameSite::Lax => "Lax",
-                SameSite::None => "None",
-            }
-        )
-    }
-}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Configuration {
@@ -526,7 +520,7 @@ async fn authenticate(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                         `/user/signup`                                         //
+//                                        `/users/signup`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("user.signups.successful", Sort::IntegralCounter) }
@@ -650,7 +644,7 @@ async fn signup(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                         `/user/login``                                         //
+//                                        `/users/login`                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("user.logins.successful", Sort::IntegralCounter) }
@@ -734,16 +728,22 @@ async fn login(
             );
 
             let mut refresh_cookie = format!(
-                "{}={}; Path=/; HttpOnly; Same-Site={};",
-                REFRESH_COOKIE, refresh_token, state.users_same_site
+                "{}={}; Max-Age={}; Path=/; HttpOnly; SameSite={}",
+                REFRESH_COOKIE,
+                refresh_token,
+                state.refresh_token_lifetime.num_seconds(),
+                state.users_same_site
             );
             let mut csrf_cookie = format!(
-                "{}={}; Path=/; Same-Site={};",
-                REFRESH_CSRF_COOKIE, csrf_token, state.users_same_site
+                "{}={}; Max-Age={}; Path=/; SameSite={}",
+                REFRESH_CSRF_COOKIE,
+                csrf_token,
+                state.refresh_token_lifetime.num_seconds(),
+                state.users_same_site
             );
             if state.users_secure_cookies {
-                refresh_cookie += " Secure;";
-                csrf_cookie += " Secure;";
+                refresh_cookie += "; Partitioned; Secure";
+                csrf_cookie += "; Partitioned; Secure";
             }
 
             axum::response::Response::builder()
@@ -784,7 +784,7 @@ async fn login(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                        `/user/refresh`                                         //
+//                                       `/users/refresh`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("user.refreshes.successful", Sort::IntegralCounter) }
@@ -794,7 +794,6 @@ inventory::submit! { metrics::Registration::new("user.refreshes.failures", Sort:
 ///
 /// We expect the refresh token & corresponding CSRF token in the request cookies, and that the CSRF
 /// token has been copied to the "x-indielinks-refresh-csrf" header.
-#[axum::debug_handler]
 async fn refresh(
     State(state): State<Arc<Indielinks>>,
     jar: CookieJar,
@@ -808,20 +807,27 @@ async fn refresh(
         origin: &Origin,
     ) -> Result<(LoginRsp, Username)> {
         let csrf_header_str = headers
-            .get("X-Indielinks-Refresh-Csrf")
+            .get(REFRESH_CSRF_HEADER_NAME)
             .context(MissingHeaderSnafu)?
             .to_str()
             .context(NonUtf8HeaderSnafu)?;
         let refresh_token_str = jar
-            .get("indielinks-refresh")
+            .get(REFRESH_COOKIE)
             .context(MissingCookieSnafu)?
             .value_trimmed();
         let csrf_token_str = jar
-            .get("indielinks-refresh-csrf")
+            .get(REFRESH_CSRF_COOKIE)
             .context(MissingCookieSnafu)?
             .value_trimmed();
         if csrf_token_str != csrf_header_str {
-            panic!("Wut?");
+            error!(
+                "CSRF token {csrf_token_str} is not equal to the CSRF header {csrf_header_str}!"
+            );
+            return CsrfMismatchSnafu {
+                token: csrf_token_str.to_owned(),
+                header: csrf_header_str.to_owned(),
+            }
+            .fail();
         }
         let (token, username) = refresh_token(
             refresh_token_str,
@@ -856,6 +862,58 @@ async fn refresh(
             counter_add!(state.instruments, "user.refreshes.failures", 1, &[]);
             let (status, msg) = err.as_status_and_msg();
             (status, Json(ErrorResponseBody { error: msg })).into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        `/users/logout`                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+inventory::submit! { metrics::Registration::new("user.logouts.successful", Sort::IntegralCounter) }
+inventory::submit! { metrics::Registration::new("user.logouts.failures", Sort::IntegralCounter) }
+
+/// Logout an extant session
+///
+/// As we store no session state server-side, this isn't a true "logout"; the caller's access token
+/// will remain valid until it expires (which shouldn't be long). All this call does is cancel the
+/// refresh tokens so the caller won't be able to refresh their access token once it is, in fact,
+/// expired.
+async fn logout(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+) -> axum::response::Response {
+    match user {
+        Ok(user) => {
+            info!(
+                "Logging-out user {}; note that any access tokens remain valid until they expire",
+                user.username()
+            );
+            counter_add!(state.instruments, "user.logouts.successful", 1, &[]);
+            let mut refresh_cookie = format!(
+                "{}=; Max-Age=0; Path=/; HttpOnly; SameSite={}",
+                REFRESH_COOKIE, state.users_same_site
+            );
+            let mut csrf_cookie = format!(
+                "{}=; Max-Age=0; Path=/; SameSite={}",
+                REFRESH_CSRF_COOKIE, state.users_same_site
+            );
+            if state.users_secure_cookies {
+                refresh_cookie += "; Partitioned; Secure";
+                csrf_cookie += "; Partitioned; Secure";
+            }
+
+            axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header(SET_COOKIE, refresh_cookie)
+                .header(SET_COOKIE, csrf_cookie)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }
+        Err(err) => {
+            error!("{err:?}");
+            counter_add!(state.instruments, "user.logouts.failures", 1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
         }
     }
 }
@@ -918,7 +976,7 @@ async fn follow(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                        `/usrs/mint-key`                                        //
+//                                       `/users/mint-key`                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inventory::submit! { metrics::Registration::new("user.mint-key.successful", Sort::IntegralCounter) }
@@ -979,10 +1037,39 @@ async fn mint_key(
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+fn mk_cors<H, M, O>(
+    allow_credentials: bool,
+    allow_headers: H,
+    allow_methods: M,
+    allow_origin: O,
+) -> CorsLayer
+where
+    H: Into<AllowHeaders>,
+    M: Into<AllowMethods>,
+    O: Into<AllowOrigin>,
+{
+    CorsLayer::new()
+        .allow_credentials(allow_credentials)
+        .allow_private_network(true)
+        .allow_headers(allow_headers)
+        .allow_methods(allow_methods)
+        .allow_origin(allow_origin)
+}
+
 /// Return a router for the User API
 ///
 /// The returned [Router] will presumably be merged with other routres.
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
+    let allow_headers = [
+        CONTENT_TYPE,
+        http::header::USER_AGENT,
+        http::header::REFERER,
+    ];
+    let allow_origin = state
+        .allowed_origins
+        .iter()
+        .map(|o| o.to_string().parse().unwrap())
+        .collect::<Vec<HeaderValue>>();
     Router::new()
         // I suppose it would be more "RESTful" to have a `user/users` resource and have callers
         // perform this action by POSTing to it (they could retrieve a user via GETting
@@ -993,112 +1080,72 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             post(signup)
                 // It might be nice to allow people to sign-up programmatically, but I think for now
                 // I'm giong to restrict this to the front end
-                .layer(
-                    CorsLayer::new()
-                        .allow_private_network(true)
-                        .allow_headers([
-                            CONTENT_TYPE,
-                            http::header::USER_AGENT,
-                            http::header::REFERER,
-                        ])
-                        .allow_methods([http::Method::POST])
-                        .allow_origin(
-                            state
-                                .allowed_origins
-                                .iter()
-                                .map(|o| o.to_string().parse().unwrap())
-                                .collect::<Vec<HeaderValue>>(),
-                        ),
-                ),
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    http::Method::POST,
+                    allow_origin.clone(),
+                )),
         )
         .route(
             "/users/login",
-            get(login).merge(post(login)).layer(
-                CorsLayer::new()
-                    .allow_credentials(true)
-                    .allow_private_network(true)
-                    .allow_headers([
-                        CONTENT_TYPE,
-                        http::header::USER_AGENT,
-                        http::header::REFERER,
-                    ])
-                    .allow_methods([http::Method::GET, http::Method::POST])
-                    .allow_origin(
-                        state
-                            .allowed_origins
-                            .iter()
-                            .map(|o| o.to_string().parse().unwrap())
-                            .collect::<Vec<HeaderValue>>(),
-                    ),
-            ),
+            get(login).merge(post(login)).layer(mk_cors(
+                true,
+                allow_headers.clone(),
+                [http::Method::GET, http::Method::POST], // Do I really need to support `GET`?
+                allow_origin.clone(),
+            )),
         )
         .route(
             "/users/refresh",
-            post(refresh).layer(
-                CorsLayer::new()
-                    .allow_credentials(true)
-                    .allow_private_network(true)
-                    .allow_headers([
-                        CONTENT_TYPE,
-                        http::header::USER_AGENT,
-                        http::header::REFERER,
-                        http::header::HeaderName::from_static("x-indielinks-refresh-csrf"),
-                    ])
-                    .allow_methods([http::Method::POST])
-                    .allow_origin(
-                        state
-                            .allowed_origins
-                            .iter()
-                            .map(|o| o.to_string().parse().unwrap())
-                            .collect::<Vec<HeaderValue>>(),
-                    ),
-            ),
+            post(refresh).layer(mk_cors(
+                true,
+                [
+                    CONTENT_TYPE,
+                    http::header::USER_AGENT,
+                    http::header::REFERER,
+                    http::header::HeaderName::from_static(REFRESH_CSRF_HEADER_NAME_LC),
+                ],
+                http::Method::POST,
+                allow_origin.clone(),
+            )),
+        )
+        .route(
+            "/users/logout",
+            post(logout).layer(mk_cors(
+                true,
+                [
+                    CONTENT_TYPE,
+                    http::header::USER_AGENT,
+                    http::header::REFERER,
+                    http::header::AUTHORIZATION,
+                    http::header::HeaderName::from_static(REFRESH_CSRF_HEADER_NAME_LC),
+                ],
+                http::Method::POST,
+                allow_origin.clone(),
+            )),
         )
         .route(
             "/users/follow",
             post(follow)
                 // Likewise, for now I think I'll limit this to the front end
-                .layer(
-                    CorsLayer::new()
-                        .allow_credentials(true)
-                        .allow_private_network(true)
-                        .allow_headers([
-                            CONTENT_TYPE,
-                            http::header::USER_AGENT,
-                            http::header::REFERER,
-                        ])
-                        .allow_methods([http::Method::POST])
-                        .allow_origin(
-                            state
-                                .allowed_origins
-                                .iter()
-                                .map(|o| o.to_string().parse().unwrap())
-                                .collect::<Vec<HeaderValue>>(),
-                        ),
-                ),
+                .layer(mk_cors(
+                    true,
+                    allow_headers.clone(),
+                    http::Method::POST,
+                    allow_origin.clone(),
+                )),
         )
         .route(
             "/users/mint-key",
             get(mint_key)
                 // Likewise, for now I think I'll limit this to the front end
-                .layer(
-                    CorsLayer::new()
-                        .allow_credentials(true)
-                        .allow_private_network(true)
-                        .allow_headers([
-                            CONTENT_TYPE,
-                            http::header::USER_AGENT,
-                            http::header::REFERER,
-                        ])
-                        .allow_methods([http::Method::GET])
-                        .allow_origin(
-                            state
-                                .allowed_origins
-                                .iter()
-                                .map(|o| o.to_string().parse().unwrap())
-                                .collect::<Vec<HeaderValue>>(),
-                        ),
-                ),
+                .layer(mk_cors(
+                    true,
+                    allow_headers.clone(),
+                    http::Method::GET,
+                    allow_origin.clone(),
+                )),
         )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),

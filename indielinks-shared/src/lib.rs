@@ -1065,6 +1065,8 @@ pub const REFRESH_CSRF_COOKIE: &str = "indielinks-refresh-csrf";
 
 pub const REFRESH_CSRF_HEADER_NAME: &str = "X-Indielinks-Refresh-Csrf";
 
+pub const REFRESH_CSRF_HEADER_NAME_LC: &str = "x-indielinks-refresh-csrf";
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignupReq {

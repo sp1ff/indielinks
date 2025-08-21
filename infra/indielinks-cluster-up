@@ -45,12 +45,12 @@ if [ "${nodes}" == "5" ]; then
 fi
 
 # Run five copies of the `indielinksd` daemon
-RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-0 -c ${here}/../indielinks-test/${config}-0.toml
-RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-1 -c ${here}/../indielinks-test/${config}-1.toml
-RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-2 -c ${here}/../indielinks-test/${config}-2.toml
+RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-0 -c ${here}/../conf/${config}-0.toml
+RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-1 -c ${here}/../conf/${config}-1.toml
+RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-2 -c ${here}/../conf/${config}-2.toml
 if [ "${nodes}" == "5" ]; then
-    RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-3 -c ${here}/../indielinks-test/${config}-3.toml
-    RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-4 -c ${here}/../indielinks-test/${config}-4.toml
+    RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-3 -c ${here}/../conf/${config}-3.toml
+    RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-4 -c ${here}/../conf/${config}-4.toml
 fi
 
 # Wait for the entire cluster to healthcheck

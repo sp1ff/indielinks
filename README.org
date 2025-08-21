@@ -2,7 +2,7 @@
 #+DESCRIPTION: Bookmarks in the Fediverse
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-08-07 Thu 17:14>
+#+DATE: <2025-08-21 Thu 17:05>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -31,6 +31,8 @@ Installation process:
        #+BEGIN_SRC bash
          yay -S scylla-bin
          sudo scylla_io_setup
+         sudo scylla_cpuset_setup --smp 2
+         sudo scylla_memory_setup --memory 3G
          sudo systemctl start scylla-server
        #+END_SRC
   2. install [[https://pypi.org/project/cqlsh/][cqlsh]]
@@ -51,6 +53,6 @@ Installation process:
 The author realizes that this process is tedious & error-prone-- Arch and Debian packages & OpenTofu scripts will be provided in the not-too-distant future.
 * Status & Roadmap
 
-The project is currently in what I'm calling "pre-\alpha", meaning that it can be run locally on one's development machine, perhaps side-by-side with Pinboard. The project is approaching \alpha status, which I'm defining to be publicly available, but with signups disabled (invited, or limited "walk-up" signups will be what I'm calling \beta).
+The project is currently in what I'm calling "pre-\alpha", meaning that it can be run locally on one's development machine, perhaps alongside Pinboard. The project is approaching \alpha status, which I'm defining to be publicly available, but with signups disabled (invited, or limited "walk-up" signups will be available).
 
 I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support, have made an indielinks cluster into a Raft consensus cluster, and am currently working on a web frontend. I plan on building-out the documentation quite a bit beyond what's available now, starting here.

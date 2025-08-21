@@ -32,6 +32,7 @@
 //!
 //! [Leptos]: https://book.leptos.dev
 
+use gloo_net::http::Request;
 use leptos::prelude::*;
 use leptos_router::{
     components::{ProtectedRoute, Route, Router, Routes},
@@ -43,13 +44,15 @@ use tracing::{debug, error, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 
+use indielinks_shared::REFRESH_CSRF_COOKIE;
+
 use indielinks_fe::{
     feeds::Feeds,
     home::Home,
-    http::refresh_token,
+    http::{refresh_token, string_for_status},
     instance::Instance,
     signin::SignIn,
-    types::{Api, Base, Token},
+    types::{Api, Base, Token, USER_AGENT},
 };
 
 /// [indielinks-fe](crate) root component
@@ -125,6 +128,26 @@ fn App() -> impl IntoView {
     // `Await` below, I get pages of warnings about the future not being Send (?)
     let fetcher = LocalResource::new(|| refresh());
 
+    let t5 = token.clone();
+    let api = use_context::<Api>().expect("No API!?").0;
+    let on_sign_out = Action::new_unsync(move |_: &()| {
+        let api = api.clone();
+        let token = token.get().expect("No token!?");
+        t5.set(None);
+        wasm_cookies::delete(REFRESH_CSRF_COOKIE);
+        async move {
+            let rsp = Request::post(&format!("{api}/api/v1/users/logout"))
+                .credentials(web_sys::RequestCredentials::Include)
+                .header("User-Agent", USER_AGENT)
+                .header("Authorization", &format!("Bearer {}", token))
+                .send()
+                .await
+                .map_err(|err| err.to_string())
+                .and_then(string_for_status);
+            info!("Logged-out: {rsp:?}");
+        }
+    });
+
     view! {
         // I'm using a `thaw` component here, `Layout` (https://thawui.vercel.app/components/layout)
         <Await
@@ -152,8 +175,9 @@ fn App() -> impl IntoView {
                     <Show when = move || t2.get().is_some() && use_location().pathname.get() != "/s" >
                         <div class="uath-actions">
                             <ul style="list-style-type: none; font-size: smaller;">
-                            // To be implemented...
-                            <li><Link href="#">"sign-out"</Link></li>
+                                <li><a href="#" on:click=move |_| {
+                                    on_sign_out.dispatch(());
+                                }>"sign-out"</a></li>
                             </ul>
                         </div>
                     </Show>

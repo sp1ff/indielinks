@@ -910,5 +910,6 @@ Specify as either an AWS region ('us-west-2', e.g.) or as an URL ('http://localh
     let client = get_client(location, &creds).await?;
     create_tables(&client).await?;
     charge_tables(&client).await?;
+    info!("indielinks DynamoDB setup done!");
     Ok(())
 }

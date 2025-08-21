@@ -21,7 +21,9 @@ use leptos::{
     prelude::*,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
+
+use indielinks_shared::REFRESH_CSRF_COOKIE;
 
 use crate::{
     http::string_for_status,
@@ -61,7 +63,10 @@ async fn login(
         .await
         .map_err(|err| err.to_string())?;
 
-    info!("Login successful: {rsp:?}");
+    info!("Login successful",);
+    if wasm_cookies::get(REFRESH_CSRF_COOKIE).is_none() {
+        error!("{REFRESH_CSRF_COOKIE} wasn't successfully set!");
+    }
 
     Ok(rsp.token)
 }

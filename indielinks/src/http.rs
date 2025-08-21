@@ -22,7 +22,6 @@ use crate::{
     peppers::Peppers,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
-    users::SameSite,
 };
 
 use indielinks_shared::StorUrl;
@@ -137,6 +136,27 @@ impl Accept {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       Application State                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SameSite {
+    Strict,
+    Lax,
+    None,
+}
+
+impl std::fmt::Display for SameSite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                SameSite::Strict => "Strict",
+                SameSite::Lax => "Lax",
+                SameSite::None => "None",
+            }
+        )
+    }
+}
 
 /// Application state available to all handlers
 pub struct Indielinks {
