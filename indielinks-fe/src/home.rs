@@ -394,55 +394,58 @@ pub fn Home() -> impl IntoView {
 
     view! {
         <div class="user-view" style="display: flex;">
-            // User's posts
-            <div class="posts-view">
-            <div class="posts-nav" style="display: flex; font-size: smaller; color: #888">
-            <span style="padding: 2px 6px;">
-                {
-                    if page.get() > 0 {
-                        Either::Left(view!{
-                            <a href="#" on:click=move |_| set_page.update(|n| *n -= 1)>"< prev"</a>
-                        })
-                    } else {
-                        Either::Right(view!{"< prev"})
-                    }
-                }
-            </span>
-            <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=on_click >"    refresh"</a></span>
-            <span style="padding: 2px 6px;">
-                {
-                    match page_data.get() {
-                        Some(Some(posts)) if posts.len() == 6 => Either::Left(view!{
-                            <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
-                        }),
-                        _ => Either::Right(view!{"next >"})
-                    }}
-            </span>
-        </div>
-        <div class="post-list">
-            <Transition fallback=move || view!{ <p>"Loading..."</p> }>
-            <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
-                 key=|post| post.id()
-                 let:post>
-                {
-                    let r0 = rerender.clone();
-                    let r1 = rerender.clone();
-                    move || {
-                        info!("{} ==? {:?}", post.url(), editing.get());
-                        if Some(post.url()) == editing.get().as_ref() {
-                            Either::Left(view!{<EditPost post=post.clone() set_editing rerender=r0.clone()/>})
-                        } else {
-                            Either::Right(view!{<Post post=post.clone() set_editing rerender=r1.clone()/>})
-                        }
-                }}
-            </For>
-            </Transition>
-        </div>
-        </div>
-        // User's tags
-        <div style="flex: 1; margin: 6px; border: 1px solid #ccc; display: flex; align-items: center; justify-content: space-around;">
-        <span>"Tags will go here!"</span>
-        </div>
+            // <Transition fallback=move || view!{ <p>"Loading..."</p> }>
+            <Await future=page_data.into_future() let:data>
+                // User's posts
+                <div class="posts-view">
+                    <div class="posts-nav" style="display: flex; font-size: smaller; color: #888">
+                        <span style="padding: 2px 6px;">
+                            {
+                                move || {
+                                info!("page: {}", page.get());
+                                if page.get() > 0 {
+                                    Either::Left(view!{
+                                        <a href="#" on:click=move |_| set_page.update(|n| *n -= 1)>"< prev"</a>
+                                    })
+                                } else {
+                                    Either::Right(view!{"< prev"})
+                                }
+                                }
+                            }
+                        </span>
+                        <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=on_click >"    refresh"</a></span>
+                        <span style="padding: 2px 6px;">
+                            {
+                                match page_data.get() {
+                                    Some(Some(posts)) if posts.len() == 6 => Either::Left(view!{
+                                        <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
+                                    }),
+                                    _ => Either::Right(view!{"next >"})
+                                }}
+                        </span>
+                    </div>
+                    <div class="post-list">
+                        <For each=move || page_data.get().unwrap_or_default().unwrap_or_default()
+                             key=|post| post.id()
+                             let:post>
+                            {
+                                let r0 = rerender.clone();
+                                let r1 = rerender.clone();
+                                move || {
+                                    if Some(post.url()) == editing.get().as_ref() {
+                                        Either::Left(view!{<EditPost post=post.clone() set_editing rerender=r0.clone()/>})
+                                    } else {
+                                        Either::Right(view!{<Post post=post.clone() set_editing rerender=r1.clone()/>})
+                                    }
+                            }}
+                        </For>
+                    </div>
+                </div>
+                // User's tags
+                <div style="flex: 1; margin: 6px; border: 1px solid #ccc; display: flex; align-items: center; justify-content: space-around;">
+                    <span>"Tags will go here!"</span>
+                </div>
+            </Await>
         </div>
     }
 }

@@ -109,6 +109,7 @@ INDIELINKS_FE_API="http://127.0.0.1:20676" INDIELINKS_BASE="/fe" trunk build --r
 cd ..
 
 install -C target/release/indielinksd /home/$USER/bin
+install -C target/release/indic       /home/$USER/bin
 
 cd indielinks-fe/dist
 wasm=$(ls -1 indielinks-fe*.wasm)

@@ -622,6 +622,10 @@ async fn metrics(State(state): State<Arc<Indielinks>>) -> String {
     String::from_utf8(result).expect("Failed to encode Prom metrics")
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           front end                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 lazy_static! {
     static ref CONTENT_TYPES: HashMap<OsString, HeaderValue> = {
         HashMap::from([
@@ -649,26 +653,36 @@ inventory::submit! { metrics::Registration::new("frontend.asset.successes", Sort
 inventory::submit! { metrics::Registration::new("frontend.asset.404s", Sort::IntegralCounter) }
 inventory::submit! { metrics::Registration::new("frontend.asset.failures", Sort::IntegralCounter) }
 
+/// Serve the front end
+///
+/// This is a quick & easy way to deploy [indielinks-fe]: just serve it from an endpoint on this
+/// service. Not sure if I'm going to stick with this long-term.
 async fn frontend(
     State(state): State<Arc<Indielinks>>,
     file: Option<axum::extract::Path<PathBuf>>,
 ) -> axum::response::Response {
     fn frontend1(assets: &Path, file: &PathBuf) -> Result<Vec<u8>> {
-        fs::read(
-            [assets.as_os_str(), file.as_os_str()]
-                .iter()
-                .collect::<PathBuf>(),
-        )
-        .map_err(|err| {
-            if err.kind() == io::ErrorKind::NotFound {
-                Error::AssetNotFound {
-                    asset: file.clone(),
+        // Not sure I like this, but I don't see how else to handle requests for, say "/h?tag=blog".
+        // I suppose once the list of URLs recognized by the SPA stabilizes, I could check for them
+        // & 404 anything else.
+        let mut p = [assets.as_os_str(), file.as_os_str()]
+            .iter()
+            .collect::<PathBuf>();
+        if !fs::exists(&p).unwrap_or(false) {
+            p = assets.join("index.html");
+        }
+
+        fs::read(&p)
+            .map_err(|err| {
+                if err.kind() == io::ErrorKind::NotFound {
+                    Error::AssetNotFound {
+                        asset: file.clone(),
+                    }
+                } else {
+                    AssetSnafu { asset: file }.into_error(err)
                 }
-            } else {
-                AssetSnafu { asset: file }.into_error(err)
-            }
-        })?
-        .pipe(Ok)
+            })?
+            .pipe(Ok)
     }
 
     let file = file
@@ -1202,7 +1216,7 @@ fn daemonize(local_statedir: &Path, no_chdir: bool) -> Result<()> {
 
 fn main() -> Result<()> {
     let opts = CliOpts::new(
-        Command::new("indielinks")
+        Command::new("indielinksd")
             .version(crate_version!())
             .author(crate_authors!())
             .about("Bookmarks in the Fediverse")

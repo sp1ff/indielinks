@@ -6,3 +6,6 @@ resolver = "2"
 [patch.crates-io]
 # openraft = { version = "=0.9.20", path = "../openraft/openraft" }
 # picky = { path = "../picky-rs-sp1ff/picky" }
+# tower = { path = "../tower-sp1ff/tower", version = "0.5.2" }
+# tower-layer = { path = "../tower-sp1ff/tower-layer", version = "0.3.3" }
+# tower-service = { path = "../tower-sp1ff/tower-service", version = "0.3.3" }
