@@ -872,6 +872,7 @@ impl Default for RateLimit {
 
 /// Current configuration
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConfigV1 {
     // For this one item, I'll allow it both in config and on the command line
     pub token: Option<SecretString>,
@@ -904,7 +905,7 @@ impl ConfigV1 {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "version")] // tag "internally"
+#[serde(tag = "version", deny_unknown_fields)] // tag "internally"
 enum Configuration {
     #[serde(rename = "1")]
     V1(ConfigV1),
@@ -1029,8 +1030,6 @@ sub-command is 'import', but it will be built-out as circumstances warrant.",
                 .long("api")
                 .num_args(1)
                 .value_parser(value_parser!(Origin))
-                // This is the default location of indielinks in development; once I go public, I should update this to point there
-                .default_value(OsStr::new("http://localhost:20679"))
                 .env("INDIC_API")
                 .help("Specify the location of the indielinks API to which you wish to speak")
         )
