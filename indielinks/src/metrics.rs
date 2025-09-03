@@ -31,8 +31,7 @@
 //!
 //! ```ignore
 //! state.instruments.get("metric-name").unwrap().add(1, &[tag...]);
-//! // panic if "metric-name" doesn't name 👆
-//! // a counter...
+//! // panic if "metric-name" doesn't name 👆 a counter...
 //! ```
 //!
 //! And even if we had dependent types (eliminating the need for the `unwrap()`), there's still the
@@ -76,12 +75,11 @@
 //! panic in these instances (as opposed to using a `Result` on, say, invalid input). On the other
 //! hand, a bad metric name in a little-used code path seems like a ticking time bomb to me.
 
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use opentelemetry::{
-    global,
+    KeyValue, global,
     metrics::{Counter, Gauge},
-    KeyValue,
 };
 
 /// Instrument type

@@ -28,6 +28,7 @@ use std::{
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
     result::Result as StdResult,
+    str::FromStr,
     time::Duration,
 };
 
@@ -128,6 +129,11 @@ enum Error {
     #[snafu(display("Failed to setup the tracing global subscriber: {source}"))]
     Subscriber {
         source: tracing::dispatcher::SetGlobalDefaultError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Bad tagname: {source}"))]
+    Tagname {
+        source: indielinks_shared::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Invalid API key"))]
@@ -519,6 +525,65 @@ where
     })
     .collect::<Vec<_>>()
     .await;
+    Ok(())
+}
+
+/// Add a link
+#[allow(clippy::too_many_arguments)]
+async fn add_link<C>(
+    mut client: C,
+    api: &Origin,
+    token: &SecretString,
+    url: &Url,
+    title: &str,
+    notes: Option<&str>,
+    tags: HashSet<Tagname>,
+    replace: Option<bool>,
+    shared: Option<bool>,
+    to_read: Option<bool>,
+) -> Result<()>
+where
+    // It would be nice to have an alias for this, but the trait_alias feature is only on nightly
+    C: Service<
+            http::Request<ReqBody>,
+            Response = http::Response<Vec<u8>>,
+            Error = Box<dyn std::error::Error + Send + Sync>,
+        > + Clone,
+{
+    use secrecy::ExposeSecret;
+
+    let add_req = PostAddReq {
+        url: url.into(),
+        title: title.to_owned(),
+        notes: notes.map(|s| s.to_owned()),
+        tags: if tags.is_empty() {
+            None
+        } else {
+            Some(tags.into_iter().map(|tag| tag.to_string()).join(","))
+        },
+        dt: None,
+        replace,
+        shared,
+        to_read,
+    };
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!(
+            "{api}/api/v1/posts/add?{}",
+            serde_urlencoded::to_string(&add_req).context(UrlEncodingSnafu { url: add_req.url })?
+        ))
+        .header(AUTHORIZATION, format!("Bearer {}", token.expose_secret()))
+        .body(ReqBody::None)
+        .context(RequestSnafu)?;
+    client
+        .ready()
+        .await
+        .context(ReadySnafu)?
+        .call(req)
+        .await
+        .context(CallSnafu)?;
+
+    // Response body ignored
     Ok(())
 }
 
@@ -1007,6 +1072,16 @@ async fn make_indielinks_client(
 //                                              main                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+fn parse_tags(text: &str) -> Result<HashSet<Tagname>> {
+    HashSet::from_iter(
+        text.split(',')
+            .map(Tagname::from_str)
+            .collect::<StdResult<Vec<_>, _>>()
+            .context(TagnameSnafu)?,
+    )
+    .pipe(Ok)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let matches = Command::new("indic")
@@ -1106,6 +1181,59 @@ the page https://pinboard.in/settings/backup.
                         .help("Pinboard JSON-formatted file containing links to be imported to indielinks"),
                 ),
         )
+        .subcommand(
+            Command::new("add-link")
+                .about("Add a link")
+                .long_about("Add a single link to indielinks. The URL & title do not need
+to be escaped; the implementation will handle that.")
+                .arg(
+                    Arg::new("replace")
+                        .short('r')
+                        .long("replace")
+                        .num_args(0)
+                        .action(ArgAction::SetTrue)
+                        .help("Replace the current link, if present")
+                )
+                .arg(
+                    Arg::new("shared")
+                        .short('s')
+                        .long("shared")
+                        .num_args(0)
+                        .action(ArgAction::SetTrue)
+                        .help("Mark this link as public/shared")
+                )
+                .arg(
+                    Arg::new("tags")
+                        .short('t')
+                        .long("tags")
+                        .num_args(1)
+                        .value_parser(parse_tags)
+                        .help("One or more tags, separated by commas")
+                )
+                .arg(
+                    Arg::new("title")
+                        .short('T')
+                        .long("title")
+                        .required(true)
+                        .num_args(1)
+                        .value_parser(value_parser!(String))
+                        .help("Title to be used for this link")
+                )
+                .arg(
+                    Arg::new("to-read")
+                        .short('R')
+                        .long("to-read")
+                        .num_args(0)
+                        .action(ArgAction::SetTrue)
+                        .help("Mark this link as unread")
+                )
+                .arg(
+                    Arg::new("URL")
+                        .required(true)
+                        .value_parser(value_parser!(Url))
+                        .index(1) /* Better to be explicit, I think */
+                        .help("The URL to be added to indielinks"))
+        )
         .get_matches();
 
     tracing::subscriber::set_global_default(
@@ -1170,6 +1298,24 @@ the page https://pinboard.in/settings/backup.
                 matches.get_one::<usize>("skip").copied(),
                 matches.get_one::<usize>("send").copied(),
                 matches.get_one::<usize>("chunk-size").copied(),
+            )
+            .await
+        }
+        Some(("add-link", matches)) => {
+            add_link(
+                client,
+                cfg.api().context(ApiSnafu)?,
+                cfg.token().context(MissingTokenSnafu)?,
+                matches.get_one::<Url>("URL").unwrap(/* impossible */),
+                matches.get_one::<String>("title").unwrap(/* impossible */),
+                None, // no notes, as yet
+                matches
+                    .get_one::<HashSet<Tagname>>("tags")
+                    .cloned()
+                    .unwrap_or(HashSet::new()),
+                matches.get_one::<bool>("replace").copied(),
+                matches.get_one::<bool>("shared").copied(),
+                matches.get_one::<bool>("to-read").copied(),
             )
             .await
         }
