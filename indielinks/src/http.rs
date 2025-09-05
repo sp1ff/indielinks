@@ -29,6 +29,7 @@ use indielinks_shared::StorUrl;
 use axum::Json;
 use chrono::Duration;
 use indielinks_cache::{cache::Cache, raft::CacheNode};
+use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
@@ -162,7 +163,7 @@ impl std::fmt::Display for SameSite {
 pub struct Indielinks {
     pub origin: Origin,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
-    pub registry: prometheus::Registry,
+    pub exporter: PrometheusExporter,
     pub instruments: Arc<metrics::Instruments>,
     pub pepper: Peppers,
     pub token_lifetime: Duration,

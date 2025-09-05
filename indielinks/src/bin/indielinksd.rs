@@ -50,7 +50,8 @@ use libc::{
     F_TLOCK, close, dup, exit, fork, getdtablesize, getpid, lockf, open, setsid, umask, write,
 };
 use opentelemetry::{KeyValue, global};
-use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use secrecy::SecretString;
 use serde::Deserialize;
 use snafu::{IntoError, prelude::*};
@@ -189,12 +190,12 @@ pub enum Error {
     LogHup {
         source: tokio::sync::mpsc::error::SendError<PathBuf>,
     },
+    #[snafu(display("While building the OLTP exporter, {source}"))]
+    OltpExporer {
+        source: opentelemetry_otlp::ExporterBuildError,
+    },
     #[snafu(display("Failed to open the indielinks lock file: errno={errno}"))]
     OpenLockFile { errno: errno::Errno },
-    #[snafu(display("Failed to build the Prometheus exporter: {source}"))]
-    PrometheusExporter {
-        source: opentelemetry_sdk::metrics::MetricError,
-    },
     #[snafu(display("Failed to connect to SycllaDB: {source}"))]
     Syclla {
         #[snafu(source(from(indielinks::scylla::Error, Box::new)))]
@@ -339,12 +340,23 @@ impl Default for SigningKeysConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct OtelExportConfig {
+    /// Endpoint that will receive metric data in OTLP format
+    endpoint: Url,
+    /// Interval at which metrics will be pushed to `endpoint`; defaults to 60 seconds
+    interval: Option<std::time::Duration>,
+}
+
 /// Indielinks configuration, version one
 #[derive(Clone, Debug, Deserialize)]
 struct ConfigV1 {
     /// The [indielinks] log file
     #[serde(rename = "log-file")]
     log_file: PathBuf,
+    /// OTLP export target; None means don't export
+    #[serde(rename = "otlp-export")]
+    otlp_export: Option<OtelExportConfig>,
     /// Local address at which to listen for public requests; specify as "address:port". This
     /// is the address to which [indielinks] will bind a listening socket for its public API.
     #[serde(rename = "public-address")]
@@ -393,6 +405,7 @@ impl Default for ConfigV1 {
     fn default() -> Self {
         ConfigV1 {
             log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(/* known good */),
+            otlp_export: None,
             public_address: "0.0.0.0:20679".parse::<SocketAddr>().unwrap(/* known good */),
             private_address: "127.0.0.1:20680".parse::<SocketAddr>().unwrap(/* known good */),
             raft_grpc_address: "0.0.0.0:20681".parse::<SocketAddr>().unwrap(/* known good */),
@@ -611,15 +624,12 @@ async fn healthcheck() -> &'static str {
 }
 
 async fn metrics(State(state): State<Arc<Indielinks>>) -> String {
-    use prometheus::{Encoder, TextEncoder};
-
-    let encoder = TextEncoder::new();
-    let metric_families = state.registry.gather();
-    let mut result = Vec::new();
-    encoder
-        .encode(&metric_families, &mut result)
+    let mut output = Vec::new();
+    state
+        .exporter
+        .export(&mut output)
         .expect("Failed to encode Prom metrics");
-    String::from_utf8(result).expect("Failed to encode Prom metrics")
+    String::from_utf8(output).expect("Non UTF-8 Prom exporter response?")
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -848,7 +858,7 @@ pub async fn select_storage(
 }
 
 /// Serve `indielinks` API requests
-async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
+async fn serve(opts: CliOpts) -> Result<()> {
     // Produce a future which can be used to signal graceful shutdown, below.
     async fn shutdown_signal(nfy: Arc<Notify>) {
         nfy.notified().await
@@ -863,6 +873,8 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
     let log_file_hup = configure_logging(&opts.log_opts, &cfg.log_file)?;
     // At this point we have logging-- huzzah!
     info!("indielinks version {} starting.", crate_version!());
+
+    let exporter = init_telemetry(cfg.otlp_export.as_ref())?;
 
     let instruments = Arc::new(Instruments::new("indielinks"));
 
@@ -913,8 +925,8 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
 
         let state = Arc::new(Indielinks {
             origin: cfg.public_origin.clone(),
-            registry: registry.clone(),
             storage,
+            exporter: exporter.clone(),
             instruments: instruments.clone(),
             pepper: cfg.pepper.clone(),
             token_lifetime: cfg.signing_keys.token_lifetime,
@@ -1047,17 +1059,29 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
 
 /// Initialize telemetry
 ///
-/// OTel is complex, and IMHO poorly documented. It's not that there isn't documentation, it's
-/// more that the extant documentation uses a lot of colloquial terms for very specific purposes
-/// and does a poor job of explaining those purposes to the non-initiate. All quotes below are
-/// from the Open Telemetry SDK [docs].
+/// <div class="warning">
 ///
-/// [docs]: https://docs.rs/opentelemetry_sdk/0.22.1/opentelemetry_sdk/index.html
+/// This method must be invoked from inside the Tokio runtime, but before any instruments are
+/// accessed.
 ///
-/// To produce metrics, e.g., I apparently need a "meter provider", and that is a part of the
-/// "SDK". All "meters" produced by a given meter provider will "be associated with the same
-/// Resource, have the same Views applied to them, and have their produced metric telemetry
-/// passed to the configured MetricReaders."
+/// </div>
+///
+/// Initialize indielinks telemetry. Return an exporter that can be used to implement a `/metrics`
+/// endpoint.
+///
+/// # Implementation Notes
+///
+/// OTel is complex, and IMHO poorly documented. It's not that there isn't documentation, it's more
+/// that the extant documentation uses a lot of colloquial terms for very specific purposes and does
+/// a poor job of explaining those purposes to the non-initiate. All quotes below are from the Open
+/// Telemetry SDK [docs].
+///
+/// [docs]: https://docs.rs/opentelemetry_sdk/latest/opentelemetry_sdk/index.html
+///
+/// To produce metrics, e.g., I apparently need a "meter provider", and that is a part of the SDK.
+/// All "meters" produced by a given meter provider will "be associated with the same Resource, have
+/// the same Views applied to them, and have their produced metric telemetry passed to the
+/// configured MetricReaders."
 ///
 /// OK... a "resource" is "an immutable representation of the entity producing telemetry as
 /// attributes," so I guess I want a resource for the `indielinks` service itself, perhaps along
@@ -1068,19 +1092,38 @@ async fn serve(registry: prometheus::Registry, opts: CliOpts) -> Result<()> {
 /// which attributes get reported, modify aggregation, or even drop entire metrics.
 ///
 /// A "metric reader" is "the interface used between the SDK and an exporter." Huh.
-///
-/// Working off the opentelemetry-prometheus sample code, I can hand a Prometheus "exporter"
-/// to the Meter Provider, but to get an exporter, I need a "registry":
-fn init_telemetry() -> Result<prometheus::Registry> {
-    let registry = prometheus::Registry::new();
+fn init_telemetry(collector_config: Option<&OtelExportConfig>) -> Result<PrometheusExporter> {
+    let old_school_exporter = PrometheusExporter::new();
 
-    let exporter = opentelemetry_prometheus::exporter()
-        .with_registry(registry.clone())
-        .build()
-        .context(PrometheusExporterSnafu)?;
+    let mut provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_resource(
+            opentelemetry_sdk::Resource::builder_empty()
+                .with_attribute(KeyValue::new("service.name", "indielinks"))
+                .build(),
+        )
+        .with_reader(old_school_exporter.clone());
 
-    global::set_meter_provider(SdkMeterProvider::builder().with_reader(exporter).build());
-    Ok(registry)
+    if let Some(config) = collector_config {
+        let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
+            .with_http()
+            .with_endpoint(config.endpoint.as_str())
+            .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
+            .build()
+            .context(OltpExporerSnafu)?;
+
+        let mut reader = opentelemetry_sdk::metrics::PeriodicReader::builder(otlp_exporter);
+        if let Some(interval) = config.interval {
+            reader = reader.with_interval(interval);
+        }
+        let reader = reader.build();
+
+        provider = provider.with_reader(reader);
+    }
+
+    let provider = provider.build();
+    global::set_meter_provider(provider);
+
+    Ok(old_school_exporter)
 }
 
 /// Make this process into a daemon
@@ -1318,9 +1361,8 @@ fn main() -> Result<()> {
     if opts.log_opts.daemon {
         daemonize(&opts.local_statedir, opts.no_chdir)?;
     }
-    // spin-up the Tokio runtime...
+    // spin-up the Tokio runtime,
     tokio::runtime::Runtime::new()
         .context(TokioRuntimeSnafu)?
-        // and start our server:
-        .block_on(serve(init_telemetry()?, opts))
+        .block_on(serve(opts)) // and start our server!
 }

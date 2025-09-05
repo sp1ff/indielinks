@@ -8,6 +8,9 @@ user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
 collection-page-size = 64
 assets = "/home/mgh/share/indielinks/assets"
 
+[otlp-export]
+target = "http://localhost:9090/api/v1/otlp/v1/metrics"
+
 [public-origin]
 scheme = "http"
 port = 20676

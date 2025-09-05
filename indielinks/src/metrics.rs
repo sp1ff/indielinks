@@ -18,7 +18,7 @@
 //! # Introduction
 //!
 //! Indlielinks uses [OpenTelemetry] to collect & export metrics. From the perspective of
-//! [OpenTelemetry] user such as Indielinks, the API is not terribly convenient to use. The actual
+//! [OpenTelemetry] users such as Indielinks, the API is not terribly convenient to use. The actual
 //! counters, gauges & histograms are called "instruments" in OTel, and we are advised to "Re-use
 //! Instruments: Instruments are designed for reuse. Avoid creating new instruments repeatedly."
 //! Fine, but where to keep them? I'd prefer not to litter my state type with hundreds of fields of

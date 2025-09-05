@@ -30,18 +30,50 @@
 //! indielink's data isn't particularly relational in nature, so DynamoDB was my "go to" answer.
 //! That said, a design goal for me is to enable indielinks to be run in a wide variety of
 //! configurations. If you want to run it as a daemon on bare metal in your house, I'll support
-//! that. If you want to run a containerized cluster in the cloud, I'll support that, too.
-//! I added ScyllaDB to support the local case: you can install & run ScyllaDB locally.
-//! The choice of ScyllaDB was also motivated by their "Alternator" interface, which allows
-//! me to talk to it via the DynamoDB API.
+//! that. If you want to run a containerized cluster in the cloud, I'll support that, too. I added
+//! ScyllaDB to support the local case: you can install & run ScyllaDB locally. The choice of
+//! ScyllaDB was also motivated by their "Alternator" interface, which allows me to talk to it via
+//! the DynamoDB API. That said, I still went through the hassle of supporting the DDB interface as
+//! well as the native Cql interface. I may at some point just standardize on the former (and
+//! simplify the code considerably).
 //!
 //! ## Observability
 //!
-//! Indielinks at this time provides for logs & metrics.
+//! Indielinks at this time provides for logs & metrics. Traces are less interesting given my design
+//! goal of keeping the system as operationally simple as possible; in particular, there's only one
+//! microservice other than the data store, making tracing rather uninteresting.
 //!
 //! ### Metrics
 //!
-//! Indielinks makes Prometheus-style metrics available publicly at the `/metrics` endpoint.
+//! I chose to use [OpenTelemetry] (AKA OTel) for for indielinks metrics, both because my sense is
+//! that its adoption is growing and just because I like the idea of vendor-agnostic support. You
+//! can still scrapte [Prometheus]-formatted metrics at `/metrics`, just because I wouldn't feel
+//! comfortable without it, but you can also configure indielinks with the address of an OTLP
+//! collector to have it push metrics in OTLP format (http/protobuf only) to that endpoint.
+//!
+//! [OpenTelemetry]: https://opentelemetry.io/docs/what-is-opentelemetry/
+//!
+//! #### OTel
+//!
+//! OTel distinguishes between the "API", which is the set of data types & operations that
+//! indielinks (or any OTel caller) invokes to create spans/metrics/log records, and the "SDK" which
+//! is the *implementation* of the API that actually makes telemetry flow. One could, in principle,
+//! define a "NOP" implementation that does nothing.
+//!
+//! The OTel SDK is implemented by the [opentelemetry] crate, and the SDK by [opentelemetry-sdk]. Among
+//! the things the implementation provides is an *exporter*. [opentelemetry-otlp] exports metrics
+//! (as well as logs & traces, for that matter) in the OTLP format to either an OTel collector or an
+//! OTLP-compatible backend. At the time of this writing, indielinks supports exporting OTLP over
+//! HTTP with protobuf payloads. One compatible backend is [Prometheus].
+//!
+//! [opentelemetry]: https://docs.rs/opentelemetry/latest/opentelemetry/index.html
+//! [opentelemetry-sdk]: https://docs.rs/opentelemetry_sdk/latest/opentelemetry_sdk/index.html
+//! [opentelemetry-otlp]: https://docs.rs/opentelemetry-otlp/latest/opentelemetry_otlp/index.html
+//! [Prometheus]: https://prometheus.io/docs/guides/opentelemetry/#enable-the-otlp-receiver
+//!
+//! Nb. the [opentelemetry-prometheus] exporter is deprecated.
+//!
+//! [opentelemetry-prometheus]: https://docs.rs/opentelemetry-prometheus/latest/opentelemetry_prometheus/
 //!
 //! ## Background Task Processing
 //!
