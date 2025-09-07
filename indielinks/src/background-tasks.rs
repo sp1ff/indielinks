@@ -80,7 +80,7 @@ use pin_project::pin_project;
 use rmp_serde::to_vec;
 use scylla::DeserializeRow;
 use serde::{Deserialize, Serialize};
-use snafu::{prelude::*, Backtrace, IntoError};
+use snafu::{Backtrace, IntoError, prelude::*};
 use tokio::{
     sync::Notify,
     task::{Id, JoinError, JoinHandle, JoinSet},
@@ -88,12 +88,7 @@ use tokio::{
 use tracing::error;
 use uuid::Uuid;
 
-use crate::{
-    counter_add, gauge_setu,
-    metrics::{self, Instruments, Sort},
-    origin::Origin,
-    storage::Backend as StorageBackend,
-};
+use crate::{define_metric, origin::Origin, storage::Backend as StorageBackend};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module error type                                        //
@@ -295,10 +290,10 @@ impl Default for Config {
     }
 }
 
-inventory::submit! { metrics::Registration::new("background.processor.tasks.completed", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("background.processor.tasks.failed",    Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("background.processor.tasks.timedout",  Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("background.processor.tasks.inflight",  Sort::IntegralGauge)   }
+define_metric! { "background.processor.tasks.completed", background_processor_tasks_completed, Sort::IntegralCounter }
+define_metric! { "background.processor.tasks.failed", background_processor_tasks_failed, Sort::IntegralCounter }
+define_metric! { "background.processor.tasks.timedout", background_processor_tasks_timedout, Sort::IntegralCounter }
+define_metric! { "background.processor.tasks.inflight",  background_processor_tasks_inflight, Sort::IntegralGauge   }
 
 /// Process background tasks. `receiver` is a [Receiver] from which we can draw tasks. `config`
 /// holds configuration parameters for the algorithm. `shutdown` is a [Notify] instance the caller
@@ -308,7 +303,6 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
     context: C,
     config: Config,
     shutdown: Arc<Notify>,
-    instruments: Arc<Instruments>,
 ) -> Result<()> {
     // The basic outline of this logic is to maintain a `JoinSet` of currently running tasks,
     let mut tasks: HashMap<Id, R::TaskId> = HashMap::new();
@@ -331,12 +325,7 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
             }
         }
 
-        gauge_setu!(
-            instruments,
-            "background.processor.tasks.inflight",
-            futures.len() as u64,
-            &[]
-        );
+        background_processor_tasks_inflight.record(futures.len() as u64, &[]);
 
         if !futures.is_empty() {
             // We've got at least one task; drive 'em all forward, while waiting on our shutdown
@@ -351,7 +340,7 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
                                     // process); now all that remains is to mark it complete.
                                     let cookie = tasks.remove(&id).context(TaskIdSnafu)?;
                                     receiver.mark_complete(cookie).await.context(CompletionSnafu)?;
-                                    counter_add!(instruments, "background.processor.tasks.completed", 1, &[]);
+                                    background_processor_tasks_completed.add(1, &[]);
                                 },
                                 Ok(Err(err)) => {
                                     // The task has failed (and been consumed in the process);
@@ -359,7 +348,7 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
                                     let cookie = tasks.remove(&id).context(TaskIdSnafu)?;
                                     // log the error...
                                     error!("Task {} reports failure: {:?}", cookie, err);
-                                    counter_add!(instruments, "background.processor.tasks.failed", 1, &[]);
+                                    background_processor_tasks_failed.add(1, &[]);
                                     // and that's kinda it. We just drop it on the floor. Once our
                                     // lease in the datastore expires, it will get picked-up &
                                     // retried.
@@ -370,7 +359,7 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
                                     let cookie = tasks.remove(&id).context(TaskIdSnafu)?;
                                     // log the error...
                                     error!("Task {} reports timeout: {:?}", cookie, elapsed);
-                                    counter_add!(instruments, "background.processor.tasks.timedout", 1, &[]);
+                                    background_processor_tasks_timedout.add(1, &[]);
                                     // and that's kinda it. We just drop it on the floor. Once our
                                     // lease in the datastore expires, it will get picked-up &
                                     // retried.
@@ -417,7 +406,6 @@ pub fn new<C: Clone + Send + 'static, R: Receiver<C> + Send + 'static>(
     receiver: R,
     context: C,
     config: Option<Config>,
-    instruments: Arc<Instruments>,
 ) -> std::result::Result<Processor, Error> {
     let shutdown = Arc::new(Notify::new());
     let processor = tokio::spawn(process(
@@ -425,7 +413,6 @@ pub fn new<C: Clone + Send + 'static, R: Receiver<C> + Send + 'static>(
         context,
         config.unwrap_or_default(),
         shutdown.clone(),
-        instruments,
     ));
     Ok(Processor {
         processor,
@@ -501,13 +488,7 @@ mod mock {
         let shutdown = Arc::new(Notify::new());
 
         // Process will run forever, so spawn it...
-        let handle = tokio::task::spawn(process(
-            backend,
-            (),
-            Config::default(),
-            shutdown.clone(),
-            Arc::new(Instruments::new("indielinks")),
-        ));
+        let handle = tokio::task::spawn(process(backend, (), Config::default(), shutdown.clone()));
         // give it ample time to run...
         tokio::time::sleep(Duration::from_secs(1)).await;
         // signal it to shutdown...
@@ -547,7 +528,6 @@ mod mock {
                 shutdown_timeout: Duration::from_millis(800),
                 ..Default::default()
             }),
-            Arc::new(Instruments::new("indielinks")),
         )
         .unwrap();
 
@@ -724,8 +704,10 @@ mod test {
 
     #[tokio::test]
     async fn simple() {
-        assert!(inventory::iter::<BackgroundTask>()
-            .find(|t| t.id == SLEEP_TASK)
-            .is_some());
+        assert!(
+            inventory::iter::<BackgroundTask>()
+                .find(|t| t.id == SLEEP_TASK)
+                .is_some()
+        );
     }
 }

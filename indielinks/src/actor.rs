@@ -18,7 +18,7 @@
 //! This module implements per-user actor endpoints, along with their inboxes, outboxes & so forth.
 //! It also implements the instance shared inbox.
 
-use std::{sync::Arc, time::Duration};
+use std::{ops::Deref, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
@@ -51,12 +51,11 @@ use crate::{
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
-    counter_add,
+    define_metric,
     entities::{
         self, ActivityPubPost, ActivityPubPostFlavor, Follower, Following, Reply, Share, User,
     },
     http::{ErrorResponseBody, Indielinks},
-    metrics::{self, Sort},
     origin::Origin,
     storage::{self, Backend as StorageBackend, Error as StorError},
 };
@@ -267,8 +266,8 @@ type StdResult<T, E> = std::result::Result<T, E>;
 //                                     assorted utilities                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("actor.verification.successes", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("actor.verification.failures", Sort::IntegralCounter) }
+define_metric! { "actor.verification.successes", actor_verification_successes, Sort::IntegralCounter }
+define_metric! { "actor.verification.failures", actor_verification_failures, Sort::IntegralCounter }
 
 /// Verify the signature on an incoming request
 ///
@@ -414,12 +413,12 @@ async fn verify_signature(
         Ok((mut request, actor)) => {
             // Place `actor` into the request context for the convenience of downstream consumers
             request.extensions_mut().insert(actor);
-            counter_add!(state.instruments, "actor.verification.successes", 1, &[]);
+            actor_verification_successes.add(1, &[]);
             next.run(request).await
         }
         Err(err) => {
             error!("indielinks failed to verify an HTTP signature: {:?}", err);
-            counter_add!(state.instruments, "actor.verification.failures", 1, &[]);
+            actor_verification_failures.add(1, &[]);
             err.into_response()
         }
     }
@@ -432,11 +431,10 @@ async fn verify_signature(
 // This should probably be generalized further, moving the status code into the parameter list
 fn handle_err<E: std::error::Error>(
     err: E,
-    instruments: &metrics::Instruments,
-    metric: &str,
+    instrument: &opentelemetry::metrics::Counter<u64>,
 ) -> axum::response::Response {
     error!("{:#?}", err);
-    counter_add!(instruments, metric, 1, &[]);
+    instrument.add(1, &[]);
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponseBody {
@@ -461,10 +459,10 @@ fn patch_content_type(mut rsp: axum::response::Response) -> axum::response::Resp
 //                                        the shared inbox                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("shared_inbox.successes", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("shared_inbox.announcements", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("shared_inbox.creates", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("shared_inbox.errors", Sort::IntegralCounter) }
+define_metric! { "shared_inbox.successes", shared_inbox_successes, Sort::IntegralCounter }
+define_metric! { "shared_inbox.announcements", shared_inbox_announcements, Sort::IntegralCounter }
+define_metric! { "shared_inbox.creates", shared_inbox_creates, Sort::IntegralCounter }
+define_metric! { "shared_inbox.errors", shared_inbox_errors, Sort::IntegralCounter }
 
 /// Handle `Note` creation
 ///
@@ -697,38 +695,29 @@ async fn shared_inbox(
         body: &AnnounceOrCreate,
         storage: &(dyn StorageBackend + Send + Sync),
         origin: &Origin,
-        instruments: &metrics::Instruments,
     ) -> Result<()> {
         match body {
             // AFAIK, an `Announce` is strictly used to notify us that someone has shared one of our
             // posts.
             AnnounceOrCreate::Announce(announce) => {
-                counter_add!(instruments, "shared_inbox.announcements", 1, &[]);
+                shared_inbox_announcements.add(1, &[]);
                 accept_share(actor, announce, storage, origin).await
             }
             AnnounceOrCreate::Create(create) => {
-                counter_add!(instruments, "shared_inbox.creates", 1, &[]);
+                shared_inbox_creates.add(1, &[]);
                 accept_create(actor, create, storage, origin).await
             }
         }
     }
 
-    match shared_inbox1(
-        &actor,
-        &body,
-        state.storage.as_ref(),
-        &state.origin,
-        &state.instruments,
-    )
-    .await
-    {
+    match shared_inbox1(&actor, &body, state.storage.as_ref(), &state.origin).await {
         Ok(_) => {
-            counter_add!(state.instruments, "shared_inbox.successes", 1, &[]);
+            shared_inbox_successes.add(1, &[]);
             (StatusCode::ACCEPTED, ()).into_response()
         }
         Err(err) => {
             error!("{:#?}", err);
-            counter_add!(state.instruments, "shared_inbox.errors", 1, &[]);
+            shared_inbox_errors.add(1, &[]);
             err.as_status_and_msg().into_response()
         }
     }
@@ -738,8 +727,8 @@ async fn shared_inbox(
 //                                  `/users/{username}` handler                                   //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("actor.retrieved", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("actor.errors", Sort::IntegralCounter) }
+define_metric! { "actor.retrieved", actor_retrieved, Sort::IntegralCounter }
+define_metric! { "actor.errors", actor_errors, Sort::IntegralCounter }
 
 /// `/users/{username}` handler
 ///
@@ -778,24 +767,24 @@ async fn actor(
     match actor1(&state.origin, state.storage.as_ref(), &username, &headers).await {
         Ok((actor, crate::http::Accept::ActivityPub)) => match actor.as_jld(None) {
             Ok(jld) => {
-                counter_add!(state.instruments, "actor.retrieved", 1, &[]);
+                actor_retrieved.add(1, &[]);
                 patch_content_type((StatusCode::OK, jld.to_string()).into_response())
             }
-            Err(err) => handle_err(err, &state.instruments, "actor.errors"),
+            Err(err) => handle_err(err, actor_errors.deref()),
         },
         Ok((actor, crate::http::Accept::Html)) => match actor.as_html() {
             Ok(html) => {
-                counter_add!(state.instruments, "actor.retrieved", 1, &[]);
+                actor_retrieved.add(1, &[]);
                 (StatusCode::OK, html.to_string()).into_response()
             }
-            Err(err) => handle_err(err, &state.instruments, "actor.errors"),
+            Err(err) => handle_err(err, actor_errors.deref()),
         },
         Err(err @ Error::NoUser { .. }) => {
             error!("{}", err);
-            counter_add!(state.instruments, "posts.served", 1, &[]);
+            posts_served.add(1, &[]);
             StatusCode::NOT_FOUND.into_response()
         }
-        Err(err) => handle_err(err, &state.instruments, "actor.errors"),
+        Err(err) => handle_err(err, actor_errors.deref()),
     }
 }
 
@@ -803,11 +792,11 @@ async fn actor(
 //                               `/users/{username}/inbox` handler                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("inbox.follows", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("inbox.likes",   Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("inbox.undos",   Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("inbox.accepts", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("inbox.errors",  Sort::IntegralCounter) }
+define_metric! { "inbox.follows", inbox_follows, Sort::IntegralCounter }
+define_metric! { "inbox.likes", inbox_likes, Sort::IntegralCounter }
+define_metric! { "inbox.undos", inbox_undos, Sort::IntegralCounter }
+define_metric! { "inbox.accepts", inbox_accepts, Sort::IntegralCounter }
+define_metric! { "inbox.errors", inbox_errors, Sort::IntegralCounter }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       Accepting a Follow                                       //
@@ -1034,7 +1023,6 @@ async fn inbox(
         origin: &Origin,
         storage: &(dyn StorageBackend + Send + Sync),
         task_sender: Arc<BackgroundTasks>,
-        instruments: &metrics::Instruments,
     ) -> Result<()> {
         let user = storage
             .user_for_name(username.as_ref())
@@ -1045,27 +1033,27 @@ async fn inbox(
             })?;
         match body {
             FollowOrLike::Follow(follow) => {
-                counter_add!(instruments, "inbox.follows", 1, &[]);
+                inbox_follows.add(1, &[]);
                 accept_follow(&user, follow, actor, storage, task_sender, origin).await
             }
             FollowOrLike::Like(like) => {
-                counter_add!(instruments, "inbox.follows", 1, &[]);
+                inbox_follows.add(1, &[]);
                 accept_like(&user, like, origin, storage).await
             }
             FollowOrLike::Undo(undo) => {
-                counter_add!(instruments, "inbox.undos", 1, &[]);
+                inbox_undos.add(1, &[]);
                 accept_undo(undo).await
             }
             FollowOrLike::Accept(accept) => {
-                counter_add!(instruments, "inbox.accepts", 1, &[]);
+                inbox_accepts.add(1, &[]);
                 accept_accept(&user, actor, accept, storage).await
             }
         }
     }
 
-    fn handle_err(err: Error, instruments: &metrics::Instruments) -> axum::response::Response {
+    fn handle_err(err: Error) -> axum::response::Response {
         error!("{:#?}", err);
-        counter_add!(instruments, "inbox.errors", 1, &[]);
+        inbox_errors.add(1, &[]);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponseBody {
@@ -1082,12 +1070,11 @@ async fn inbox(
         &state.origin,
         state.storage.as_ref(),
         state.task_sender.clone(),
-        &state.instruments,
     )
     .await
     {
         Ok(_) => (StatusCode::CREATED, ()).into_response(),
-        Err(err) => handle_err(err, &state.instruments),
+        Err(err) => handle_err(err),
     }
 }
 
@@ -1095,8 +1082,8 @@ async fn inbox(
 //                                           Followers                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("followers.pages", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("followers.errors", Sort::IntegralCounter) }
+define_metric! { "followers.pages", followers_pages, Sort::IntegralCounter }
+define_metric! { "followers.errors", followers_errors, Sort::IntegralCounter }
 
 // No query params => None, "?page=1" => Some(1)
 #[derive(Clone, Debug, Deserialize)]
@@ -1215,12 +1202,12 @@ async fn followers(
     {
         Ok(ref page) => match Jld::new(page, None) {
             Ok(jrd) => {
-                counter_add!(state.instruments, "followers.pages", 1, &[]);
+                followers_pages.add(1, &[]);
                 patch_content_type((StatusCode::OK, jrd.to_string()).into_response())
             }
-            Err(err) => handle_err(err, &state.instruments, "followers.errors"),
+            Err(err) => handle_err(err, followers_errors.deref()),
         },
-        Err(err) => handle_err(err, &state.instruments, "followers.errors"),
+        Err(err) => handle_err(err, followers_errors.deref()),
     }
 }
 
@@ -1228,8 +1215,8 @@ async fn followers(
 //                                           Following                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("following.pages", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("following.errors", Sort::IntegralCounter) }
+define_metric! { "following.pages", following_pages, Sort::IntegralCounter }
+define_metric! { "following.errors", following_errors, Sort::IntegralCounter }
 
 /// Retrieve a user's following collection
 async fn following(
@@ -1312,12 +1299,12 @@ async fn following(
     {
         Ok(ref page) => match Jld::new(page, None) {
             Ok(jrd) => {
-                counter_add!(state.instruments, "following.pages", 1, &[]);
+                following_pages.add(1, &[]);
                 patch_content_type((StatusCode::OK, jrd.to_string()).into_response())
             }
-            Err(err) => handle_err(err, &state.instruments, "following.errors"),
+            Err(err) => handle_err(err, following_errors.deref()),
         },
-        Err(err) => handle_err(err, &state.instruments, "following.errors"),
+        Err(err) => handle_err(err, following_errors.deref()),
     }
 }
 
@@ -1325,8 +1312,8 @@ async fn following(
 //                                             Posts                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("posts.served", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("posts.errors", Sort::IntegralCounter) }
+define_metric! { "posts.served", posts_served, Sort::IntegralCounter }
+define_metric! { "posts.errors", posts_errors, Sort::IntegralCounter }
 
 async fn get_post(
     State(state): State<Arc<Indielinks>>,
@@ -1387,24 +1374,24 @@ async fn get_post(
     {
         Ok((note, crate::http::Accept::ActivityPub)) => match note.as_jld(None) {
             Ok(jld) => {
-                counter_add!(state.instruments, "posts.served", 1, &[]);
+                posts_served.add(1, &[]);
                 patch_content_type((StatusCode::OK, jld.to_string()).into_response())
             }
-            Err(err) => handle_err(err, &state.instruments, "posts.errors"),
+            Err(err) => handle_err(err, posts_errors.deref()),
         },
         Ok((note, crate::http::Accept::Html)) => match note.as_html() {
             Ok(html) => {
-                counter_add!(state.instruments, "posts.served", 1, &[]);
+                posts_served.add(1, &[]);
                 (StatusCode::OK, html.to_string()).into_response()
             }
-            Err(err) => handle_err(err, &state.instruments, "posts.errors"),
+            Err(err) => handle_err(err, posts_errors.deref()),
         },
         Err(err @ Error::NoPost { .. }) => {
             error!("{}", err);
-            counter_add!(state.instruments, "posts.served", 1, &[]);
+            posts_served.add(1, &[]);
             StatusCode::NOT_FOUND.into_response()
         }
-        Err(err) => handle_err(err, &state.instruments, "posts.errors"),
+        Err(err) => handle_err(err, posts_errors.deref()),
     }
 }
 

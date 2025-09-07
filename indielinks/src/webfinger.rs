@@ -52,12 +52,10 @@ use std::sync::Arc;
 use crate::ap_entities::make_user_id;
 use crate::entities::User;
 use crate::http::Indielinks;
-use crate::metrics::Sort;
 use crate::origin::Origin;
-use crate::storage;
 use crate::storage::Backend as StorageBackend;
 use crate::{acct::Account, http::ErrorResponseBody};
-use crate::{counter_add, metrics};
+use crate::{define_metric, storage};
 
 use axum::extract::{Query, State};
 use axum::{Json, http::StatusCode, response::IntoResponse};
@@ -220,9 +218,9 @@ impl axum::response::IntoResponse for ResponseBody {
 //                                       webfinger handler                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("webfinger.served", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("webfinger.not_found", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("webfinger.errors", Sort::IntegralCounter) }
+define_metric! { "webfinger.served", webfinger_served, Sort::IntegralCounter }
+define_metric! { "webfinger.not_found", webfinger_not_found, Sort::IntegralCounter }
+define_metric! { "webfinger.errors", webfinger_errors, Sort::IntegralCounter }
 
 #[derive(Debug, Deserialize)]
 pub struct WebFingerQueryParams {
@@ -261,11 +259,11 @@ pub async fn webfinger(
 
     match webfinger1(&params.resource, &state.origin, state.storage.as_ref()).await {
         Ok(rsp) => {
-            counter_add!(state.instruments, "webfinger.served", 1, &[]);
+            webfinger_served.add(1, &[]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(Error::Hostname { .. }) => {
-            counter_add!(state.instruments, "webfinger.not_found", 1, &[]);
+            webfinger_not_found.add(1, &[]);
             info!("Mismatched hostname");
             (
                 StatusCode::NOT_FOUND,
@@ -276,7 +274,7 @@ pub async fn webfinger(
                 .into_response()
         }
         Err(Error::NoSuchUser { .. }) => {
-            counter_add!(state.instruments, "webfinger.not_found", 1, &[]);
+            webfinger_not_found.add(1, &[]);
             info!("No such user");
             (
                 StatusCode::NOT_FOUND,

@@ -63,10 +63,9 @@ use crate::{
     activity_pub::SendCreate,
     authn::{self, AuthnScheme, check_api_key, check_password, check_token},
     background_tasks::{BackgroundTasks, Sender},
-    counter_add,
+    define_metric,
     entities::User,
     http::{ErrorResponseBody, Indielinks},
-    metrics::{self, Sort},
     origin::Origin,
     peppers::Peppers,
     signing_keys::SigningKeys,
@@ -392,8 +391,8 @@ type StdResult<T, E> = std::result::Result<T, E>;
 //                                         Authorization                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.auth.successes", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("delicious.auth.failures", Sort::IntegralCounter) }
+define_metric! { "delicious.auth.successes", delicious_auth_success, Sort::IntegralCounter }
+define_metric! { "delicious.auth.failures", delicious_auth_failures, Sort::IntegralCounter }
 
 /// Authenticate a request to the del.icio.us API
 ///
@@ -499,13 +498,13 @@ async fn authenticate(
         Ok(user) => {
             debug!("indielinks authorized user {}", user.id());
             request.extensions_mut().insert(user);
-            counter_add!(state.instruments, "delicious.auth.successes", 1, &[]);
+            delicious_auth_success.add(1, &[]);
             next.run(request).await
         }
         // I want to be careful about what sort of information we reveal to our caller...
         Err(err) => {
             error!("indielinks failed to authenticate this request: {err}");
-            counter_add!(state.instruments, "delicious.auth.failures", 1, &[]);
+            delicious_auth_failures.add(1, &[]);
             err.into_response()
         }
     }
@@ -538,12 +537,9 @@ fn parse_tag_parameter(tags: &Option<String>) -> Result<HashSet<Tagname>> {
 //                                        `/posts/update`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.updates", Sort::IntegralCounter) }
+define_metric! { "delicious.updates", delicious_updates, Sort::IntegralCounter }
 
-async fn update(
-    State(state): State<Arc<Indielinks>>,
-    Extension(user): Extension<User>,
-) -> axum::response::Response {
+async fn update(Extension(user): Extension<User>) -> axum::response::Response {
     async fn update1(user: User) -> Result<UpdateRsp> {
         let update_time = user.last_update().context(NoPostsSnafu {
             username: user.username().clone(),
@@ -556,7 +552,7 @@ async fn update(
 
     match update1(user).await {
         Ok(rsp) => {
-            counter_add!(state.instruments, "delicious.updates", 1, &[]);
+            delicious_updates.add(1, &[]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(err) => {
@@ -573,7 +569,7 @@ async fn update(
 //                                          `/posts/add`                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.posts.added", Sort::IntegralCounter) }
+define_metric! { "delicious.posts.added", delicious_posts_added, Sort::IntegralCounter }
 
 /// `/posts/add` handler
 ///
@@ -659,11 +655,11 @@ async fn add_post(
     .await
     {
         Ok(true) => {
-            counter_add!(state.instruments, "delicious.posts.added", 1, &[]);
+            delicious_posts_added.add(1, &[]);
             (StatusCode::CREATED, "done".to_string())
         }
         Ok(false) => {
-            counter_add!(state.instruments, "delicious.posts.added", 1, &[]);
+            delicious_posts_added.add(1, &[]);
             (StatusCode::OK, "done".to_string())
         }
         Err(err) => {
@@ -684,7 +680,7 @@ async fn add_post(
 //                                         `posts/delete`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.posts.deleted", Sort::IntegralCounter) }
+define_metric! { "delicious.posts.deleted", delicious_posts_deleted, Sort::IntegralCounter }
 
 async fn delete_post(
     State(state): State<Arc<Indielinks>>,
@@ -712,11 +708,11 @@ async fn delete_post(
     let (status_code, status) =
         match delete_post1(state.storage.as_ref(), user, post_delete_req.url).await {
             Ok(true) => {
-                counter_add!(state.instruments, "delicious.posts.deleted", 1, &[]);
+                delicious_posts_deleted.add(1, &[]);
                 (StatusCode::OK, "done".to_string())
             }
             Ok(false) => {
-                counter_add!(state.instruments, "delicious.posts.deleted", 1, &[]);
+                delicious_posts_deleted.add(1, &[]);
                 (StatusCode::OK, "item not found".to_string())
             }
             Err(err) => {
@@ -737,7 +733,7 @@ async fn delete_post(
 //                                          `/posts/get`                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.posts.retrieved", Sort::IntegralCounter) }
+define_metric! { "delicious.posts.retrieved", delicious_posts_retrieved, Sort::IntegralCounter }
 
 /// `/posts/get` handler
 ///
@@ -807,12 +803,7 @@ async fn get_posts(
 
     match get_posts1(state.storage.as_ref(), user, post_get_req).await {
         Ok(rsp) => {
-            counter_add!(
-                state.instruments,
-                "delicious.posts.retrieved",
-                rsp.posts.len() as u64,
-                &[]
-            );
+            delicious_posts_retrieved.add(rsp.posts.len() as u64, &[]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(err) => {
@@ -829,7 +820,7 @@ async fn get_posts(
 //                                        `/posts/recent`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.posts.recents", Sort::IntegralCounter) }
+define_metric! { "delicious.posts.recents", delicious_posts_recents, Sort::IntegralCounter }
 
 /// Retrieve a list of the user's most recent posts
 ///
@@ -864,12 +855,7 @@ async fn get_recent(
 
     match get_recent1(state.storage.as_ref(), user, post_recent_req).await {
         Ok(rsp) => {
-            counter_add!(
-                state.instruments,
-                "delicious.posts.recents",
-                rsp.posts.len() as u64,
-                &[]
-            );
+            delicious_posts_recents.add(rsp.posts.len() as u64, &[]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(err) => {
@@ -884,7 +870,7 @@ async fn get_recent(
 //                                         `posts/dates`                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.posts.dates", Sort::IntegralCounter) }
+define_metric! { "delicious.posts.dates", delicious_posts_dates, Sort::IntegralCounter }
 
 async fn posts_dates(
     State(state): State<Arc<Indielinks>>,
@@ -916,12 +902,7 @@ async fn posts_dates(
 
     match posts_dates1(state.storage.as_ref(), user, posts_dates_req).await {
         Ok(rsp) => {
-            counter_add!(
-                state.instruments,
-                "delicious.posts.dates",
-                rsp.dates.len() as u64,
-                &[]
-            );
+            delicious_posts_dates.add(rsp.dates.len() as u64, &[]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(err) => {
@@ -936,7 +917,7 @@ async fn posts_dates(
 //                                          `posts/all`                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.posts.all", Sort::IntegralCounter) }
+define_metric! { "delicious.posts.all", delicious_posts_all, Sort::IntegralCounter }
 
 fn apply_pagination(posts: Vec<Post>, start: Option<usize>, size: Option<usize>) -> Vec<Post> {
     match (start, size) {
@@ -1022,12 +1003,7 @@ async fn all_posts(
 
     match all_posts1(state.storage.as_ref(), user, posts_all_req).await {
         Ok(rsp) => {
-            counter_add!(
-                state.instruments,
-                "delicious.posts.all",
-                rsp.posts.len() as u64,
-                &[]
-            );
+            delicious_posts_all.add(rsp.posts.len() as u64, &[]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(err) => {
@@ -1042,7 +1018,7 @@ async fn all_posts(
 //                                           `tags/get`                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.posts.tags", Sort::IntegralCounter) }
+define_metric! { "delicious.posts.tags", delicious_posts_tags, Sort::IntegralCounter }
 
 /// `tags/get` handler
 ///
@@ -1067,12 +1043,7 @@ async fn tags_get(
 
     match tags_get1(state.storage.as_ref(), user).await {
         Ok(rsp) => {
-            counter_add!(
-                state.instruments,
-                "delicious.posts.tags",
-                rsp.map.len() as u64,
-                &[]
-            );
+            delicious_posts_tags.add(rsp.map.len() as u64, &[]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(err) => {
@@ -1087,7 +1058,7 @@ async fn tags_get(
 //                                         `tags/rename`                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.tags.renames", Sort::IntegralCounter) }
+define_metric! { "delicious.tags.renames", delicious_tags_renames, Sort::IntegralCounter }
 
 async fn tags_rename(
     State(state): State<Arc<Indielinks>>,
@@ -1110,7 +1081,7 @@ async fn tags_rename(
 
     match tags_rename1(state.storage.as_ref(), user, tags_rename_req).await {
         Ok(_) => {
-            counter_add!(state.instruments, "delicious.tags.renames", 1, &[]);
+            delicious_tags_renames.add(1, &[]);
             (
                 StatusCode::OK,
                 Json(GenericRsp {
@@ -1131,7 +1102,7 @@ async fn tags_rename(
 //                                         `tags/delete`                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("delicious.tags.deleted", Sort::IntegralCounter) }
+define_metric! { "delicious.tags.deleted", delicious_tags_deleted, Sort::IntegralCounter }
 
 async fn tags_delete(
     State(state): State<Arc<Indielinks>>,
@@ -1153,7 +1124,7 @@ async fn tags_delete(
 
     match tags_delete1(state.storage.as_ref(), user, tags_delete_req).await {
         Ok(_) => {
-            counter_add!(state.instruments, "delicious.tags.deleted", 1, &[]);
+            delicious_tags_deleted.add(1, &[]);
             (
                 StatusCode::OK,
                 Json(GenericRsp {

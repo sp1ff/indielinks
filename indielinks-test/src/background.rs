@@ -20,7 +20,6 @@ use indielinks::{
         self, Backend as TasksBackend, BackgroundTask, BackgroundTasks, Config, Context, Sender,
         TaggedTask, Task,
     },
-    metrics::Instruments,
     origin::Origin,
     storage::Backend as StorageBackend,
 };
@@ -172,7 +171,6 @@ pub async fn first_background(
             shutdown_timeout: Duration::from_secs(30),
             ..Default::default()
         }),
-        Arc::new(Instruments::new("indielinks")),
     )
     .unwrap();
 

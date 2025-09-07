@@ -112,10 +112,9 @@ use crate::{
     activity_pub::SendFollow,
     authn::{self, AuthnScheme, check_api_key, check_password, check_token},
     background_tasks::{self, BackgroundTasks, Sender},
-    counter_add,
+    define_metric,
     entities::{self, FollowId, User},
     http::{ErrorResponseBody, Indielinks, SameSite},
-    metrics::{self, Sort},
     origin::Origin,
     peppers::{self, Peppers},
     signing_keys::{self, SigningKeys},
@@ -415,8 +414,8 @@ impl Default for Configuration {
 //                                         Authorization                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("user.auth.successes", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("user.auth.failures", Sort::IntegralCounter) }
+define_metric! { "user.auth.successes", user_auth_successes, Sort::IntegralCounter }
+define_metric! { "user.auth.failures", user_auth_failures, Sort::IntegralCounter }
 
 /// Authenticate a request to the user API
 ///
@@ -502,18 +501,18 @@ async fn authenticate(
         Ok(user) => {
             debug!("indielinks authorized user {}", user.id());
             request.extensions_mut().insert(user);
-            counter_add!(state.instruments, "user.auth.successes", 1, &[]);
+            user_auth_successes.add(1, &[]);
             next.run(request).await
         }
         Err(Error::NoAuthToken { .. }) => {
             info!("indielinks failed to authenticate this request");
-            counter_add!(state.instruments, "user.auth.failures", 1, &[]);
+            user_auth_failures.add(1, &[]);
             next.run(request).await
         }
         // I want to be careful about what sort of information we reveal to our caller...
         Err(err) => {
             error!("indielinks failed to authenticate this request");
-            counter_add!(state.instruments, "user.auth.failures", 1, &[]);
+            user_auth_failures.add(1, &[]);
             err.into_response()
         }
     }
@@ -523,8 +522,8 @@ async fn authenticate(
 //                                        `/users/signup`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("user.signups.successful", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("user.signups.failures", Sort::IntegralCounter) }
+define_metric! { "user.signups.successful", user_signups_successful, Sort::IntegralCounter }
+define_metric! { "user.signups.failures", user_signups_failures, Sort::IntegralCounter }
 
 /// Signup as a new user
 ///
@@ -576,7 +575,7 @@ async fn signup(
     match signup1(&signup_req, state.clone()).await {
         Ok(rsp) => {
             info!("Created user {}", signup_req.username);
-            counter_add!(state.instruments, "user.signups.successful", 1, &[]);
+            user_signups_successful.add(1, &[]);
             (StatusCode::CREATED, Json(rsp)).into_response()
         }
         Err(Error::UserSignup { source }) => match source {
@@ -585,7 +584,7 @@ async fn signup(
                     "password rejected due to insufficient strength: {}",
                     feedback
                 );
-                counter_add!(state.instruments, "user.signups.failures", 1, &[]);
+                user_signups_failures.add(1, &[]);
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponseBody {
@@ -596,7 +595,7 @@ async fn signup(
             }
             entities::Error::PasswordWhitespace { .. } => {
                 info!("Password rejected due to leading and/or trailing whitespace");
-                counter_add!(state.instruments, "user.signups.failures", 1, &[]);
+                user_signups_failures.add(1, &[]);
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponseBody {
@@ -608,7 +607,7 @@ async fn signup(
             }
             err => {
                 error!("{:#?}", err);
-                counter_add!(state.instruments, "user.signups.failures", 1, &[]);
+                user_signups_failures.add(1, &[]);
                 // Arghhhhh...
                 let (status, msg) = UserSignupSnafu.into_error(err).as_status_and_msg();
                 (status, Json(ErrorResponseBody { error: msg })).into_response()
@@ -617,7 +616,7 @@ async fn signup(
         Err(Error::AddUser { source }) => match source {
             storage::Error::UsernameClaimed { username, .. } => {
                 info!("Username {} already claimed", username);
-                counter_add!(state.instruments, "user.signups.failures", 1, &[]);
+                user_signups_failures.add(1, &[]);
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponseBody {
@@ -628,7 +627,7 @@ async fn signup(
             }
             err => {
                 error!("{:#?}", err);
-                counter_add!(state.instruments, "user.signups.failures", 1, &[]);
+                user_signups_failures.add(1, &[]);
                 // Arghhhhh...
                 let (status, msg) = AddUserSnafu.into_error(err).as_status_and_msg();
                 (status, Json(ErrorResponseBody { error: msg })).into_response()
@@ -636,7 +635,7 @@ async fn signup(
         },
         Err(err) => {
             error!("{:#?}", err);
-            counter_add!(state.instruments, "user.signups.failures", 1, &[]);
+            user_signups_failures.add(1, &[]);
             let (status, msg) = err.as_status_and_msg();
             (status, Json(ErrorResponseBody { error: msg })).into_response()
         }
@@ -647,8 +646,8 @@ async fn signup(
 //                                        `/users/login`                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("user.logins.successful", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("user.logins.failures", Sort::IntegralCounter) }
+define_metric! { "user.logins.successful", user_logins_successful, Sort::IntegralCounter }
+define_metric! { "user.logins.failures", user_logins_failures, Sort::IntegralCounter }
 
 /// Login as an existing user
 ///
@@ -720,11 +719,9 @@ async fn login(
         Ok((rsp, refresh_token, csrf_token)) => {
             info!("Logged-in user {}", login_req.username);
 
-            counter_add!(
-                state.instruments,
-                "user.logins.successful",
+            user_logins_successful.add(
                 1,
-                &[KeyValue::new("username", login_req.username.to_string())]
+                &[KeyValue::new("username", login_req.username.to_string())],
             );
 
             let mut refresh_cookie = format!(
@@ -755,11 +752,9 @@ async fn login(
         }
         Err(Error::BadPassword { username, .. }) => {
             error!("Bad password for user {}", username);
-            counter_add!(
-                state.instruments,
-                "user.logins.failures",
+            user_logins_failures.add(
                 1,
-                &[KeyValue::new("username", login_req.username.to_string())]
+                &[KeyValue::new("username", login_req.username.to_string())],
             );
             (
                 StatusCode::UNAUTHORIZED,
@@ -771,11 +766,9 @@ async fn login(
         }
         Err(err) => {
             error!("{:#?}", err);
-            counter_add!(
-                state.instruments,
-                "user.logins.failures",
+            user_logins_failures.add(
                 1,
-                &[KeyValue::new("username", login_req.username.to_string())]
+                &[KeyValue::new("username", login_req.username.to_string())],
             );
             let (status, msg) = err.as_status_and_msg();
             (status, Json(ErrorResponseBody { error: msg })).into_response()
@@ -787,8 +780,8 @@ async fn login(
 //                                       `/users/refresh`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("user.refreshes.successful", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("user.refreshes.failures", Sort::IntegralCounter) }
+define_metric! { "user.refreshes.successful", user_refreshes_successful, Sort::IntegralCounter }
+define_metric! { "user.refreshes.failures", user_refreshes_failures, Sort::IntegralCounter }
 
 /// Refresh an expired or lost access token vended from `/user/login`
 ///
@@ -849,17 +842,12 @@ async fn refresh(
     ) {
         Ok((rsp, username)) => {
             info!("Successfully refreshed an access token for {username}.");
-            counter_add!(
-                state.instruments,
-                "user.refreshes.successful",
-                1,
-                &[KeyValue::new("username", username.to_string())]
-            );
+            user_refreshes_successful.add(1, &[KeyValue::new("username", username.to_string())]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(err) => {
             error!("{:#?}", err);
-            counter_add!(state.instruments, "user.refreshes.failures", 1, &[]);
+            user_refreshes_failures.add(1, &[]);
             let (status, msg) = err.as_status_and_msg();
             (status, Json(ErrorResponseBody { error: msg })).into_response()
         }
@@ -870,8 +858,8 @@ async fn refresh(
 //                                        `/users/logout`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("user.logouts.successful", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("user.logouts.failures", Sort::IntegralCounter) }
+define_metric! { "user.logouts.successful", user_logouts_successful, Sort::IntegralCounter }
+define_metric! { "user.logouts.failures", user_logouts_failures, Sort::IntegralCounter }
 
 /// Logout an extant session
 ///
@@ -889,7 +877,7 @@ async fn logout(
                 "Logging-out user {}; note that any access tokens remain valid until they expire",
                 user.username()
             );
-            counter_add!(state.instruments, "user.logouts.successful", 1, &[]);
+            user_logouts_successful.add(1, &[]);
             let mut refresh_cookie = format!(
                 "{}=; Max-Age=0; Path=/; HttpOnly; SameSite={}",
                 REFRESH_COOKIE, state.users_same_site
@@ -912,7 +900,7 @@ async fn logout(
         }
         Err(err) => {
             error!("{err:?}");
-            counter_add!(state.instruments, "user.logouts.failures", 1, &[]);
+            user_logouts_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()
         }
     }
@@ -922,8 +910,8 @@ async fn logout(
 //                                        `/users/follow`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("user.follows.successful", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("user.follows.failures", Sort::IntegralCounter) }
+define_metric! { "user.follows.successful", user_follows_successful, Sort::IntegralCounter }
+define_metric! { "user.follows.failures", user_follows_failures, Sort::IntegralCounter }
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
@@ -954,11 +942,11 @@ async fn follow(
     match &user {
         Ok(user) => match follow1(user, &req.id, &state.task_sender).await {
             Ok(_) => {
-                counter_add!(state.instruments, "user.follows.successful", 1, &[]);
+                user_follows_successful.add(1, &[]);
                 StatusCode::ACCEPTED.into_response()
             }
             Err(err) => {
-                counter_add!(state.instruments, "user.follows.failures", 1, &[]);
+                user_follows_failures.add(1, &[]);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorResponseBody {
@@ -969,7 +957,7 @@ async fn follow(
             }
         },
         Err(_) => {
-            counter_add!(state.instruments, "user.follows.failures", 1, &[]);
+            user_follows_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()
         }
     }
@@ -979,8 +967,8 @@ async fn follow(
 //                                       `/users/mint-key`                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-inventory::submit! { metrics::Registration::new("user.mint-key.successful", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("user.mint-key.failures", Sort::IntegralCounter) }
+define_metric! { "user.mint-key.successful", user_mint_key_successful, Sort::IntegralCounter }
+define_metric! { "user.mint-key.failures", user_mint_key_failures, Sort::IntegralCounter }
 
 async fn mint_key(
     State(state): State<Arc<Indielinks>>,
@@ -1012,11 +1000,11 @@ async fn mint_key(
                         .unwrap_or("never".to_owned()),
                     user.username()
                 );
-                counter_add!(state.instruments, "user.mint-key.successful", 1, &[]);
+                user_mint_key_successful.add(1, &[]);
                 (StatusCode::CREATED, Json(rsp)).into_response()
             }
             Err(err) => {
-                counter_add!(state.instruments, "user.mint-key.failures", 1, &[]);
+                user_mint_key_failures.add(1, &[]);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorResponseBody {
@@ -1027,7 +1015,7 @@ async fn mint_key(
             }
         },
         Err(_) => {
-            counter_add!(state.instruments, "user.mint-key.failures", 1, &[]);
+            user_mint_key_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()
         }
     }

@@ -14,13 +14,8 @@
 // see <http://www.gnu.org/licenses/>.
 
 use crate::{
-    background_tasks::BackgroundTasks,
-    cache::GrpcClientFactory,
-    entities::FollowerId,
-    metrics::{self},
-    origin::Origin,
-    peppers::Peppers,
-    signing_keys::SigningKeys,
+    background_tasks::BackgroundTasks, cache::GrpcClientFactory, entities::FollowerId,
+    origin::Origin, peppers::Peppers, signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
 };
 
@@ -164,7 +159,6 @@ pub struct Indielinks {
     pub origin: Origin,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
     pub exporter: PrometheusExporter,
-    pub instruments: Arc<metrics::Instruments>,
     pub pepper: Peppers,
     pub token_lifetime: Duration,
     pub refresh_token_lifetime: Duration,

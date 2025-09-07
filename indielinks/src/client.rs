@@ -15,7 +15,7 @@
 
 //! # indielinks as an HTTP client
 
-use std::sync::Arc;
+use std::ops::Deref;
 
 use http::{HeaderValue, Method};
 use opentelemetry::KeyValue;
@@ -31,9 +31,8 @@ use indielinks_shared::Username;
 use crate::{
     ap_entities::make_key_id,
     authn::{ensure_sha_256, sign_request},
-    counter_add,
+    define_metric,
     entities::User,
-    metrics::{self, Sort},
     origin::Origin,
 };
 
@@ -73,25 +72,17 @@ type Result<T> = std::result::Result<T, Error>;
 /// [indielinks]: crate
 /// [metrics]: crate::metrics
 #[derive(Clone)]
-pub struct InstrumentedMiddleware {
-    instruments: Arc<metrics::Instruments>,
-}
+pub struct InstrumentedMiddleware;
 
-impl InstrumentedMiddleware {
-    pub fn new(instruments: Arc<metrics::Instruments>) -> InstrumentedMiddleware {
-        InstrumentedMiddleware { instruments }
-    }
-}
-
-inventory::submit! { metrics::Registration::new("client.requests",                Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("client.errors",                  Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("client.responses.informational", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("client.responses.success",       Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("client.responses.redirect",      Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("client.responses.client_error",  Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("client.responses.server_error",  Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("client.responses.unknown",       Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("client.responses.errors",        Sort::IntegralCounter) }
+define_metric! { "client.requests",                client_requests,                Sort::IntegralCounter }
+define_metric! { "client.errors",                  client_errors,                  Sort::IntegralCounter }
+define_metric! { "client.responses.informational", client_responses_informational, Sort::IntegralCounter }
+define_metric! { "client.responses.success",       client_responses_success,       Sort::IntegralCounter }
+define_metric! { "client.responses.redirect",      client_responses_redirect,      Sort::IntegralCounter }
+define_metric! { "client.responses.client_error",  client_responses_client_error,  Sort::IntegralCounter }
+define_metric! { "client.responses.server_error",  client_responses_server_error,  Sort::IntegralCounter }
+define_metric! { "client.responses.unknown",       client_responses_unknown,       Sort::IntegralCounter }
+define_metric! { "client.responses.errors",        client_responses_errors,        Sort::IntegralCounter }
 
 #[async_trait::async_trait]
 impl Middleware for InstrumentedMiddleware {
@@ -106,30 +97,23 @@ impl Middleware for InstrumentedMiddleware {
             .host()
             .map(|host| vec![KeyValue::new("host".to_owned(), host.to_string())])
             .unwrap_or_default();
-        counter_add!(self.instruments, "client.requests", 1, attrs.as_slice());
+        client_requests.add(1, attrs.as_slice());
         let res = next.run(req, extensions).await;
         match &res {
             Ok(rsp) => {
-                counter_add!(
-                    self.instruments,
-                    &format!(
-                        "client.responses.{}",
-                        match rsp.status().as_u16() {
-                            100..=199 => "informational",
-                            200..=299 => "success",
-                            300..=399 => "redirect",
-                            400..=499 => "client_error",
-                            500..=599 => "server_error",
-                            _ => "unknown",
-                        }
-                    ),
-                    1,
-                    attrs.as_slice()
-                );
+                let instrument = match rsp.status().as_u16() {
+                    100..=199 => client_responses_informational.deref(),
+                    200..=299 => client_responses_success.deref(),
+                    300..=399 => client_responses_redirect.deref(),
+                    400..=499 => client_responses_client_error.deref(),
+                    500..=599 => client_responses_server_error.deref(),
+                    _ => client_responses_unknown.deref(),
+                };
+                instrument.add(1, attrs.as_slice());
             }
             Err(err) => {
                 error!("While sending a request, got {}", err);
-                counter_add!(self.instruments, "client.errors", 1, attrs.as_slice());
+                client_errors.add(1, attrs.as_slice());
             }
         }
         res
@@ -204,11 +188,7 @@ impl Middleware for SigningMiddleware {
 
 /// Create a [ClientWithMiddleware] that is instrumented, will conditionally sign outgoing requests
 /// (if there's a [User] in the request extensions) and automatically retry.
-pub fn make_client(
-    user_agent: &str,
-    instruments: Arc<metrics::Instruments>,
-    max_retries: Option<u32>,
-) -> Result<ClientWithMiddleware> {
+pub fn make_client(user_agent: &str, max_retries: Option<u32>) -> Result<ClientWithMiddleware> {
     reqwest_middleware::ClientBuilder::new(
         reqwest::ClientBuilder::new()
             .user_agent(user_agent)
@@ -238,7 +218,7 @@ pub fn make_client(
     .with(RetryTransientMiddleware::new_with_policy(
         ExponentialBackoff::builder().build_with_max_retries(max_retries.unwrap_or(3)),
     ))
-    .with(InstrumentedMiddleware { instruments })
+    .with(InstrumentedMiddleware)
     .build()
     .pipe(Ok)
 }

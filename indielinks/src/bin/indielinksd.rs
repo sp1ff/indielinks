@@ -92,11 +92,11 @@ use indielinks::{
         LogStore, make_router as make_cache_router,
     },
     client::make_client,
-    counter_add,
+    define_metric,
     delicious::make_router as make_delicious_router,
     entities::FollowerId,
     http::Indielinks,
-    metrics::{self, Instruments, Sort},
+    metrics::check_metric_names,
     origin::Origin,
     peppers::Peppers,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
@@ -589,7 +589,6 @@ fn configure_logging(logopts: &LogOpts, logfile: &Path) -> Result<Option<mpsc::S
 }
 
 async fn otel_middleware(
-    State(state): State<Arc<Indielinks>>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -613,7 +612,9 @@ async fn otel_middleware(
         .collect();
 
     let name = format!("http.{}{}", request.method().as_str().to_lowercase(), stem);
-    let counter = state.instruments.meter().u64_counter(name).build();
+    let counter = opentelemetry::global::meter("indielinks")
+        .u64_counter(name)
+        .build();
     // Nb. can add attributes like so: &[KeyValue::new("user", user.clone())]
     counter.add(1, &[]);
     next.run(request).await
@@ -659,9 +660,9 @@ lazy_static! {
     };
 }
 
-inventory::submit! { metrics::Registration::new("frontend.asset.successes", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("frontend.asset.404s", Sort::IntegralCounter) }
-inventory::submit! { metrics::Registration::new("frontend.asset.failures", Sort::IntegralCounter) }
+define_metric! { "frontend.asset.successes", frontend_asset_successes, Sort::IntegralCounter }
+define_metric! { "frontend.asset.404s", frontend_asset_404s, Sort::IntegralCounter }
+define_metric! { "frontend.asset.failures", frontend_asset_failures, Sort::IntegralCounter }
 
 /// Serve the front end
 ///
@@ -705,32 +706,26 @@ async fn frontend(
             if let Some(Some(header_value)) = file.extension().map(|ext| CONTENT_TYPES.get(ext)) {
                 rsp = rsp.header(http::header::CONTENT_TYPE, header_value);
             }
-            counter_add!(
-                state.instruments,
-                "frontend.asset.successes",
+            frontend_asset_successes.add(
                 1,
-                &[KeyValue::new("asset", file.to_string_lossy().into_owned())]
+                &[KeyValue::new("asset", file.to_string_lossy().into_owned())],
             );
             rsp.status(http::StatusCode::OK).body(body.into()).expect(
                 "Failed to construct a response from /fe. This is a bug & should be investigated",
             )
         }
         Err(Error::AssetNotFound { .. }) => {
-            counter_add!(
-                state.instruments,
-                "frontend.asset.404s",
+            frontend_asset_404s.add(
                 1,
-                &[KeyValue::new("asset", file.to_string_lossy().into_owned())]
+                &[KeyValue::new("asset", file.to_string_lossy().into_owned())],
             );
             http::StatusCode::NOT_FOUND.into_response()
         }
         Err(err) => {
             error!("{err:?}");
-            counter_add!(
-                state.instruments,
-                "frontend.asset.failures",
+            frontend_asset_failures.add(
                 1,
-                &[KeyValue::new("asset", file.to_string_lossy().into_owned())]
+                &[KeyValue::new("asset", file.to_string_lossy().into_owned())],
             );
             http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
@@ -876,12 +871,9 @@ async fn serve(opts: CliOpts) -> Result<()> {
 
     let exporter = init_telemetry(cfg.otlp_export.as_ref())?;
 
-    let instruments = Arc::new(Instruments::new("indielinks"));
-
     // Loop forever, handling SIGHUPs, until asked to terminate:
     loop {
-        let client =
-            make_client(&cfg.user_agent, instruments.clone(), None).context(ClientSnafu)?;
+        let client = make_client(&cfg.user_agent, None).context(ClientSnafu)?;
 
         // Re-build our database connections each pass, in case configuration values have changed:
         let (storage, tasks, cache) =
@@ -899,13 +891,9 @@ async fn serve(opts: CliOpts) -> Result<()> {
         };
         // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
         // processing in an orderly manner:
-        let task_processor = background_tasks::new(
-            nosql_tasks,
-            context,
-            Some(cfg.background_tasks().clone()),
-            instruments.clone(),
-        )
-        .context(BackgroundTasksSnafu)?;
+        let task_processor =
+            background_tasks::new(nosql_tasks, context, Some(cfg.background_tasks().clone()))
+                .context(BackgroundTasksSnafu)?;
         let cache_node = CacheNode::<GrpcClientFactory>::new(
             &cfg.raft_config,
             GrpcClientFactory,
@@ -927,7 +915,6 @@ async fn serve(opts: CliOpts) -> Result<()> {
             origin: cfg.public_origin.clone(),
             storage,
             exporter: exporter.clone(),
-            instruments: instruments.clone(),
             pepper: cfg.pepper.clone(),
             token_lifetime: cfg.signing_keys.token_lifetime,
             refresh_token_lifetime: cfg.signing_keys.refresh_token_lifetime,
@@ -1093,6 +1080,7 @@ async fn serve(opts: CliOpts) -> Result<()> {
 ///
 /// A "metric reader" is "the interface used between the SDK and an exporter." Huh.
 fn init_telemetry(collector_config: Option<&OtelExportConfig>) -> Result<PrometheusExporter> {
+    check_metric_names();
     let old_school_exporter = PrometheusExporter::new();
 
     let mut provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
