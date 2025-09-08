@@ -924,14 +924,14 @@ fn apply_pagination(posts: Vec<Post>, start: Option<usize>, size: Option<usize>)
         (None, None) => posts,
         (None, Some(n)) => {
             if n < posts.len() {
-                posts[posts.len() - n..].to_vec()
+                posts[..n].to_vec()
             } else {
                 posts
             }
         }
         (Some(s), None) => {
             if s < posts.len() {
-                posts[..posts.len() - s].to_vec()
+                posts[s..].to_vec()
             } else {
                 Vec::new()
             }
@@ -939,10 +939,10 @@ fn apply_pagination(posts: Vec<Post>, start: Option<usize>, size: Option<usize>)
         (Some(s), Some(n)) => {
             if s >= posts.len() {
                 Vec::new()
-            } else if n < posts.len() - s {
-                posts[posts.len() - s - n..posts.len() - s].to_vec()
+            } else if s + n <= posts.len() {
+                posts[s..s + n].to_vec()
             } else {
-                posts[..posts.len() - s].to_vec()
+                posts[s..posts.len()].to_vec()
             }
         }
     }

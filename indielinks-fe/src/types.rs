@@ -29,6 +29,8 @@ use leptos::prelude::RwSignal;
 pub struct Api(pub String); // Make this a proper `Url`
 #[derive(Clone, Debug)]
 pub struct Base(pub String); // How to represent the path portion of an `Url` here?
+#[derive(Clone, Debug)]
+pub struct PageSize(pub usize);
 
 // and a type alias for obvious reasons:
 pub type Token = RwSignal<Option<String>>;

@@ -20,10 +20,18 @@
     padding-left: 16px;
 }
 
-.uath-actions {
+.auth-actions {
     color: #f5f5ff;
     margin-left: auto;
     padding-right: 8px;
+}
+
+.auth-actions a {
+    color: inherit;
+}
+
+.auth-actions a:visited {
+    color: inherit;
 }
 
 .posts-view {

@@ -339,9 +339,9 @@ pub async fn posts_all(
     // pagination out-of-range: [1, 11)
     let body = workaround(&client, url.join("/api/v1/posts/all?start=1&results=10")?).await?;
     assert!(body.posts.len() == 3);
-    assert!(body.posts[0].url().to_string() == "https://foo4.com/");
-    assert!(body.posts[1].url().to_string() == "https://foo3.com/");
-    assert!(body.posts[2].url().to_string() == "https://foo2.com/");
+    assert!(body.posts[0].url().to_string() == "https://foo3.com/");
+    assert!(body.posts[1].url().to_string() == "https://foo2.com/");
+    assert!(body.posts[2].url().to_string() == "https://foo1.com/");
 
     // pagination out-of-range: [5, 15)
     let body = workaround(&client, url.join("/api/v1/posts/all?start=5&results=10")?).await?;
@@ -350,7 +350,7 @@ pub async fn posts_all(
     // partial pagination: [3..)
     let body = workaround(&client, url.join("/api/v1/posts/all?start=3")?).await?;
     assert!(body.posts.len() == 1);
-    assert!(body.posts[0].url().to_string() == "https://foo4.com/");
+    assert!(body.posts[0].url().to_string() == "https://foo1.com/");
 
     Ok(())
 }

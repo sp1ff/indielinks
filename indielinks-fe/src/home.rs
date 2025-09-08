@@ -29,7 +29,7 @@ use indielinks_shared::{Post, PostAddReq, PostsAllRsp, StorUrl};
 
 use crate::{
     http::{send_with_retry, string_for_status},
-    types::{Api, Base, Token, USER_AGENT},
+    types::{Api, Base, PageSize, Token, USER_AGENT},
 };
 
 #[component]
@@ -39,13 +39,14 @@ use crate::{
 fn Post(
     post: Post,
     set_editing: WriteSignal<Option<StorUrl>>,
+    set_page: WriteSignal<usize>,
     rerender: ArcTrigger,
 ) -> impl IntoView {
     debug!("Post invoked.");
 
     let api = use_context::<Api>().expect("No context for the API location!?");
     let token = use_context::<Token>().expect("No token Cell!?");
-    let token = token.get().expect("No token!?");
+    let token = token.get_untracked().expect("No token!?");
 
     let title = post.title().to_owned();
     let posted = post.posted().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -113,7 +114,10 @@ fn Post(
                             let tag: String = tag.clone().into();
                             let tag0 = tag.clone();
                             view! {
-                                <a href={ t.clone() + &tag0.clone()} > { tag } </a> " "
+                                <a href={t.clone() + &tag0.clone()} on:click=move |_| {
+                                    set_page.set(0);
+
+                                } > { tag } </a> " "
                             }
                         }).collect::<Vec<_>>()
                     }
@@ -324,11 +328,15 @@ pub fn Home() -> impl IntoView {
         .expect("Failed to rerieve the API net location")
         .0;
 
+    let page_size = use_context::<PageSize>()
+        .expect("Failed to retrieve the page size configuration item")
+        .0;
+
     // I'm still confused on how & when these `View` constructing functions are invoked, but it
     // seems that this function won't be invoked until after sign-in, so we can extract the token &
     // provide it to all our subordinate components via context rather than prop drilling.
     let token = use_context::<Token>().expect("No token Cell!?");
-    let token = token.get().expect("No token!?");
+    let token = token.get_untracked().expect("No token!?");
 
     // Later: recognize some basic query parameters <https://book.leptos.dev/router/18_params_and_queries.html>
 
@@ -352,9 +360,13 @@ pub fn Home() -> impl IntoView {
         api: String,
         token: String,
         page: usize,
+        page_size: usize,
         tag: Option<String>,
     ) -> Option<Vec<Post>> {
-        let mut url = format!("{api}/api/v1/posts/all?start={}&results=6", page * 6);
+        let mut url = format!(
+            "{api}/api/v1/posts/all?start={}&results={page_size}",
+            page * page_size,
+        );
         if let Some(tag) = tag {
             url += &format!("&tag={tag}");
         }
@@ -372,7 +384,10 @@ pub fn Home() -> impl IntoView {
         .await
         .map_err(|err| error!("Deserializing a page's worth of posts; {err:?}"))
         .ok()?
-        .pipe(|rsp| Some(rsp.posts))
+        .pipe(|rsp| {
+            debug!("Loaded {} posts.", rsp.posts.len());
+            Some(rsp.posts)
+        })
     }
 
     let params = use_query_map();
@@ -383,6 +398,7 @@ pub fn Home() -> impl IntoView {
             api.clone(),
             token.clone(),
             page.get(),
+            page_size,
             params.with(|m| m.get("tag")),
         )
     });
@@ -395,7 +411,7 @@ pub fn Home() -> impl IntoView {
     view! {
         <div class="user-view" style="display: flex;">
             // <Transition fallback=move || view!{ <p>"Loading..."</p> }>
-            <Await future=page_data.into_future() let:data>
+            <Await future=page_data.into_future() let:_data>
                 // User's posts
                 <div class="posts-view">
                     <div class="posts-nav" style="display: flex; font-size: smaller; color: #888">
@@ -416,12 +432,14 @@ pub fn Home() -> impl IntoView {
                         <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=on_click >"    refresh"</a></span>
                         <span style="padding: 2px 6px;">
                             {
-                                match page_data.get() {
-                                    Some(Some(posts)) if posts.len() == 6 => Either::Left(view!{
-                                        <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
-                                    }),
-                                    _ => Either::Right(view!{"next >"})
-                                }}
+                                move || {
+                                    match page_data.get() {
+                                        Some(Some(posts)) if posts.len() == page_size => Either::Left(view!{
+                                            <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
+                                        }),
+                                        _ => Either::Right(view!{"next >"})
+                                    }}
+                            }
                         </span>
                     </div>
                     <div class="post-list">
@@ -435,7 +453,7 @@ pub fn Home() -> impl IntoView {
                                     if Some(post.url()) == editing.get().as_ref() {
                                         Either::Left(view!{<EditPost post=post.clone() set_editing rerender=r0.clone()/>})
                                     } else {
-                                        Either::Right(view!{<Post post=post.clone() set_editing rerender=r1.clone()/>})
+                                        Either::Right(view!{<Post post=post.clone() set_editing set_page rerender=r1.clone()/>})
                                     }
                             }}
                         </For>

@@ -40,7 +40,7 @@ use leptos_router::{
     path,
 };
 use thaw::{Layout, LayoutHeader, Link, Tab, TabList};
-use tracing::{debug, error, info};
+use tracing::{Level, debug, error, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 
@@ -52,7 +52,7 @@ use indielinks_fe::{
     http::{refresh_token, string_for_status},
     instance::Instance,
     signin::SignIn,
-    types::{Api, Base, Token, USER_AGENT},
+    types::{Api, Base, PageSize, Token, USER_AGENT},
 };
 
 /// [indielinks-fe](crate) root component
@@ -74,6 +74,13 @@ fn App() -> impl IntoView {
     provide_context(Api(option_env!("INDIELINKS_FE_API")
         .unwrap_or("http://localhost:20679")
         .to_owned()));
+
+    provide_context(PageSize(
+        option_env!("INDIELINKS_PAGE_SIZE")
+            .unwrap_or("4")
+            .parse::<usize>()
+            .expect("Couldn't parse INDIELINKS_PAGE_SIZE"),
+    ));
 
     // Finally, this is where we "mount" this frontend. When developing against Trunk, this will
     // just be "", but as of the time of this writing, it is served by the backend at "/fe"
@@ -165,15 +172,15 @@ fn App() -> impl IntoView {
                         </TabList>
                     </Show>
                     <Show when = move || t1.get().is_none() && use_location().pathname.get() != "/s" >
-                        <div class="uath-actions">
+                        <div class="auth-actions">
                             <ul style="list-style-type: none; font-size: smaller;">
-                            <li><Link href={ s.clone() }>"sign-in"</Link></li>
-                            <li><Link href={ u.clone() }>"sign-up"</Link></li>
+                            <li><a href={ s.clone() }>"sign-in"</a></li>
+                            <li><a href={ u.clone() }>"sign-up"</a></li>
                             </ul>
                         </div>
                     </Show>
                     <Show when = move || t2.get().is_some() && use_location().pathname.get() != "/s" >
-                        <div class="uath-actions">
+                        <div class="auth-actions">
                             <ul style="list-style-type: none; font-size: smaller;">
                                 <li><a href="#" on:click=move |_| {
                                     on_sign_out.dispatch(());
@@ -218,6 +225,7 @@ fn main() {
     // configured to output to the browser console:
     fmt()
         .with_writer(MakeConsoleWriter::default().map_trace_level_to(tracing::Level::DEBUG))
+        .with_max_level(Level::DEBUG)
         .without_time()
         .with_ansi(false)
         .init();
