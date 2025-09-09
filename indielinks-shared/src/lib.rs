@@ -1026,6 +1026,7 @@ pub struct PostsAllReq {
     pub todt: Option<DateTime<Utc>>,
     #[serde(rename = "meta")]
     pub _meta: Option<bool>,
+    pub unread: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

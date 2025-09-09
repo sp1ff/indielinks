@@ -159,6 +159,7 @@ pub trait Backend {
         user: &User,
         tags: &UpToThree<Tagname>,
         dates: &DateRange,
+        unread: bool,
     ) -> Result<Vec<Post>, Error>;
     /// Retrieve recent posts
     async fn get_recent_posts(

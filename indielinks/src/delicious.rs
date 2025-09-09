@@ -959,6 +959,8 @@ fn apply_pagination(posts: Vec<Post>, start: Option<usize>, size: Option<usize>)
 /// - start: zero-based index at which to begin returning results (zero corresponds to the earliest
 ///   [Post] matching `tag`, `fromdt`, and/or `todt`)
 /// - results: the number of results to be returned
+/// - unread: this is an indielinks extension; if true, return only [Post]s with the "unread"
+///   attribute set to true, and if false, return [Posts]s regardless of that attribute
 ///
 /// Both the [del.icio.us] and Pinboard [docs] are quite vague on how these parameters interact.
 /// Pinboard seems to not respect `start` and `results` parameters at all, so I was unable to deduce
@@ -992,6 +994,7 @@ async fn all_posts(
                         &user,
                         &tags,
                         &DateRange::new(posts_all_req.fromdt, posts_all_req.todt),
+                        posts_all_req.unread.unwrap_or(false),
                     )
                     .await
                     .context(AllPostsSnafu)?,

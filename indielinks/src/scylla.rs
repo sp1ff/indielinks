@@ -655,6 +655,24 @@ enum PreparedStatements {
     GetAllPosts13,
     GetAllPosts14,
     GetAllPosts15,
+
+    GetAllPosts16,
+    GetAllPosts17,
+    GetAllPosts18,
+    GetAllPosts19,
+    GetAllPosts20,
+    GetAllPosts21,
+    GetAllPosts22,
+    GetAllPosts23,
+    GetAllPosts24,
+    GetAllPosts25,
+    GetAllPosts26,
+    GetAllPosts27,
+    GetAllPosts28,
+    GetAllPosts29,
+    GetAllPosts30,
+    GetAllPosts31,
+
     GetPostsForTag,
     GetPostById,
     RenameTag,
@@ -772,7 +790,8 @@ impl Session {
             "select * from posts_by_posted where user_id=? and tags contains ? limit ? allow filtering",
             "select * from posts_by_posted where user_id=? and tags contains ? and tags contains ? limit ? allow filtering",
             "select * from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? limit ? allow filtering",
-            "select * from posts_by_posted where user_id=? order by posted desc",
+
+            "select * from posts_by_posted where user_id=? order by posted desc", // GetAllPosts0
             "select * from posts_by_posted where user_id=? and posted >= ? order by posted desc",
             "select * from posts_by_posted where user_id=? and posted < ? order by posted desc",
             "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? order by posted desc",
@@ -787,7 +806,25 @@ impl Session {
             "select * from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
             "select * from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
             "select * from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
-            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? order by posted desc allow filtering", // GetAllPost15
+
+            "select * from posts_by_posted where user_id=? and unread=true order by posted desc allow filtering", // GetAllPosts16
+            "select * from posts_by_posted where user_id=? and posted >= ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted < ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted < ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and tags contains ? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and tags contains ? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering",
+            "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering", // GetAllPost31
+
             "select * from posts where user_id=? and tags contains ? allow filtering", // GetPosts15
             "select * from posts where id=?", // GetPostById
             // I hate to add the `if exists` clause here, making this an LWT, but if I don't I
@@ -844,7 +881,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 76] = prepared_statements
+        let prepared_statements: [PreparedStatement; 92] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -1365,9 +1402,10 @@ impl storage::Backend for Session {
         user: &User,
         tags: &UpToThree<Tagname>,
         dates: &DateRange,
+        unread: bool,
     ) -> StdResult<Vec<Post>, StorError> {
-        match (tags, dates) {
-            (UpToThree::None, DateRange::None) => {
+        match (tags, dates, unread) {
+            (UpToThree::None, DateRange::None, false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts0],
@@ -1375,7 +1413,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::None, DateRange::Begins(dt)) => {
+            (UpToThree::None, DateRange::Begins(dt), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts1],
@@ -1383,7 +1421,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::None, DateRange::Ends(dt)) => {
+            (UpToThree::None, DateRange::Ends(dt), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts2],
@@ -1391,7 +1429,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::None, DateRange::Both(b, e)) => {
+            (UpToThree::None, DateRange::Both(b, e), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts3],
@@ -1399,7 +1437,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::One(tag), DateRange::None) => {
+            (UpToThree::One(tag), DateRange::None, false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts4],
@@ -1407,7 +1445,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::One(tag), DateRange::Begins(dt)) => {
+            (UpToThree::One(tag), DateRange::Begins(dt), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts5],
@@ -1415,7 +1453,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::One(tag), DateRange::Ends(dt)) => {
+            (UpToThree::One(tag), DateRange::Ends(dt), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts6],
@@ -1423,7 +1461,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::One(tag), DateRange::Both(b, e)) => {
+            (UpToThree::One(tag), DateRange::Both(b, e), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts7],
@@ -1431,7 +1469,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::Two(tag0, tag1), DateRange::None) => {
+            (UpToThree::Two(tag0, tag1), DateRange::None, false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts8],
@@ -1439,7 +1477,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::Two(tag0, tag1), DateRange::Begins(dt)) => {
+            (UpToThree::Two(tag0, tag1), DateRange::Begins(dt), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts9],
@@ -1447,7 +1485,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::Two(tag0, tag1), DateRange::Ends(dt)) => {
+            (UpToThree::Two(tag0, tag1), DateRange::Ends(dt), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts10],
@@ -1455,7 +1493,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::Two(tag0, tag1), DateRange::Both(b, e)) => {
+            (UpToThree::Two(tag0, tag1), DateRange::Both(b, e), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts11],
@@ -1463,7 +1501,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::None) => {
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::None, false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts12],
@@ -1471,7 +1509,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(dt)) => {
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(dt), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts13],
@@ -1479,7 +1517,7 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(dt)) => {
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(dt), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts14],
@@ -1487,10 +1525,139 @@ impl storage::Backend for Session {
                     )
                     .await
             }
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e)) => {
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e), false) => {
                 self.session
                     .execute_unpaged(
                         &self.prepared_statements[PreparedStatements::GetAllPosts15],
+                        (user.id(), b, e, tag0, tag1, tag2),
+                    )
+                    .await
+            }
+
+            (UpToThree::None, DateRange::None, true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts16],
+                        (user.id(),),
+                    )
+                    .await
+            }
+            (UpToThree::None, DateRange::Begins(dt), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts17],
+                        (user.id(), dt),
+                    )
+                    .await
+            }
+            (UpToThree::None, DateRange::Ends(dt), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts18],
+                        (user.id(), dt),
+                    )
+                    .await
+            }
+            (UpToThree::None, DateRange::Both(b, e), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts19],
+                        (user.id(), b, e),
+                    )
+                    .await
+            }
+            (UpToThree::One(tag), DateRange::None, true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts20],
+                        (user.id(), tag),
+                    )
+                    .await
+            }
+            (UpToThree::One(tag), DateRange::Begins(dt), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts21],
+                        (user.id(), dt, tag),
+                    )
+                    .await
+            }
+            (UpToThree::One(tag), DateRange::Ends(dt), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts22],
+                        (user.id(), dt, tag),
+                    )
+                    .await
+            }
+            (UpToThree::One(tag), DateRange::Both(b, e), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts23],
+                        (user.id(), b, e, tag),
+                    )
+                    .await
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::None, true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts24],
+                        (user.id(), tag0, tag1),
+                    )
+                    .await
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Begins(dt), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts25],
+                        (user.id(), dt, tag0, tag1),
+                    )
+                    .await
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Ends(dt), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts26],
+                        (user.id(), dt, tag0, tag1),
+                    )
+                    .await
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Both(b, e), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts27],
+                        (user.id(), b, e, tag0, tag1),
+                    )
+                    .await
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::None, true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts28],
+                        (user.id(), tag0, tag1, tag2),
+                    )
+                    .await
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(dt), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts29],
+                        (user.id(), dt, tag0, tag1, tag2),
+                    )
+                    .await
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(dt), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts30],
+                        (user.id(), dt, tag0, tag1, tag2),
+                    )
+                    .await
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e), true) => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::GetAllPosts31],
                         (user.id(), b, e, tag0, tag1, tag2),
                     )
                     .await

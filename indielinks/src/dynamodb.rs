@@ -1299,6 +1299,7 @@ impl storage::Backend for Client {
         user: &User,
         tags: &UpToThree<Tagname>,
         dates: &DateRange,
+        unread: bool,
     ) -> StdResult<Vec<Post>, StorError> {
         let mut query = self
             .client
@@ -1308,6 +1309,12 @@ impl storage::Backend for Client {
             .key_condition_expression("user_id=:id")
             .expression_attribute_values(":id", AttributeValue::S(user.id().to_string()))
             .scan_index_forward(false);
+
+        if unread {
+            query = query
+                .filter_expression("unread=:u")
+                .expression_attribute_values(":u", AttributeValue::Bool(true));
+        }
 
         match (tags, dates) {
             (UpToThree::None, DateRange::None) => {}

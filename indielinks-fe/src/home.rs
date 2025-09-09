@@ -277,11 +277,11 @@ fn EditPost(
             </div>
             <div style="margin-bottom: 8px; font-size: smaller;">
                 <label>
-                    <input type="checkbox" id="private" name="private" value={ private } node_ref=private_element/> private
+                    <input type="checkbox" id="private" name="private" checked={ private } node_ref=private_element/> private
                 </label>
                 " "
                 <label>
-                    <input type="checkbox" id="unread" name="unread" value={ unread } node_ref=unread_element/> unread
+                    <input type="checkbox" id="unread" name="unread" checked={ unread } node_ref=unread_element/> unread
                 </label>
             </div>
             <div>
@@ -342,6 +342,8 @@ pub fn Home() -> impl IntoView {
 
     // Create a bit of reactive state for the current page...
     let (page, set_page) = signal(0usize);
+    // whether we're filtering read posts
+    let (unread_only, set_unread_only) = signal(false);
     // and whether & which `Post` is currently being edited.
     let (editing, set_editing): (ReadSignal<Option<StorUrl>>, WriteSignal<Option<StorUrl>>) =
         signal(None);
@@ -362,9 +364,10 @@ pub fn Home() -> impl IntoView {
         page: usize,
         page_size: usize,
         tag: Option<String>,
+        unread_only: bool,
     ) -> Option<Vec<Post>> {
         let mut url = format!(
-            "{api}/api/v1/posts/all?start={}&results={page_size}",
+            "{api}/api/v1/posts/all?start={}&results={page_size}&unread={unread_only}",
             page * page_size,
         );
         if let Some(tag) = tag {
@@ -400,12 +403,21 @@ pub fn Home() -> impl IntoView {
             page.get(),
             page_size,
             params.with(|m| m.get("tag")),
+            unread_only.get(),
         )
     });
 
     let on_click = {
         let trig = rerender.clone();
         move |_| trig.notify()
+    };
+
+    let toggle_unread = {
+        let trig = rerender.clone();
+        move |_| {
+            set_unread_only.update(|unread_only| *unread_only = !*unread_only);
+            trig.notify()
+        }
     };
 
     view! {
@@ -430,6 +442,11 @@ pub fn Home() -> impl IntoView {
                             }
                         </span>
                         <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=on_click >"    refresh"</a></span>
+                        <span style="padding: 2px 6px;">
+                            <a href="#" on:click=toggle_unread>{ move || {
+                                if unread_only.get() { "all posts" } else { "unread posts" }
+                            }}</a>
+                        </span>
                         <span style="padding: 2px 6px;">
                             {
                                 move || {
