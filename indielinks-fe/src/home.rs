@@ -39,7 +39,6 @@ use crate::{
 fn Post(
     post: Post,
     set_editing: WriteSignal<Option<StorUrl>>,
-    set_page: WriteSignal<usize>,
     rerender: ArcTrigger,
 ) -> impl IntoView {
     debug!("Post invoked.");
@@ -95,32 +94,39 @@ fn Post(
     });
 
     let base = use_context::<Base>().expect("No base!?").0;
+
+    let query = use_query_map(); // Memo<...>
     // These clones are getting out of hand... I understand I need to move them into the `View`, but
     // why do they need to be cloned *again* in closures inside the `View`?
     let a1 = api.clone();
     let t1 = token.clone();
     let r1 = rerender.clone();
     let u0 = url.clone().to_string();
-    let t = format!("{base}/h?tag=");
+    let t = format!("{base}/h?page=0");
     view! {
         <div class="post">
             <div class="post-title"><a href={ u0.clone() }> { title } </a></div>
             <div class="post-info">
                 <div class="post-info-left"> { posted }</div>
                 <div class="post-info-right">
-                    {
+                    {move || {
+                        let unread = query.get().get("unread").map(|s| {
+                            let t = s.to_ascii_lowercase();
+                            t == "true" || t == "yes" || t == ""
+                        });
+                        let mut t = t.clone();
+                        if unread.is_some_and(|b|b) {
+                            t += "&unread";
+                        }
                         post.tags().map(|tag| {
                             // Man, this involves a *lot* of cloning-- needed?
                             let tag: String = tag.clone().into();
                             let tag0 = tag.clone();
                             view! {
-                                <a href={t.clone() + &tag0.clone()} on:click=move |_| {
-                                    set_page.set(0);
-
-                                } > { tag } </a> " "
+                                <a href={ format!("{t}&tag={tag0}") }> { tag } </a> " "
                             }
                         }).collect::<Vec<_>>()
-                    }
+                    }}
                 </div>
             </div>
             <div class="post-controls">
@@ -301,6 +307,7 @@ fn EditPost(
 #[component]
 pub fn Home() -> impl IntoView {
     debug!("Home invoked.");
+
     // RE posts: we can be in one of three situations:
     // 1. zero posts-- the user just signed-up & hasn't posted anything; don't display the
     // pagination controls & show an explanatory message in the list div
@@ -332,26 +339,44 @@ pub fn Home() -> impl IntoView {
         .expect("Failed to retrieve the page size configuration item")
         .0;
 
+    let base = use_context::<Base>().expect("No base!?").0;
+
     // I'm still confused on how & when these `View` constructing functions are invoked, but it
     // seems that this function won't be invoked until after sign-in, so we can extract the token &
     // provide it to all our subordinate components via context rather than prop drilling.
-    let token = use_context::<Token>().expect("No token Cell!?");
-    let token = token.get_untracked().expect("No token!?");
+    let token = use_context::<Token>()
+        .expect("No token Cell!?")
+        .get_untracked()
+        .expect("No token!?");
 
-    // Later: recognize some basic query parameters <https://book.leptos.dev/router/18_params_and_queries.html>
-
-    // Create a bit of reactive state for the current page...
-    let (page, set_page) = signal(0usize);
-    // whether we're filtering read posts
-    let (unread_only, set_unread_only) = signal(false);
-    // and whether & which `Post` is currently being edited.
+    // Create a bit of reactive state for the current page: whether & which `Post` is currently
+    // being edited.
     let (editing, set_editing): (ReadSignal<Option<StorUrl>>, WriteSignal<Option<StorUrl>>) =
         signal(None);
-    // Finally, setup a mechanism by which we can force this view to be re-rendered. A signal won't
-    // really do it because there are places (say, after a delete) where we want to *force* a
-    // re-render programmatically. "A trigger is a data-less signal with the sole purpose of
-    // notifying other reactive code of a change."
+    // Setup a mechanism by which we can force this view to be re-rendered. A signal won't really do
+    // it because there are places (say, after a delete) where we want to *force* a re-render
+    // programmatically. "A trigger is a data-less signal with the sole purpose of notifying other
+    // reactive code of a change."
     let rerender = ArcTrigger::new();
+
+    // Not sure how to best handle this; if I use a *typed* query map, the `get()` method can fail,
+    // and I'm not sure how to handle that. This way, any malformed query parameters will just
+    // fallback to their defaults.
+    let query = use_query_map(); // Memo<...>
+
+    let filters = Memo::new(move |_| {
+        let q = query.read();
+        let tag = q.get("tag");
+        let page = q
+            .get("page")
+            .map(|s| s.parse::<usize>()) // Option<Result<usize, Error>>
+            .and_then(Result::ok);
+        let unread = q.get("unread").map(|s| {
+            let t = s.to_ascii_lowercase();
+            t == "true" || t == "yes" || t == ""
+        });
+        (tag, page, unread) // (Option<String>, Option<usize>, Option<bool>)
+    });
 
     // I'd really prefer to return a `Result<Vec<Post>>`, but I can't use this as a `LocalResource`
     // unless the return type is `Clone`, which errors generally are not. I *could* change my error
@@ -393,17 +418,19 @@ pub fn Home() -> impl IntoView {
         })
     }
 
-    let params = use_query_map();
     let tracker = rerender.clone();
+
     let page_data = LocalResource::new(move || {
+        debug!("page_data invoked!");
         tracker.track();
+        let q = filters.get();
         load_data(
             api.clone(),
             token.clone(),
-            page.get(),
+            q.1.unwrap_or(0),
             page_size,
-            params.with(|m| m.get("tag")),
-            unread_only.get(),
+            q.0,
+            q.2.unwrap_or(false),
         )
     });
 
@@ -412,48 +439,73 @@ pub fn Home() -> impl IntoView {
         move |_| trig.notify()
     };
 
-    let toggle_unread = {
-        let trig = rerender.clone();
-        move |_| {
-            set_unread_only.update(|unread_only| *unread_only = !*unread_only);
-            trig.notify()
-        }
-    };
-
     view! {
         <div class="user-view" style="display: flex;">
-            // <Transition fallback=move || view!{ <p>"Loading..."</p> }>
             <Await future=page_data.into_future() let:_data>
                 // User's posts
                 <div class="posts-view">
                     <div class="posts-nav" style="display: flex; font-size: smaller; color: #888">
                         <span style="padding: 2px 6px;">
                             {
+                                let base = base.clone();
                                 move || {
-                                info!("page: {}", page.get());
-                                if page.get() > 0 {
-                                    Either::Left(view!{
-                                        <a href="#" on:click=move |_| set_page.update(|n| *n -= 1)>"< prev"</a>
-                                    })
-                                } else {
-                                    Either::Right(view!{"< prev"})
-                                }
+                                    let (tag, page, unread) = filters.get();
+                                    if page.is_some_and(|n| n > 0) {
+                                        let mut back = format!("{}/h?{}", base.clone(), match (page, tag) {
+                                            (Some(p), None) => format!("page={}", p - 1),
+                                            (Some(p), Some(tag)) => format!("?page={}&tag={tag}", p - 1),
+                                            _ => unimplemented!("impossible"),
+                                        });
+                                        if unread.is_some_and(|b|b) {
+                                            back = back + "&unread";
+                                        }
+                                        Either::Left(view!{
+                                            <a href={ back }>"< prev"</a>
+                                        })
+                                    } else {
+                                        Either::Right(view!{"< prev"})
+                                    }
                                 }
                             }
                         </span>
-                        <span style="padding: 2px 6px;">"page " {page} " " <a href="#" on:click=on_click >"    refresh"</a></span>
+                        <span style="padding: 2px 6px;">"page " {move || { let (_, page, _) = filters.get(); page.unwrap_or(0) }} " " <a href="#" on:click=on_click >"    refresh"</a></span>
                         <span style="padding: 2px 6px;">
-                            <a href="#" on:click=toggle_unread>{ move || {
-                                if unread_only.get() { "all posts" } else { "unread posts" }
-                            }}</a>
+                            {
+                                let base = base.clone();
+                                move || {
+                                    let (tag, page, unread) = filters.get();
+                                    let query = match (tag, page) {
+                                        (None, None) => "".to_owned(),
+                                        (Some(t), None) => format!("tag={t}"),
+                                        (None, Some(p)) => format!("page={p}"),
+                                        (Some(t), Some(p)) => format!("tag={t}&page={p}")
+                                    };
+                                    let (url, text) = if unread.unwrap_or(false) {
+                                        (format!("{}/h?{query}", base.clone()), "all posts".to_owned())
+                                    } else {
+                                        (format!("{base}/h?{query}&unread"), "unread posts".to_owned())
+                                    };
+                                    view!{<a href={ url } >{ text }</a>}
+                            }}
                         </span>
                         <span style="padding: 2px 6px;">
                             {
                                 move || {
                                     match page_data.get() {
-                                        Some(Some(posts)) if posts.len() == page_size => Either::Left(view!{
-                                            <a href="#" on:click=move |_| set_page.update(|n| *n += 1)>"> next"</a>
-                                        }),
+                                        Some(Some(posts)) if posts.len() == page_size =>
+                                            {
+                                                let (tag, page, unread) = filters.get();
+                                                let mut forward = format!("{base}/h?{}", match (page, tag) {
+                                                    (Some(p), None) => format!("page={}", p + 1),
+                                                    (Some(p), Some(tag)) => format!("page={}&tag={tag}", p + 1),
+                                                    (None, None) => "page=1".to_owned(),
+                                                    (None, Some(tag)) => format!("page=1&tag={tag}")
+                                                });
+                                                if unread.is_some_and(|b|b) {
+                                                    forward = forward + "&unread";
+                                                }
+                                                Either::Left(view!{<a href={ forward }>"> next"</a>})
+                                            },
                                         _ => Either::Right(view!{"next >"})
                                     }}
                             }
@@ -470,7 +522,7 @@ pub fn Home() -> impl IntoView {
                                     if Some(post.url()) == editing.get().as_ref() {
                                         Either::Left(view!{<EditPost post=post.clone() set_editing rerender=r0.clone()/>})
                                     } else {
-                                        Either::Right(view!{<Post post=post.clone() set_editing set_page rerender=r1.clone()/>})
+                                        Either::Right(view!{<Post post=post.clone() set_editing rerender=r1.clone()/>})
                                     }
                             }}
                         </For>
