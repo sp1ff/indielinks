@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -157,6 +158,7 @@ impl std::fmt::Display for SameSite {
 /// Application state available to all handlers
 pub struct Indielinks {
     pub origin: Origin,
+    pub instance_id: Uuid,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
     pub exporter: PrometheusExporter,
     pub pepper: Peppers,

@@ -105,6 +105,7 @@ use indielinks::{
     users::{Configuration as UsersConfiguration, make_router as make_user_router},
     webfinger::webfinger,
 };
+use uuid::Uuid;
 
 /// The indielinks application error type
 ///
@@ -253,6 +254,7 @@ impl LogOpts {
 
 /// Configuration options read from the CLI (or the environment)
 struct CliOpts {
+    pub instance_id: Uuid,
     pub log_opts: LogOpts,
     pub cfg: Option<PathBuf>,
     pub local_statedir: PathBuf,
@@ -263,6 +265,10 @@ impl CliOpts {
     fn new(matches: clap::ArgMatches) -> Result<CliOpts> {
         let here = env::current_dir().context(CurrentDirSnafu)?;
         Ok(CliOpts {
+            instance_id: matches
+                .get_one::<Uuid>("instance-id")
+                .cloned()
+                .unwrap_or(Uuid::new_v4()),
             log_opts: LogOpts::new(&matches),
             cfg: matches
                 .get_one::<PathBuf>("config")
@@ -573,12 +579,22 @@ fn configure_logging(logopts: &LogOpts, logfile: &Path) -> Result<Option<mpsc::S
                     .with_writer(log_file),
             )
         } else {
-            Box::new(fmt::Layer::default().json().with_writer(log_file))
+            Box::new(
+                fmt::Layer::default()
+                    .json()
+                    .with_current_span(true)
+                    .with_writer(log_file),
+            )
         }
     } else if logopts.plain {
         Box::new(fmt::Layer::default().compact().with_writer(io::stdout))
     } else {
-        Box::new(fmt::Layer::default().json().with_writer(io::stdout))
+        Box::new(
+            fmt::Layer::default()
+                .json()
+                .with_current_span(true)
+                .with_writer(io::stdout),
+        )
     };
 
     // Nb. this can only be invoked once (will panic on a second invocation)!
@@ -853,7 +869,15 @@ pub async fn select_storage(
 }
 
 /// Serve `indielinks` API requests
-async fn serve(opts: CliOpts) -> Result<()> {
+#[tracing::instrument(
+    skip(opts, cfg, log_file_hup),
+    fields(instance_id = %opts.instance_id)
+)]
+async fn serve(
+    opts: CliOpts,
+    mut cfg: ConfigV1,
+    log_file_hup: Option<mpsc::Sender<PathBuf>>,
+) -> Result<()> {
     // Produce a future which can be used to signal graceful shutdown, below.
     async fn shutdown_signal(nfy: Arc<Notify>) {
         nfy.notified().await
@@ -861,13 +885,6 @@ async fn serve(opts: CliOpts) -> Result<()> {
 
     let mut sighup = signal(SignalKind::hangup()).unwrap();
     let mut sigkill = signal(SignalKind::terminate()).unwrap();
-
-    // Failure to parse at this point is fatal; below, we fall back to the last "known-good"
-    // configuration & keep going.
-    let mut cfg = parse_config(&opts.cfg)?;
-    let log_file_hup = configure_logging(&opts.log_opts, &cfg.log_file)?;
-    // At this point we have logging-- huzzah!
-    info!("indielinks version {} starting.", crate_version!());
 
     let exporter = init_telemetry(cfg.otlp_export.as_ref())?;
 
@@ -913,6 +930,7 @@ async fn serve(opts: CliOpts) -> Result<()> {
 
         let state = Arc::new(Indielinks {
             origin: cfg.public_origin.clone(),
+            instance_id: opts.instance_id,
             storage,
             exporter: exporter.clone(),
             pepper: cfg.pepper.clone(),
@@ -1140,7 +1158,7 @@ fn init_telemetry(collector_config: Option<&OtelExportConfig>) -> Result<Prometh
 /// The reader may object that this could all be handled by the
 /// [daemonize](https://docs.rs/daemonize) crate. I chose not to introduce another dependency just
 /// for the sake of a single function, and in any event, I learned a lot about process management
-/// while doing so & wound up choosing to do a few things differently.
+/// while doing so & wound up choosing to do a few things differently, anyway.
 ///
 /// References:
 ///
@@ -1245,6 +1263,36 @@ fn daemonize(local_statedir: &Path, no_chdir: bool) -> Result<()> {
     Ok(())
 }
 
+/// Transition to async
+///
+/// As alluded to [above](daemonize), the start-up sequence for indielinks can be a bit touchy:
+///
+/// 1. if we're to run as a daemon, we need to fork, first, before starting the async runtime
+/// 2. we only configuring logging _after_ starting the async runtime, because, again in the case
+///    where we're running as a daemon, the logging facility depends on it
+/// 3. we only want to enter `serve()` _after_ spinning-up logging, because it carries-out some
+///    intersting logging, and we'd like that instrumented with the instance ID
+///
+/// This function is step 2 in that list-- it's intended to be invoked via `block_on()` & will
+/// configure our logging and then call `serve()`.
+async fn go_async(opts: CliOpts) -> Result<()> {
+    // Take care to configure logging *before* we call `serve()` since it's instrumented (if we
+    // don't, the span that's created on entry to `serve()` is ignored). Failure to parse at this
+    // point is fatal; below, in `serve()`, we fall back to the last "known-good" configuration &
+    // keep going.
+    let cfg = parse_config(&opts.cfg)?;
+    let log_file_hup = configure_logging(&opts.log_opts, &cfg.log_file)?;
+
+    // At this point we have logging-- huzzah!
+    info!(
+        "indielinks version {}, instance {} starting.",
+        crate_version!(),
+        opts.instance_id
+    );
+
+    serve(opts, cfg, log_file_hup).await
+}
+
 fn main() -> Result<()> {
     let opts = CliOpts::new(
         Command::new("indielinksd")
@@ -1284,6 +1332,18 @@ fn main() -> Result<()> {
                     .action(ArgAction::SetTrue)
                     .env("INDIELINKS_DEBUG")
                     .help("produce debug output"),
+            )
+            .arg(
+                // I'm not sure if I want to allow this to be set in config. For now, just CLI and env.
+                Arg::new("instance-id")
+                    .short('I')
+                    .long("instance-id")
+                    .num_args(1)
+                    .value_parser(value_parser!(Uuid))
+                    .env("INDIELINKS_INSTANCE_ID")
+                    .help("Instance ID (only salient when running in a cluster)")
+                    .long_help("Instance ID
+A UUID identifying this indielinks instance in a cluster. If not given, a random UUID will be used.")
             )
             .arg(
                 Arg::new("no-chdir")
@@ -1349,8 +1409,9 @@ fn main() -> Result<()> {
     if opts.log_opts.daemon {
         daemonize(&opts.local_statedir, opts.no_chdir)?;
     }
+
     // spin-up the Tokio runtime,
     tokio::runtime::Runtime::new()
         .context(TokioRuntimeSnafu)?
-        .block_on(serve(opts)) // and start our server!
+        .block_on(go_async(opts)) // and start our server!
 }

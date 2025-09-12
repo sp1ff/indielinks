@@ -75,6 +75,36 @@
 //!
 //! [opentelemetry-prometheus]: https://docs.rs/opentelemetry-prometheus/latest/opentelemetry_prometheus/
 //!
+//! #### Instance IDs
+//!
+//! When running your service in a cluster, unless you never ship logs off each host, it's important
+//! to have your log messages tagged with some kind of identifier that can identify _which instance_
+//! produced it. The operator can specify this on the command line or in the environment (indielinks
+//! uses a UUID).
+//!
+//! Maybe I'm missing something, but I found it surprisingly difficult to get that into the
+//! [tracing] infrastructure. Some suggest creating a "root" span in `main()` & entering it before
+//! doing anything else. The idea is to guarantee that every subsequent [Span] & [Event] is a child
+//! of that root. That seems workable to me in a synchronous program, but not in async: [Span]s are
+//! not propogated across async tasks.
+//!
+//! [Span]: tracing::Span
+//! [Event]: tracing::Event
+//!
+//! I considered a custom [FormatEvent] implementation (as was suggested
+//! [here](https://users.rust-lang.org/t/global-fields-to-always-log-on-any-event-in-tracing-subscriber/81649/4)),
+//! but I couldn't see how to add the instance ID to the [Event]'s fields, meaning that I'd have to
+//! replicate the code implementing my chosen formatter, and just write-out the instance ID inline,
+//! which I found unappealing.
+//!
+//! [FormatEvent]: tracing_subscriber::fmt::FormatEvent
+//!
+//! For now, I'm just relying on the [instrument] macro, which is unfortunate, since any code
+//! executed on a code path I failed to instrument will lack the attribute. If it becomes a problem
+//! in practice, I'll have to fall-back to a custom [FormatEvent] implementation.
+//!
+//! [instrument]: https://docs.rs/tracing/latest/tracing/attr.instrument.html
+//!
 //! ## Background Task Processing
 //!
 //! Surprisingly (to me), [axum] makes no provision for compute outside request handlers. There's

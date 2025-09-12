@@ -587,6 +587,10 @@ define_metric! { "delicious.posts.added", delicious_posts_added, Sort::IntegralC
 /// - toread
 ///
 /// Update the `first_update` & `last_update` fields for this user on success.
+#[tracing::instrument(
+    skip(state, user),
+    fields(instance_id = %state.instance_id)
+)]
 async fn add_post(
     State(state): State<Arc<Indielinks>>,
     Query(post_add_req): Query<PostAddReq>,
