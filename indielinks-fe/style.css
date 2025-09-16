@@ -87,3 +87,12 @@
     font-size: smaller;
     text-align: right;
 }
+
+.add-post {
+    margin: 4px;
+    padding: 6px;
+    border: 1px solid #ddd;
+    display: flex;
+    flex-direction: column;
+    /* align-items: flex-start; */
+}

@@ -35,8 +35,10 @@
 use gloo_net::http::Request;
 use leptos::prelude::*;
 use leptos_router::{
+    NavigateOptions,
     components::{ProtectedRoute, Route, Router, Routes},
-    hooks::use_location,
+    hooks::{use_location, use_navigate},
+    location::State,
     path,
 };
 use thaw::{Layout, LayoutHeader, Link, Tab, TabList};
@@ -47,6 +49,7 @@ use tracing_subscriber_wasm::MakeConsoleWriter;
 use indielinks_shared::REFRESH_CSRF_COOKIE;
 
 use indielinks_fe::{
+    add_link::AddLink,
     feeds::Feeds,
     home::Home,
     http::{refresh_token, string_for_status},
@@ -54,6 +57,7 @@ use indielinks_fe::{
     signin::SignIn,
     types::{Api, Base, PageSize, Token, USER_AGENT},
 };
+use wasm_bindgen::JsValue;
 
 /// [indielinks-fe](crate) root component
 // Despite (naive?) appearances, this function isn't called every time we need to render this
@@ -156,66 +160,101 @@ fn App() -> impl IntoView {
     });
 
     view! {
-        // I'm using a `thaw` component here, `Layout` (https://thawui.vercel.app/components/layout)
         <Await
             future=fetcher.into_future()
             let:_data>
-            <Layout>
-                <LayoutHeader class="banner">
-                    <h1 class="logo">indielinks</h1>
-                    <Show when=move || t0.get().is_some() >
-                        <TabList selected_value class="tab-list">
-                            // Should I really be using `Link` here?
-                            <Tab value="instance" class="tab"><Link href={ i.read_value().clone() }>"Instance"</Link></Tab>
-                            <Tab value="home" class="tab"><Link href={ h.read_value().clone() }>"Home"</Link></Tab>
-                            <Tab value="feeds" class="tab"><Link href={ f.read_value().clone() }>"Feeds"</Link></Tab>
-                        </TabList>
-                    </Show>
-                    <Show when = move || t1.get().is_none() && use_location().pathname.get() != "/s" >
-                        <div class="auth-actions">
-                            <ul style="list-style-type: none; font-size: smaller;">
-                            <li><a href={ s.clone() }>"sign-in"</a></li>
-                            <li><a href={ u.clone() }>"sign-up"</a></li>
-                            </ul>
-                        </div>
-                    </Show>
-                    <Show when = move || t2.get().is_some() && use_location().pathname.get() != "/s" >
-                        <div class="auth-actions">
-                            <ul style="list-style-type: none; font-size: smaller;">
-                                <li><a href="#" on:click=move |_| {
-                                    on_sign_out.dispatch(());
-                                }>"sign-out"</a></li>
-                            </ul>
-                        </div>
-                    </Show>
-                </LayoutHeader>
+            <Router base>
+                // Should factor this out into it's own component
+                {
+                    let location = use_location(); // -> Location (which is Clone, but that's it)
+                    let navigate = use_navigate(); // -> impl Fn(&str, NavigateOptions) + Clone
+                    let add_link =
+                        move |_| {
+                            let state = web_sys::js_sys::Object::new();
+                            let _ = web_sys::js_sys::Reflect::set(
+                                &state,
+                                &"from".into(),
+                                &JsValue::from(location.pathname.get()),
+                            );
+                            navigate(
+                                "/a",
+                                NavigateOptions {
+                                    state: State::new(Some(state.into())),
+                                    ..Default::default()
+                                },
+                            );
+                    };
+
+                    view! {
+                        // I'm using a `thaw` component here, `Layout` (https://thawui.vercel.app/components/layout)
+                        <LayoutHeader class="banner">
+                            <h1 class="logo">indielinks</h1>
+                            <Show when=move || t0.get().is_some() >
+                                <TabList selected_value class="tab-list">
+                                    // Should I really be using `Link` here?
+                                    <Tab value="instance" class="tab"><Link href={ i.read_value().clone() }>"Instance"</Link></Tab>
+                                    <Tab value="home" class="tab"><Link href={ h.read_value().clone() }>"Home"</Link></Tab>
+                                    <Tab value="feeds" class="tab"><Link href={ f.read_value().clone() }>"Feeds"</Link></Tab>
+                                </TabList>
+                            </Show>
+                            <Show when = move || t1.get().is_none() && use_location().pathname.get() != "/s" >
+                                <div class="auth-actions">
+                                    <ul style="list-style-type: none; font-size: smaller;">
+                                    <li><a href={ s.clone() }>"sign-in"</a></li>
+                                    <li><a href={ u.clone() }>"sign-up"</a></li>
+                                    </ul>
+                                </div>
+                            </Show>
+                            <Show when = move || t2.get().is_some() && use_location().pathname.get() != "/s" >
+                                <div class="auth-actions">
+                                    <ul style="list-style-type: none; font-size: smaller;">
+                                        // Note the `clone()` in the on:click handler-- this is
+                                        // essential! TBH, I'm a bit hazy on why, but it has to do
+                                        // with the fact that we're inside a `<Show>` component,
+                                        // here.
+                                        <li><a href="#" on:click=add_link.clone()>"add link"</a></li>
+                                        <li><a href="#" on:click=move |_| {
+                                            on_sign_out.dispatch(());
+                                        }>"sign-out"</a></li>
+                                    </ul>
+                                </div>
+                            </Show>
+                        </LayoutHeader>
+                    }
+                }
                 <Layout>
                     <main>
-                        <Router base>
-                            <Routes fallback=Instance>
-                                <Route path=path!("/") view=Instance />
-                                <Route path=path!("/s") view=move || view!{ <SignIn /> } />
-                                <ProtectedRoute
-                                    path=path!("/h")
-                                    // Some(true) means display, Some(false) means do *not* display, and
-                                    // None means that this information is still loading
-                                    condition = move || Some(t3.get().is_some())
-                                    redirect_path = || "/"
-                                    view=move || view! { <Home />}
-                                />
-                                <ProtectedRoute
-                                    path=path!("/f")
-                                    // Some(true) means display, Some(false) means do *not* display, and
-                                    // None means that this information is still loading
-                                    condition = move || Some(t4.get().is_some())
-                                    redirect_path = || "/"
-                                    view=Feeds
-                                />
-                            </Routes>
-                        </Router>
+                        <Routes fallback=Instance>
+                            <Route path=path!("/") view=Instance />
+                            <Route path=path!("/s") view=move || view!{ <SignIn /> } />
+                            <ProtectedRoute
+                                path=path!("/h")
+                                // Some(true) means display, Some(false) means do *not* display, and
+                                // None means that this information is still loading
+                                condition = move || Some(t3.get().is_some())
+                                redirect_path = || "/"
+                                view=move || view! { <Home />}
+                            />
+                            <ProtectedRoute
+                                path=path!("/f")
+                                // Some(true) means display, Some(false) means do *not* display, and
+                                // None means that this information is still loading
+                                condition = move || Some(t4.get().is_some())
+                                redirect_path = || "/"
+                                view=Feeds
+                            />
+                            <ProtectedRoute
+                                path=path!("/a")
+                                // Some(true) means display, Some(false) means do *not* display, and
+                                // None means that this information is still loading
+                                condition = move || Some(t4.get().is_some())
+                                redirect_path = || "/"
+                                view=AddLink
+                            />
+                        </Routes>
                     </main>
                 </Layout>
-            </Layout>
+            </Router>
         </Await>
     }
 }

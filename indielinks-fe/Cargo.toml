@@ -10,8 +10,8 @@ futures = "0.3.31"
 gloo-net = { version = "0.6.0", features = ["http"] }
 indielinks-shared = { path = "../indielinks-shared" }
 itertools = "0.14.0"
-leptos = { version = "0.8.2", features = ["csr"] }
-leptos_router = "0.8.2"
+leptos = { version = "0.8.6", features = ["csr"] }
+leptos_router = "0.8.6"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_urlencoded = "0.7.1"
 snafu = "0.8.6"

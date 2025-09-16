@@ -15,6 +15,8 @@
 
 #![cfg(target_arch = "wasm32")]
 
+#[path = "add-link.rs"]
+pub mod add_link;
 pub mod feeds;
 pub mod home;
 pub mod http;
