@@ -1089,7 +1089,10 @@ pub struct SignupRsp {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoginReq {
-    pub username: Username,
+    // I first thought to make this a `Username`, but in that case, should the caller fat-finger the
+    // username to something illegal, axum will fail to deserialize the request, producing the
+    // unhelpful status code 422 Unprocessable Entity
+    pub username: String,
     pub password: SecretString,
 }
 

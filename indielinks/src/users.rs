@@ -147,11 +147,6 @@ pub enum Error {
         value: HeaderValue,
         backtrace: Backtrace,
     },
-    #[snafu(display("Incorrect password for {username}"))]
-    BadPassword {
-        username: Username,
-        backtrace: Backtrace,
-    },
     #[snafu(display("{username} is not a valid username"))]
     BadUsername {
         username: String,
@@ -202,7 +197,7 @@ pub enum Error {
     NoPepper { source: peppers::Error },
     #[snafu(display("Couldn't validate password for user {username}: {source}"))]
     Password {
-        username: Username,
+        username: String,
         source: entities::Error,
     },
     #[snafu(display("Failed to mint refresh and/or CSRF tokens: {source}"))]
@@ -225,7 +220,7 @@ pub enum Error {
         source: Box<token::Error>,
     },
     #[snafu(display("Unknown username {username}"))]
-    UnknownUser { username: Username },
+    UnknownUser { username: String },
     #[snafu(display("Authorization scheme {scheme} not supported"))]
     UnsupportedAuthScheme {
         scheme: String,
@@ -239,8 +234,13 @@ pub enum Error {
     },
     #[snafu(display("Failed to lookup user {username}: {source}"))]
     User {
-        username: Username,
+        username: String,
         source: crate::storage::Error,
+    },
+    #[snafu(display("{username} is not a valid indielinks username"))]
+    Username {
+        username: String,
+        source: indielinks_shared::Error,
     },
     #[snafu(display("Failed to create user: {source}"))]
     UserSignup { source: entities::Error },
@@ -278,7 +278,6 @@ impl Error {
             ////////////////////////////////////////////////////////////////////////////////////////
             Error::BadApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::BadUsername { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            Error::BadPassword { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::InvalidApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::InvalidCredentials { .. } => {
                 (StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
@@ -300,6 +299,7 @@ impl Error {
             Error::UnsupportedAuthScheme { .. } => {
                 (StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
             }
+            Error::Username { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             ////////////////////////////////////////////////////////////////////////////////////////
             // Internal failure-- own up to it:
             ////////////////////////////////////////////////////////////////////////////////////////
@@ -505,13 +505,13 @@ async fn authenticate(
             next.run(request).await
         }
         Err(Error::NoAuthToken { .. }) => {
-            info!("indielinks failed to authenticate this request");
+            info!("indielinks failed to authenticate this request-- no auth token");
             user_auth_failures.add(1, &[]);
             next.run(request).await
         }
         // I want to be careful about what sort of information we reveal to our caller...
         Err(err) => {
-            error!("indielinks failed to authenticate this request");
+            error!("indielinks failed to authenticate this request: {err:?}");
             user_auth_failures.add(1, &[]);
             err.into_response()
         }
@@ -665,26 +665,31 @@ async fn login(
         refresh_token_lifetime: &Duration,
         signing_keys: &SigningKeys,
         origin: &Origin,
-        username: &Username,
+        username: &str,
         password: SecretString,
     ) -> Result<(LoginRsp, String, String)> {
         let user = storage
             .user_for_name(username.as_ref())
             .await
             .context(UserSnafu {
-                username: username.clone(),
+                username: username.to_owned(),
             })?
             .context(UnknownUserSnafu {
-                username: username.clone(),
+                username: username.to_owned(),
             })?;
         user.check_password(peppers, password)
             .context(PasswordSnafu {
-                username: username.clone(),
+                username: username.to_owned(),
             })?;
+
+        // It seems unlikely that a bad username could sneak in, but still.
+        let username = Username::new(username).context(UsernameSnafu {
+            username: username.to_owned(),
+        })?;
 
         let (keyid, signing_key) = signing_keys.current().context(NoKeysSnafu)?;
         let token = mint_token(
-            username,
+            &username,
             &keyid,
             &signing_key,
             origin.host(),
@@ -694,7 +699,7 @@ async fn login(
             username: username.clone(),
         })?;
         let (refresh_token, csrf_token) = mint_refresh_and_csrf_tokens(
-            username,
+            &username,
             &keyid,
             &signing_key,
             origin.host(),
@@ -750,7 +755,7 @@ async fn login(
                 .body(axum::body::Body::from(serde_json::to_string(&rsp).unwrap()))
                 .unwrap()
         }
-        Err(Error::BadPassword { username, .. }) => {
+        Err(Error::Password { username, .. }) => {
             error!("Bad password for user {}", username);
             user_logins_failures.add(
                 1,
