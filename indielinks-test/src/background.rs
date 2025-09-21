@@ -20,6 +20,7 @@ use indielinks::{
         self, Backend as TasksBackend, BackgroundTask, BackgroundTasks, Config, Context, Sender,
         TaggedTask, Task,
     },
+    client::make_client,
     origin::Origin,
     storage::Backend as StorageBackend,
 };
@@ -165,7 +166,7 @@ pub async fn first_background(
         Context {
             origin,
             storage,
-            client: reqwest::Client::new().into(),
+            client: make_client("user-agent", &Default::default(), &Default::default()).unwrap(/* known good */),
         },
         Some(Config {
             shutdown_timeout: Duration::from_secs(30),

@@ -76,7 +76,7 @@ use tracing_subscriber::{
 };
 use url::Url;
 
-use indielinks_shared::StorUrl;
+use indielinks_shared::{StorUrl, service::ExponentialBackoffParameters};
 
 use indielinks_cache::{
     cache::Cache,
@@ -386,6 +386,8 @@ struct ConfigV1 {
     users_config: UsersConfiguration,
     #[serde(rename = "user-agent")]
     user_agent: String,
+    #[serde(rename = "client-exponential-backoff")]
+    client_exponential_backoff: ExponentialBackoffParameters,
     #[serde(rename = "collection-page-size")]
     collection_page_size: usize,
     assets: Option<PathBuf>,
@@ -421,6 +423,7 @@ impl Default for ConfigV1 {
             signing_keys: SigningKeysConfig::default(),
             users_config: UsersConfiguration::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
+            client_exponential_backoff: ExponentialBackoffParameters::default(),
             collection_page_size: 12, // Copied from Mastodon
             assets: None,
             background_tasks: background_tasks::Config::default(),
@@ -890,7 +893,12 @@ async fn serve(
 
     // Loop forever, handling SIGHUPs, until asked to terminate:
     loop {
-        let client = make_client(&cfg.user_agent, None).context(ClientSnafu)?;
+        let client = make_client(
+            &cfg.user_agent,
+            &Default::default(),
+            &cfg.client_exponential_backoff,
+        )
+        .context(ClientSnafu)?;
 
         // Re-build our database connections each pass, in case configuration values have changed:
         let (storage, tasks, cache) =

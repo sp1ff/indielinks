@@ -27,14 +27,16 @@
 
 use std::{
     collections::{HashSet, VecDeque},
+    error::Error as StdError,
     time::Duration,
 };
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use either::Either;
 use futures::{StreamExt, TryStreamExt, stream};
-use http::{Method, header};
+use http::{Method, Request, header};
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use reqwest::IntoUrl;
@@ -42,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, prelude::*};
 use tap::Pipe;
 use tokio::time::Instant;
+use tower::{Service, ServiceExt};
 use tracing::{debug, warn};
 use url::Url;
 use uuid::Uuid;
@@ -54,7 +57,7 @@ use crate::{
         make_user_id,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
-    client::request_builder,
+    client::ClientType,
     entities::{FollowId, User, Visibility},
     origin::Origin,
     storage::Backend as StorageBackend,
@@ -79,6 +82,11 @@ pub enum Error {
         source: http::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to build an HTTP request: {source}"))]
+    BuildRequest {
+        source: http::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to build a Create activity from a Note for Post {postid}: {source}"))]
     Create {
         postid: PostId,
@@ -87,7 +95,7 @@ pub enum Error {
     },
     #[snafu(display("ActivityPub request failed: {rsp:?}"))]
     FailedAp {
-        rsp: Box<reqwest::Response>,
+        rsp: Box<http::Response<bytes::Bytes>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to form an URL for follow of {id} for {username}"))]
@@ -153,17 +161,17 @@ pub enum Error {
     },
     #[snafu(display("Failed to send a request: {source}"))]
     Request {
-        source: reqwest_middleware::Error,
+        source: Box<dyn StdError + Send + Sync>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While waiting to send a request, {source}"))]
+    RequestReady {
+        source: Box<dyn StdError + Send + Sync>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize the request body to JSON: {source}"))]
     RspJson {
-        source: reqwest::Error,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("Failed to send an ActivityPub entity: {source}"))]
-    SendAp {
-        source: reqwest_middleware::Error,
+        source: serde_json::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to sign a request for {keyid}: {source}"))]
@@ -221,10 +229,14 @@ async fn send_activity_pub_core<U: IntoUrl, B: ToJld + std::fmt::Debug>(
     url: U,
     body: Option<&B>,
     context: Option<ap_entities::Context>,
-    client: &reqwest_middleware::ClientWithMiddleware,
-) -> Result<reqwest::Response> {
+    client: &mut ClientType,
+) -> Result</*reqwest::Response*/ http::Response<Bytes>> {
     let url = url.into_url().context(UrlSnafu)?;
-    request_builder(client, method, url.clone(), Some((user, origin)))
+
+    let request = Request::builder()
+        .method(method)
+        .uri(url.as_str())
+        .extension((user.clone(), origin.clone()))
         .header(header::ACCEPT, "application/activity+json")
         .header(header::CONTENT_TYPE, "application/activity+json")
         .header(
@@ -237,13 +249,19 @@ async fn send_activity_pub_core<U: IntoUrl, B: ToJld + std::fmt::Debug>(
                 url: Box::new(url.clone()),
             })?,
         )
-        .body::<reqwest::Body>(
+        .body::<Bytes>(
             body.map(|b| Jld::new(b, context).context(JldSnafu))
                 .transpose()?
                 .map(|jld| jld.into())
                 .unwrap_or_default(),
         )
-        .send()
+        .context(BuildRequestSnafu)?;
+
+    client
+        .ready()
+        .await
+        .context(RequestReadySnafu)?
+        .call(request)
         .await
         .context(RequestSnafu)
 }
@@ -257,7 +275,7 @@ pub async fn send_activity_pub_no_response<U: IntoUrl, B: ToJld + std::fmt::Debu
     url: U,
     body: Option<&B>,
     context: Option<ap_entities::Context>,
-    client: &reqwest_middleware::ClientWithMiddleware,
+    client: &mut ClientType,
 ) -> Result<()> {
     let response = send_activity_pub_core(user, origin, method, url, body, context, client).await?;
 
@@ -287,7 +305,7 @@ pub async fn send_activity_pub<
     url: U,
     body: Option<&B>,
     context: Option<ap_entities::Context>,
-    client: &reqwest_middleware::ClientWithMiddleware,
+    client: &mut ClientType,
 ) -> Result<R> {
     let response = send_activity_pub_core(user, origin, method, url, body, context, client).await?;
 
@@ -297,7 +315,8 @@ pub async fn send_activity_pub<
         return FailedApSnafu { rsp: response }.fail();
     }
 
-    response.json::<R>().await.context(RspJsonSnafu)
+    let body = response.into_body();
+    serde_json::from_slice::<R>(body.as_ref()).context(RspJsonSnafu)
 }
 
 /// Resolve a collection of [Recipient]s to a set of indielinks [User]s
@@ -485,7 +504,7 @@ impl SendCreate {
         user: &User,
         origin: &Origin,
         follower: &StorUrl,
-        client: &reqwest_middleware::ClientWithMiddleware,
+        client: &mut ClientType,
     ) -> Result<Url> {
         debug!("Resolving follower {:?} to a public inbox...", follower);
         send_activity_pub::<&'_ str, (), Actor>(
@@ -592,13 +611,13 @@ impl Task<Context> for SendCreate {
                 .and_then(|follower| {
                     let user = user.clone();
                     let origin = context.origin.clone();
-                    let client = context.client.clone();
+                    let mut client = context.client.clone();
                     async move {
                         SendCreate::follower_to_public_inbox(
                             &user,
                             &origin,
                             follower.actor_id(),
-                            &client,
+                            &mut client,
                         )
                         .await
                         .map_err(crate::storage::Error::new)
@@ -639,6 +658,7 @@ impl Task<Context> for SendCreate {
                 // If we're here, it's time-- make the call. Nb. that we're not taking advantage of
                 // the retry facility offered by `send_activity_pub`-- we'll handle that here so as
                 // to interleave the retries.
+                let mut client3 = context.client.clone();
                 match send_activity_pub_no_response::<&'_ str, Create>(
                     &user,
                     &context.origin,
@@ -646,7 +666,7 @@ impl Task<Context> for SendCreate {
                     this_call.inbox.as_ref(),
                     Some(&create),
                     None,
-                    &context.client,
+                    &mut client3,
                 )
                 .await
                 {
@@ -724,7 +744,7 @@ impl SendFollow {
         user: &User,
         origin: &Origin,
         actorid: &Url,
-        client: &reqwest_middleware::ClientWithMiddleware,
+        client: &mut ClientType,
     ) -> Result<Url> {
         send_activity_pub::<&'_ str, (), Actor>(
             user,
@@ -755,11 +775,12 @@ impl Task<Context> for SendFollow {
             // Ugh-- this needs to be cleaned-up.
             let userurl = StorUrl::from(this.actorid.clone());
 
+            let mut client2 = context.client.clone();
             let inbox = SendFollow::inbox_for_actor(
                 &this.user,
                 &context.origin,
                 &this.actorid,
-                &context.client,
+                &mut client2,
             )
             .await?;
 
@@ -787,6 +808,7 @@ impl Task<Context> for SendFollow {
                 })?,
             );
 
+            let mut client3 = context.client.clone();
             send_activity_pub_no_response::<Url, Follow>(
                 &this.user,
                 &context.origin,
@@ -794,7 +816,7 @@ impl Task<Context> for SendFollow {
                 inbox,
                 Some(&follow),
                 None,
-                &context.client,
+                &mut client3,
             )
             .await
         }

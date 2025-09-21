@@ -36,6 +36,7 @@ use snafu::{Backtrace, OptionExt, ResultExt, Snafu, ensure};
 use tap::Pipe;
 
 use indielinks_shared::Username;
+use tower::{Layer, Service};
 
 use crate::{
     entities::{self, User},
@@ -132,6 +133,8 @@ pub enum Error {
     NoContentTypeHeader,
     #[snafu(display("In order to sign a request, it must contain a Date header"))]
     NoDateHeader,
+    #[snafu(display("In order to sign a request, it must contain a Digest header"))]
+    NoDigestHeader,
     #[snafu(display("In order to sign a request, it must contain a Host header"))]
     NoHostHeader,
     #[snafu(display("The text was not valid UTF-8"))]
@@ -366,6 +369,93 @@ pub async fn check_password(
     Ok(user)
 }
 
+/// Append an [RFC-3230] SHA-256 `Digest` header to the input request
+///
+/// [RFC-3230]: https://datatracker.ietf.org/doc/html/rfc3230
+pub fn add_sha_256_digest<B: AsRef<[u8]>>(request: &mut http::Request<B>) {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(request.body().as_ref());
+    request.headers_mut().append(
+        "digest",
+        HeaderValue::from_str(&format!(
+                "sha-256={}",
+                BASE64_STANDARD.encode(hasher.finalize().as_slice())
+            )).unwrap(/* known good */),
+    );
+}
+
+/// Add a `Digest` header using SHA-256 to a request if it's not already present
+///
+/// I would have liked to use the [tower-http] [SetRequestHeader] middleware, but that, regrettably,
+/// only examines the header name. The semantics I want are "if there is no `Digest` header *using
+/// SHA-256* present, then add one". This means examining the header *value*, as well.
+///
+/// [SetRequestHeader]: tower_http::set_header::SetRequestHeader
+///
+/// This is the simplest implementation I could code that meets my needs; obvious possibilities for
+/// extension would be supporting other checksum algorithms as well as different criteria for adding
+/// the header (override, append, e.g.).
+#[derive(Clone, Debug)]
+pub struct AddSha256DigestIfNotPresent<S> {
+    inner: S,
+}
+
+impl<S> AddSha256DigestIfNotPresent<S> {
+    pub fn apply<B: AsRef<[u8]>>(&self, request: &mut http::Request<B>) {
+        let num_sha_256_digest_headers = request
+            .headers()
+            .get_all("digest")
+            .iter()
+            .filter_map(|h| {
+                h.to_str()
+                    .map(|s| {
+                        s.to_lowercase()
+                            .starts_with("sha-256=")
+                            .then_some(s.to_owned())
+                    })
+                    .unwrap_or(None)
+            })
+            .count();
+        if num_sha_256_digest_headers == 0 {
+            add_sha_256_digest(request)
+        }
+    }
+}
+
+impl<ReqBody, S> Service<http::Request<ReqBody>> for AddSha256DigestIfNotPresent<S>
+where
+    S: Service<http::Request<ReqBody>>,
+    ReqBody: AsRef<[u8]>,
+{
+    type Response = S::Response;
+
+    type Error = S::Error;
+
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut request: http::Request<ReqBody>) -> Self::Future {
+        self.apply(&mut request);
+        self.inner.call(request)
+    }
+}
+
+pub struct AddSha256DigestIfNotPresentLayer;
+
+impl<S> Layer<S> for AddSha256DigestIfNotPresentLayer {
+    type Service = AddSha256DigestIfNotPresent<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        AddSha256DigestIfNotPresent { inner }
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                           Verifying HTTP Signatures for ActivityPub                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -568,6 +658,50 @@ pub fn sign_request(
         .context(SignatureSnafu)?;
 
     Ok((http::Request::from_parts(parts, body), http_signature))
+}
+
+pub fn compute_signature<B: AsRef<[u8]>>(
+    request: &http::Request<B>,
+    key_id: &str,
+    private_key: &picky::key::PrivateKey,
+) -> Result<HeaderValue> {
+    let headers = request.headers();
+
+    if !headers.contains_key("Date") {
+        return Err(Error::NoDateHeader);
+    }
+
+    if !headers.contains_key("Host") {
+        return Err(Error::NoHostHeader);
+    }
+
+    if !headers.contains_key("Content-Type") {
+        return Err(Error::NoContentTypeHeader);
+    }
+
+    // Should really check that it's a SHA-256 digest!
+    if !headers.contains_key("Digest") {
+        return Err(Error::NoDigestHeader);
+    }
+
+    let signature = HttpSignatureBuilder::new()
+        .key_id(key_id)
+        .signature_method(
+            private_key,
+            SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+        )
+        // `picky::http::http_request::HttpRequest` trait is implemented for
+        // `http::request::Parts` for `http` crate with `http_trait_impl` feature gate
+        .generate_signing_string_using_http_request(request)
+        .request_target()
+        .http_header(header::CONTENT_TYPE.as_str())
+        .http_header(header::DATE.as_str())
+        .http_header("digest")
+        .http_header(header::HOST.as_str())
+        .build()
+        .context(SignatureSnafu)?;
+
+    HeaderValue::from_str(&signature.to_string()[10..]).context(SignatureToStringSnafu)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

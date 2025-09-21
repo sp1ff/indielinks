@@ -51,6 +51,7 @@ use crate::{
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
+    client::ClientType,
     define_metric,
     entities::{
         self, ActivityPubPost, ActivityPubPostFlavor, Follower, Following, Reply, Share, User,
@@ -301,7 +302,7 @@ async fn verify_signature(
     async fn verify_signature1(
         headers: axum::http::HeaderMap,  // := http::header::headerMap
         request: axum::extract::Request, // := http::request::Request
-        client: &reqwest_middleware::ClientWithMiddleware,
+        mut client: ClientType,
     ) -> Result<(axum::extract::Request, ap_entities::Actor)> {
         // Huh. Per <https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12>, the
         // signature should be transmitted in an Authorizatoin header, with a scheme of "Signature":
@@ -335,7 +336,7 @@ async fn verify_signature(
         debug!("Resolving key ID {}", key_id);
 
         let actor =
-            ap_entities::resolve_key_id(&Url::parse(key_id).context(BadKeyIdSnafu)?, client)
+            ap_entities::resolve_key_id(&Url::parse(key_id).context(BadKeyIdSnafu)?, &mut client)
                 .await
                 .context(ResolveKeyIdSnafu)?;
 
@@ -409,7 +410,7 @@ async fn verify_signature(
 
     // If I borrow, this functions fails to implement `Service` (I suspect the future becomes no
     // longer `Send` or something like that).
-    match verify_signature1(headers, request, &state.client).await {
+    match verify_signature1(headers, request, state.client.clone()).await {
         Ok((mut request, actor)) => {
             // Place `actor` into the request context for the convenience of downstream consumers
             request.extensions_mut().insert(actor);
@@ -843,6 +844,7 @@ impl Task<Context> for AcceptFollow {
         );
 
         async fn exec1(this: Box<AcceptFollow>, context: Context) -> Result<()> {
+            let mut client2 = context.client.clone();
             send_activity_pub_no_response::<&'_ str, Accept>(
                 &this.user,
                 &this.origin,
@@ -853,7 +855,7 @@ impl Task<Context> for AcceptFollow {
                         .context(AcceptResponseSnafu)?,
                 ),
                 None,
-                &context.client,
+                &mut client2,
             )
             .await
             .context(RequestSnafu)

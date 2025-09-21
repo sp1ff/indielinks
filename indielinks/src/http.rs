@@ -25,7 +25,6 @@ use axum::Json;
 use chrono::Duration;
 use indielinks_cache::{cache::Cache, raft::CacheNode};
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
-use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
@@ -168,7 +167,7 @@ pub struct Indielinks {
     pub users_same_site: SameSite,
     pub users_secure_cookies: bool,
     pub allowed_origins: Vec<Origin>,
-    pub client: ClientWithMiddleware,
+    pub client: crate::client::ClientType,
     pub collection_page_size: usize,
     pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,

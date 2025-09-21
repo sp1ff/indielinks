@@ -76,3 +76,14 @@ heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
 election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
 election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
 
+[client-exponential-backoff]
+jitter = 10.0
+num-attempts = 3
+
+[client-exponential-backoff.durations.min]
+secs = 1
+nanos = 0
+[client-exponential-backoff.durations.max]
+secs = 3
+nanos = 0
+

@@ -32,6 +32,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use clap::{
     Arg, ArgAction, Command, crate_authors, crate_version, parser::ValueSource, value_parser,
 };
@@ -54,13 +55,16 @@ use url::Url;
 
 use indielinks::origin::Origin;
 
-use indielinks_shared::Tagname;
+use indielinks_shared::{
+    Tagname,
+    service::{Body, ExponentialBackoffPolicy, RateLimit},
+};
 
 use indielinks_client::{
     add_link::add_link,
     import_onetab::import_onetab,
     import_pinboard::import_pinboard,
-    service::{ExponentialBackoffPolicy, GenericRspBody, ReqBody},
+    service::{/*GenericRspBody,*/ ReqBody},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -141,22 +145,6 @@ type Result<T> = std::result::Result<T, Error>;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         configuration                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Express a rate limit in terms of requests per duration
-#[derive(Clone, Debug, Deserialize)]
-struct RateLimit {
-    pub num: u64,
-    pub duration: std::time::Duration,
-}
-
-impl Default for RateLimit {
-    fn default() -> Self {
-        RateLimit {
-            num: 3,
-            duration: Duration::from_secs(1),
-        }
-    }
-}
 
 /// Current configuration
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -253,11 +241,12 @@ async fn make_indielinks_client(
 ) -> Result<
     impl Service<
         http::Request<ReqBody>,
-        Response = http::Response<Vec<u8>>,
+        Response = http::Response<Bytes>,
+        // Response = http::Response<Vec<u8>>,
         Error = Box<dyn std::error::Error + Send + Sync>,
     > + Clone,
 > {
-    use indielinks_client::service::proto_reqwest_tower::ReqwestServiceLayer;
+    use indielinks_shared::service::ReqwestServiceLayer;
     use secrecy::ExposeSecret;
 
     ServiceBuilder::new()
@@ -292,7 +281,9 @@ async fn make_indielinks_client(
             ACCEPT,
             HeaderValue::from_static("application/json"),
         ))
-        .layer(ReqwestServiceLayer::new(GenericRspBody))
+        // Later: add some instrumentation? For debugging?
+        // .layer(ReqwestServiceLayer::new(GenericRspBody))
+        .layer(ReqwestServiceLayer::new(Body))
         .service(reqwest::Client::new())
         .pipe(Ok)
 }

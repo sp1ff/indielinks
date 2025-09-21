@@ -566,7 +566,7 @@ mod mock {
 #[derive(Clone)]
 pub struct Context {
     pub origin: Origin,
-    pub client: reqwest_middleware::ClientWithMiddleware,
+    pub client: crate::client::ClientType,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
 }
 

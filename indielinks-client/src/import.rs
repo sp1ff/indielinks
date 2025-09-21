@@ -74,7 +74,7 @@ async fn import_post<C>(
 where
     C: Service<
             http::Request<ReqBody>,
-            Response = http::Response<Vec<u8>>,
+            Response = http::Response<bytes::Bytes>,
             Error = Box<dyn std::error::Error + Send + Sync>,
         > + Clone,
 {
@@ -117,7 +117,7 @@ pub async fn import_posts<C, I>(
 where
     C: Service<
             http::Request<ReqBody>,
-            Response = http::Response<Vec<u8>>,
+            Response = http::Response<bytes::Bytes>,
             Error = Box<dyn std::error::Error + Send + Sync>,
         > + Clone,
     I: Iterator<Item = PostAddReq>,

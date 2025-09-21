@@ -130,7 +130,7 @@ where
     // It would be nice to have an alias for this, but the trait_alias feature is only on nightly
     C: Service<
             http::Request<ReqBody>,
-            Response = http::Response<Vec<u8>>,
+            Response = http::Response<bytes::Bytes>,
             Error = Box<dyn std::error::Error + Send + Sync>,
         > + Clone,
     P: AsRef<Path>,

@@ -116,9 +116,10 @@
 //! compatibility with as many other apps as possible.
 //!
 
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, error::Error as StdError, fmt::Display};
 
 use chrono::{DateTime, FixedOffset, Utc};
+use http::{Method, Request};
 use lazy_static::lazy_static;
 use picky::key::PublicKey as PickyPublicKey;
 use regex::Regex;
@@ -126,11 +127,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
+use tower::{Service, ServiceExt};
 use url::Url;
 
 use indielinks_shared::{Post, PostId, Username};
 
 use crate::{
+    client::ClientType,
     entities::{self, FollowId, User},
     origin::Origin,
 };
@@ -143,7 +146,7 @@ use crate::{
 pub enum Error {
     #[snafu(display("Failed to deserialize an Actor: {source}"))]
     ActorDe {
-        source: reqwest::Error,
+        source: serde_json::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Unexpected object `id` type"))]
@@ -208,11 +211,21 @@ pub enum Error {
         source: picky::key::KeyError,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to build an http Request: {source}"))]
+    Request {
+        source: http::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to resolve keyid {}: {source}"))]
     ResolveKeyId {
         key_id: Url,
-        #[snafu(source(from(reqwest_middleware::Error, Box::new)))]
-        source: Box<reqwest_middleware::Error>,
+        source: Box<dyn StdError + Send + Sync>,
+        // backtrace not included because it would make the error too large
+    },
+    #[snafu(display("Failed to resolve keyid {} because the Service wasn't ready: {source}"))]
+    ResolveKeyIdReady {
+        key_id: Url,
+        source: Box<dyn StdError + Send + Sync>,
         // backtrace not included because it would make the error too large
     },
     #[snafu(display("Failed serializing to a JSON Value: {source}"))]
@@ -1446,21 +1459,28 @@ impl ToJld for Create {
 // (since no-one should check this request of a signature-- it's a prerequisite for being able to
 // *make* a signature!)
 /// Resolve a key ID to a PublicKey
-pub async fn resolve_key_id(
-    key_id: &Url,
-    client: &reqwest_middleware::ClientWithMiddleware,
-) -> Result<Actor> {
-    client
-        .get(key_id.clone())
+pub async fn resolve_key_id(key_id: &Url, client: &mut ClientType) -> Result<Actor> {
+    let request = Request::builder()
+        .method(Method::GET)
         .header(http::header::ACCEPT, "application/activity+json")
-        .send()
+        .uri(key_id.as_str())
+        .body(bytes::Bytes::new())
+        .context(RequestSnafu)?;
+
+    let body = client
+        .ready()
+        .await
+        .context(ResolveKeyIdReadySnafu {
+            key_id: key_id.clone(),
+        })?
+        .call(request)
         .await
         .context(ResolveKeyIdSnafu {
             key_id: key_id.clone(),
         })?
-        .json::<Actor>()
-        .await
-        .context(ActorDeSnafu)
+        .into_body();
+
+    serde_json::from_slice::<Actor>(body.as_ref()).context(ActorDeSnafu)
 }
 
 /// Newtype "proving" that the caller produced JSON-LD
@@ -1499,7 +1519,7 @@ impl AsRef<str> for Jld {
     }
 }
 
-impl From<Jld> for reqwest::Body {
+impl From<Jld> for bytes::Bytes {
     fn from(value: Jld) -> Self {
         value.to_string().into()
     }
