@@ -18,11 +18,29 @@ while [ ${nnodes} -ne 3 ]; do
         exit 1
     fi
 done
-docker cp indielinks.cql scylla-node-1:/indielinks.cql
-docker cp dev-charge.cql scylla-node-1:/dev-charge.cql
+# docker cp indielinks.cql scylla-node-1:/indielinks.cql
+# TODO(sp1ff): 
+# docker cp dev-charge.cql scylla-node-1:/dev-charge.cql
 
-docker exec -i scylla-node-1 cqlsh -e "create keyspace if not exists indielinks with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3} and tablets = {'enabled': false};"
-docker exec -i scylla-node-1 cqlsh -f /indielinks.cql
-docker exec -i scylla-node-1 cqlsh -f /dev-charge.cql
-RUST_LOG="debug,scylla::transport=debug" cargo run --bin indielinks-ddb -- \
-        -p -D http://localhost:8043
+# TODO(sp1ff): 
+# docker exec -i scylla-node-1 cqlsh -e "create keyspace if not exists indielinks with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3} and tablets = {'enabled': false};"
+# docker exec -i scylla-node-1 cqlsh -f /indielinks.cql
+# TODO(sp1ff): 
+# docker exec -i scylla-node-1 cqlsh -f /dev-charge.cql
+# RUST_LOG="debug,scylla::transport=debug" cargo run --bin indielinks-ddb -- \
+#         -p -D http://localhost:8043
+
+rust_log=debug,\
+aws_config=info,\
+aws_runtime=info,\
+aws_sdk_dynamodb=info,\
+aws_sdk_sts=info,\
+aws_sigv4=info,\
+aws_smithy_runtime=info,\
+aws_smithy_runtime_api=info,\
+hyper=info,\
+openraft=info,\
+scylla=info
+
+RUST_LOG=${rust_log} cargo run --bin indielinks-schemas -- -D -p ddb http://localhost:8043
+RUST_LOG=${rust_log} cargo run --bin indielinks-schemas -- -D -p scylla 127.0.0.1:9043

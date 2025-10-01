@@ -1,13 +1,40 @@
-/* CQL (Cassandra Query Language) file for charging a local database.
+/* Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
 
-   This is intended, along with `compose.local.yaml` for local
-   indielinks development. I.e. the assumption is that the dev will
-   stand-up a local ScyllaDB cluster using `docker compose`, then use
-   this script to create the keyspace & tables required by indielinks.
+   This file is part of indielinks.
 
-   I'll write a second script to load some initial data. */
+   indielinks is free software: you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published
+   by the Free Software Foundation, either version 3 of the License,
+   or (at your option) any later version.
+
+   indielinks is distributed in the hope that it will be useful, but
+   WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+   General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with indielinks. If not, see <http://www.gnu.org/licenses/>.
+
+
+   This CQL (Cassandra Query Language) file will initialize a ScyllaDB
+   database with the indielinks schema, version zero.
+
+   */
+
+create keyspace if not exists indielinks
+  with replication = {
+    'class': 'NetworkTopologyStrategy',
+    'replication_factor' : 3
+  } and tablets = {
+    'enabled': false
+  };
 
 use indielinks;
+
+create table if not exists schema_migrations (
+  version bigint PRIMARY KEY,
+  applied timestamp
+);
 
 /* Paritition key is the user *ID* (not the username). Should give
    high cardinality, smooth distribution and uniform growth of each

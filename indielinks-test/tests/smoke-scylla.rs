@@ -16,33 +16,32 @@
 /// # delicious-scylla
 ///
 /// Integration tests run against an indielinks configured with the Scylla storage back-end.
-use common::{Configuration, IndielinksTest, run};
+use common::{run, Configuration, IndielinksTest};
 use crypto_common::rand_core::{OsRng, RngCore};
 use indielinks::{
     entities::{FollowId, User},
     origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
-    scylla::{add_followers, add_following, add_user},
+    scylla::{add_followers, add_following, add_user, create_client, execute_cql},
 };
 use indielinks_shared::{StorUrl, UserEmail, UserId, Username};
 use indielinks_test::{
-    Helper,
     activity_pub::{as_follower, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
+    Helper,
 };
 
 use async_trait::async_trait;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Failed, Trial};
-use scylla::client::session_builder::SessionBuilder;
 use secrecy::SecretString;
-use snafu::{Backtrace, Snafu, prelude::*};
+use snafu::{prelude::*, Backtrace, Snafu};
 use tokio::runtime::Runtime;
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
 use std::{collections::HashSet, fmt::Display, io, sync::Arc};
 
@@ -71,7 +70,7 @@ enum Error {
     },
     #[snafu(display("Failed to create a ScyllaDB session: {source}"))]
     NewSession {
-        source: scylla::errors::NewSessionError,
+        source: indielinks::scylla::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("No user {username}"))]
@@ -102,6 +101,8 @@ enum Error {
     SetGlobalDefault {
         source: tracing::subscriber::SetGlobalDefaultError,
     },
+    #[snafu(display("ScyllaDB error {source}"))]
+    Scylla { source: indielinks::scylla::Error },
 }
 
 impl std::fmt::Debug for Error {
@@ -146,11 +147,9 @@ struct State {
 
 impl State {
     pub async fn new(cfg: &Configuration) -> Result<State> {
-        let mut builder = SessionBuilder::new().known_nodes(&cfg.scylla.hosts);
-        if let Some((user, pass)) = &cfg.scylla.credentials {
-            builder = builder.user(user, pass);
-        }
-        let session = builder.build().await.context(NewSessionSnafu)?;
+        let session = create_client(&cfg.scylla.hosts, &cfg.scylla.credentials)
+            .await
+            .context(NewSessionSnafu)?;
         session
             .use_keyspace("indielinks", false)
             .await
@@ -352,6 +351,8 @@ inventory::submit!(IndielinksTest {
     test_fn: |cfg: Configuration, helper| { Box::pin(test_mint_key(cfg.indielinks, helper)) },
 });
 
+const CQL: &str = include_str!("dev-charge.cql");
+
 fn main() -> Result<()> {
     // Regrettably, the Scylla API has forced us to use async Rust. This is inconvenient as the
     // libtest-mimic crate expects *synchronous* test functions. Using `#[tokio::main]` leaves us
@@ -383,6 +384,13 @@ fn main() -> Result<()> {
     }
 
     let state = Arc::new(rt.block_on(async { State::new(&config).await })?);
+
+    // I'm not happy about this: charging the database with some initial data is absolutely part of
+    // fixture setup. Thing is, I can't do this without a client, and I can't create a client until
+    // I've spun-up the ScyllaDB cluster. I need to re-think my fixture setup logic, but I'm going
+    // to wait on that until I re-organize it more generally along the lines of `cache-tests`.
+    rt.block_on(async { execute_cql(&state.session, CQL).await })
+        .context(ScyllaSnafu)?;
 
     // This, together with prefixing my function names with numbers, is a hopefully temporary
     // workaround to the fact that my tests can't be run out-of-order or simultaneously.

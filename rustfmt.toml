@@ -1,3 +1,7 @@
-group_imports = "StdExternalCrate"
+# Need to keep this in sync with Cargo.toml!
+edition = "2021"
 reorder_imports = true
-imports_granularity = "Crate"
+# Argh... still unstable; cf. https://github.com/rust-lang/rustfmt/issues/5083
+# group_imports = "StdExternalCrate"
+# Argh... still unstable; cf. https://github.com/rust-lang/rustfmt/issues/4991
+# imports_granularity = "Crate"

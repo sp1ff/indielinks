@@ -21,7 +21,7 @@
 use std::{fmt::Display, ops::Deref};
 
 use either::Either;
-use secrecy::{ExposeSecret, SecretSlice};
+use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Deserializer};
 use serde_bytes::ByteBuf;
 use tap::{Conv, Pipe};
@@ -169,5 +169,49 @@ impl<'de> Deserialize<'de> for Key {
 impl From<Vec<u8>> for Key {
     fn from(value: Vec<u8>) -> Self {
         Key(value.into())
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                      generic credentials                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// General-purpose credentials-- presumably username, password
+// Not sure that the username should be secret, but why not?
+#[derive(Clone, Debug, Deserialize)]
+pub struct Credentials(pub (SecretString, SecretString));
+
+impl clap::builder::ValueParserFactory for Credentials {
+    type Parser = CredentialsParser;
+
+    fn value_parser() -> Self::Parser {
+        CredentialsParser
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CredentialsParser;
+
+impl clap::builder::TypedValueParser for CredentialsParser {
+    type Value = Credentials;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> std::result::Result<Self::Value, clap::Error> {
+        use clap::error::ErrorKind;
+        value
+            .to_str()
+            .ok_or(clap::Error::new(ErrorKind::InvalidValue))?
+            .split(',')
+            .collect::<Vec<&str>>()
+            .into_iter()
+            .pipe(exactly_two)
+            .map_err(|_| clap::Error::new(ErrorKind::WrongNumberOfValues))?
+            .pipe(|p| (p.0.into(), p.1.into())) // OMFG-- I can't map over a tuple
+            .pipe(Credentials)
+            .pipe(Ok)
     }
 }

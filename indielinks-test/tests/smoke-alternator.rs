@@ -16,45 +16,59 @@
 //! # delicious-alternator
 //!
 //! Integration tests run against an indielinks configured with the DynamoDB storage back-end.
-use common::{Configuration, IndielinksTest, run};
+use common::{run, Configuration, IndielinksTest};
 use indielinks::{
-    dynamodb::{add_followers, add_following, add_user},
+    dynamodb::{add_followers, add_following, add_user, create_client},
     entities::{FollowId, User},
     peppers::{Pepper, Version as PepperVersion},
 };
 use indielinks_shared::{Post, StorUrl, UserEmail, UserId, Username};
 use indielinks_test::{
-    Helper,
     activity_pub::{as_follower, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
+    Helper,
 };
 
 use async_trait::async_trait;
-use aws_config::{BehaviorVersion, Region, meta::region::RegionProviderChain};
 use aws_sdk_dynamodb::{
-    config::Credentials,
+    error::SdkError,
+    operation::put_item::PutItemError,
     types::{AttributeValue, DeleteRequest, Select, WriteRequest},
 };
-use either::Either;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Failed, Trial};
 use secrecy::SecretString;
 use serde_dynamo::aws_sdk_dynamodb_1::from_items;
-use snafu::{Backtrace, Snafu, prelude::*};
+use snafu::{prelude::*, Backtrace, Snafu};
 use tap::Pipe;
 use tokio::runtime::Runtime;
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
-use std::{cmp::min, collections::HashSet, fmt::Display, io, sync::Arc};
+use std::{
+    cmp::min,
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    io,
+    sync::Arc,
+};
 
 mod common;
 
 #[derive(Snafu)]
 enum Error {
+    #[snafu(display("Failed to charge table {name}: {source:#?}"))]
+    ChargeTable {
+        name: String,
+        #[snafu(source(from(SdkError<PutItemError, aws_sdk_dynamodb::config::http::HttpResponse>, Box::new)))]
+        source: Box<SdkError<PutItemError, aws_sdk_dynamodb::config::http::HttpResponse>>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While creating the DDB client, {source}"))]
+    Client { source: indielinks::dynamodb::Error },
     #[snafu(display("Failed to run {cmd}: {source}"))]
     Command { cmd: String, source: common::Error },
     #[snafu(display("Error obtaining test configuration: {source}"))]
@@ -141,40 +155,10 @@ struct State {
 
 impl State {
     pub async fn new(cfg: &Configuration) -> Result<State> {
-        let creds = cfg
-            .dynamo
-            .credentials
-            .as_ref()
-            .map(|(id, secret)| Credentials::new(id, secret, None, None, "indielinks"));
-
-        let config = match cfg.dynamo.location.as_ref() {
-            Either::Left(region) => {
-                let region_provider =
-                    RegionProviderChain::first_try(Some(Region::new(region.clone())))
-                        .or_default_provider()
-                        .or_else(Region::new("us-west-2"));
-                let mut loader = aws_config::from_env().region(region_provider);
-                if let Some(creds) = creds {
-                    loader = loader.credentials_provider(creds);
-                }
-                loader.load().await
-            }
-            Either::Right(endpoints) => {
-                let ep_url = *endpoints
-                    .iter()
-                    .peekable()
-                    .peek()
-                    .ok_or(NoEndpointsSnafu {}.build())?;
-                let mut loader = aws_config::defaults(BehaviorVersion::latest())
-                    .endpoint_url((*ep_url).as_str());
-                if let Some(creds) = creds {
-                    loader = loader.credentials_provider(creds);
-                }
-                loader.load().await
-            }
-        };
         Ok(State {
-            client: ::aws_sdk_dynamodb::Client::new(&config),
+            client: create_client(&cfg.dynamo.location, &cfg.dynamo.credentials)
+                .await
+                .context(ClientSnafu)?,
         })
     }
     async fn id_for_username(&self, username: &Username) -> Result<Option<UserId>> {
@@ -429,6 +413,84 @@ inventory::submit!(IndielinksTest {
     test_fn: |cfg: Configuration, helper| { Box::pin(test_mint_key(cfg.indielinks, helper)) },
 });
 
+async fn charge_tables(client: &::aws_sdk_dynamodb::Client) -> Result<()> {
+    client
+        .put_item()
+        .table_name("users")
+        .set_item(Some(HashMap::from([
+            ("id".to_string(), AttributeValue::S("9a1df092-cd69-4c64-91f7-b8fb4022ea49".to_string())),
+            ("username".to_string(), AttributeValue::S("sp1ff".to_string())),
+            ("discoverable".to_string(), AttributeValue::Bool(true)),
+            ("display_name".to_string(), AttributeValue::S("sp1ff".to_string())),
+            ("summary".to_string(), AttributeValue::S("Defender of the galaxy".to_string())),
+            ("pub_key_pem".to_string(), AttributeValue::S("-----BEGIN RSA PUBLIC KEY-----MIICCgKCAgEAlpLzxYKh8aT90oMK6AeeKMCj220BhuWCozk06DsjF7KeOsCesiDxNwpKOuFvdljc8d6fhO1IWM75KplDs0vgPegdmxgMA/xwRpRt1L0x5rzOv8m2k6TRGgx8CquzimwAWG7M8pz2vTlb2HeRNHwsoyWd0hYtfFzrYfVQiBVI7MGul7dwyO3AIO94tW5cok7jfL8XkPo9bqrLTwLL/jw61vleuhcFtA7lf0H+chD6ikGcVqGD++aRmRdmnvVRZcS2ySo5btXQaT/THkouq2ZqWA1rpz0Ta645qE8LdfatqTBhPomOCQOViaT+sxrem6pEAUlJwP+/ibYO6ZOFGxZXAgH4WaEExPjIeJdOBP/flkx+YnvYb62e+Q7J+URVl6Y92ZMGmWBNz88zLu6uODD75p2Lyo0kG1Gr6qDChtqmH4fdKMZOXKxTQzwtN68NZmjUYR5ZVZYn6sTmzLT9RPiSj4NFzB28z7auNVRbROpNpSKpUonp3Bb6hy7aEfl1iaOeijjIQw26fZgxEJO624ZbpLLuLY+A/4pDNlawbyTK8WOYCZLUYn2w6IolpHVKh7/eP7qDy4TNbX439W0DLBRoCzA+8Vv5SLU8pT2coiXM65Dc3L6NGOwIjuoId5+Ei9SSP29GU5eu5rVb8JzM3lkmIujFVwqxOrdHu6CSrQcuf+MCAwEAAQ==-----END RSA PUBLIC KEY-----".to_string())),
+            ("priv_key_pem".to_string(), AttributeValue::S("-----BEGIN RSA PRIVATE KEY-----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-----END RSA PRIVATE KEY-----".to_string())),
+            ("api_keys".to_string(),
+             AttributeValue::M(
+                 HashMap::from(
+                     [("One".to_string(),
+                       AttributeValue::M(HashMap::from([
+                           ("expiry".to_string(), AttributeValue::Null(true)),
+                           ("version".to_string(), AttributeValue::S("1".to_string())),
+                           ("key_material_hash".to_string(), AttributeValue::L(vec![
+                               AttributeValue::N("18".to_string()),
+                               AttributeValue::N("149".to_string()),
+                               AttributeValue::N("37".to_string()),
+                               AttributeValue::N("96".to_string()),
+                               AttributeValue::N("225".to_string()),
+                               AttributeValue::N("143".to_string()),
+                               AttributeValue::N("211".to_string()),
+                               AttributeValue::N("193".to_string()),
+                               AttributeValue::N("123".to_string()),
+                               AttributeValue::N("75".to_string()),
+                               AttributeValue::N("85".to_string()),
+                               AttributeValue::N("183".to_string()),
+                               AttributeValue::N("244".to_string()),
+                               AttributeValue::N("48".to_string()),
+                               AttributeValue::N("52".to_string()),
+                               AttributeValue::N("136".to_string()),
+                               AttributeValue::N("147".to_string()),
+                               AttributeValue::N("19".to_string()),
+                               AttributeValue::N("233".to_string()),
+                               AttributeValue::N("7".to_string()),
+                               AttributeValue::N("156".to_string()),
+                               AttributeValue::N("48".to_string()),
+                               AttributeValue::N("144".to_string()),
+                               AttributeValue::N("249".to_string()),
+                               AttributeValue::N("223".to_string()),
+                               AttributeValue::N("1".to_string()),
+                               AttributeValue::N("93".to_string()),
+                               AttributeValue::N("249".to_string()),
+                           ]))
+                       ])))]))
+            ),
+            ("password_hash".to_string(), AttributeValue::S("$argon2id$v=19$m=19456,t=2,p=1$P2VPm95xh/Pb5hBbokpHTg$TbheNsNWEk8OKL17u/GYhnLwgo8DCxnrzm0SJ+R/AUM".to_string())),
+            ("pepper_version".to_string(), AttributeValue::S("pepper-ver:20250213".to_string())),
+            ])))
+        .send()
+        .await
+        .context(ChargeTableSnafu { name: "users".to_string()})?;
+    client
+        .put_item()
+        .table_name("unique_usernames")
+        .set_item(Some(HashMap::from([
+            (
+                "username".to_string(),
+                AttributeValue::S("sp1ff".to_string()),
+            ),
+            (
+                "id".to_string(),
+                AttributeValue::S("9a1df092-cd69-4c64-91f7-b8fb4022ea49".to_string()),
+            ),
+        ])))
+        .send()
+        .await
+        .context(ChargeTableSnafu {
+            name: "unique_usernames".to_string(),
+        })?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     // Regrettably, the Scylla API has forced us to use async Rust. This is inconvenient as the
     // libtest-mimic crate expects *synchronous* test functions. Using `#[tokio::main]` leaves us
@@ -460,6 +522,12 @@ fn main() -> Result<()> {
     }
 
     let state = Arc::new(rt.block_on(async { State::new(&config).await })?);
+
+    // I'm not happy about this: charging the database with some initial data is absolutely part of
+    // fixture setup. Thing is, I can't do this without a client, and I can't create a client until
+    // I've spun-up the ScyllaDB cluster. I need to re-think my fixture setup logic, but I'm going
+    // to wait on that until I re-organize it more generally along the lines of `cache-tests`.
+    let _ = rt.block_on(async { charge_tables(&state.client).await })?;
 
     // Nb. this program is always run from the root directory of the owning crate.
     // This, together with prefixing my function names with numbers, is a hopefully temporary

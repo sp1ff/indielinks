@@ -19,13 +19,12 @@
 //!
 //! Code common to the indielinks integration test framework goes here. See [indielinks_test] for a
 //! full description.
-use std::{collections::HashMap, env, fs, process::Command, sync::Arc};
+use std::{collections::HashMap, env, fs, net::SocketAddr, process::Command, sync::Arc};
 
-use either::Either;
 use libtest_mimic::Failed;
 use reqwest::Url;
 use serde::Deserialize;
-use snafu::{Backtrace, IntoError, prelude::*};
+use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
 use tracing::Level;
 
@@ -34,7 +33,8 @@ use indielinks_shared::Username;
 use indielinks_cache::types::{ClusterNode, NodeId};
 
 use indielinks::{
-    background_tasks::Backend as TasksBackend, peppers::Peppers, storage::Backend as StorageBackend,
+    background_tasks::Backend as TasksBackend, dynamodb::Location, peppers::Peppers,
+    storage::Backend as StorageBackend, util::Credentials,
 };
 
 use indielinks_test::Helper;
@@ -98,16 +98,16 @@ pub struct ScyllaConfig {
     /// ScyllaDB credentials, if authentication is to be used. Nb that I'm not using
     /// `secrecy::SecretString` here; I assume that if you're running this test suite, it's
     /// against a local, unsecured instance.
-    pub credentials: Option<(String, String)>,
+    pub credentials: Option<Credentials>,
     /// ScyllaDB hosts; specify as "host:port"
-    pub hosts: Vec<String>,
+    pub hosts: Vec<SocketAddr>,
 }
 
 impl Default for ScyllaConfig {
     fn default() -> Self {
         ScyllaConfig {
             credentials: None,
-            hosts: vec![String::from("localhost:9043")],
+            hosts: vec!["127.0.0.1:9043".parse::<SocketAddr>().unwrap(/* known good */)],
         }
     }
 }
@@ -120,25 +120,25 @@ pub struct DynamoConfig {
     /// Alternator interface locally and have the cluster be open. Nb that I'm not using
     /// `secrecy::SecretString` here; I assume that if you're running this test suite, it's
     /// against a local, unsecured instance.
-    pub credentials: Option<(String, String)>,
+    pub credentials: Option<Credentials>,
     /// You can find DynamoDB in a few ways. If you're truly talking to DynamoDB in AWS, you can
     /// give a region. You can also specify an URL (like
     /// `https://dynamodb.us-west-2.amazonaws.com`). If you're talking to ScyllaDB over the
     /// Alternator interface, we're going to have to handle load-balancing on the client-side,
     /// so specify more than one.
-    #[serde(with = "either::serde_untagged")]
-    pub location: Either<String, Vec<Url>>,
+    pub location: Location,
 }
 
 impl Default for DynamoConfig {
     fn default() -> Self {
         DynamoConfig {
             credentials: None,
-            location: Either::Right(vec![
+            location: vec![
                 Url::parse("http://127.0.0.1:8043").unwrap(),
                 Url::parse("http://127.0.0.1:8044").unwrap(),
                 Url::parse("http://127.0.0.1:8045").unwrap(),
-            ]),
+            ]
+            .into(),
         }
     }
 }

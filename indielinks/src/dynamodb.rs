@@ -22,19 +22,19 @@
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     cache::{
-        Backend as CacheBackend, Flavor, LogIndex, NID, RaftLog, RaftMetadata, to_storage_io_err,
+        to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
     },
     entities::{ActivityPubPost, ApiKeys, FollowId, Follower, Following, Like, Reply, Share, User},
     storage::{self, DateRange, UsernameClaimedSnafu},
-    util::UpToThree,
+    util::{Credentials, UpToThree},
 };
 
 use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
 use async_trait::async_trait;
-use aws_config::{BehaviorVersion, Region, meta::region::RegionProviderChain};
+use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use aws_sdk_dynamodb::{
-    config::Credentials,
+    config::Region as AwsSdkRegion,
     operation::{
         batch_write_item::BatchWriteItemError, get_item::GetItemError, put_item::PutItemError,
         query::QueryOutput, update_item::UpdateItemError,
@@ -44,23 +44,25 @@ use aws_sdk_dynamodb::{
 use aws_smithy_async::future::pagination_stream::PaginationStream;
 use chrono::{DateTime, Duration, Utc};
 use either::Either;
-use futures::{Stream, stream::BoxStream};
+use futures::{stream::BoxStream, Stream};
 use indielinks_cache::types::{NodeId, TypeConfig};
 use itertools::Itertools;
 use openraft::{Entry, ErrorSubject, ErrorVerb, LogId, LogState, StorageError, Vote};
 use pin_project::pin_project;
 use rmp_serde::{from_slice, to_vec};
-use secrecy::SecretString;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_dynamo::{
     aws_sdk_dynamodb_1::{from_items, to_item},
     from_item,
 };
-use snafu::{Backtrace, IntoError, ResultExt, Snafu};
+use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
+use tracing::error;
 use url::Url;
 use uuid::Uuid;
 
 use std::{
+    borrow::Cow,
     cmp::min,
     collections::{HashMap, HashSet, VecDeque},
     ops::Bound,
@@ -185,6 +187,12 @@ pub enum Error {
         flavor: crate::cache::Flavor,
         backtrace: Backtrace,
     },
+    #[snafu(display("The `version` field is missing from the query results; this is a bug and should be reported."))]
+    MissingVersion { backtrace: Backtrace },
+    #[snafu(display(
+        "The schema version query didn't return anything; this is a bug and should be reported."
+    ))]
+    MissingVersions { backtrace: Backtrace },
     #[snafu(display("{userid}'s post count has gone negative ({count})"))]
     NegativePostCount {
         userid: UserId,
@@ -360,6 +368,16 @@ pub enum Error {
         #[snafu(source(from(SdkError<PutItemError, HttpResponse>, Box::new)))]
         source: Box<SdkError<PutItemError, HttpResponse>>,
     },
+    #[snafu(display("{text} could not be parsed as a schema version ({source}); this is a bug."))]
+    Version {
+        text: String,
+        source: std::num::ParseIntError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display(
+        "The schema version came back with an unexpected DDB AttributeType; this is a bug."
+    ))]
+    VersionType { backtrace: Backtrace },
     #[snafu(display("Failed to read a vote from the database: {source}"))]
     VoteGet {
         #[snafu(source(from(SdkError<GetItemError, HttpResponse>, Box::new)))]
@@ -700,6 +718,259 @@ where
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                   creating DynamoDB clients                                    //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Let's tighten-up the types for this, a bit.
+
+/// A serializable [Region](aws_sdk_dynamodb::config::Region). Implemented as a newtype around the
+/// AWS SDK's [Region] to work around Rust's orphan traits rule
+// Not making this sortable since the AWS SDK doesn't
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub struct Region(AwsSdkRegion);
+
+impl Region {
+    /// Creates a new `Region` from the given string.
+    pub fn new(region: impl Into<Cow<'static, str>>) -> Self {
+        Self(AwsSdkRegion::new(region))
+    }
+
+    /// Const function that creates a new `Region` from a static str.
+    pub const fn from_static(region: &'static str) -> Self {
+        Self(AwsSdkRegion::from_static(region))
+    }
+}
+
+impl std::fmt::Display for Region {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::ops::Deref for Region {
+    type Target = AwsSdkRegion;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::convert::AsRef<AwsSdkRegion> for Region {
+    fn as_ref(&self) -> &AwsSdkRegion {
+        &self.0
+    }
+}
+
+impl std::convert::AsRef<str> for Region {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl<'de> Deserialize<'de> for Region {
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Region::new(s))
+    }
+}
+
+impl Serialize for Region {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.0.as_ref())
+    }
+}
+
+/// Where to find DynamoDB on the network. Again implemented as a newtype due to orphan traits
+/// rules. [Location] is not only serializable, but also parsable by [clap].
+// Not making this sortable since `Region` isn't
+#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, Serialize)]
+pub struct Location(#[serde(with = "either::serde_untagged")] Either<Region, Vec<Url>>);
+
+impl std::fmt::Display for Location {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Either::Left(region) => write!(f, "{region}"),
+            Either::Right(urls) => write!(
+                f,
+                "[{}]",
+                urls.iter()
+                    .map(Url::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+}
+
+impl std::ops::Deref for Location {
+    type Target = Either<Region, Vec<Url>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Region> for Location {
+    fn from(value: Region) -> Self {
+        Location(Either::Left(value))
+    }
+}
+
+impl From<Vec<Url>> for Location {
+    fn from(value: Vec<Url>) -> Self {
+        Location(Either::Right(value))
+    }
+}
+
+impl std::convert::AsRef<Either<Region, Vec<Url>>> for Location {
+    fn as_ref(&self) -> &Either<Region, Vec<Url>> {
+        &self.0
+    }
+}
+
+impl clap::builder::ValueParserFactory for Location {
+    type Parser = LocationParser;
+
+    fn value_parser() -> Self::Parser {
+        LocationParser
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LocationParser;
+
+impl clap::builder::TypedValueParser for LocationParser {
+    type Value = Location;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> std::result::Result<Self::Value, clap::Error> {
+        use clap::error::ErrorKind;
+        let vals = value
+            .to_str()
+            .ok_or(clap::Error::new(ErrorKind::InvalidValue))?
+            .split(',')
+            .collect::<Vec<&str>>();
+        match vals.iter().exactly_one() {
+            Ok(s) => Ok(Location(match Url::parse(s) {
+                Ok(url) => Either::Right(vec![url]),
+                Err(_) => Either::Left(Region::new(s.to_string())),
+            })),
+            Err(_) => Ok(Location(Either::Right(
+                vals.iter()
+                    .cloned()
+                    .map(Url::parse)
+                    .collect::<std::result::Result<Vec<Url>, _>>()
+                    .map_err(|_| clap::Error::new(ErrorKind::InvalidValue))?,
+            ))),
+        }
+    }
+}
+
+/// Create an AWS SDK DynamoDB Client
+pub async fn create_client(
+    location: &Location,
+    credentials: &Option<Credentials>,
+) -> Result<aws_sdk_dynamodb::Client> {
+    use secrecy::ExposeSecret;
+
+    let credentials = credentials.as_ref().map(|Credentials((id, secret))| {
+        aws_sdk_dynamodb::config::Credentials::new(
+            id.expose_secret(),
+            secret.expose_secret(),
+            None,
+            None,
+            "indielinks",
+        )
+    });
+
+    let config = match &location.0 {
+        Either::Left(region) => {
+            let region_provider = RegionProviderChain::first_try(Some(region.0.clone()))
+                .or_default_provider()
+                .or_else(AwsSdkRegion::new("us-west-2"));
+            let mut loader = aws_config::from_env().region(region_provider);
+            if let Some(credentials) = credentials {
+                loader = loader.credentials_provider(credentials);
+            }
+            loader.load().await
+        }
+        Either::Right(endpoints) => {
+            let ep_url = *endpoints
+                .iter()
+                .peekable()
+                .peek()
+                .ok_or(NoEndpointsSnafu {}.build())?;
+            let mut loader =
+                aws_config::defaults(BehaviorVersion::latest()).endpoint_url((*ep_url).as_str());
+            if let Some(credentials) = credentials {
+                loader = loader.credentials_provider(credentials);
+            }
+            loader.load().await
+        }
+    };
+
+    Ok(aws_sdk_dynamodb::Client::new(&config))
+}
+
+/// Retrieve the current schema version (or None, if the database doesn't exist)
+pub async fn get_current_schema_version(client: &aws_sdk_dynamodb::Client) -> Result<Option<u32>> {
+    fn convert(map: HashMap<String, AttributeValue>) -> Result<u32> {
+        match map.get("version").context(MissingVersionSnafu)? {
+            AttributeValue::N(s) => s
+                .parse::<u32>()
+                .context(VersionSnafu { text: s.to_owned() })?
+                .pipe(Ok),
+            _ => VersionTypeSnafu.fail(),
+        }
+    }
+
+    // It's unfortunate that we have to scan the table to do this, but what the hell: the table
+    // should be very small, and this should never be run on a hot path.
+    match client
+        .scan()
+        .table_name("schema_migrations")
+        .projection_expression("version")
+        .select(Select::SpecificAttributes)
+        .send()
+        .await
+    {
+        Ok(scan_output) => {
+            let mut versions = scan_output
+                .items
+                .context(MissingVersionsSnafu)?
+                .into_iter()
+                .map(convert)
+                .collect::<Result<Vec<_>>>()?;
+            versions.sort();
+            Ok(versions.pop())
+        }
+        Err(err) => {
+            // SdkError<ScanError, HttpResponse>
+            //              E           R
+            if matches!(
+                err.as_service_error(),
+                Some(&ScanError::ResourceNotFoundException(_))
+            ) {
+                Ok(None) // `schema_migrations` table not found! => return None
+            } else {
+                error!("get_current_schema_version: {err:#?}");
+                Err(ScanSnafu.into_error(err))
+            }
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                indielinks DynamoDB client type                                 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -712,49 +983,12 @@ pub struct Client {
 
 impl Client {
     pub async fn new(
-        location: &Either<String, Vec<Url>>,
-        credentials: &Option<(SecretString, SecretString)>,
+        location: &Location,
+        credentials: &Option<crate::util::Credentials>,
         node_id: NodeId,
     ) -> Result<Client> {
-        use secrecy::ExposeSecret;
-        let creds = credentials.as_ref().map(|(id, secret)| {
-            Credentials::new(
-                id.expose_secret(),
-                secret.expose_secret(),
-                None,
-                None,
-                "indielinks",
-            )
-        });
-
-        let config = match location {
-            Either::Left(region) => {
-                let region_provider =
-                    RegionProviderChain::first_try(Some(Region::new(region.clone())))
-                        .or_default_provider()
-                        .or_else(Region::new("us-west-2"));
-                let mut loader = aws_config::from_env().region(region_provider);
-                if let Some(creds) = creds {
-                    loader = loader.credentials_provider(creds);
-                }
-                loader.load().await
-            }
-            Either::Right(endpoints) => {
-                let ep_url = *endpoints
-                    .iter()
-                    .peekable()
-                    .peek()
-                    .ok_or(NoEndpointsSnafu {}.build())?;
-                let mut loader = aws_config::defaults(BehaviorVersion::latest())
-                    .endpoint_url((*ep_url).as_str());
-                if let Some(creds) = creds {
-                    loader = loader.credentials_provider(creds);
-                }
-                loader.load().await
-            }
-        };
         Ok(Client {
-            client: ::aws_sdk_dynamodb::Client::new(&config),
+            client: create_client(location, credentials).await?,
             node_id,
         })
     }

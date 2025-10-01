@@ -16,14 +16,14 @@
 use std::{fmt::Display, io, sync::Arc};
 
 /// # Background task processing integration tests for DynamoDB/Alternator
-use common::{BackgroundTest, Configuration, run};
+use common::{run, BackgroundTest, Configuration};
 
 use indielinks_test::background::first_background;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Trial};
 use snafu::prelude::*;
 use tokio::runtime::Runtime;
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
 mod common;
 
@@ -81,16 +81,9 @@ impl State {
     pub async fn new(cfg: &Configuration) -> Result<State> {
         Ok(State {
             session: Arc::new(
-                indielinks::dynamodb::Client::new(
-                    &cfg.dynamo.location,
-                    &cfg.dynamo
-                        .credentials
-                        .clone()
-                        .map(|(x, y)| (x.into(), y.into())),
-                    0,
-                )
-                .await
-                .context(ClientSnafu)?,
+                indielinks::dynamodb::Client::new(&cfg.dynamo.location, &cfg.dynamo.credentials, 0)
+                    .await
+                    .context(ClientSnafu)?,
             ),
         })
     }

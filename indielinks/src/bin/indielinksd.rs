@@ -43,7 +43,6 @@ use std::{
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use chrono::Duration;
 use clap::{Arg, ArgAction, Command, crate_authors, crate_version, value_parser};
-use either::Either;
 use http::{HeaderName, HeaderValue};
 use lazy_static::lazy_static;
 use libc::{
@@ -52,7 +51,6 @@ use libc::{
 use opentelemetry::{KeyValue, global};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
-use secrecy::SecretString;
 use serde::Deserialize;
 use snafu::{IntoError, prelude::*};
 use tap::Pipe;
@@ -94,6 +92,7 @@ use indielinks::{
     client::make_client,
     define_metric,
     delicious::make_router as make_delicious_router,
+    dynamodb::Location as DynamoLocation,
     entities::FollowerId,
     http::Indielinks,
     metrics::check_metric_names,
@@ -103,6 +102,7 @@ use indielinks::{
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
     users::{Configuration as UsersConfiguration, make_router as make_user_router},
+    util::Credentials,
     webfinger::webfinger,
 };
 use uuid::Uuid;
@@ -297,23 +297,22 @@ pub enum StorageConfig {
     /// Use ScyllaDB/CQL interface
     Scylla {
         /// ScyllaDB credentials, if authentication is to be used
-        credentials: Option<(SecretString, SecretString)>,
-        /// ScyllaDB hosts; specify as "host:port"
-        hosts: Vec<String>,
+        credentials: Option<Credentials>,
+        /// ScyllaDB hosts; specify as "host:port" (or anything that can be parsed as a [SocketAddr])
+        hosts: Vec<SocketAddr>,
     },
     /// Use DyanmoDB or Scylla over the Alternator interface
     Dynamo {
         /// AWS credentials: key ID & secret key; you'll pretty-much always need to specify these
         /// when running against DDB, but one could be talking to a local SycllaDB over the
         /// Alternator interface locally and have the cluster be open
-        credentials: Option<(SecretString, SecretString)>,
+        credentials: Option<Credentials>,
         /// You can find DynamoDB in a few ways. If you're truly talking to DynamoDB in AWS, you can
         /// give a region. You can also specify an URL (like
         /// `https://dynamodb.us-west-2.amazonaws.com`). If you're talking to ScyllaDB over the
         /// Alternator interface, we're going to have to handle load-balancing on the client-side,
         /// so specify more than one.
-        #[serde(with = "either::serde_untagged")]
-        location: Either<String, Vec<Url>>,
+        location: DynamoLocation,
     },
 }
 
@@ -321,7 +320,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         StorageConfig::Scylla {
             credentials: None,
-            hosts: vec![String::from("localhost:9042")],
+            hosts: vec!["localhost:9042".parse::<SocketAddr>().unwrap(/* known good */)],
         }
     }
 }

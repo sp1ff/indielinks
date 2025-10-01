@@ -19,8 +19,10 @@
 //!
 //! [Storage]: crate::storage
 
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::net::SocketAddr;
 use std::ops::Bound;
 use std::pin::Pin;
 use std::task::Poll;
@@ -28,9 +30,11 @@ use std::task::Poll;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use enum_map::{Enum, EnumMap};
+use futures::stream::iter;
+use futures::StreamExt;
 use futures::{
-    Stream,
     stream::{self, BoxStream},
+    Stream,
 };
 use indielinks_cache::types::{NodeId, TypeConfig};
 use itertools::Itertools;
@@ -44,24 +48,25 @@ use scylla::{
     client::{session::Session as InnerSession, session_builder::SessionBuilder},
     response::{PagingState, PagingStateResponse},
     statement::{
-        Statement,
         batch::{Batch, BatchStatement, BatchType},
         prepared::PreparedStatement,
+        Statement,
     },
 };
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::ExposeSecret;
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
-use tracing::debug;
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
 use crate::entities::ApiKeys;
+use crate::util::Credentials;
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
     cache::{
-        Backend as CacheBackend, Flavor, LogIndex, NID, RaftLog, RaftMetadata, to_storage_io_err,
+        to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
     },
     entities::{
         ActivityPubPost, FollowId, Follower, FollowerId, Following, Like, Reply, Share, User,
@@ -213,6 +218,11 @@ pub enum Error {
         source: scylla::response::query_result::IntoRowsResultError,
         backtrace: Backtrace,
     },
+    #[snafu(display("Expected a single row; {source}"))]
+    SingleRow {
+        source: scylla::errors::SingleRowError,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to deserialize a tag count: {source}"))]
     TagCountDe {
         source: scylla::deserialize::DeserializationError,
@@ -242,6 +252,11 @@ pub enum Error {
     UserQuery {
         username: String,
         source: scylla::errors::ExecutionError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Expected UTF-8: {source}"))]
+    Utf8 {
+        source: std::string::FromUtf8Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize an openraft Vote: {source}"))]
@@ -601,6 +616,162 @@ where
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Create an instance of the native ScyllaDB SDK client
+pub async fn create_client(
+    hosts: impl IntoIterator<Item = impl Borrow<SocketAddr>>,
+    credentials: &Option<Credentials>,
+) -> Result<InnerSession> {
+    let mut builder = SessionBuilder::new().known_nodes_addr(hosts);
+    if let Some(Credentials((user, pass))) = credentials {
+        builder = builder.user(user.expose_secret(), pass.expose_secret())
+    }
+    builder.build().await.context(NewSessionSnafu)
+}
+
+/// Retrieve the current schema version (or None, if the database doesn't exist)
+pub async fn get_current_schema_version(session: &InnerSession) -> Result<Option<u32>> {
+    if let Err(err) = session.use_keyspace("indielinks", false).await {
+        if matches!(
+            err,
+            scylla::errors::UseKeyspaceError::RequestError(
+                scylla::errors::RequestAttemptError::DbError(scylla::errors::DbError::Invalid, _)
+            )
+        ) {
+            // Keyspace doesn't exist
+            info!(
+                "The `indielinks` keyspace does not exist; assuming this database is unconfigured."
+            );
+            return Ok(None);
+        } else {
+            error!("get_current_schema_version: {err:#?}");
+            return Err(KeyspaceSnafu.into_error(err));
+        }
+    }
+
+    match session
+        .query_unpaged("select max(version) from schema_migrations;", ())
+        .await
+    {
+        Ok(query_result) => Ok(Some(
+            query_result
+                .into_rows_result()
+                .context(IntoRowsResultSnafu)?
+                .single_row::<(i64,)>()
+                .context(SingleRowSnafu)?
+                .0 as u32,
+        )),
+        Err(err) => {
+            // It would be weird to have a keyspace defined and not the `schema_versions` table, but still.
+            if matches!(
+                err,
+                scylla::errors::ExecutionError::LastAttemptError(
+                    scylla::errors::RequestAttemptError::DbError(
+                        scylla::errors::DbError::Invalid,
+                        _
+                    )
+                )
+            ) {
+                info!("The `schema_migrations` table doesn't exist; assuming this database is unconfigured.");
+                Ok(None)
+            } else {
+                error!("get_current_schema_version: {err:#?}");
+                Err(ExecutionSnafu.into_error(err))
+            }
+        }
+    }
+}
+
+/// Execute arbitrary CQL.
+pub async fn execute_cql<S: AsRef<str>>(session: &InnerSession, cql: S) -> Result<()> {
+    // Strip comments first, since they might contain semicolons. There are a few ways to do this,
+    // but the simplest and most efficient seemed to me to just do it by hand in a single pass.
+    let mut output_buffer = Vec::new();
+    enum State {
+        Init,
+        SawForwardSlash,
+        InComment,
+        SawAsterisk,
+    }
+    let mut state = State::Init;
+    let text = cql.as_ref().as_bytes();
+    for b in text {
+        match state {
+            State::Init => {
+                // Looking for '/'; else copy
+                if *b == b'/' {
+                    state = State::SawForwardSlash;
+                } else {
+                    output_buffer.push(*b);
+                }
+            }
+            State::SawForwardSlash => {
+                // Looking for a '*'; if there, we're in a comment. Else push the preceedint '/'
+                // _and_ the current char.
+                if *b == b'*' {
+                    state = State::InComment;
+                } else {
+                    output_buffer.push(b'/');
+                    output_buffer.push(*b);
+                    state = State::Init;
+                }
+            }
+            State::InComment => {
+                // Looking for a '*'. Skip text, in any event.
+                if *b == b'*' {
+                    state = State::SawAsterisk;
+                }
+            }
+            State::SawAsterisk => {
+                // Looking for a '/'; if there, shift back to init. Skip text, in any event.
+                if *b == b'/' {
+                    state = State::Init;
+                } else {
+                    state = State::InComment;
+                }
+            }
+        }
+    }
+
+    iter(
+        String::from_utf8(output_buffer)
+            .context(Utf8Snafu)?
+            .as_str()
+            .split(";")
+            .filter_map(|query| match query.trim() {
+                "" => None,
+                s => Some(s),
+            }),
+    )
+    .then(|query| {
+        debug!("Executing cql: {}", query);
+        session.query_unpaged(query, ())
+    })
+    .collect::<Vec<_>>()
+    .await
+    .into_iter()
+    .collect::<StdResult<Vec<_>, _>>()
+    .context(ExecutionSnafu)
+    .map(|_| ())
+}
+
+pub async fn migrate_schema<S: AsRef<str>>(
+    session: &InnerSession,
+    cql: S,
+    version: u32,
+) -> Result<()> {
+    execute_cql(session, cql).await?;
+    session
+        .query_unpaged(
+            "insert into schema_migrations (version, applied) values (?, ?);",
+            (version as i64, Utc::now()),
+        )
+        .await
+        .context(ExecutionSnafu)
+        .map(|_| ())
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                indielinks SycllaDB session type                                //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -749,15 +920,11 @@ impl Session {
     /// but they need to be parsable as `IpAddress`es. `credentials`, if non-None, should be a pair
     /// of string consisting of the username & password.
     pub async fn new(
-        hosts: impl IntoIterator<Item = impl AsRef<str>>,
-        credentials: &Option<(SecretString, SecretString)>,
+        hosts: impl IntoIterator<Item = impl Borrow<SocketAddr>>,
+        credentials: &Option<Credentials>,
         node_id: NodeId,
     ) -> Result<Session> {
-        let mut builder = SessionBuilder::new().known_nodes(hosts);
-        if let Some((user, pass)) = credentials {
-            builder = builder.user(user.expose_secret(), pass.expose_secret())
-        }
-        let scylla = builder.build().await.context(NewSessionSnafu)?;
+        let scylla = create_client(hosts, credentials).await?;
         scylla
             .use_keyspace("indielinks", false)
             .await

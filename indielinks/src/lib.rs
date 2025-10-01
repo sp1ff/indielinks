@@ -33,6 +33,8 @@ pub mod cache;
 pub mod client;
 pub mod delicious;
 pub mod dynamodb;
+#[path = "dynamodb-schemas.rs"]
+pub mod dynamodb_schemas;
 pub mod entities;
 pub mod http;
 pub mod metrics;

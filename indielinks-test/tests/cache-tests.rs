@@ -32,13 +32,13 @@ use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 use snafu::{ResultExt, Snafu};
 use tokio::runtime::Runtime;
 use tracing::debug;
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
 use indielinks::cache::Backend as CacheBackend;
 
 use indielinks_test::cache::{openraft_test_suite, raft_ops};
 
-use common::{Configuration, Fixture, run};
+use common::{run, Configuration, Fixture};
 
 mod common;
 
@@ -186,17 +186,10 @@ inventory::submit!(TestFixture {
     },
     mk_backend: |cfg| -> BoxFuture<'static, Result<Arc<dyn CacheBackend + Send + Sync>>> {
         async move {
-            indielinks::dynamodb::Client::new(
-                &cfg.dynamo.location,
-                &cfg.dynamo
-                    .credentials
-                    .clone()
-                    .map(|(x, y)| (x.into(), y.into())),
-                0,
-            )
-            .await
-            .context(ClientSnafu)
-            .map(|x| Arc::new(x) as Arc<dyn CacheBackend + Send + Sync>) // Unsize coercion
+            indielinks::dynamodb::Client::new(&cfg.dynamo.location, &cfg.dynamo.credentials, 0)
+                .await
+                .context(ClientSnafu)
+                .map(|x| Arc::new(x) as Arc<dyn CacheBackend + Send + Sync>) // Unsize coercion
         }
         .boxed()
     }

@@ -108,8 +108,9 @@ cd indielinks-fe
 INDIELINKS_FE_API="http://localhost:20676" INDIELINKS_BASE="/fe" INDIELINKS_PAGE_SIZE="20" trunk build --release
 cd ..
 
-install -C target/release/indielinksd /home/$USER/bin
-install -C target/release/indic       /home/$USER/bin
+install -C target/release/indielinksd        /home/$USER/bin
+install -C target/release/indic              /home/$USER/bin
+install -C target/release/indielinks-schemas /home/$USER/bin
 
 cd indielinks-fe/dist
 wasm=$(ls -1 indielinks-fe*.wasm)
@@ -128,14 +129,7 @@ install -C style.css          /home/$USER/share/indielinks/assets/style.css
 install -C indielinks-fe.wasm /home/$USER/share/indielinks/assets/indielinks-fe.wasm
 cd ../..
 
-# This is particularly awful: `cqlsh` is, regrettably, implemented in Python,
-# meaning that it's essentially impossible to install. There's an AUR package,
-# cqlsh-bin, but it's broken. There are no packages, AFAIK, that install it. I
-# resorted to setting-up a virtual environment & installing it from PyPi.
-source /home/$USER/venvs/cqlsh/bin/activate
-cqlsh -e "create keyspace if not exists indielinks with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor':1} and tablets = {'enabled': false};"
-cqlsh -f infra/indielinks.cql
-deactivate
+/home/$USER/bin/indielinks-schemas -D -p scylla 127.0.0.1:9042
 
 install indielinks/proto-indielinks.toml /home/$USER/etc/indielinks.toml
 
