@@ -15,7 +15,7 @@
 
 //! Integration tests for the webfinger endpoint.
 
-use indielinks_shared::Username;
+use indielinks_shared::entities::Username;
 
 use indielinks::{acct::Account, origin::Origin};
 

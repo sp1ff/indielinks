@@ -27,37 +27,37 @@ use std::{
 
 use async_trait::async_trait;
 use axum::{
-    Router,
     extract::{Json, State},
     response::IntoResponse,
     routing::{get, post},
+    Router,
 };
-use http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
+use http::{header::CONTENT_TYPE, HeaderValue, StatusCode};
 use num_bigint::BigInt;
 use openraft::{
-    Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader, StorageError,
-    StorageIOError, Vote,
     error::NetworkError,
     storage::{LogFlushed, RaftLogStorage},
+    Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader, StorageError,
+    StorageIOError, Vote,
 };
 use scylla::{
-    DeserializeRow, SerializeRow,
     cluster::metadata::ColumnType,
-    deserialize::{FrameSlice, value::DeserializeValue},
+    deserialize::{value::DeserializeValue, FrameSlice},
     errors::{DeserializationError, SerializationError, TypeCheckError},
     serialize::{
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
     },
+    DeserializeRow, SerializeRow,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{from_value, to_value};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Conv, Pipe, TryConv};
 use tokio::sync::RwLock;
 use tonic::Code;
 
-use indielinks_shared::StorUrl;
+use indielinks_shared::entities::StorUrl;
 
 use indielinks_cache::{
     cache::Cache,
@@ -71,7 +71,7 @@ use indielinks_cache::{
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 
-use crate::{entities::FollowerId, http::Indielinks, protobuf_interop::*};
+use crate::{entities::FollowerId, indielinks::Indielinks, protobuf_interop::*};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //

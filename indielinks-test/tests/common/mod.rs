@@ -28,7 +28,7 @@ use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
 use tracing::Level;
 
-use indielinks_shared::Username;
+use indielinks_shared::entities::Username;
 
 use indielinks_cache::types::{ClusterNode, NodeId};
 

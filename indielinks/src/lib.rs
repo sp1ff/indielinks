@@ -37,6 +37,7 @@ pub mod dynamodb;
 pub mod dynamodb_schemas;
 pub mod entities;
 pub mod http;
+pub mod indielinks;
 pub mod metrics;
 pub mod origin;
 pub mod peppers;

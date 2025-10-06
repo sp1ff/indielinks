@@ -81,7 +81,7 @@ pub enum Error {
     },
     #[snafu(display("Bad tagname: {source}"))]
     Tagname {
-        source: indielinks_shared::Error,
+        source: indielinks_shared::entities::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Invalid API key"))]

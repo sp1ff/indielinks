@@ -57,7 +57,7 @@
 //!
 //! [here]: https://github.com/scylladb/care-pet/blob/master/rust/src/database/migrate/mod.rs
 
-use std::{fmt::Display, io, net::SocketAddr};
+use std::{fmt::Display, io, net::SocketAddr, ops::Deref, sync::Arc};
 
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use futures::{future::BoxFuture, stream::iter, StreamExt};
@@ -77,8 +77,8 @@ use indielinks::{
     },
     dynamodb_schemas::create_schema as create_dynamodb_schema,
     scylla::{
-        create_client as create_scylla_client,
-        get_current_schema_version as get_current_scylla_schema_version, migrate_schema,
+        create_client as create_scylla_client, create_schema as create_scylladb_schema,
+        get_current_schema_version as get_current_scylla_schema_version,
     },
     util::Credentials,
 };
@@ -90,6 +90,8 @@ use indielinks::{
 /// Application error type
 #[derive(Snafu)]
 pub enum Error {
+    #[snafu(display("While creating the schema, {source}"))]
+    CreateSchema { source: indielinks::scylla::Error },
     #[snafu(display("When creating the DDB client, {source}"))]
     DdbClient { source: indielinks::dynamodb::Error },
     #[snafu(display("While updating the DynamoDB schema, {source:#?}"))]
@@ -162,9 +164,23 @@ fn configure_logging(debug: bool, verbose: bool, quiet: bool, plain: bool) -> Re
 
 const SCHEMA_VERSION: u32 = 0;
 
-const CQL_SCHEMAS: &[&str] = &[include_str!("../../schemas/0.cql")];
+// Each function is expected to update `schema_migrations` on successful completion
+// Can be implemented as:
+//     fn test2(_: aws_sdk_dynamodb::Client) -> BoxFuture<'static, Result<()>> {
+//         ...
+//     }
+pub type ScyllaDbSchemaUpdate =
+    fn(Arc<scylla::client::session::Session>) -> BoxFuture<'static, Result<()>>;
 
-// Each function is expected to update `schema_versions` on successful compltion
+const CQL_SCHEMAS: &[ScyllaDbSchemaUpdate] = &[|session| {
+    Box::pin(async move {
+        create_scylladb_schema(session, include_str!("../../schemas/0.cql"))
+            .await
+            .context(CreateSchemaSnafu)
+    })
+}];
+
+// Each function is expected to update `schema_versions` on successful completion
 // Can be written as:
 //     fn test2(_: aws_sdk_dynamodb::Client) -> BoxFuture<'static, Result<()>> {
 //         ...
@@ -309,23 +325,24 @@ Specify as either an AWS region ('us-west-2', e.g.) or as an URL ('http://localh
             "scylla" => {
                 let creds = matches.remove_one::<Credentials>("creds");
                 let hosts = matches.remove_many::<SocketAddr>("host").unwrap(/* required */);
-                let client = create_scylla_client(hosts, &creds)
-                    .await
-                    .context(ScyllaClientSnafu)?;
+                let client = Arc::new(
+                    create_scylla_client(hosts, &creds)
+                        .await
+                        .context(ScyllaClientSnafu)?,
+                );
                 // Since the keyspace won't exist in a new database, attempt to set it in
                 // `get_current_scylla_schema_version()
-                let to_apply = get_current_scylla_schema_version(&client)
+                let to_apply = get_current_scylla_schema_version(client.deref())
                     .await
                     .context(ScyllaSchemaVersionSnafu)?
                     .map(|i| i + 1)
                     .unwrap_or(0) as usize;
-                let _ = iter(CQL_SCHEMAS[to_apply..].iter().zip(to_apply..))
-                    .then(|(s, i)| migrate_schema(&client, s, i as u32))
+                let _: StdResult<Vec<_>, Error> = iter(CQL_SCHEMAS[to_apply..].iter())
+                    .then(|f| f(client.clone()))
                     .collect::<Vec<StdResult<_, _>>>()
                     .await
                     .into_iter()
-                    .collect::<StdResult<Vec<_>, _>>()
-                    .context(ScyllaSchemaUpdateSnafu);
+                    .collect::<StdResult<Vec<_>, _>>();
                 info!("ScyllaDB configured.");
                 Ok(())
             }

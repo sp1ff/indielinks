@@ -34,25 +34,26 @@
 use std::ops::Deref;
 
 use bytes::Bytes;
-use http::{HeaderName, HeaderValue, header::USER_AGENT};
+use either::Either;
+use http::{header::USER_AGENT, HeaderName, HeaderValue};
 use opentelemetry::KeyValue;
 use pin_project::pin_project;
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tower::{
-    Layer, Service, ServiceBuilder,
     buffer::BufferLayer,
     limit::RateLimitLayer,
     retry::{
-        Retry, RetryLayer,
         backoff::{ExponentialBackoffMaker, MakeBackoff},
+        Retry, RetryLayer,
     },
+    Layer, Service, ServiceBuilder,
 };
 use tower_http::set_header::{SetRequestHeader, SetRequestHeaderLayer};
-use tracing::{Level, debug, error};
+use tracing::{debug, error, Level};
 
 use indielinks_shared::{
-    Username,
+    entities::{UserPrivateKey, Username},
     service::{
         Body, ExponentialBackoffParameters, ExponentialBackoffPolicy, RateLimit,
         ReqwestServiceFuture, ReqwestServiceLayer,
@@ -60,8 +61,8 @@ use indielinks_shared::{
 };
 
 use crate::{
-    ap_entities::make_key_id,
-    authn::{AddSha256DigestIfNotPresent, AddSha256DigestIfNotPresentLayer, compute_signature},
+    ap_entities::{make_instance_actor_key_id, make_key_id},
+    authn::{compute_signature, AddSha256DigestIfNotPresent, AddSha256DigestIfNotPresentLayer},
     define_metric,
     entities::User,
     origin::Origin,
@@ -83,6 +84,8 @@ pub enum Error {
         source: tower::retry::backoff::InvalidBackoff,
         backtrace: Backtrace,
     },
+    #[snafu(display("While creating the key ID for the instance actor, {source}"))]
+    InstanceActor { source: crate::ap_entities::Error },
     #[snafu(display("Failed to create a KeyId for user {username}: {source}"))]
     KeyId {
         username: Username,
@@ -137,11 +140,12 @@ impl<InnerFut> InstrumentedServiceFuture<InnerFut> {
     ) -> InstrumentedServiceFuture<<S as Service<http::Request<ReqBody>>>::Future>
     where
         S: Service<http::Request<ReqBody>>,
+        ReqBody: std::fmt::Debug,
     {
         let host = request.uri().host().unwrap_or("localhost").to_owned();
         let span = tracing::span!(Level::DEBUG, "indielinks-client-call");
         let _ = span.enter();
-        debug!("Sending request to {host}");
+        debug!("Sending request to {host}: {request:?}");
         client_requests.add(1, &[KeyValue::new("host", host.clone())]);
         InstrumentedServiceFuture {
             host,
@@ -155,6 +159,7 @@ impl<RspBody, E, InnerFut> std::future::Future for InstrumentedServiceFuture<Inn
 where
     InnerFut: std::future::Future<Output = std::result::Result<http::Response<RspBody>, E>>,
     E: std::error::Error,
+    RspBody: std::fmt::Debug,
 {
     type Output = std::result::Result<http::Response<RspBody>, E>;
 
@@ -177,7 +182,7 @@ where
                     };
                     instrument.add(1, &[KeyValue::new("host", this.host.clone())]);
                     debug!(
-                        "Response from {} returned with status {}",
+                        "Response {rsp:?} from {} returned with status {}",
                         this.host,
                         rsp.status()
                     );
@@ -203,6 +208,8 @@ impl<S, ReqBody, RspBody> Service<http::Request<ReqBody>> for InstrumentedServic
 where
     S: Service<http::Request<ReqBody>, Response = http::Response<RspBody>>,
     <S as Service<http::Request<ReqBody>>>::Error: std::error::Error,
+    RspBody: std::fmt::Debug,
+    ReqBody: std::fmt::Debug,
 {
     type Response = S::Response;
 
@@ -236,32 +243,65 @@ impl<S> Layer<S> for InstrumentedLayer {
     }
 }
 
-/// Add an Activity Pub signature to `request` if there is a `(User, Origin)` pair in the request
-/// extensions
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Add an Activity Pub signature to `request` if there is an `(Either<User, UserPrivateKey>,
+/// Origin)` pair in the request extensions.
 fn maybe_add_signature<B: AsRef<[u8]>>(request: &http::Request<B>) -> Option<HeaderValue> {
     fn maybe_add_signature1<B: AsRef<[u8]>>(
         request: &http::Request<B>,
-        user: &User,
+        principal: &Either<User, UserPrivateKey>,
         origin: &Origin,
     ) -> Result<HeaderValue> {
-        compute_signature::<B>(
-            request,
-            make_key_id(user.username(), origin)
-                .context(KeyIdSnafu {
-                    username: user.username(),
-                })?
-                .as_str(),
-            user.priv_key().as_ref(),
-        )
+        match principal {
+            Either::Left(user) => compute_signature::<B>(
+                request,
+                make_key_id(user.username(), origin)
+                    .context(KeyIdSnafu {
+                        username: user.username(),
+                    })?
+                    .as_str(),
+                user.priv_key().as_ref(),
+            ),
+            Either::Right(private_key) => compute_signature::<B>(
+                request,
+                make_instance_actor_key_id(origin)
+                    .context(InstanceActorSnafu)?
+                    .as_str(),
+                private_key.as_ref(),
+            ),
+        }
         .context(AuthnSnafu)
     }
 
     request
         .extensions()
-        .get::<(User, Origin)>()
-        .map(|(user, origin)| maybe_add_signature1(request, user, origin))
+        .get::<(Either<User, UserPrivateKey>, Origin)>()
+        .map(|(principal, origin)| maybe_add_signature1(request, principal, origin))
         .and_then(Result::ok)
 }
+
+fn add_date<B: AsRef<[u8]>>(_request: &http::Request<B>) -> Option<HeaderValue> {
+    Some(
+        HeaderValue::from_str(
+            chrono::Utc::now()
+                .format("%a, %d %b %Y %H:%M:%S GMT")
+                .to_string()
+                .as_ref(),
+        ).unwrap(/* known good */),
+    )
+}
+
+fn add_host<B: AsRef<[u8]>>(request: &http::Request<B>) -> Option<HeaderValue> {
+    request
+        .uri()
+        .host()
+        .map(HeaderValue::from_str)
+        .transpose()
+        .unwrap_or(None)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // In indielinks-client, I make the client type generic, with a type constraint like:
 //
@@ -279,26 +319,33 @@ fn maybe_add_signature<B: AsRef<[u8]>>(request: &http::Request<B>) -> Option<Hea
 // `cargo build`; the `make_client()` return type won't type-check, but the compiler will write the
 // expected type to a text file in the build directory (it will be the second one)-- just copy it
 // from there over this one:
-pub type ClientType = AddSha256DigestIfNotPresent<
+pub type ClientType = SetRequestHeader<
     SetRequestHeader<
-        SetRequestHeader<
-            Retry<
-                ExponentialBackoffPolicy,
-                tower::buffer::Buffer<
-                    http::Request<bytes::Bytes>,
-                    InstrumentedServiceFuture<
-                        ReqwestServiceFuture<reqwest::Client, indielinks_shared::service::Body>,
+        AddSha256DigestIfNotPresent<
+            SetRequestHeader<
+                SetRequestHeader<
+                    Retry<
+                        ExponentialBackoffPolicy,
+                        tower::buffer::Buffer<
+                            http::Request<bytes::Bytes>,
+                            InstrumentedServiceFuture<
+                                ReqwestServiceFuture<
+                                    reqwest::Client,
+                                    indielinks_shared::service::Body,
+                                >,
+                            >,
+                        >,
                     >,
+                    http::HeaderValue,
                 >,
+                for<'a> fn(
+                    &'a http::Request<bytes::Bytes>,
+                ) -> std::option::Option<http::HeaderValue>,
             >,
-            http::HeaderValue,
         >,
-        // A function item is a special zero-sized type tied to exactly one function in your program.
-        // This is useful because it compiles down to just hard-coding the correct function when the
-        // function item is used, which is more efficient than calling a dynamic function pointer. In
-        // some cases, the compiler will automatically cast function items to function pointers
         for<'a> fn(&'a http::Request<bytes::Bytes>) -> std::option::Option<http::HeaderValue>,
     >,
+    for<'a> fn(&'a http::Request<bytes::Bytes>) -> std::option::Option<http::HeaderValue>,
 >;
 
 /// Build a [tower] [Service] based on [reqwest::Client] that will:
@@ -319,31 +366,43 @@ pub fn make_client(
         // apply the retry middleware, and finally the instrumentation (so that metrics will be emitted
         // on each retry):
         //
-        //                          requests
-        //                              |
-        //                              v
-        // +-----------------    Add SHA-256 digest     -----------------+
-        // | +--------------- Add ActivityPub signature ---------------+ |
-        // | | +-------------   Set User-Agent header   -------------+ | |
-        // | | | +-----------     retry on failure      -----------+ | | |
-        // | | | | +---------       Buffer layer        ---------+ | | | |
-        // | | | | | +-------      RateLimit layer      -------+ | | | | |
-        // | | | | | | +-----      instrumentation      -----+ | | | | | |
-        // | | | | | | | +---       Reqwest layer       ---+ | | | | | | |
-        // | | | | | | | |                                 | | | | | | | |
-        // | | | | | | | |             remote              | | | | | | | |
-        // | | | | | | | |                                 | | | | | | | |
-        // | | | | | | | +-->       Reqwest layer       <--+ | | | | | | |
-        // | | | | | | +---->      instrumentation      <----+ | | | | | |
-        // | | | | | +------>      RateLimit layer      <------+ | | | | |
-        // | | | | +-------->       Buffer layer        <--------+ | | | |
-        // | | | +---------->     retry on failure      <----------+ | | |
-        // | | +------------>   Set User-Agent header   <------------+ | |
-        // | +--------------> Add ActivityPub signature <--------------+ |
-        // +---------------->    Add SHA-256 digest     <----------------+
-        //                               |
-        //                               v
-        //                           responses
+        //                              requests
+        //                                  |
+        //                                  v
+        // +---------------------      Add Date header      ---------------------+
+        // | +-------------------      Add Host header      -------------------+ |
+        // | | +-----------------    Add SHA-256 digest     -----------------+ | |
+        // | | | +--------------- Add ActivityPub signature ---------------+ | | |
+        // | | | | +-------------   Set User-Agent header   -------------+ | | | |
+        // | | | | | +-----------     retry on failure      -----------+ | | | | |
+        // | | | | | | +---------       Buffer layer        ---------+ | | | | | |
+        // | | | | | | | +-------      RateLimit layer      -------+ | | | | | | |
+        // | | | | | | | | +-----      instrumentation      -----+ | | | | | | | |
+        // | | | | | | | | | +---       Reqwest layer       ---+ | | | | | | | | |
+        // | | | | | | | | | |                                 | | | | | | | | | |
+        // | | | | | | | | | |             remote              | | | | | | | | | |
+        // | | | | | | | | | |                                 | | | | | | | | | |
+        // | | | | | | | | | +-->       Reqwest layer       <--+ | | | | | | | | |
+        // | | | | | | | | +---->      instrumentation      <----+ | | | | | | | |
+        // | | | | | | | +------>      RateLimit layer      <------+ | | | | | | |
+        // | | | | | | +-------->       Buffer layer        <--------+ | | | | | |
+        // | | | | | +---------->     retry on failure      <----------+ | | | | |
+        // | | | | +------------>   Set User-Agent header   <------------+ | | | |
+        // | | | +--------------> Add ActivityPub signature <--------------+ | | |
+        // | | +---------------->    Add SHA-256 digest     <----------------+ | |
+        // | +------------------>      Add Host header      <------------------+ |
+        // +-------------------->      Add Date header      <--------------------+
+        //                                   |
+        //                                   v
+        //                               responses
+        .layer(SetRequestHeaderLayer::if_not_present(
+            http::header::DATE,
+            add_date as for<'a> fn(&'a http::Request<bytes::Bytes>) -> Option<HeaderValue>,
+        ))
+        .layer(SetRequestHeaderLayer::if_not_present(
+            http::header::HOST,
+            add_host as for<'a> fn(&'a http::Request<bytes::Bytes>) -> Option<HeaderValue>,
+        ))
         .layer(AddSha256DigestIfNotPresentLayer)
         .layer(SetRequestHeaderLayer::if_not_present(
             HeaderName::from_static("signature"),

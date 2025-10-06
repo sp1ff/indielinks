@@ -23,7 +23,7 @@ use snafu::{Backtrace, ResultExt, Snafu};
 use tower::{Service, ServiceExt};
 use url::Url;
 
-use indielinks_shared::{PostAddReq, Tagname};
+use indielinks_shared::{api::PostAddReq, entities::Tagname};
 
 use crate::service::ReqBody;
 

@@ -22,14 +22,15 @@ use std::{ops::Deref, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
-    Extension, Json, Router,
-    extract::State,
-    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
+    extract::{Path, State},
+    http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
+    Extension, Json, Router,
 };
 use chrono::Utc;
-use futures::{StreamExt, stream};
+use either::Either;
+use futures::{stream, StreamExt};
 use http::Method;
 use itertools::Itertools;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
@@ -40,14 +41,14 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
-use indielinks_shared::{PostId, StorUrl, Username};
+use indielinks_shared::entities::{PostId, StorUrl, UserPrivateKey, Username};
 
 use crate::{
     activity_pub::{derive_visibility, resolve_recipients, send_activity_pub_no_response},
     ap_entities::{
-        self, Accept, Actor, Announce, AnnounceOrCreate, AsAccept, Create, Follow, FollowOrLike,
-        Jld, Like, Note, Recipient, ToJld, Undo, make_user_followers, make_user_following,
-        username_and_postid_from_url,
+        self, make_user_followers, make_user_following, username_and_postid_from_url, Accept,
+        Actor, Announce, AnnounceOrCreate, AsAccept, Create, Follow, FollowOrLike, InstanceActor,
+        Jld, Like, Note, Recipient, ToJld, Undo,
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
@@ -56,7 +57,8 @@ use crate::{
     entities::{
         self, ActivityPubPost, ActivityPubPostFlavor, Follower, Following, Reply, Share, User,
     },
-    http::{ErrorResponseBody, Indielinks},
+    http::ErrorResponseBody,
+    indielinks::Indielinks,
     origin::Origin,
     storage::{self, Backend as StorageBackend, Error as StorError},
 };
@@ -113,6 +115,8 @@ pub enum Error {
         source: picky::http::http_signature::HttpSignatureError,
         backtrace: Backtrace,
     },
+    #[snafu(display("{username} is not a legit user and hence can't be used to sign requests"))]
+    BadSigningUser { username: Username },
     #[snafu(display("Failed to enforce items 2 and/or 3 in Cavage et al section 2.3: {source}"))]
     Cavage2323 { source: crate::authn::Error },
     #[snafu(display("Mismatch in the content digest: {source}"))]
@@ -125,6 +129,8 @@ pub enum Error {
     FollowersGetStream { source: storage::Error },
     #[snafu(display("While computing followers, our stream yielded: {source}"))]
     FollowersStream { source: storage::Error },
+    #[snafu(display("Failed to create the instance actor: {source}"))]
+    InstanceActor { source: crate::ap_entities::Error },
     #[snafu(display("Failed to append a query parameter to an URL: {source}"))]
     Join {
         source: url::ParseError,
@@ -183,6 +189,10 @@ pub enum Error {
     },
     #[snafu(display("Failed to obtain an Actor public key: {source}"))]
     PublicKey { source: ap_entities::Error },
+    #[snafu(display("Failed to obtain the instance actor's public key in PEM format: {source}"))]
+    PublicKeyPem {
+        source: indielinks_shared::entities::Error,
+    },
     #[snafu(display("Failed to resolve recipients {recipients:?}: {source}"))]
     Recipients {
         recipients: Vec<Recipient>,
@@ -290,6 +300,13 @@ define_metric! { "actor.verification.failures", actor_verification_failures, Sor
 async fn verify_signature(
     State(state): State<Arc<Indielinks>>,
     headers: axum::http::HeaderMap,
+    // In order to verify the signature, I need to resolve the keyid to a public key, which means a
+    // GET request back to the server. Surprisingly, Mastodon requires even GET requests to be
+    // signed, meaning I need a `User` instance.
+    //
+    // Thing is, this middleware will be invoked even for requests to the public inbox, where I'll
+    // need to use the "instance actor". That's why this parameter is an `Option`
+    username: Option<Path<Username>>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -303,6 +320,9 @@ async fn verify_signature(
         headers: axum::http::HeaderMap,  // := http::header::headerMap
         request: axum::extract::Request, // := http::request::Request
         mut client: ClientType,
+        storage: &(dyn StorageBackend + Send + Sync),
+        principal: Either<Username, &UserPrivateKey>,
+        origin: &Origin,
     ) -> Result<(axum::extract::Request, ap_entities::Actor)> {
         // Huh. Per <https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12>, the
         // signature should be transmitted in an Authorizatoin header, with a scheme of "Signature":
@@ -335,10 +355,25 @@ async fn verify_signature(
         let key_id = &parsed_http_signature.key_id;
         debug!("Resolving key ID {}", key_id);
 
-        let actor =
-            ap_entities::resolve_key_id(&Url::parse(key_id).context(BadKeyIdSnafu)?, &mut client)
-                .await
-                .context(ResolveKeyIdSnafu)?;
+        let principal = match principal {
+            Either::Left(username) => Either::Left(
+                storage
+                    .user_for_name(username.as_ref())
+                    .await
+                    .context(StorageSnafu)?
+                    .context(BadSigningUserSnafu { username })?,
+            ),
+            Either::Right(private_key) => Either::Right(private_key.clone()),
+        };
+
+        let actor = ap_entities::resolve_key_id(
+            &Url::parse(key_id).context(BadKeyIdSnafu)?,
+            &mut client,
+            principal,
+            origin,
+        )
+        .await
+        .context(ResolveKeyIdSnafu)?;
 
         let public_key = actor.public_key().context(PublicKeySnafu)?;
 
@@ -410,7 +445,19 @@ async fn verify_signature(
 
     // If I borrow, this functions fails to implement `Service` (I suspect the future becomes no
     // longer `Send` or something like that).
-    match verify_signature1(headers, request, state.client.clone()).await {
+    match verify_signature1(
+        headers,
+        request,
+        state.client.clone(),
+        state.storage.as_ref(),
+        match username {
+            Some(username) => Either::Left(username.0),
+            None => Either::Right(&state.instance_state.private_key),
+        },
+        &state.origin,
+    )
+    .await
+    {
         Ok((mut request, actor)) => {
             // Place `actor` into the request context for the convenience of downstream consumers
             request.extensions_mut().insert(actor);
@@ -418,7 +465,7 @@ async fn verify_signature(
             next.run(request).await
         }
         Err(err) => {
-            error!("indielinks failed to verify an HTTP signature: {:?}", err);
+            error!("indielinks failed to verify an HTTP signature: {:#?}", err);
             actor_verification_failures.add(1, &[]);
             err.into_response()
         }
@@ -1398,6 +1445,40 @@ async fn get_post(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         instance actor                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "instance_actor.served", instance_actor_served, Sort::IntegralCounter }
+define_metric! { "instance_actor.errors", instance_actor_errors, Sort::IntegralCounter }
+
+async fn instance_actor(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
+    fn instance_actor1(state: Arc<Indielinks>) -> Result<InstanceActor> {
+        InstanceActor::new(
+            &state.origin,
+            state
+                .instance_state
+                .public_key
+                .to_pem()
+                .context(PublicKeyPemSnafu)?
+                .as_str(),
+        )
+        .context(InstanceActorSnafu)
+    }
+
+    match instance_actor1(state) {
+        // The instance actor always goes back as JLD, never HTML
+        Ok(actor) => match Jld::new(&actor, None) {
+            Ok(jld) => {
+                instance_actor_served.add(1, &[]);
+                patch_content_type((StatusCode::OK, jld.to_string()).into_response())
+            }
+            Err(err) => handle_err(err, instance_actor_errors.deref()),
+        },
+        Err(err) => handle_err(err, instance_actor_errors.deref()),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1422,5 +1503,6 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route("/users/{username}/followers", get(followers))
         .route("/users/{username}/following", get(following))
         .route("/users/{username}/posts/{postid}", get(get_post))
+        .route("/actor", get(instance_actor))
         .with_state(state)
 }

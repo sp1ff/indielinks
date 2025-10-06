@@ -24,32 +24,33 @@ use std::{fmt::Display, str::FromStr};
 
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use chrono::{DateTime, Utc};
-use password_hash::{PasswordHashString, SaltString, rand_core::OsRng};
-use picky::key::{PrivateKey, PublicKey};
-use pkcs8::{EncodePrivateKey, spki};
+use password_hash::{rand_core::OsRng, PasswordHashString, SaltString};
 use scylla::{
-    DeserializeRow, SerializeRow,
-    cluster::metadata::NativeType,
-    deserialize::{DeserializationError, FrameSlice, TypeCheckError, value::DeserializeValue},
+    deserialize::{value::DeserializeValue, DeserializationError, FrameSlice, TypeCheckError},
     frame::response::result::ColumnType,
     serialize::{
-        SerializationError,
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
+        SerializationError,
     },
+    DeserializeRow, SerializeRow,
 };
 use secrecy::{ExposeSecret, SecretBox, SecretSlice, SecretString};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha512_224};
-use snafu::{Backtrace, IntoError, prelude::*};
+use snafu::{prelude::*, Backtrace, IntoError};
 use tap::pipe::Pipe;
 use tracing::debug;
 use url::Url;
 use uuid::Uuid;
-use zxcvbn::{Score, feedback::Feedback, zxcvbn};
+use zxcvbn::{feedback::Feedback, zxcvbn, Score};
 
 use indielinks_shared::{
-    ColumnTypeMismatchSnafu, Post, StorUrl, UserEmail, UserId, Username, define_id,
+    define_id,
+    entities::{
+        generate_rsa_keypair, Post, StorUrl, UserEmail, UserId, UserPrivateKey, UserPublicKey,
+        Username,
+    },
     native_type_check,
 };
 
@@ -79,11 +80,6 @@ pub enum Error {
         expiry: DateTime<Utc>,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to import an RSA key from PKCS8 format: {source}"))]
-    FromPkcs8 {
-        source: picky::key::KeyError,
-        backtrace: Backtrace,
-    },
     #[snafu(display("Failed to hash password: {source}"))]
     HashPassword {
         source: password_hash::errors::Error,
@@ -99,6 +95,10 @@ pub enum Error {
         source: argon2::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("While generating the user's keypair, {source}"))]
+    Keypair {
+        source: indielinks_shared::entities::Error,
+    },
     #[snafu(display("Can't deserialize a {typ} from a null frame slice"))]
     NoFrameSlice { typ: String, backtrace: Backtrace },
     #[snafu(display("No pepper found for user {username}: {source}"))]
@@ -113,26 +113,6 @@ pub enum Error {
     },
     #[snafu(display("Passwords may not begin or end in whitespace"))]
     PasswordWhitespace { backtrace: Backtrace },
-    #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
-    Pem {
-        source: picky::key::KeyError,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("Failed to export an RSA private key to PKCS8 DER format; {source}"))]
-    Pkcs8Der {
-        source: pkcs8::Error,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("Failed to export an RSA public key to DER format: {source}"))]
-    PublicKeyDer {
-        source: spki::Error,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("Failed to generate an RSA private key: {source}"))]
-    RsaPrivateKeyGen {
-        source: rsa::errors::Error,
-        backtrace: Backtrace,
-    },
     #[snafu(display("Failed to parse {text} as an URL: {source}"))]
     UserUrl {
         text: String,
@@ -169,10 +149,6 @@ fn mk_serde_de_err<'de, D: serde::Deserializer<'de>>(err: impl std::error::Error
     <D::Error as serde::de::Error>::custom(format!("{:?}", err))
 }
 
-fn mk_serde_ser_err<S: serde::Serializer>(err: impl std::error::Error) -> S::Error {
-    <S::Error as serde::ser::Error>::custom(format!("{:?}", err))
-}
-
 define_id!(FollowId, "followid");
 define_id!(FollowerId, "followerid");
 define_id!(LikeId, "likeid");
@@ -182,174 +158,6 @@ define_id!(ShareId, "shareid");
 // I had, in the past, defined a few other identifiers, making it worth it to wrap the boilerplate
 // up in a macro. Now that it's just `UserId`, I should probably go back to just implementing it by
 // hand.
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                         UserPublicKey                                          //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Newtype idiom to work around Rust's orphaned trait rule
-// `UserPublicKey` isn't a refined type; it's just a wrapper on which to hang trait implementations
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(transparent)]
-pub struct UserPublicKey(#[serde(with = "serde_publickey")] PublicKey);
-
-impl UserPublicKey {
-    pub fn to_pem(&self) -> Result<String> {
-        self.0.to_pem_str().context(PemSnafu)
-    }
-}
-
-impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserPublicKey {
-    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        native_type_check!(typ, Ascii, TypeCheckError, "PublicKey")
-    }
-    fn deserialize(
-        _: &'metadata ColumnType<'metadata>,
-        v: Option<FrameSlice<'frame>>,
-    ) -> StdResult<Self, DeserializationError> {
-        v.ok_or(
-            NoFrameSliceSnafu {
-                typ: "PublicKey".to_owned(),
-            }
-            .build(),
-        )
-        .map_err(mk_de_err)?
-        .as_slice()
-        .pipe(std::str::from_utf8)
-        .map_err(mk_de_err)?
-        .pipe(PublicKey::from_pem_str)
-        .map_err(mk_de_err)?
-        .pipe(UserPublicKey)
-        .pipe(Ok)
-    }
-}
-
-impl SerializeValue for UserPublicKey {
-    fn serialize<'b>(
-        &self,
-        typ: &ColumnType<'_>,
-        writer: CellWriter<'b>,
-    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        native_type_check!(typ, Ascii, SerializationError, "PublicKey")?;
-        self.0
-            .to_pem_str()
-            .map_err(mk_ser_err)?
-            .as_bytes()
-            .pipe(|x| writer.set_value(x))
-            .map_err(mk_ser_err)?
-            .pipe(Ok)
-    }
-}
-
-mod serde_publickey {
-    use super::*;
-    use serde::{Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(pub_key: &PublicKey, ser: S) -> StdResult<S::Ok, S::Error> {
-        pub_key
-            .to_pem_str()
-            .map_err(mk_serde_ser_err::<S>)?
-            .pipe(|s| <String as serde::Serialize>::serialize(&s, ser))
-    }
-
-    pub fn deserialize<'de, D>(de: D) -> StdResult<PublicKey, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        <String as serde::Deserialize>::deserialize(de)
-            .map_err(mk_serde_de_err::<'de, D>)?
-            .pipe_ref(|s| PublicKey::from_pem_str(s))
-            .map_err(mk_serde_de_err::<'de, D>)?
-            .pipe(Ok)
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                         UserPrivateKey                                          //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Newtype idiom to work around Rust's orphaned trait rule
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(transparent)]
-// `UserPrivateKey` isn't a refined type; it's just a wrapper on which to hang trait implementations
-pub struct UserPrivateKey(#[serde(with = "serde_privatekey")] PrivateKey);
-
-impl UserPrivateKey {
-    pub fn to_pem(&self) -> Result<String> {
-        self.0.to_pem_str().context(PemSnafu)
-    }
-}
-
-impl AsRef<PrivateKey> for UserPrivateKey {
-    fn as_ref(&self) -> &PrivateKey {
-        &self.0
-    }
-}
-
-impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for UserPrivateKey {
-    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        native_type_check!(typ, Ascii, TypeCheckError, "PrivateKey")
-    }
-    fn deserialize(
-        _: &'metadata ColumnType<'metadata>,
-        v: Option<FrameSlice<'frame>>,
-    ) -> StdResult<Self, DeserializationError> {
-        v.ok_or(
-            NoFrameSliceSnafu {
-                typ: "PrivateKey".to_owned(),
-            }
-            .build(),
-        )
-        .map_err(mk_de_err)?
-        .as_slice()
-        .pipe(std::str::from_utf8)
-        .map_err(mk_de_err)?
-        .pipe(PrivateKey::from_pem_str)
-        .map_err(mk_de_err)?
-        .pipe(UserPrivateKey)
-        .pipe(Ok)
-    }
-}
-
-impl SerializeValue for UserPrivateKey {
-    fn serialize<'b>(
-        &self,
-        typ: &ColumnType<'_>,
-        writer: CellWriter<'b>,
-    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        native_type_check!(typ, Ascii, SerializationError, "PrivateKey")?;
-        self.0
-            .to_pem_str()
-            .map_err(mk_ser_err)?
-            .as_bytes()
-            .pipe(|x| writer.set_value(x))
-            .map_err(mk_ser_err)?
-            .pipe(Ok)
-    }
-}
-
-mod serde_privatekey {
-    use super::*;
-    use serde::{Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(pub_key: &PrivateKey, ser: S) -> StdResult<S::Ok, S::Error> {
-        pub_key
-            .to_pem_str()
-            .map_err(mk_serde_ser_err::<S>)?
-            .pipe(|s| <String as serde::Serialize>::serialize(&s, ser))
-    }
-
-    pub fn deserialize<'de, D>(de: D) -> StdResult<PrivateKey, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        <String as serde::Deserialize>::deserialize(de)
-            .map_err(mk_serde_de_err::<'de, D>)?
-            .pipe_ref(|s| PrivateKey::from_pem_str(s))
-            .map_err(mk_serde_de_err::<'de, D>)?
-            .pipe(Ok)
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                             ApiKey                                             //
@@ -649,36 +457,6 @@ fn validate_password(password: &SecretString, user_inputs: &[&str]) -> Result<()
     Ok(())
 }
 
-/// Generate a 2048-bit RSA keypair
-fn generate_rsa_keypair() -> Result<(UserPublicKey, UserPrivateKey)> {
-    use pkcs8::EncodePublicKey;
-
-    let mut rng = rand::thread_rng();
-    let rsa_priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).context(RsaPrivateKeyGenSnafu)?;
-    let rsa_pub_key = rsa::RsaPublicKey::from(&rsa_priv_key);
-
-    Ok((
-        UserPublicKey(
-            PublicKey::from_der(
-                rsa_pub_key
-                    .to_public_key_der()
-                    .context(PublicKeyDerSnafu)?
-                    .as_bytes(),
-            )
-            .context(FromPkcs8Snafu)?,
-        ),
-        UserPrivateKey(
-            PrivateKey::from_pkcs8(
-                rsa_priv_key
-                    .to_pkcs8_der()
-                    .context(Pkcs8DerSnafu)?
-                    .as_bytes(),
-            )
-            .context(FromPkcs8Snafu)?,
-        ),
-    ))
-}
-
 impl User {
     /// Mint a new key & add it to this users's collection, ejecting an earlier key if need be
     pub fn add_key(&self, expiry: Option<DateTime<Utc>>) -> Result<(ApiKeys, String)> {
@@ -764,7 +542,7 @@ impl User {
         summary: Option<&str>,
     ) -> Result<User> {
         validate_password(password, &[username.as_ref(), email.as_ref()])?;
-        let (pub_key, priv_key) = generate_rsa_keypair()?;
+        let (pub_key, priv_key) = generate_rsa_keypair().context(KeypairSnafu)?;
         let password_hash = User::hash_password(pepper_key, password)?;
         let _ = display_name.unwrap_or(username.as_ref()).to_string();
         Ok(User {

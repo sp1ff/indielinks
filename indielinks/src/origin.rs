@@ -105,7 +105,7 @@ use std::{
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, prelude::*};
+use snafu::{prelude::*, Backtrace};
 use url::Url;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -299,7 +299,7 @@ impl TryFrom<&url::Host> for Host {
 /// [indielinks] Origin
 ///
 /// [indielinks]: crate
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Origin {
     scheme: Protocol,
     host: Host,
@@ -323,6 +323,12 @@ impl Origin {
     pub fn port(&self) -> Option<u16> {
         self.port
     }
+    fn effective_port(&self) -> u16 {
+        match self.scheme {
+            Protocol::Http => self.port.unwrap_or(80),
+            Protocol::Https => self.port.unwrap_or(443),
+        }
+    }
 }
 
 impl Display for Origin {
@@ -343,6 +349,16 @@ impl FromStr for Origin {
             .try_into()
     }
 }
+
+impl std::cmp::PartialEq for Origin {
+    fn eq(&self, other: &Self) -> bool {
+        self.scheme == other.scheme
+            && self.host == other.host
+            && self.effective_port() == other.effective_port()
+    }
+}
+
+impl std::cmp::Eq for Origin {}
 
 // This is a bit of an experiment for me. I wanted to write ctors that would express both "make an
 // Origin out of these borrows" and "move these values into an Origin". It occured to me that `From`

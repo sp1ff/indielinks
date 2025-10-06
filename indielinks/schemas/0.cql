@@ -33,7 +33,8 @@ use indielinks;
 
 create table if not exists schema_migrations (
   version bigint PRIMARY KEY,
-  applied timestamp
+  instance_state blob,
+  applied timestamp,
 );
 
 /* Paritition key is the user *ID* (not the username). Should give

@@ -25,7 +25,10 @@ use leptos_router::hooks::use_query_map;
 use tap::Pipe;
 use tracing::{debug, error, info};
 
-use indielinks_shared::{Post, PostAddReq, PostsAllRsp, StorUrl};
+use indielinks_shared::{
+    api::{PostAddReq, PostsAllRsp},
+    entities::{Post, StorUrl},
+};
 
 use crate::{
     http::{send_with_retry, string_for_status},
@@ -96,8 +99,8 @@ fn Post(
     let base = use_context::<Base>().expect("No base!?").0;
 
     let query = use_query_map(); // Memo<...>
-    // These clones are getting out of hand... I understand I need to move them into the `View`, but
-    // why do they need to be cloned *again* in closures inside the `View`?
+                                 // These clones are getting out of hand... I understand I need to move them into the `View`, but
+                                 // why do they need to be cloned *again* in closures inside the `View`?
     let a1 = api.clone();
     let t1 = token.clone();
     let r1 = rerender.clone();

@@ -49,16 +49,18 @@
 
 use std::sync::Arc;
 
-use crate::ap_entities::make_user_id;
-use crate::entities::User;
-use crate::http::Indielinks;
-use crate::origin::Origin;
-use crate::storage::Backend as StorageBackend;
-use crate::{acct::Account, http::ErrorResponseBody};
-use crate::{define_metric, storage};
+use crate::{
+    ap_entities::make_user_id,
+    entities::User,
+    indielinks::Indielinks,
+    origin::Origin,
+    storage::Backend as StorageBackend,
+    {acct::Account, http::ErrorResponseBody},
+    {define_metric, storage},
+};
 
 use axum::extract::{Query, State};
-use axum::{Json, http::StatusCode, response::IntoResponse};
+use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tracing::{error, info};

@@ -23,7 +23,7 @@ use leptos::{
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
-use indielinks_shared::REFRESH_CSRF_COOKIE;
+use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
 use crate::{
     http::string_for_status,

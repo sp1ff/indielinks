@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+
+# Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+#
+# This program is free software; you can redistribute it and/or modify it under the terms of the
+# GNU Lesser General Public License as published by the Free Software Foundation; either version 3
+# of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
+# the GNU Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License along with this
+# library; if not, write to the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+# Boston, MA 02110-1301 USA
+
+OT2_VERSION=0.0.1
+
+###########################################################################
+#                               The Big Kahuna                            #
+###########################################################################
+
+ot2_capture_template=
+ot2_help=no
+ot2_indic_tags=
+ot2_instapaper=no
+ot2_instapaper_pass=
+ot2_prev_option=
+ot2_target=
+ot2_pinboard_token=
+ot2_verbose=no
+ot2_version=no
+ot2_nargs=0
+for ot2_option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$ot2_prev_option"; then
+        eval $ot2_prev_option=\$ot2_option
+        ot2_prev_option=
+        ot2_nargs=$(($ot2_nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option, in $ot2_option
+    case $ot2_option in
+        *=?*) ot2_optarg=$(expr "X$ot2_option" : '[^=]*=\(.*\)') ;;
+        *=)   ot2_optarg= ;;
+        *)    ot2_optarg=yes ;;
+    esac
+
+    # Handle options here
+    case $ot2_option in
+        -h | --he | --hel | --help)
+            ot2_help=yes;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -a | --indic-tags)
+            ot2_prev_option=ot2_indic_tags;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -a=* | --indic-tags=*)
+            ot2_indic_tags=$ot2_optarg;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -c | --cap | --capture-template)
+            ot2_prev_option=ot2_capture_template;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -c=* | --cap=* | --capture-template=*)
+            ot2_capture_template=$ot2_optarg;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -p | --pass | --instapaper-pass)
+            ot2_prev_option=ot2_instapaper_pass;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -p=* | --pass=* | --instapaper-pass=*)
+            ot2_instapaper_pass=$ot2_optarg;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -t | --tar | --targ | --targe | --target)
+            ot2_prev_option=ot2_target;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -t=* | --tar=* | --targ=* | --targe=* | --target=*)
+            ot2_target=$ot2_optarg;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -T | --pin-tok | --pinboard-token)
+            ot2_prev_option=ot2_pinboard_token;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -T=* | --pin-tok=* | --pinboard-token=*)
+            ot2_pinboard_token=$ot2_optarg;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -v | --verb | --verbo | --verbos | --verbose)
+            ot2_verbose=yes;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -V | --vers | --versi | --versio | --version)
+            ot2_version=yes;
+            ot2_nargs=$(($ot2_nargs+1));;
+        -*)
+            echo "unrecognized option: \`$ot2_option'
+Try \`$0 --help' for more information" >&2;
+            set +e;
+            exit 2;;
+        *)
+            break;;
+    esac
+done
+
+if test "$ot2_help" = "yes"; then
+    cat <<EOF
+ot2 sends a OneTab export file to Pinboard, (optionally) Instapaper, my
+local indielinks instance, and (optionally) my reading page.
+
+This is ot2 version $OT2_VERSION.
+
+Usage: ot2 [OPTION...] INPUT-FILE
+
+Options:
+
+  -h, --help                 display this help and exit with status zero
+  -V, --version              display version information and exit
+  -a tags, --indic-tags=TAGS comma-separated list of tags to pass
+                             to indic (until I get around to implementing
+                             targets, there)
+  -t TARGET, --target=TARGET send each link to \`pin' target TARGET
+  -p PASSWD, --pass=PASSWD   Instapaper password
+  -T TOKEN, --pinboard-token=TOKEN    Pinboard.in API token
+
+INPUT-FILE shall be a text file, containing links to be sent to
+Pinboard, one-per-line. Each line shall be of the form:
+
+  URL | DESCRIPTION
+
+(which is the OneTab export format).
+
+This is a hacked-up version of my original `ot` script, for use with
+indielinks & my revamped reading lists. It's kind of a zoo at the moment,
+since I'm rushing to just work with my local indielinks installation as
+soon as possible. I'm not sure where this script will end up.
+
+Cheat Sheet:
+
+    - rwg : weekend reading
+    - rwd : weekend dev reading
+EOF
+    exit 0
+fi
+
+if test "$ot2_version" = "yes"; then
+    cat <<EOF
+\`$0' $OT2_VERSION
+EOF
+    exit 0
+fi
+
+if test "$ot2_verbose" = "yes"; then
+    set -x
+fi
+
+if test -z "$ot2_target"; then
+    echo "No target given" >&2
+    exit 1
+fi
+
+shift $ot2_nargs
+test $# == 1 || ( echo "Expected one argument." >&2; exit 2 )
+
+pin_args=()
+if test -n "$ot2_pinboard_token"; then
+    pin_args+=("-t" "$ot2_pinboard_token")
+fi
+pin_args+=("send" "-r" "$ot2_target")
+if test -n "$ot2_instapaper_pass"; then
+   pin_args+=("-p" "$ot2_instapaper_pass")
+fi
+
+indic_args=("add-link" "-r" "-R")
+if test -n "$ot2_indic_tags"; then
+    indic_args+=("-t" "$ot2_indic_tags")
+fi
+
+echo -n "Sending links"
+while read line; do
+
+    IFS='|' read -r url title <<<"$line"
+
+    if test -n "$ot2_capture_template"; then
+
+        # OK-- we're going through the Org Capture system, which itself will
+        # send the link to Pinboard & indielinks
+        url_enc=$(node -e "console.log(encodeURIComponent(\"$url\"))")
+        title_enc=$(node -e "console.log(encodeURIComponent(\"$title\"))")
+        IFS=',' read -r -a tags <<<"$ot2_indic_tags"
+        for x in "${tags[@]}"; do
+            tags_enc="$tags_enc&tag=$x"
+        done
+        if ! /opt/emacsen/current/bin/emacsclient "org-protocol://capture?template=$ot2_capture_template&url=$url_enc&title=$title_enc$tags_enc" > /dev/null; then
+            echo "failed on input line: $line" >&2
+            exit 1
+        fi
+
+    else
+
+        # We're sending to Pinboard & indielinks ourselves
+        if ! indic "${indic_args[@]}" -T "$title" "$url"; then
+            echo "failed on input line: $line" >&2
+            exit 1
+        fi
+
+    fi
+    
+    if ! pin "${pin_args[@]}" "$line"; then
+        echo "bad input line: $line" >&2
+        exit 1
+    fi
+
+    echo -n "."
+
+done < "$1"
+echo "done."

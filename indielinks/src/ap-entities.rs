@@ -119,6 +119,7 @@
 use std::{collections::HashMap, error::Error as StdError, fmt::Display};
 
 use chrono::{DateTime, FixedOffset, Utc};
+use either::Either;
 use http::{Method, Request};
 use lazy_static::lazy_static;
 use picky::key::PublicKey as PickyPublicKey;
@@ -130,11 +131,11 @@ use tap::Pipe;
 use tower::{Service, ServiceExt};
 use url::Url;
 
-use indielinks_shared::{Post, PostId, Username};
+use indielinks_shared::entities::{Post, PostId, UserPrivateKey, Username};
 
 use crate::{
     client::ClientType,
-    entities::{self, FollowId, User},
+    entities::{FollowId, User},
     origin::Origin,
 };
 
@@ -146,6 +147,7 @@ use crate::{
 pub enum Error {
     #[snafu(display("Failed to deserialize an Actor: {source}"))]
     ActorDe {
+        body: bytes::Bytes,
         source: serde_json::Error,
         backtrace: Backtrace,
     },
@@ -173,8 +175,8 @@ pub enum Error {
     InvalidRecipient { url: Box<Url>, backtrace: Backtrace },
     #[snafu(display("We parsed a username out of an Actor ID, but it was invalid: {source}"))]
     InvalidUsername {
-        #[snafu(source(from(indielinks_shared::Error, Box::new)))]
-        source: Box<indielinks_shared::Error>,
+        #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
+        source: Box<indielinks_shared::entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("JSON serialization error: {source}"))]
@@ -205,7 +207,9 @@ pub enum Error {
         source: crate::origin::Error,
     },
     #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
-    Pem { source: entities::Error },
+    Pem {
+        source: indielinks_shared::entities::Error,
+    },
     #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
     PickyPem {
         source: picky::key::KeyError,
@@ -254,6 +258,10 @@ pub fn make_follow_id(username: &Username, id: &FollowId, origin: &Origin) -> Re
 /// Return an URL naming a public key
 pub fn make_key_id(username: &Username, origin: &Origin) -> Result<Url> {
     Url::parse(&format!("{}/users/{}#main-key", origin, username)).context(UrlParseSnafu)
+}
+
+pub fn make_instance_actor_key_id(origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/actor#main-key", origin)).context(UrlParseSnafu)
 }
 
 /// Return an RUL naming a user's "followers" collection
@@ -350,7 +358,38 @@ mod test_locations {
 
     use uuid::Uuid;
 
+    use crate::origin::{Host, Protocol};
+
     use super::*;
+
+    #[test]
+    fn test_indieweb_social_origin_mismatch() {
+        let golden: Origin = (
+            Protocol::Https,
+            Host::new("indiepin.net").unwrap(/* known good */),
+        )
+            .into();
+        // Origin {
+        //     scheme: Https,
+        //     host: RegName(
+        //         RegName(
+        //             "indiepin.net",
+        //         ),
+        //     ),
+        //     port: None,
+        // }
+
+        let url = Url::parse("https://indiepin.net/users/sp1ff/posts/9e0301d1-b388-4f48-8c3f-83003457722a").unwrap(/* known good */);
+        // Tuple(
+        //     "https",
+        //     Domain(
+        //         "indiepin.net",
+        //     ),
+        //     443,
+        // )
+
+        assert!(&golden == &Origin::new(&url.origin()).unwrap(/* known good */));
+    }
 
     #[test]
     fn test_username_from_url() {
@@ -414,6 +453,7 @@ pub enum Type {
     Accept,
     Actor,
     Announce,
+    Application,
     Create,
     Follow,
     Like,
@@ -432,6 +472,7 @@ impl std::fmt::Display for Type {
                 Type::Accept => "Accept",
                 Type::Actor => "Person",
                 Type::Announce => "Announce",
+                Type::Application => "Application",
                 Type::Create => "Create",
                 Type::Follow => "Follow",
                 Type::Like => "Like",
@@ -499,6 +540,16 @@ impl PublicKey {
             id: make_key_id(username, origin)?,
             owner: make_user_id(username, origin)?,
             public_key_pem: pub_key.to_pem_str().context(PickyPemSnafu)?,
+        })
+    }
+    pub fn for_instance_actor<S: AsRef<str>>(
+        origin: &Origin,
+        public_key_pem: S,
+    ) -> Result<PublicKey> {
+        Ok(PublicKey {
+            id: Url::parse(&format!("{}/actor#main-key", origin)).context(UrlParseSnafu)?,
+            owner: Url::parse(&format!("{}/actor", origin)).context(UrlParseSnafu)?,
+            public_key_pem: public_key_pem.as_ref().to_owned(),
         })
     }
 }
@@ -598,6 +649,36 @@ impl ActorField {
 impl From<Url> for ActorField {
     fn from(value: Url) -> Self {
         ActorField::Iri(value)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         InstanceActor                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceActor {
+    id: Url,
+    preferred_username: crate::origin::Host,
+    public_key: PublicKey,
+    endpoints: Endpoints,
+}
+
+impl InstanceActor {
+    pub fn new<S: AsRef<str>>(origin: &Origin, public_key_pem: S) -> Result<InstanceActor> {
+        Ok(InstanceActor {
+            id: Url::parse(&format!("{}/actor", origin)).context(UrlParseSnafu)?,
+            preferred_username: origin.host().clone(),
+            public_key: PublicKey::for_instance_actor(origin, public_key_pem)?,
+            endpoints: Endpoints::new(origin)?,
+        })
+    }
+}
+
+impl ToJld for InstanceActor {
+    fn get_type(&self) -> Type {
+        Type::Application
     }
 }
 
@@ -1260,10 +1341,8 @@ impl Note {
             // `http://indieweb.social/@sp1ff/...`
             url: make_user_post_id(username, &post.id(), origin)?,
             attributed_to: make_user_id(username, origin)?,
-            to: vec![
-                Url::parse("https://www.w3.org/ns/activitystreams#Public")
-                    .context(UrlParseSnafu)?,
-            ],
+            to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
+                .context(UrlParseSnafu)?],
             cc: vec![make_user_followers(username, origin)?],
             content: post_html.clone(),
             content_map: HashMap::from([("en".to_owned(), post_html)]),
@@ -1340,7 +1419,7 @@ mod twitter_text {
 
     use super::Html;
 
-    use indielinks_shared::StorUrl;
+    use indielinks_shared::entities::StorUrl;
 
     use crate::origin::Origin;
 
@@ -1455,14 +1534,21 @@ impl ToJld for Create {
 //                                  ActivityPub Entity Utilities                                  //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Refactor this in terms of send_activity_pub? Maybe not worth the effort to sign the request
-// (since no-one should check this request of a signature-- it's a prerequisite for being able to
-// *make* a signature!)
+// Refactor this in terms of send_activity_pub? Nb. we can't know a priori if the peer implements
+// authorized fetch, so we pretty-much *have* to sign every `GET` request with the instance actor's
+// private key.
 /// Resolve a key ID to a PublicKey
-pub async fn resolve_key_id(key_id: &Url, client: &mut ClientType) -> Result<Actor> {
+pub async fn resolve_key_id(
+    key_id: &Url,
+    client: &mut ClientType,
+    principal: Either<User, UserPrivateKey>,
+    origin: &Origin,
+) -> Result<Actor> {
     let request = Request::builder()
         .method(Method::GET)
         .header(http::header::ACCEPT, "application/activity+json")
+        .header(http::header::CONTENT_TYPE, "application/activity+json")
+        .extension((principal, origin.clone()))
         .uri(key_id.as_str())
         .body(bytes::Bytes::new())
         .context(RequestSnafu)?;
@@ -1480,7 +1566,7 @@ pub async fn resolve_key_id(key_id: &Url, client: &mut ClientType) -> Result<Act
         })?
         .into_body();
 
-    serde_json::from_slice::<Actor>(body.as_ref()).context(ActorDeSnafu)
+    serde_json::from_slice::<Actor>(body.as_ref()).context(ActorDeSnafu { body })
 }
 
 /// Newtype "proving" that the caller produced JSON-LD

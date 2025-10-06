@@ -23,16 +23,16 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use futures::{StreamExt, stream::iter};
+use futures::{stream::iter, StreamExt};
 use indielinks::origin::Origin;
 use itertools::Itertools;
 use secrecy::SecretString;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tower::Service;
 use url::Url;
 
-use indielinks_shared::{PostAddReq, Tagname};
+use indielinks_shared::{api::PostAddReq, entities::Tagname};
 
 use crate::{import::import_posts, service::ReqBody};
 
@@ -108,7 +108,7 @@ pub enum Error {
     },
     #[snafu(display("Bad tagname: {source}"))]
     Tagname {
-        source: indielinks_shared::Error,
+        source: indielinks_shared::entities::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Invalid API key"))]

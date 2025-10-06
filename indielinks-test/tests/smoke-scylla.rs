@@ -24,7 +24,7 @@ use indielinks::{
     peppers::{Pepper, Version as PepperVersion},
     scylla::{add_followers, add_following, add_user, create_client, execute_cql},
 };
-use indielinks_shared::{StorUrl, UserEmail, UserId, Username};
+use indielinks_shared::entities::{StorUrl, UserEmail, UserId, Username};
 use indielinks_test::{
     activity_pub::{as_follower, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},

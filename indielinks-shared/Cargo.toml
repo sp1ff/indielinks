@@ -8,11 +8,21 @@ async-trait = "0.1.89"
 bytes = "1.10.1"
 chrono = { version = "0.4.41", features = ["serde"] }
 email_address = "0.2.9"
+# `getrandom` is really a transitive dependnecy, but we need the "js"
+# feature for indielinks-fe builds (indielinks-fe depends on this
+# crate).
+getrandom = { version = "0.2", features = ["js"] }
+hex = "0.4.3"
 http = "1.3.1"
 lazy_static = "1.5.0"
+picky = "=7.0.0-rc.17"
 pin-project = "1.1.10"
+pkcs8 = "0.10.2"
+rand = "0.8.0"
 regex = "1.11.1"
 reqwest = "0.12.23"
+rmp-serde = "1.3.0"
+rsa = "0.9.8"
 scylla = { version = "1.1.0", features = ["full-serialization"], optional = true }
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.219", features = ["derive"] }

@@ -26,11 +26,11 @@ use std::{convert::AsRef, result::Result as StdResult};
 use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};
 use jwt::{FromBase64, Header, SignWithKey, ToBase64, Token, VerifyWithKey, VerifyingAlgorithm};
-use rand::{RngCore, rngs::OsRng};
+use rand::{rngs::OsRng, RngCore};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use snafu::{Backtrace, prelude::*};
+use snafu::{prelude::*, Backtrace};
 use uuid::Uuid;
 
 use crate::{
@@ -38,7 +38,7 @@ use crate::{
     signing_keys::{self, KeyId, SigningKey, SigningKeys},
 };
 
-use indielinks_shared::Username;
+use indielinks_shared::entities::Username;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //

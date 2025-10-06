@@ -23,8 +23,9 @@ use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::net::SocketAddr;
-use std::ops::Bound;
+use std::ops::{Bound, Deref};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Poll;
 
 use async_trait::async_trait;
@@ -37,6 +38,7 @@ use futures::{
     Stream,
 };
 use indielinks_cache::types::{NodeId, TypeConfig};
+use indielinks_shared::instance_state::InstanceStateV0;
 use itertools::Itertools;
 use num_bigint::BigInt;
 use openraft::{
@@ -59,9 +61,10 @@ use tap::Pipe;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
+use indielinks_shared::entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
 use crate::entities::ApiKeys;
+use crate::storage::SchemaSnafu;
 use crate::util::Credentials;
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
@@ -132,6 +135,10 @@ pub enum Error {
     FollowDe {
         source: scylla::deserialize::DeserializationError,
         backtrace: Backtrace,
+    },
+    #[snafu(display("While creating instance state, {source}"))]
+    InstanceState {
+        source: indielinks_shared::instance_state::Error,
     },
     #[snafu(display("Failed to convert to a RowsResult: {source}"))]
     IntoRowsResult {
@@ -216,6 +223,11 @@ pub enum Error {
     #[snafu(display("Expected rows: {source}"))]
     ResultNotRows {
         source: scylla::response::query_result::IntoRowsResultError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Deserialization error while validating schema: {source}"))]
+    SchemaDe {
+        source: scylla::deserialize::DeserializationError,
         backtrace: Backtrace,
     },
     #[snafu(display("Expected a single row; {source}"))]
@@ -650,17 +662,21 @@ pub async fn get_current_schema_version(session: &InnerSession) -> Result<Option
     }
 
     match session
-        .query_unpaged("select max(version) from schema_migrations;", ())
+        .query_unpaged("select version from schema_migrations;", ())
         .await
     {
-        Ok(query_result) => Ok(Some(
-            query_result
+        Ok(query_result) => {
+            let mut versions = query_result
                 .into_rows_result()
                 .context(IntoRowsResultSnafu)?
-                .single_row::<(i64,)>()
-                .context(SingleRowSnafu)?
-                .0 as u32,
-        )),
+                .rows::<(i64,)>()
+                .context(TypedRowsSnafu)?
+                .map(|res| res.map(|(i,)| i as u32))
+                .collect::<StdResult<Vec<_>, _>>()
+                .context(SchemaDeSnafu)?;
+            versions.sort();
+            Ok(versions.pop())
+        }
         Err(err) => {
             // It would be weird to have a keyspace defined and not the `schema_versions` table, but still.
             if matches!(
@@ -755,16 +771,16 @@ pub async fn execute_cql<S: AsRef<str>>(session: &InnerSession, cql: S) -> Resul
     .map(|_| ())
 }
 
-pub async fn migrate_schema<S: AsRef<str>>(
-    session: &InnerSession,
-    cql: S,
-    version: u32,
-) -> Result<()> {
-    execute_cql(session, cql).await?;
+pub async fn create_schema(session: Arc<InnerSession>, cql: &str) -> Result<()> {
+    execute_cql(session.deref(), cql).await?;
     session
         .query_unpaged(
-            "insert into schema_migrations (version, applied) values (?, ?);",
-            (version as i64, Utc::now()),
+            "insert into schema_migrations (version, instance_state, applied) values (?, ?, ?);",
+            (
+                0_i64,
+                InstanceStateV0::new().context(InstanceStateSnafu)?,
+                Utc::now(),
+            ),
         )
         .await
         .context(ExecutionSnafu)
@@ -2015,6 +2031,25 @@ impl storage::Backend for Session {
             .transpose()
             .map_err(|err| StorError::new(UserDeSnafu {}.into_error(err)))?
             .pipe(Ok)
+    }
+
+    async fn validate_schema_version(
+        &self,
+        expected_version: u32,
+    ) -> StdResult<InstanceStateV0, StorError> {
+        let state = self
+            .session
+            .query_unpaged(
+                "select instance_state from schema_migrations where version = ?;",
+                (expected_version as i64,),
+            )
+            .await?
+            .into_rows_result()?
+            .rows::<(InstanceStateV0,)>()?
+            .exactly_one()
+            .map_err(|_| SchemaSnafu.build())?
+            .map_err(|err| StorError::new(SchemaDeSnafu.into_error(err)))?;
+        Ok(state.0)
     }
 }
 

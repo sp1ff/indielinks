@@ -24,11 +24,11 @@ use reqwest::{Client, Url};
 use tracing::info;
 use uuid::Uuid;
 use wiremock::{
-    Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
 };
 
-use indielinks_shared::{FollowReq, Username};
+use indielinks_shared::{api::FollowReq, entities::Username};
 
 use indielinks::{
     actor::CollectionPage,
@@ -38,7 +38,7 @@ use indielinks::{
     peppers::{Pepper, Version as PepperVersion},
 };
 
-use crate::{Helper, PeerUser, make_signed_request, peer_actor};
+use crate::{make_signed_request, peer_actor, Helper, PeerUser};
 
 pub async fn posting_creates_note(
     url: Url,

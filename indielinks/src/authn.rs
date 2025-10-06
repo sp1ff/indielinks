@@ -22,20 +22,20 @@
 use std::{str::FromStr, string::FromUtf8Error};
 
 use axum::http::HeaderValue;
-use base64::{Engine, prelude::BASE64_STANDARD};
+use base64::{prelude::BASE64_STANDARD, Engine};
 use http::header;
 use itertools::Itertools;
 use picky::{
     hash::HashAlgorithm,
-    http::{HttpSignature, http_signature::HttpSignatureBuilder},
+    http::{http_signature::HttpSignatureBuilder, HttpSignature},
     signature::SignatureAlgorithm,
 };
 use secrecy::{SecretSlice, SecretString};
 use sha2::Digest;
-use snafu::{Backtrace, OptionExt, ResultExt, Snafu, ensure};
+use snafu::{ensure, Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 
-use indielinks_shared::Username;
+use indielinks_shared::entities::Username;
 use tower::{Layer, Service};
 
 use crate::{
@@ -77,8 +77,8 @@ pub enum Error {
     #[snafu(display("{username} is not a valid username"))]
     BadUsername {
         username: String,
-        #[snafu(source(from(indielinks_shared::Error, Box::new)))]
-        source: Box<indielinks_shared::Error>,
+        #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
+        source: Box<indielinks_shared::entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Computed digest did not match the reported digest"))]
@@ -708,13 +708,7 @@ pub fn compute_signature<B: AsRef<[u8]>>(
 //                                      HTTP Signature Tests                                      //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Right off the bat: indielinks supports the *draft* HTTP signatures [spec], AKA
-/// "draft-cavage-http-signatures-12". There is a later RFC that, AFAICT, no one actually uses.
-///
-/// [spec]: https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12
-/// [RFC]: https://www.rfc-editor.org/rfc/rfc9421.html#signature-params
-///
-/// Next, getting the signature right is a
+/// Getting the signature right is a
 /// [commonly](https://socialhub.activitypub.rocks/t/http-signatures-and-mastodon-continue-to-confound/3801)
 /// [noted](https://rknight.me/blog/building-an-activitypub-server/)
 /// [pain](https://code.lag.net/robey/squidcity/src/branch/main/src/signatures.ts#L15)
@@ -727,13 +721,13 @@ pub fn compute_signature<B: AsRef<[u8]>>(
 mod http_signature_tests {
     use std::str::FromStr;
 
-    use base64::prelude::{BASE64_STANDARD, Engine};
+    use base64::prelude::{Engine, BASE64_STANDARD};
     use http::method::Method;
-    use http::{HeaderValue, Request, Uri, header, request};
-    use picky::http::HttpSignature;
+    use http::{header, request, HeaderValue, Request, Uri};
     use picky::http::http_signature::HttpSignatureBuilder;
+    use picky::http::HttpSignature;
     use picky::key::{PrivateKey, PublicKey};
-    use rsa::{RsaPrivateKey, RsaPublicKey, pkcs1v15};
+    use rsa::{pkcs1v15, RsaPrivateKey, RsaPublicKey};
     use sha2::Digest;
 
     use super::*;

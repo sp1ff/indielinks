@@ -18,7 +18,7 @@
 use gloo_net::http::Request;
 use leptos::prelude::*;
 
-use indielinks_shared::{LoginRsp, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME};
+use indielinks_shared::api::{LoginRsp, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME};
 
 use crate::types::{Api, Token, USER_AGENT};
 

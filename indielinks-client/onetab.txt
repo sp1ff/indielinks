@@ -1,0 +1,42 @@
+https://web.eecs.umich.edu/~manosk/assets/papers/ironfleet-sosp15.pdf | 250-hawblitzel.pdf - ironfleet-sosp15.pdf
+https://www.cambridge.org/core/journals/journal-of-functional-programming# | Journal of Functional Programming | Cambridge Core
+https://rvarago.github.io/a-length-indexed-vector-in-rust/ | A length-indexed Vector in Rust
+https://blog.polybdenum.com/2025/03/26/why-you-need-subtyping.html | Why You Need Subtyping | Considerations on Codecrafting
+https://arxiv.org/pdf/2503.24036 | Automated Discovery of Tactic Libraries for Interactive Theorem Proving - 2503.24036v2.pdf
+https://cce.whatthefuck.computer/rebuild/0x01#60f710b2-6a1f-44be-bc13-dfe01e46d4e3 | Rebuild of The Complete Computer 0x01: You Can (Not) Compute - The Complete Computer
+https://minikin.me/blog/rust-type-system-deep-dive | Rust Type System Deep Dive From GATs to Type Erasure
+https://users.rust-lang.org/t/blog-post-crate-publishing-tips-and-guidelines/39391/8 | Blog post: Crate publishing tips and guidelines - community - The Rust Programming Language Forum
+https://www.iroh.computer/ | Iroh
+https://matklad.github.io/2018/06/04/newtype-index-pattern.html | Newtype Index Pattern
+http://strictlypositive.org/IdiomLite.pdf | IdiomLite.pdf
+https://www.cocoawithlove.com/blog/2016/07/12/type-checker-issues.html | Exponential time complexity in the Swift type checker
+https://www.teachmaths.org/20250220_org-mode-beamer/ | Org Mode Beamer Presentations - Matt's Meandering Mind
+https://whatthefuck.computer/ | The Arcology Garden - The Arcology Garden
+https://www.cs.tufts.edu/comp/150FP/archive/ralf-hinze/CAM-basics.pdf | CAM-basics.pdf
+https://sachachua.com/blog/2024/11/excerpts-from-a-conversation-with-john-wiegley-johnw-and-adam-porter-alphapapa-about-personal-information-management/ | Excerpts from a conversation with John Wiegley (johnw) and Adam Porter (alphapapa) about personal information management :: Sacha Chua
+https://www.youtube.com/watch?v=dnHIsr6gGnE | Sandy Maguire - Haskell, Agda, Certainty By Construction, and More - YouTube
+https://hal.science/hal-05024207/document | Code Generation via Meta-programming in Dependently Typed Proof Assistants - main.pdf
+https://arxiv.org/pdf/2502.07640 | 2502.07640v3.pdf
+https://asterinas.github.io/2025/02/13/towards-practical-formal-verification-for-a-general-purpose-os-in-rust.html | Towards Practical Formal Verification for a General-Purpose OS in Rust
+https://arxiv.org/pdf/2502.06563 | 2502.06563v2.pdf
+https://www.lithic.com/blog/authorization-rules-engine | Building an Authorization Rules Engine | Lithic
+https://github.com/plasma-umass/ChatDBG | plasma-umass/ChatDBG: ChatDBG - AI-assisted debugging. Uses AI to answer 'why'
+https://doc.norang.ca/org-mode.html#HowToUseThisDocument | Org Mode - Organize Your Life In Plain Text!
+https://fosdem.org/2025/schedule/event/fosdem-2025-5088-lessons-from-rewriting-systems-software-in-rust/ | FOSDEM 2025 - Lessons from rewriting systems software in Rust
+https://protesilaos.com/codelog/2025-03-08-live-stream-emacs-linux-life/ | Live @ 2025-03-15, 14:00 Europe/Athens: ‘Ask Me Anything’ about Emacs, Linux, and Life in general | Protesilaos Stavrou
+https://a16z.com/ai-web-app-builders/?utm_medium=email&utm_source=newsletter&mkt_tok=MzgyLUpaQi03OTgAAAGZEFTjomsg1zw_G2EqSPjiaIhanSvwmwFs-hZWV2VOg0L07uRMXDpG_hQsKNWq2y4ED8q0SmCkVTp5Q2QHU4Kef9K8sczxomiHDFpJNAPAY6Kp | From Prompt to Product: The Rise of AI-Powered Web App Builders | Andreessen Horowitz
+https://depth-first.com/articles/2023/02/28/using-the-typestate-pattern-with-rust-traits/ | Using the Typestate Pattern with Rust Traits | Depth-First
+https://www.howtocodeit.com/articles/ultimate-guide-rust-newtypes | The Ultimate Guide to Rust Newtypes
+https://steveklabnik.com/writing/borrow-checking-escape-analysis-and-the-generational-hypothesis/ | Borrow checking, escape analysis, and the generational hypothesis
+https://dl.acm.org/doi/pdf/10.1145/3473576 | Generalized evidence passing for effect handlers: efficient compilation of effect handlers to C - 3473576.pdf
+https://arxiv.org/pdf/2503.01245 | 2503.01245v2.pdf
+https://herman.bearblog.dev/building-software-to-last-forever/ | Building software to last forever | ᕕ( ᐛ )ᕗ Herman's blog
+https://www.galois.com/articles/specifications-dont-exist | Galois - Specifications Don't Exist
+https://sachachua.com/blog/2025/05/working-on-the-plumbing-in-a-small-web-community/ | Working on the plumbing in a small web community :: Sacha Chua
+https://spepo.github.io/2025-06-22-fault-tolerant-org-links.html | Fault-tolerant Org Links
+https://nationalsecurityjournal.org/americas-drone-crisis-made-in-america-is-nearly-impossible/ | America's Drone Crisis: 'Made in America' Is Nearly Impossible - National Security Journal
+https://arxiv.org/pdf/2508.03678 | More Than a Score: Probing the Impact of Prompt Specificity on LLM Code Generation - 2508.03678v1.pdf
+https://www.youtube.com/watch?v=GzQNdpd0D-4 | (1) Modern Emacs Part 2: Project.el, Eglot and Corfu - VOD - YouTube
+https://blog.wilcoxd.com/2025/06/14/OrgMode-As-Architecture-Notebook/ | Org Mode As Architecture Notebook | Wilcox Development Solutions Blog
+https://er.ucu.edu.ua/server/api/core/bitstreams/96d26b67-1d86-48c8-982d-aca824948005/content | Facilitation of the theorem proving in Coq using transformer - Andrusyshyn Orest Bachelor.pdf
+https://arxiv.org/pdf/2508.09856 | Invertible Syntax without the Tuples (Functional Pearl) - 2508.09856v1.pdf

@@ -38,11 +38,11 @@ use std::{
 };
 
 use axum::{
-    Extension, Router,
     extract::{Json, State},
-    http::{HeaderValue, StatusCode, header::CONTENT_TYPE},
+    http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
+    Extension, Router,
 };
 use axum_extra::extract::Query;
 use chrono::Utc;
@@ -54,18 +54,22 @@ use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error};
 
 use indielinks_shared::{
-    Post, PostAddReq, PostId, PostsAllReq, PostsAllRsp, PostsDate, PostsDatesReq, PostsDatesRsp,
-    PostsDeleteReq, PostsGetReq, PostsGetRsp, PostsRecentReq, PostsRecentRsp, StorUrl, Tagname,
-    TagsDeleteReq, TagsGetRsp, TagsRenameReq, UpdateRsp, Username,
+    api::{
+        PostAddReq, PostsAllReq, PostsAllRsp, PostsDate, PostsDatesReq, PostsDatesRsp,
+        PostsDeleteReq, PostsGetReq, PostsGetRsp, PostsRecentReq, PostsRecentRsp, TagsDeleteReq,
+        TagsGetRsp, TagsRenameReq, UpdateRsp,
+    },
+    entities::{Post, PostId, StorUrl, Tagname, Username},
 };
 
 use crate::{
     activity_pub::SendCreate,
-    authn::{self, AuthnScheme, check_api_key, check_password, check_token},
+    authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     background_tasks::{BackgroundTasks, Sender},
     define_metric,
     entities::User,
-    http::{ErrorResponseBody, Indielinks},
+    http::ErrorResponseBody,
+    indielinks::Indielinks,
     origin::Origin,
     peppers::Peppers,
     signing_keys::SigningKeys,
@@ -107,8 +111,8 @@ pub enum Error {
     },
     #[snafu(display("Bad tag name: {source}"))]
     BadTagName {
-        #[snafu(source(from(indielinks_shared::Error, Box::new)))]
-        source: Box<indielinks_shared::Error>,
+        #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
+        source: Box<indielinks_shared::entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("{username} is not a valid username"))]

@@ -22,18 +22,23 @@ use crate::{
     util::UpToThree,
 };
 
-use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
+use indielinks_shared::{
+    entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
+    instance_state::InstanceStateV0,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
-use snafu::{Backtrace, prelude::*};
+use snafu::{prelude::*, Backtrace};
 
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum Error {
+    #[snafu(display("Schema validation error"))]
+    Schema { backtrace: Backtrace },
     #[snafu(display("{source}"))]
     Storage {
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
@@ -182,4 +187,5 @@ pub trait Backend {
     /// Retrieve a [User] instance given a textual username. None means there is no user by that
     /// name.
     async fn user_for_name(&self, name: &str) -> Result<Option<User>, Error>;
+    async fn validate_schema_version(&self, schema_version: u32) -> Result<InstanceStateV0, Error>;
 }

@@ -83,11 +83,11 @@ use picky::key::{PrivateKey, PublicKey};
 use reqwest::Url;
 use secrecy::SecretString;
 use wiremock::{
-    Mock, ResponseTemplate,
     matchers::{method, path},
+    Mock, ResponseTemplate,
 };
 
-use indielinks_shared::{StorUrl, Username};
+use indielinks_shared::entities::{StorUrl, Username};
 
 use indielinks::{
     ap_entities::{self, make_user_id},

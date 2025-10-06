@@ -288,6 +288,66 @@
 //!
 //! [tower]: https://docs.rs/tower/0.5.2/tower/
 //!
+//! ## Request Signing, Instance Actors, Authorized Fetch, and All That There
+//!
+//! ActivityPub communicates server-to-server through `POST` [requests] that are [authenticated] by
+//! HTTP signatures. The situation with respect to HTTP signatures in ActivityPub is regrettable.
+//! Right off the bat: indielinks supports the *draft* HTTP signatures [spec], AKA
+//! "draft-cavage-http-signatures-12". There is a later RFC that, AFAICT, no one actually uses
+//! (update: since I wrote that, Mastodon has added support for RFC 9421 signatures [beginning] in version 4.4.0).
+//!
+//! [requests]: https://www.w3.org/TR/activitypub/#delivery
+//! [authenticated]: https://www.w3.org/wiki/ActivityPub/Primer/Authentication_Authorization#Server_to_Server
+//! [spec]: https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12
+//! [RFC]: https://www.rfc-editor.org/rfc/rfc9421.html#signature-params
+//! [beginning]: https://docs.joinmastodon.org/spec/security/#http-message-signatures
+//!
+//! It was my understanding that `GET` ActivityPub requests need *not* be signed, but it turns out
+//! that Mastodon has introduced something called [secure mode]: "Secure mode is the foundation upon
+//! which “limited federation mode” is built. A Mastodon server in limited federation mode will only
+//! federate with servers its admin has explicitly allowed, and reject all other requests." A
+//! Mastodon instance in secure mode will, among other things, enable what is known as [authorized
+//! fetch]: "which requires all HTTP GET requests for ActivityPub objects to include HTTP
+//! Signatures... Servers with authorized fetch enabled generally don't enforce any fine grained
+//! access control over the actors whose signatures they require to fetch data. They usually only
+//! reject requests from actors on domains that they've blocked at the server level."
+//!
+//! [secure mode]: https://docs.joinmastodon.org/spec/activitypub/#secure-mode
+//! [authorized fetch]: https://www.w3.org/wiki/ActivityPub/Primer/Authentication_Authorization#Authorized_fetch
+//!
+//! This creates problems for the other party in communication with an ActivityPub server
+//! that enforces authorized fetch:
+//!
+//! - on receipt of a `POST` from such as server, the other party will need to authenticate the
+//!   message signature; in general, this will mean resolving the public key ID in the signature
+//!   to the actual public key material, which means a GET request _back_ to the secure server. Now
+//!   that the other party needs to *sign* that request, we'll see a request from the secure server
+//!   *back* to the other party to resolve the key ID. Not only is this rather "chatty", it leads
+//!   to an infinite loop when the other party *also* enforces authorized fetch!
+//! - if the `POST` request from a secure server lands in the other party's shared inbox, it
+//!   is unclear whose private key should be used to sign the outgoing `GET` request to resolve
+//!   the `POST` request's key ID
+//!
+//! [Terrence Eden](https://shkspr.mobi/blog/) notes this problem
+//! [here](https://shkspr.mobi/blog/2024/02/http-signature-infinite-loop/). The answer generally in
+//! use seems to be to have an "instance actor": an actor that represents the entire instance of the
+//! ActivityPub app and whose public key may be fetched *without* authentication.
+//!
+//! Typically, Sebastian Jambor [explains] the solution well: "Most Fediverse instances have an
+//! actor that is not tied to any user, but instead to the instance itself. On Mastodon, it has its
+//! own username, which is the domain name itself. For example, for the Academy, the instance actor
+//! is @activitypub.academy@activitypub.academy... This actor is special in many ways. For example,
+//! its actor ID does not follow the usual Mastodon naming schema, it is simply
+//! <https://activitypub.academy/actor>, and if you check out this profile in the ActivityPub
+//! Explorer, you see that the actor is of type Application."
+//!
+//! [explains]: https://seb.jambor.dev/posts/understanding-activitypub-part-4-threads/#the-instance-actor
+//!
+//! TBH, the whole thing feels ad hoc and "bolted on" to me. Steve Bate has a nice
+//! [write-up](https://socialhub.activitypub.rocks/t/authorized-fetch-and-the-instance-actor/3868)
+//! on how this situation came to be. See also
+//! [here](https://fedify.dev/manual/access-control#instance-actor)
+//!
 //! # Developers' Documentation
 //!
 //! I spent the best part of a year (on & off) "picking at" the problem of implementing an

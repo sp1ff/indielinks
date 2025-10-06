@@ -23,7 +23,10 @@ use libtest_mimic::Failed;
 use reqwest::{Client, StatusCode, Url};
 use serde_json::json;
 
-use indielinks_shared::{LoginRsp, MintKeyRsp, SignupRsp, Username};
+use indielinks_shared::{
+    api::{LoginRsp, MintKeyRsp, SignupRsp},
+    entities::Username,
+};
 
 use indielinks::http::ErrorResponseBody;
 

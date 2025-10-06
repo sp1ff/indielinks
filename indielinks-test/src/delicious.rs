@@ -20,17 +20,17 @@
 use crate::Helper;
 
 use indielinks_shared::{
-    PostsAllRsp, PostsDatesRsp, PostsGetRsp, PostsRecentRsp, TagsGetRsp, UpdateRsp, Username,
+    api::{PostsAllRsp, PostsDatesRsp, PostsGetRsp, PostsRecentRsp, TagsGetRsp, UpdateRsp},
+    entities::{Post, Tagname, Username},
 };
 
 use indielinks::delicious::GenericRsp;
 
 use chrono::Utc;
-use indielinks_shared::{Post, Tagname};
 use libtest_mimic::Failed;
 use reqwest::{
-    StatusCode, Url,
     header::{HeaderMap, HeaderValue},
+    StatusCode, Url,
 };
 
 use std::sync::Arc;

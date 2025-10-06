@@ -19,6 +19,7 @@ use aws_sdk_dynamodb::{
     config::http::HttpResponse,
     error::SdkError,
     operation::{create_table::CreateTableError, put_item::PutItemError},
+    primitives::Blob,
     types::{
         AttributeDefinition, AttributeValue, BillingMode, GlobalSecondaryIndex, KeySchemaElement,
         KeyType, LocalSecondaryIndex, ScalarAttributeType,
@@ -26,6 +27,7 @@ use aws_sdk_dynamodb::{
     Client,
 };
 use chrono::Utc;
+use indielinks_shared::instance_state::InstanceStateV0;
 use snafu::{Backtrace, ResultExt, Snafu};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -45,6 +47,10 @@ pub enum Error {
         name: String,
         source: aws_sdk_dynamodb::error::BuildError,
         backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to create the instance state: {source}"))]
+    InstanceState {
+        source: indielinks_shared::instance_state::Error,
     },
     #[snafu(display("Failed to write the schema version to the database: {source}"))]
     SchemaVersion {
@@ -562,10 +568,17 @@ async fn create_tables(client: &Client) -> Result<()> {
 pub async fn create_schema(client: Client) -> Result<()> {
     create_tables(&client).await?;
 
+    let instance_state = InstanceStateV0::new().context(InstanceStateSnafu)?;
+    let buf = rmp_serde::to_vec(&instance_state).unwrap(/* known good */);
+
     client
         .put_item()
         .table_name("schema_migrations")
         .item("version".to_owned(), AttributeValue::N("0".to_owned()))
+        .item(
+            "instance_state".to_owned(),
+            AttributeValue::B(Blob::new(buf)),
+        )
         .item(
             "applied".to_owned(),
             AttributeValue::S(format!("{}", Utc::now().timestamp())),

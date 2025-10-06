@@ -18,10 +18,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use libtest_mimic::Failed;
-use reqwest::{Url, blocking::Client};
+use reqwest::{blocking::Client, Url};
 use tracing::{debug, error};
 
-use indielinks_shared::StorUrl;
+use indielinks_shared::entities::StorUrl;
 
 use indielinks_cache::{
     raft::StorageError,

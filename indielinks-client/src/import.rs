@@ -14,9 +14,9 @@
 // see <http://www.gnu.org/licenses/>.
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use http::{Method, Request, header::AUTHORIZATION};
+use http::{header::AUTHORIZATION, Method, Request};
 use indielinks::origin::Origin;
-use indielinks_shared::PostAddReq;
+use indielinks_shared::api::PostAddReq;
 use secrecy::SecretString;
 use snafu::{Backtrace, ResultExt, Snafu};
 use tower::{Service, ServiceExt};

@@ -37,11 +37,11 @@ num-bigint = { version = "0.3.3", features = ["serde"] }
 openraft = { version = "0.9.20", features = ["serde", "storage-v2"] }
 opentelemetry = { version = "0.30.0", features = ["metrics"] }
 opentelemetry-otlp = { version = "0.30.0", default-features = false, features = ["metrics", "http-proto", "reqwest-client"] }
-opentelemetry-prometheus-text-exporter = "0.2.0"
+opentelemetry-prometheus-text-exporter = "=0.2.0"
 opentelemetry_sdk = "0.30.0"
 password-hash = "0.5.0"
 pct-str = "2.0.0"
-picky = "7.0.0-rc.16"
+picky = "=7.0.0-rc.17"
 pin-project = "1.1.10"
 pkcs8 = "0.10.2"
 prost = "0.13.5"

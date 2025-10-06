@@ -29,7 +29,10 @@ use crate::{
     util::{Credentials, UpToThree},
 };
 
-use indielinks_shared::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
+use indielinks_shared::{
+    entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
+    instance_state::InstanceStateV0,
+};
 
 use async_trait::async_trait;
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
@@ -1035,6 +1038,12 @@ impl std::convert::From<SdkError<QueryError, HttpResponse>> for StorError {
     }
 }
 
+impl std::convert::From<SdkError<ScanError, HttpResponse>> for StorError {
+    fn from(value: SdkError<ScanError, HttpResponse>) -> Self {
+        StorError::new(value)
+    }
+}
+
 impl std::convert::From<SdkError<UpdateItemError, HttpResponse>> for StorError {
     fn from(value: SdkError<UpdateItemError, HttpResponse>) -> Self {
         StorError::new(value)
@@ -1924,6 +1933,33 @@ impl storage::Backend for Client {
                 .map_err(StorError::new)?
                 .pipe(Ok),
             None => Ok(None),
+        }
+    }
+
+    async fn validate_schema_version(
+        &self,
+        expected_version: u32,
+    ) -> StdResult<InstanceStateV0, StorError> {
+        match self
+            .client
+            .scan()
+            .table_name("schema_migrations")
+            .projection_expression("instance_state")
+            .filter_expression("version=:version")
+            .expression_attribute_values(":version", AttributeValue::N(format!("{expected_version}")))
+            .send()
+            .await?
+            .items()
+            .iter()
+            .exactly_one()
+            .map_err(|_| crate::storage::SchemaSnafu.build())?
+            .get("instance_state")
+            .unwrap(/* known good */)
+        {
+            AttributeValue::B(blob) => {
+                rmp_serde::from_slice::<InstanceStateV0>(blob.as_ref()).map_err(StorError::new)
+            }
+            _ => crate::storage::SchemaSnafu.fail(),
         }
     }
 }

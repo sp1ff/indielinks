@@ -13,25 +13,10 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use crate::{
-    background_tasks::BackgroundTasks, cache::GrpcClientFactory, entities::FollowerId,
-    origin::Origin, peppers::Peppers, signing_keys::SigningKeys,
-    storage::Backend as StorageBackend,
-};
-
-use indielinks_shared::StorUrl;
-
 use axum::Json;
-use chrono::Duration;
-use indielinks_cache::{cache::Cache, raft::CacheNode};
-use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
-use tokio::sync::RwLock;
-use uuid::Uuid;
-
-use std::{path::PathBuf, sync::Arc};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        Error Responses                                         //
@@ -152,25 +137,4 @@ impl std::fmt::Display for SameSite {
             }
         )
     }
-}
-
-/// Application state available to all handlers
-pub struct Indielinks {
-    pub origin: Origin,
-    pub instance_id: Uuid,
-    pub storage: Arc<dyn StorageBackend + Send + Sync>,
-    pub exporter: PrometheusExporter,
-    pub pepper: Peppers,
-    pub token_lifetime: Duration,
-    pub refresh_token_lifetime: Duration,
-    pub signing_keys: SigningKeys,
-    pub users_same_site: SameSite,
-    pub users_secure_cookies: bool,
-    pub allowed_origins: Vec<Origin>,
-    pub client: crate::client::ClientType,
-    pub collection_page_size: usize,
-    pub assets: PathBuf,
-    pub task_sender: Arc<BackgroundTasks>,
-    pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
-    pub first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
 }

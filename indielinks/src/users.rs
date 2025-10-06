@@ -82,20 +82,20 @@
 use std::sync::Arc;
 
 use axum::{
-    Extension, Json, Router,
-    extract::{State, rejection::ExtensionRejection},
-    http::{HeaderValue, StatusCode, header::CONTENT_TYPE},
+    extract::{rejection::ExtensionRejection, State},
+    http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
+    Extension, Json, Router,
 };
 use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Duration, Utc};
-use http::{HeaderMap, header::SET_COOKIE};
+use http::{header::SET_COOKIE, HeaderMap};
 use itertools::Itertools;
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, IntoError, prelude::*};
+use snafu::{prelude::*, Backtrace, IntoError};
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
     set_header::SetResponseHeaderLayer,
@@ -104,17 +104,21 @@ use tracing::{debug, error, info};
 use url::Url;
 
 use indielinks_shared::{
-    FollowReq, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
-    REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC, SignupReq, SignupRsp, Username,
+    api::{
+        FollowReq, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, SignupReq, SignupRsp,
+        REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
+    },
+    entities::Username,
 };
 
 use crate::{
     activity_pub::SendFollow,
-    authn::{self, AuthnScheme, check_api_key, check_password, check_token},
+    authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     background_tasks::{self, BackgroundTasks, Sender},
     define_metric,
     entities::{self, FollowId, User},
-    http::{ErrorResponseBody, Indielinks, SameSite},
+    http::{ErrorResponseBody, SameSite},
+    indielinks::Indielinks,
     origin::Origin,
     peppers::{self, Peppers},
     signing_keys::{self, SigningKeys},
@@ -240,7 +244,7 @@ pub enum Error {
     #[snafu(display("{username} is not a valid indielinks username"))]
     Username {
         username: String,
-        source: indielinks_shared::Error,
+        source: indielinks_shared::entities::Error,
     },
     #[snafu(display("Failed to create user: {source}"))]
     UserSignup { source: entities::Error },

@@ -24,9 +24,9 @@ use std::{
     str::FromStr,
 };
 
-use futures::{StreamExt, stream::iter};
+use futures::{stream::iter, StreamExt};
 use indielinks::origin::Origin;
-use indielinks_shared::{PostAddReq, Tagname};
+use indielinks_shared::{api::PostAddReq, entities::Tagname};
 use itertools::Itertools;
 use secrecy::SecretString;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};

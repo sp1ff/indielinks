@@ -31,7 +31,7 @@
 //! stack.
 //!
 //! [RFC]: https://datatracker.ietf.org/doc/html/rfc7565
-//! [Username]: indielinks_shared::Username
+//! [Username]: indielinks_shared::entities::Username
 //!
 //! # Syntax
 //!
@@ -120,7 +120,7 @@ use lazy_static::lazy_static;
 use pct_str::{Encoder, PctStr, PctString};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use snafu::{Backtrace, prelude::*};
+use snafu::{prelude::*, Backtrace};
 
 use crate::{origin::Host, util::exactly_two};
 

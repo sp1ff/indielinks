@@ -55,8 +55,8 @@ use url::Url;
 use indielinks::origin::Origin;
 
 use indielinks_shared::{
+    entities::Tagname,
     service::{Body, ExponentialBackoffPolicy, RateLimit},
-    Tagname,
 };
 
 use indielinks_client::{
@@ -269,7 +269,6 @@ async fn make_indielinks_client(
     impl Service<
             http::Request<ReqBody>,
             Response = http::Response<Bytes>,
-            // Response = http::Response<Vec<u8>>,
             Error = Box<dyn std::error::Error + Send + Sync>,
         > + Clone,
 > {

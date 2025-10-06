@@ -35,29 +35,29 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
-        Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
     },
 };
 
-use axum::{Router, extract::State, response::IntoResponse, routing::get};
+use axum::{extract::State, response::IntoResponse, routing::get, Router};
 use chrono::Duration;
-use clap::{Arg, ArgAction, Command, crate_authors, crate_version, value_parser};
+use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use http::{HeaderName, HeaderValue};
 use lazy_static::lazy_static;
 use libc::{
-    F_TLOCK, close, dup, exit, fork, getdtablesize, getpid, lockf, open, setsid, umask, write,
+    close, dup, exit, fork, getdtablesize, getpid, lockf, open, setsid, umask, write, F_TLOCK,
 };
-use opentelemetry::{KeyValue, global};
+use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use serde::Deserialize;
-use snafu::{IntoError, prelude::*};
+use snafu::{prelude::*, IntoError};
 use tap::Pipe;
 use tokio::{
     net::TcpListener,
-    signal::unix::{SignalKind, signal},
-    sync::{Notify, RwLock, mpsc},
+    signal::unix::{signal, SignalKind},
+    sync::{mpsc, Notify, RwLock},
 };
 use tonic::transport::Server as TonicServer;
 use tower_http::{
@@ -65,16 +65,16 @@ use tower_http::{
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
 };
-use tracing::{Level, error, info};
+use tracing::{error, info, Level};
 use tracing_subscriber::{
-    Layer, Registry,
     filter::EnvFilter,
     fmt::{self, MakeWriter},
     layer::SubscriberExt,
+    Layer, Registry,
 };
 use url::Url;
 
-use indielinks_shared::{StorUrl, service::ExponentialBackoffParameters};
+use indielinks_shared::{entities::StorUrl, service::ExponentialBackoffParameters};
 
 use indielinks_cache::{
     cache::Cache,
@@ -86,22 +86,22 @@ use indielinks::{
     actor::make_router as make_actor_router,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
     cache::{
-        Backend as CacheBackend, FOLLOWER_TO_PUBLIC_INBOX, GrpcClientFactory, GrpcService,
-        LogStore, make_router as make_cache_router,
+        make_router as make_cache_router, Backend as CacheBackend, GrpcClientFactory, GrpcService,
+        LogStore, FOLLOWER_TO_PUBLIC_INBOX,
     },
     client::make_client,
     define_metric,
     delicious::make_router as make_delicious_router,
     dynamodb::Location as DynamoLocation,
     entities::FollowerId,
-    http::Indielinks,
+    indielinks::Indielinks,
     metrics::check_metric_names,
     origin::Origin,
     peppers::Peppers,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
-    users::{Configuration as UsersConfiguration, make_router as make_user_router},
+    users::{make_router as make_user_router, Configuration as UsersConfiguration},
     util::Credentials,
     webfinger::webfinger,
 };
@@ -197,16 +197,18 @@ pub enum Error {
     },
     #[snafu(display("Failed to open the indielinks lock file: errno={errno}"))]
     OpenLockFile { errno: errno::Errno },
-    #[snafu(display("Failed to connect to SycllaDB: {source}"))]
-    Syclla {
-        #[snafu(source(from(indielinks::scylla::Error, Box::new)))]
-        source: Box<indielinks::scylla::Error>,
-    },
+    #[snafu(display("Schema check failure: {source}"))]
+    SchemaCheck { source: indielinks::storage::Error },
     #[snafu(display("Failed to fork the indielinks process a second time: errno={errno}"))]
     SecondFork { errno: errno::Errno },
     #[snafu(display("Failed to set the tracing subscriber: {source}"))]
     Subscriber {
         source: tracing::subscriber::SetGlobalDefaultError,
+    },
+    #[snafu(display("Failed to connect to SycllaDB: {source}"))]
+    Syclla {
+        #[snafu(source(from(indielinks::scylla::Error, Box::new)))]
+        source: Box<indielinks::scylla::Error>,
     },
     #[snafu(display("Failed to instantiate a Tokio runtime: {source}"))]
     TokioRuntime { source: std::io::Error },
@@ -225,6 +227,8 @@ type Result<T> = std::result::Result<T, Error>;
 type StdResult<T, E> = std::result::Result<T, E>;
 
 static DEFAULT_LOCALSTATEDIR: &str = ".";
+
+static SCHEMA_VERSION: u32 = 0;
 
 /// Logging-related options read from the command line or the environment
 struct LogOpts {
@@ -902,6 +906,13 @@ async fn serve(
         // Re-build our database connections each pass, in case configuration values have changed:
         let (storage, tasks, cache) =
             select_storage(&cfg.storage_config, cfg.raft_config.this_node).await?;
+
+        // Validate the datastore schema ASAP:
+        let instance_state = storage
+            .validate_schema_version(SCHEMA_VERSION)
+            .await
+            .context(SchemaCheckSnafu)?;
+
         // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`
         // is a task processing implementation backed by our datastore.
         let nosql_tasks = Arc::new(BackgroundTasks::new(tasks));
@@ -918,6 +929,7 @@ async fn serve(
         let task_processor =
             background_tasks::new(nosql_tasks, context, Some(cfg.background_tasks().clone()))
                 .context(BackgroundTasksSnafu)?;
+        // This will need to be re-thought as the number (and types) of caches grows, but for now:
         let cache_node = CacheNode::<GrpcClientFactory>::new(
             &cfg.raft_config,
             GrpcClientFactory,
@@ -933,11 +945,10 @@ async fn serve(
             ),
         ));
 
-        // This will need to be re-thought as the number (and types) of caches grows, but for now:
-
         let state = Arc::new(Indielinks {
             origin: cfg.public_origin.clone(),
             instance_id: opts.instance_id,
+            instance_state,
             storage,
             exporter: exporter.clone(),
             pepper: cfg.pepper.clone(),

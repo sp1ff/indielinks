@@ -35,13 +35,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use either::Either;
-use futures::{StreamExt, TryStreamExt, stream};
-use http::{Method, Request, header};
+use futures::{stream, StreamExt, TryStreamExt};
+use http::{header, Method, Request};
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use reqwest::IntoUrl;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, IntoError, prelude::*};
+use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
 use tokio::time::Instant;
 use tower::{Service, ServiceExt};
@@ -49,12 +49,12 @@ use tracing::{debug, warn};
 use url::Url;
 use uuid::Uuid;
 
-use indielinks_shared::{PostId, StorUrl, UserId, Username};
+use indielinks_shared::entities::{PostId, StorUrl, UserId, UserPrivateKey, Username};
 
 use crate::{
     ap_entities::{
-        self, Actor, Create, Follow, Jld, Note, Recipient, ToJld, Type, make_follow_id,
-        make_user_id,
+        self, make_follow_id, make_user_id, Actor, Create, Follow, Jld, Note, Recipient, ToJld,
+        Type,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
     client::ClientType,
@@ -236,19 +236,12 @@ async fn send_activity_pub_core<U: IntoUrl, B: ToJld + std::fmt::Debug>(
     let request = Request::builder()
         .method(method)
         .uri(url.as_str())
-        .extension((user.clone(), origin.clone()))
+        .extension((
+            Either::<User, UserPrivateKey>::Left(user.clone()),
+            origin.clone(),
+        ))
         .header(header::ACCEPT, "application/activity+json")
         .header(header::CONTENT_TYPE, "application/activity+json")
-        .header(
-            header::DATE,
-            Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
-        )
-        .header(
-            header::HOST,
-            url.host_str().context(UrlHostSnafu {
-                url: Box::new(url.clone()),
-            })?,
-        )
         .body::<Bytes>(
             body.map(|b| Jld::new(b, context).context(JldSnafu))
                 .transpose()?
