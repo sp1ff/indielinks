@@ -21,43 +21,42 @@
 //! indielinks: ::indielinksd
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::OsStr,
     fmt::Debug,
     fs::{self},
     io::{self},
     path::PathBuf,
     result::Result as StdResult,
-    str::FromStr,
     time::Duration,
 };
 
 use bytes::Bytes;
 use clap::{
-    Arg, ArgAction, Command, crate_authors, crate_version, parser::ValueSource, value_parser,
+    crate_authors, crate_version, parser::ValueSource, value_parser, Arg, ArgAction, Command,
 };
 use http::{
-    HeaderValue,
     header::{ACCEPT, AUTHORIZATION, USER_AGENT},
+    HeaderValue,
 };
 use secrecy::SecretString;
 use serde::Deserialize;
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use tower::{
-    Service, ServiceBuilder, buffer::BufferLayer, limit::RateLimitLayer,
-    retry::backoff::MakeBackoff,
+    buffer::BufferLayer, limit::RateLimitLayer, retry::backoff::MakeBackoff, Service,
+    ServiceBuilder,
 };
 use tower_http::set_header::SetRequestHeaderLayer;
-use tracing::{Level, level_filters::LevelFilter};
-use tracing_subscriber::{Registry, fmt, layer::SubscriberExt};
+use tracing::{level_filters::LevelFilter, Level};
+use tracing_subscriber::{fmt, layer::SubscriberExt, Registry};
 use url::Url;
 
 use indielinks::origin::Origin;
 
 use indielinks_shared::{
-    Tagname,
     service::{Body, ExponentialBackoffPolicy, RateLimit},
+    Tagname,
 };
 
 use indielinks_client::{
@@ -122,16 +121,13 @@ enum Error {
         source: tracing::dispatcher::SetGlobalDefaultError,
         backtrace: Backtrace,
     },
-    #[snafu(display("Bad tagname: {source}"))]
-    Tagname {
-        source: indielinks_shared::Error,
-        backtrace: Backtrace,
-    },
     #[snafu(display("Invalid API key"))]
     Token {
         source: http::header::InvalidHeaderValue,
         backtrace: Backtrace,
     },
+    #[snafu(display("{target_name} is not a known target"))]
+    UnknownTarget { target_name: String },
 }
 
 impl std::fmt::Debug for Error {
@@ -141,6 +137,31 @@ impl std::fmt::Debug for Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            targets                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A target is a preconfigured set of options for new posts
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct Target {
+    pub replace: bool,
+    pub shared: bool,
+    #[serde(rename = "toread")]
+    pub to_read: bool,
+    pub tags: HashSet<Tagname>,
+}
+
+impl Default for Target {
+    fn default() -> Self {
+        Self {
+            replace: true,
+            shared: false,
+            to_read: true,
+            tags: HashSet::new(),
+        }
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         configuration                                          //
@@ -157,6 +178,7 @@ struct ConfigV1 {
     /// Rate limit for requests to indielinks
     #[serde(rename = "rate-limit")]
     pub rate_limit: RateLimit,
+    pub targets: HashMap<String, Target>,
 }
 
 impl ConfigV1 {
@@ -214,6 +236,11 @@ impl Configuration {
             Configuration::V1(config_v1) => config_v1.api(),
         }
     }
+    pub fn targets(&self) -> &HashMap<String, Target> {
+        match self {
+            Configuration::V1(config_v1) => &config_v1.targets,
+        }
+    }
     pub fn token(&self) -> Option<&SecretString> {
         match self {
             Configuration::V1(config_v1) => config_v1.token(),
@@ -240,11 +267,11 @@ async fn make_indielinks_client(
     rate_limit: &RateLimit,
 ) -> Result<
     impl Service<
-        http::Request<ReqBody>,
-        Response = http::Response<Bytes>,
-        // Response = http::Response<Vec<u8>>,
-        Error = Box<dyn std::error::Error + Send + Sync>,
-    > + Clone,
+            http::Request<ReqBody>,
+            Response = http::Response<Bytes>,
+            // Response = http::Response<Vec<u8>>,
+            Error = Box<dyn std::error::Error + Send + Sync>,
+        > + Clone,
 > {
     use indielinks_shared::service::ReqwestServiceLayer;
     use secrecy::ExposeSecret;
@@ -291,16 +318,6 @@ async fn make_indielinks_client(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                              main                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-fn parse_tags(text: &str) -> Result<HashSet<Tagname>> {
-    HashSet::from_iter(
-        text.split(',')
-            .map(Tagname::from_str)
-            .collect::<StdResult<Vec<_>, _>>()
-            .context(TagnameSnafu)?,
-    )
-    .pipe(Ok)
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -469,7 +486,7 @@ You can get the OneTab browser plugin at https://www.one-tab.com/.")
 to be escaped; the implementation will handle that.")
                 .arg(
                     Arg::new("replace")
-                        .short('r')
+                        .short('P')
                         .long("replace")
                         .num_args(0)
                         .action(ArgAction::SetTrue)
@@ -484,12 +501,22 @@ to be escaped; the implementation will handle that.")
                         .help("Mark this link as public/shared")
                 )
                 .arg(
-                    Arg::new("tags")
+                    Arg::new("tag")
                         .short('t')
-                        .long("tags")
-                        .num_args(1)
-                        .value_parser(parse_tags)
-                        .help("One or more tags, separated by commas")
+                        .long("tag")
+                        .help("Specify a tag to be applied to this post-- may be given more than once")
+                        .long_help("Tags may be up to 255 grapheme clusters in length and may not contain commas nor whitespace. Tags may be designated as private by beginning them with a '.'. More than one tag may be given by providing this option more than once (i.e. \"-t a -t b...\").")
+                        .action(ArgAction::Append)
+                        .value_parser(value_parser!(Tagname))
+                )
+                .arg(
+                    Arg::new("target")
+                        .short('r')
+                        .long("target")
+                        .help("pre-configured target for this link")
+                        .long_help("Since one will likely re-use many of these options across invocations of this tool, it may be convenient to define them once in the configuration file & afterwards refer to that collection by name; we call such a pre-defined collection a \"target\". ")
+                        .value_parser(value_parser!(String))
+                        .required(false)
                 )
                 .arg(
                     Arg::new("title")
@@ -599,6 +626,49 @@ to be escaped; the implementation will handle that.")
             .context(OnetabSnafu)
         }
         Some(("add-link", matches)) => {
+            // The rules:
+
+            // - if no target given, then the command line arguments `tag`, `replace`, `shared` &
+            //   `to-read` are used; they all have default values, so no problems, there.
+            // - if a target *is* given, and it's not known, that's an error
+            // - if we have a legit target, that forms the default values, but they can be
+            //   individually overridden by command line arguments
+
+            let (tags, replace, shared, to_read) = match matches.get_one::<String>("target") {
+                Some(target_name) => {
+                    let target = cfg.targets().get(target_name).context(UnknownTargetSnafu {
+                        target_name: target_name.clone(),
+                    })?;
+                    (
+                        matches
+                            .get_many::<Tagname>("tag")
+                            .map(|iter| HashSet::from_iter(iter.cloned()))
+                            .unwrap_or(target.tags.clone()),
+                        matches
+                            .get_one::<bool>("replace")
+                            .cloned()
+                            .unwrap_or(target.replace),
+                        matches
+                            .get_one::<bool>("shared")
+                            .cloned()
+                            .unwrap_or(target.shared),
+                        matches
+                            .get_one::<bool>("to-read")
+                            .cloned()
+                            .unwrap_or(target.to_read),
+                    )
+                }
+                None => (
+                    matches
+                        .get_many::<Tagname>("tag")
+                        .map(|iter| HashSet::from_iter(iter.cloned()))
+                        .unwrap_or(HashSet::new()),
+                    matches.get_flag("replace"),
+                    matches.get_flag("shared"),
+                    matches.get_flag("to-read"),
+                ),
+            };
+
             add_link(
                 client,
                 cfg.api().context(ApiSnafu)?,
@@ -606,13 +676,10 @@ to be escaped; the implementation will handle that.")
                 matches.get_one::<Url>("URL").unwrap(/* impossible */),
                 matches.get_one::<String>("title").unwrap(/* impossible */),
                 None, // no notes, as yet
-                matches
-                    .get_one::<HashSet<Tagname>>("tags")
-                    .cloned()
-                    .unwrap_or(HashSet::new()),
-                matches.get_one::<bool>("replace").copied(),
-                matches.get_one::<bool>("shared").copied(),
-                matches.get_one::<bool>("to-read").copied(),
+                tags.iter(),
+                replace,
+                shared,
+                to_read,
             )
             .await
             .context(AddLinkSnafu)

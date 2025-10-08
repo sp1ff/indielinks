@@ -13,9 +13,9 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashSet, fmt::Debug};
+use std::fmt::Debug;
 
-use http::{Method, Request, header::AUTHORIZATION};
+use http::{header::AUTHORIZATION, Method, Request};
 use indielinks::origin::Origin;
 use itertools::Itertools;
 use secrecy::SecretString;
@@ -78,17 +78,17 @@ type Result<T> = std::result::Result<T, Error>;
 
 /// Add a link
 #[allow(clippy::too_many_arguments)]
-pub async fn add_link<C>(
+pub async fn add_link<'a, C, I>(
     mut client: C,
     api: &Origin,
     token: &SecretString,
     url: &Url,
     title: &str,
     notes: Option<&str>,
-    tags: HashSet<Tagname>,
-    replace: Option<bool>,
-    shared: Option<bool>,
-    to_read: Option<bool>,
+    tags: I,
+    replace: bool,
+    shared: bool,
+    to_read: bool,
 ) -> Result<()>
 where
     // It would be nice to have an alias for this, but the trait_alias feature is only on nightly
@@ -97,22 +97,20 @@ where
             Response = http::Response<bytes::Bytes>,
             Error = Box<dyn std::error::Error + Send + Sync>,
         > + Clone,
+    I: Iterator<Item = &'a Tagname>,
 {
     use secrecy::ExposeSecret;
 
+    let tags = tags.map(|tag| tag.to_string()).join(",");
     let add_req = PostAddReq {
         url: url.into(),
         title: title.to_owned(),
         notes: notes.map(|s| s.to_owned()),
-        tags: if tags.is_empty() {
-            None
-        } else {
-            Some(tags.into_iter().map(|tag| tag.to_string()).join(","))
-        },
+        tags: if tags.is_empty() { None } else { Some(tags) },
         dt: None,
-        replace,
-        shared,
-        to_read,
+        replace: Some(replace),
+        shared: Some(shared),
+        to_read: Some(to_read),
     };
     let req = Request::builder()
         .method(Method::POST)
