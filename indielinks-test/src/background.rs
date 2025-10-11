@@ -21,9 +21,10 @@ use indielinks::{
         TaggedTask, Task,
     },
     client::make_client,
-    origin::Origin,
     storage::Backend as StorageBackend,
 };
+
+use indielinks_shared::origin::Origin;
 
 use async_trait::async_trait;
 use libtest_mimic::Failed;
@@ -33,8 +34,8 @@ use uuid::Uuid;
 
 use std::{
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
     },
     time::Duration,
 };

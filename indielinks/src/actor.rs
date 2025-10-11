@@ -41,7 +41,10 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
-use indielinks_shared::entities::{PostId, StorUrl, UserPrivateKey, Username};
+use indielinks_shared::{
+    entities::{PostId, StorUrl, UserPrivateKey, Username},
+    origin::Origin,
+};
 
 use crate::{
     activity_pub::{derive_visibility, resolve_recipients, send_activity_pub_no_response},
@@ -59,7 +62,6 @@ use crate::{
     },
     http::ErrorResponseBody,
     indielinks::Indielinks,
-    origin::Origin,
     storage::{self, Backend as StorageBackend, Error as StorError},
 };
 

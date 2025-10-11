@@ -24,7 +24,6 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use futures::{stream::iter, StreamExt};
-use indielinks::origin::Origin;
 use itertools::Itertools;
 use secrecy::SecretString;
 use serde::{de::DeserializeOwned, Deserialize};
@@ -32,7 +31,7 @@ use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tower::Service;
 use url::Url;
 
-use indielinks_shared::{api::PostAddReq, entities::Tagname};
+use indielinks_shared::{api::PostAddReq, entities::Tagname, origin::Origin};
 
 use crate::{import::import_posts, service::ReqBody};
 

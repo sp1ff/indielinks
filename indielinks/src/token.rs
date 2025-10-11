@@ -33,10 +33,9 @@ use sha2::Sha256;
 use snafu::{prelude::*, Backtrace};
 use uuid::Uuid;
 
-use crate::{
-    origin::Host,
-    signing_keys::{self, KeyId, SigningKey, SigningKeys},
-};
+use indielinks_shared::origin::Host;
+
+use crate::signing_keys::{self, KeyId, SigningKey, SigningKeys};
 
 use indielinks_shared::entities::Username;
 

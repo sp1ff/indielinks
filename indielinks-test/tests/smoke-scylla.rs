@@ -20,11 +20,13 @@ use common::{run, Configuration, IndielinksTest};
 use crypto_common::rand_core::{OsRng, RngCore};
 use indielinks::{
     entities::{FollowId, User},
-    origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
     scylla::{add_followers, add_following, add_user, create_client, execute_cql},
 };
-use indielinks_shared::entities::{StorUrl, UserEmail, UserId, Username};
+use indielinks_shared::{
+    entities::{StorUrl, UserEmail, UserId, Username},
+    origin::Origin,
+};
 use indielinks_test::{
     activity_pub::{as_follower, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},

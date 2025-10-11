@@ -80,7 +80,7 @@ use pin_project::pin_project;
 use rmp_serde::to_vec;
 use scylla::DeserializeRow;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, IntoError, prelude::*};
+use snafu::{prelude::*, Backtrace, IntoError};
 use tokio::{
     sync::Notify,
     task::{Id, JoinError, JoinHandle, JoinSet},
@@ -88,7 +88,9 @@ use tokio::{
 use tracing::error;
 use uuid::Uuid;
 
-use crate::{define_metric, origin::Origin, storage::Backend as StorageBackend};
+use indielinks_shared::origin::Origin;
+
+use crate::{define_metric, storage::Backend as StorageBackend};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module error type                                        //
@@ -704,10 +706,8 @@ mod test {
 
     #[tokio::test]
     async fn simple() {
-        assert!(
-            inventory::iter::<BackgroundTask>()
-                .find(|t| t.id == SLEEP_TASK)
-                .is_some()
-        );
+        assert!(inventory::iter::<BackgroundTask>()
+            .find(|t| t.id == SLEEP_TASK)
+            .is_some());
     }
 }

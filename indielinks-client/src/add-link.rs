@@ -16,14 +16,13 @@
 use std::fmt::Debug;
 
 use http::{header::AUTHORIZATION, Method, Request};
-use indielinks::origin::Origin;
 use itertools::Itertools;
 use secrecy::SecretString;
 use snafu::{Backtrace, ResultExt, Snafu};
 use tower::{Service, ServiceExt};
 use url::Url;
 
-use indielinks_shared::{api::PostAddReq, entities::Tagname};
+use indielinks_shared::{api::PostAddReq, entities::Tagname, origin::Origin};
 
 use crate::service::ReqBody;
 

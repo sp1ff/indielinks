@@ -109,6 +109,7 @@ use indielinks_shared::{
         REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::Username,
+    origin::Origin,
 };
 
 use crate::{
@@ -119,7 +120,6 @@ use crate::{
     entities::{self, FollowId, User},
     http::{ErrorResponseBody, SameSite},
     indielinks::Indielinks,
-    origin::Origin,
     peppers::{self, Peppers},
     signing_keys::{self, SigningKeys},
     storage::{self, Backend as StorageBackend},

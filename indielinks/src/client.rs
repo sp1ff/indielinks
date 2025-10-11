@@ -54,6 +54,7 @@ use tracing::{debug, error, Level};
 
 use indielinks_shared::{
     entities::{UserPrivateKey, Username},
+    origin::Origin,
     service::{
         Body, ExponentialBackoffParameters, ExponentialBackoffPolicy, RateLimit,
         ReqwestServiceFuture, ReqwestServiceLayer,
@@ -65,7 +66,6 @@ use crate::{
     authn::{compute_signature, AddSha256DigestIfNotPresent, AddSha256DigestIfNotPresentLayer},
     define_metric,
     entities::User,
-    origin::Origin,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

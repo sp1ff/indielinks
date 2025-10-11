@@ -21,11 +21,11 @@ use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use indielinks_shared::{entities::StorUrl, instance_state::InstanceStateV0};
+use indielinks_shared::{entities::StorUrl, instance_state::InstanceStateV0, origin::Origin};
 
 use crate::{
     background_tasks::BackgroundTasks, cache::GrpcClientFactory, entities::FollowerId,
-    http::SameSite, origin::Origin, peppers::Peppers, signing_keys::SigningKeys,
+    http::SameSite, peppers::Peppers, signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
 };
 

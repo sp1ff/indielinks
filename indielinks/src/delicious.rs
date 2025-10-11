@@ -60,6 +60,7 @@ use indielinks_shared::{
         TagsGetRsp, TagsRenameReq, UpdateRsp,
     },
     entities::{Post, PostId, StorUrl, Tagname, Username},
+    origin::Origin,
 };
 
 use crate::{
@@ -70,7 +71,6 @@ use crate::{
     entities::User,
     http::ErrorResponseBody,
     indielinks::Indielinks,
-    origin::Origin,
     peppers::Peppers,
     signing_keys::SigningKeys,
     storage::{self, Backend as StorageBackend, DateRange},

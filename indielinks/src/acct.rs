@@ -122,7 +122,9 @@ use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use snafu::{prelude::*, Backtrace};
 
-use crate::{origin::Host, util::exactly_two};
+use indielinks_shared::origin::Host;
+
+use crate::util::exactly_two;
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
@@ -141,7 +143,7 @@ pub enum Error {
     #[snafu(display("{host} could not be parsed as an acct host: {source}"))]
     Host {
         host: String,
-        source: crate::origin::Error,
+        source: indielinks_shared::origin::Error,
     },
     #[snafu(display("{text} is not a valid percent-encoded username"))]
     PctEncodedUsername {

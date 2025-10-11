@@ -87,13 +87,15 @@ use wiremock::{
     Mock, ResponseTemplate,
 };
 
-use indielinks_shared::entities::{StorUrl, Username};
+use indielinks_shared::{
+    entities::{StorUrl, Username},
+    origin::Origin,
+};
 
 use indielinks::{
     ap_entities::{self, make_user_id},
     authn::{ensure_sha_256, sign_request},
     entities::FollowId,
-    origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
 };
 

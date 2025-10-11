@@ -18,7 +18,7 @@
 //! [indic](crate) (think "Indie-C") is a general purpose [indielinks] client. It currently supports
 //! three sub-commands around importing and adding links, but I anticipate it growing quickly.
 //!
-//! indielinks: ::indielinksd
+//! [indielinks]: ../indielinksd/index.html
 
 use std::{
     collections::{HashMap, HashSet},
@@ -52,10 +52,9 @@ use tracing::{level_filters::LevelFilter, Level};
 use tracing_subscriber::{fmt, layer::SubscriberExt, Registry};
 use url::Url;
 
-use indielinks::origin::Origin;
-
 use indielinks_shared::{
     entities::Tagname,
+    origin::Origin,
     service::{Body, ExponentialBackoffPolicy, RateLimit},
 };
 
@@ -255,6 +254,8 @@ impl Default for Configuration {
 }
 
 /// Create an [indielinks] client
+///
+/// [indielinks]: ../indielinksd/index.html
 ///
 /// Return a [reqwest::Client] wrapped in tower layers that will:
 ///

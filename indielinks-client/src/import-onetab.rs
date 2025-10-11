@@ -25,8 +25,7 @@ use std::{
 };
 
 use futures::{stream::iter, StreamExt};
-use indielinks::origin::Origin;
-use indielinks_shared::{api::PostAddReq, entities::Tagname};
+use indielinks_shared::{api::PostAddReq, entities::Tagname, origin::Origin};
 use itertools::Itertools;
 use secrecy::SecretString;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};

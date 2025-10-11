@@ -74,7 +74,7 @@ use tracing_subscriber::{
 };
 use url::Url;
 
-use indielinks_shared::{entities::StorUrl, service::ExponentialBackoffParameters};
+use indielinks_shared::{entities::StorUrl, origin::Origin, service::ExponentialBackoffParameters};
 
 use indielinks_cache::{
     cache::Cache,
@@ -96,7 +96,6 @@ use indielinks::{
     entities::FollowerId,
     indielinks::Indielinks,
     metrics::check_metric_names,
-    origin::Origin,
     peppers::Peppers,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
     signing_keys::SigningKeys,

@@ -21,12 +21,11 @@
 
 use std::time::Duration;
 
-use indielinks_shared::entities::Username;
+use indielinks_shared::{entities::Username, origin::Origin};
 
 use indielinks::{
     actor::CollectionPage,
     ap_entities::{self, Jld},
-    origin::Origin,
 };
 use libtest_mimic::Failed;
 use reqwest::{Client, Url};

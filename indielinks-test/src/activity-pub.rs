@@ -28,13 +28,12 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-use indielinks_shared::{api::FollowReq, entities::Username};
+use indielinks_shared::{api::FollowReq, entities::Username, origin::Origin};
 
 use indielinks::{
     actor::CollectionPage,
     ap_entities::{Accept, ActorField, Create, Jld, Like, Note, ObjectField},
     entities::FollowId,
-    origin::Origin,
     peppers::{Pepper, Version as PepperVersion},
 };
 

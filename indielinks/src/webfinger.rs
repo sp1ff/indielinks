@@ -49,11 +49,12 @@
 
 use std::sync::Arc;
 
+use indielinks_shared::origin::Origin;
+
 use crate::{
     ap_entities::make_user_id,
     entities::User,
     indielinks::Indielinks,
-    origin::Origin,
     storage::Backend as StorageBackend,
     {acct::Account, http::ErrorResponseBody},
     {define_metric, storage},

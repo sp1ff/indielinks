@@ -35,12 +35,11 @@ use sha2::Digest;
 use snafu::{ensure, Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 
-use indielinks_shared::entities::Username;
+use indielinks_shared::{entities::Username, origin::Host};
 use tower::{Layer, Service};
 
 use crate::{
     entities::{self, User},
-    origin::Host,
     peppers::Peppers,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,

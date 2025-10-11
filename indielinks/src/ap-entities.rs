@@ -131,12 +131,14 @@ use tap::Pipe;
 use tower::{Service, ServiceExt};
 use url::Url;
 
-use indielinks_shared::entities::{Post, PostId, UserPrivateKey, Username};
+use indielinks_shared::{
+    entities::{Post, PostId, UserPrivateKey, Username},
+    origin::Origin,
+};
 
 use crate::{
     client::ClientType,
     entities::{FollowId, User},
-    origin::Origin,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -204,7 +206,7 @@ pub enum Error {
     #[snafu(display("{url} has an opaque origin: {source}"))]
     OpaqueOrigin {
         url: Box<Url>,
-        source: crate::origin::Error,
+        source: indielinks_shared::origin::Error,
     },
     #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
     Pem {
@@ -358,7 +360,7 @@ mod test_locations {
 
     use uuid::Uuid;
 
-    use crate::origin::{Host, Protocol};
+    use indielinks_shared::origin::{Host, Protocol};
 
     use super::*;
 
@@ -660,7 +662,7 @@ impl From<Url> for ActorField {
 #[serde(rename_all = "camelCase")]
 pub struct InstanceActor {
     id: Url,
-    preferred_username: crate::origin::Host,
+    preferred_username: indielinks_shared::origin::Host,
     public_key: PublicKey,
     endpoints: Endpoints,
 }
@@ -1419,9 +1421,7 @@ mod twitter_text {
 
     use super::Html;
 
-    use indielinks_shared::entities::StorUrl;
-
-    use crate::origin::Origin;
+    use indielinks_shared::{entities::StorUrl, origin::Origin};
 
     pub fn parse_post<I: Iterator<Item: AsRef<str>>>(
         origin: &Origin,

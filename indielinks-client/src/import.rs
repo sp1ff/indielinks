@@ -15,8 +15,7 @@
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use http::{header::AUTHORIZATION, Method, Request};
-use indielinks::origin::Origin;
-use indielinks_shared::api::PostAddReq;
+use indielinks_shared::{api::PostAddReq, origin::Origin};
 use secrecy::SecretString;
 use snafu::{Backtrace, ResultExt, Snafu};
 use tower::{Service, ServiceExt};
