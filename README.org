@@ -2,7 +2,7 @@
 #+DESCRIPTION: Bookmarks in the Fediverse
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-10-14 Tue 17:52>
+#+DATE: <2025-10-15 Wed 10:11>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -11,26 +11,40 @@
 
 indielinks brings [[https://web.archive.org/web/20080906021806/http://delicious.com/][del.icio.us]]-style social bookmarking to the [[https://en.wikipedia.org/wiki/Fediverse][Fediverse]].
 
-[[https://en.wikipedia.org/wiki/Delicious_(website)][del.icio.us]] was a web service in the aughts & early teens to which you could not only upload your bookmarks, but share them, discuss them with others and so discover content shared by others (AKA "social bookmarking"). The [[https://en.wikipedia.org/wiki/Fediverse][Fediverse]] is a collection of decentralized social networking services that federate with one another over the [[https://www.w3.org/TR/activitypub/][ActivityPub]] protocol; the one you've mostly likely heard of is [[https://joinmastodon.org/][Mastodon]].
+[[https://en.wikipedia.org/wiki/Delicious_(website)][del.icio.us]] was a web service in the aughts & early teens to which you could not only upload your bookmarks, but share them, discuss them and discover content shared by others (AKA "social bookmarking"). The [[https://en.wikipedia.org/wiki/Fediverse][Fediverse]] is a collection of decentralized social networking services that federate with one another over the [[https://www.w3.org/TR/activitypub/][ActivityPub]] protocol; the one you've mostly likely heard of is [[https://joinmastodon.org/][Mastodon]].
 
-indielinks is a web service that offers social bookmarking, but it's federated: imagine your (public) bookmarks showing up in your followers' Mastodon feeds, where they can comment, boost & re-post.
+indielinks is a web service that offers social bookmarking
+
+#+ATTR_HTML: :style margin-left: auto; margin-right: auto; display: block; :width 80%
+#+NAME: indielinks
+#+CAPTION: My "daily hacking" reading list
+[[assets/daily-hacking.png]]
+
+but it's federated: when you add a (public) link
+
+#+ATTR_HTML: :style margin-left: auto; margin-right: auto; display: block; :width 90%
+#+NAME: fediverse
+#+CAPTION: Adding a public link
+[[assets/add-link.png]]
+
+it will show up in your followers' Mastodon feeds, where they can comment, boost & re-post.
+
+#+ATTR_HTML: :style margin-left: auto; margin-right: auto; display: block;
+#+NAME: fediverse
+#+CAPTION: The link showing up in my indieweb.social timeline
+[[assets/mastodon-timeline.png]]
 * License
 
 indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.html][GPL v3.0]].
 * Pre-requisites
 
-At this time, indielinks is only available as source. Therefore, the Rust stable [[https://rustup.rs/][toolchain]] is required. To run indielinks locally, you'll either need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or [[https://www.docker.com/][Docker]] (to pull & run ScyllaDB images). The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend.
-Finally, you'll also need to have the =wasm32-unknown-unknown= target available in your Rust toolchain.
-
-#+BEGIN_SRC bash
-  rustup target add wasm32-unknown-unknown
-#+END_SRC
+At this time, indielinks is only available as source. Therefore, the Rust stable [[https://rustup.rs/][toolchain]] is required. To run indielinks locally, you'll either need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or [[https://www.docker.com/][Docker]] (to pull & run ScyllaDB images). The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend. The [[INSTALL.org]] file has details.
 * Installation
 
-Presently, indielinks can only be installed locally, running against ScyllaDB, by hand. See INSTALL.org for details.
+Presently, indielinks can only be installed locally, running against ScyllaDB, by hand. See [[INSTALL.org]] for details.
 * Status & Roadmap
 
-I'm using indielinks today, running locally on bare metal to save bookmarks & maintain reading lists. That said, it's early code, and I haven't even stood-up the first instance, yet. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support on the backend, have made an indielinks cluster into a Raft consensus cluster (in anticipation of caching), and am currently working on a web frontend.
+I'm using indielinks today, running locally on bare metal to save bookmarks & maintain reading lists. That said, it's early code, and I haven't even stood-up the first public instance, yet. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support on the backend, have made an indielinks cluster into a Raft consensus cluster (in anticipation of caching), and am currently working on a web frontend.
 
 Outside of installation, the frontend is probably the most lacking: it's incomplete, and generally looks like it was written, well, by a backend developer.
 
@@ -38,4 +52,4 @@ I've only recently made this project public. You can read more about the project
 
 Beyond packaging and the frontend, my next focus will be on deploying to the cloud & making an instance available, perhaps publicly, perhaps by invitation.
 
-In the meantime, comments, suggestions and contributions are welcome, in the [[https://github.com/sp1ff/indielinks/issues][issues]] or at [[mailto:sp1ff@pobox.com][sp1ff@pobox.com]]. In particular, if you're a frontend developer who'd be interested in helping-out, I'd love to hear from you.
+In the meantime, comments, suggestions and contributions are welcome, on [[https://indieweb.social/@sp1ff][Mastodon]], in the [[https://github.com/sp1ff/indielinks/issues][issues]] or at [[mailto:sp1ff@pobox.com][sp1ff@pobox.com]]. In particular, if you're a frontend developer who'd be interested in helping out, I'd love to hear from you.
