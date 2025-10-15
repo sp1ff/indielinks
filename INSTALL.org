@@ -1,0 +1,55 @@
+#+TITLE: INSTALL
+#+DESCRIPTION: Installation instructions for indielinks
+#+AUTHOR: Michael Herstine
+#+EMAIL: sp1ff@pobox.com
+#+DATE: <2025-10-14 Tue 17:52>
+#+AUTODATE: t
+#+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
+#+STARTUP: overview
+
+* Overview
+
+Arch & Debian packages are in the works, but for now, this is a manual process. Don't treat this file as a checklist to be blindly copied: you'll need to understand each step & modify it for your particular case:
+
+* Installation process:
+
+** Install the Rust Toolchain
+
+If you don't have it already:
+
+#+BEGIN_SRC bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  rustup target add wasm32-unknown-unknown
+  cargo install --locked trunk
+#+END_SRC
+** Install [[https://www.scylladb.com/][ScyllaDB]] Using Your Distribution's Package Manager
+
+On Arch, I did the following:
+
+#+BEGIN_SRC bash
+  yay -S scylla-bin
+  sudo scylla_io_setup
+  sudo scylla_cpuset_setup --smp 2
+  sudo scylla_memory_setup --memory 3G
+  sudo systemctl start scylla-server
+#+END_SRC
+** Install [[https://pypi.org/project/cqlsh/][cqlsh]]
+
+=cqlsh= is, regrettably, implemented in Python:
+
+#+BEGIN_SRC bash
+  mkdir ~/venvs && cd ~/venvs
+  python -m env cqlsh
+  source cqlsh/bin/activate
+  pip install scylla-cqlsh
+  deactivate
+#+END_SRC
+** Install indielinks
+
+Before doing so, you probably want to skim the file =indielinks/proto-indielinks.toml= and adjust the install location, port numberes & like that. In particular, if you don't happen to have an OTLP collector running locally, just omit the =[otlp-export]= section altogether.
+
+#+BEGIN_SRC bash
+  cd ~/code/projects/indielinks
+  admin/proto-install
+#+END_SRC
+  

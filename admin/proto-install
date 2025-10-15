@@ -132,6 +132,7 @@ cd ../..
 /home/$USER/bin/indielinks-schemas -D -p scylla 127.0.0.1:9042
 
 install indielinks/proto-indielinks.toml /home/$USER/etc/indielinks.toml
+sed -i -e s@/home/USER/@/home/$USER/@ /home/$USER/etc/indielinks.toml
 
 if test -r /home/$USER/var/run/indielinks.pid; then
     pid=$(cat /home/$USER/var/run/indielinks.pid)

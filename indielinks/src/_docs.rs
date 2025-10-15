@@ -16,13 +16,13 @@
 //! # General indielinks Documentation
 //!
 //! General (i.e. not documenting a particular struct or a method) documentation goes here. It's
-//! really just a grab bag at this point; I'll polish it after collecting some content.
+//! a bit of a grab bag at this point.
 //!
 //! ## The Data Store
 //!
 //! Some might be surprised at my choice of ScyllaDB and DynamoDB. I admit, I didn't think it
-//! through very deeply; it's just that in 2024 I think we're past the point where a relational
-//! database should be the default answer when you need to write-down some state. A NoSQL
+//! through very deeply; it's just that in 2024 I thought we were past the point where a relational
+//! database should be the default answer when you need to write down some state. A NoSQL
 //! wide-column store is pretty-much my default solution, and it's only when & if I discover during
 //! design that I truly can't wriggle-out of joins, or referential integrity, or full-blow ACID
 //! transactions that I change to a RDBMS.
@@ -47,7 +47,7 @@
 //!
 //! I chose to use [OpenTelemetry] (AKA OTel) for for indielinks metrics, both because my sense is
 //! that its adoption is growing and just because I like the idea of vendor-agnostic support. You
-//! can still scrapte [Prometheus]-formatted metrics at `/metrics`, just because I wouldn't feel
+//! can still scrape [Prometheus]-formatted metrics at `/metrics`, just because I wouldn't feel
 //! comfortable without it, but you can also configure indielinks with the address of an OTLP
 //! collector to have it push metrics in OTLP format (http/protobuf only) to that endpoint.
 //!
@@ -270,12 +270,13 @@
 //!
 //! ## Integration Tests
 //!
-//! I've begun building-out integration tests in the [indielinks-test] crate. While these tests fit
-//! into the standard Rust integration test framework, I've created them with custom harnesses that
-//! will stand-up ScyllaDB, spin-up an indielinks instance, & then allow the tests to interact with
-//! indielinks as HTTP clients.
+//! I've begun building-out integration tests in dedicated crates (e.g. [indielinks-test]). While
+//! these tests fit into the standard Rust integration test framework, I've created them with custom
+//! harnesses that will stand-up ScyllaDB, spin-up an indielinks instance & then allow the tests to
+//! interact with indielinks as HTTP clients. I wrote about this in detail [here].
 //!
 //! [indielinks-test]: ../../indielinks_test/index.html
+//! [here]: https://www.unwoundstack.com/blog/integration-testing-rust-binaries.html
 //!
 //! ## indielinks as Client
 //!
@@ -304,10 +305,10 @@
 //!
 //! It was my understanding that `GET` ActivityPub requests need *not* be signed, but it turns out
 //! that Mastodon has introduced something called [secure mode]: "Secure mode is the foundation upon
-//! which “limited federation mode” is built. A Mastodon server in limited federation mode will only
+//! which 'limited federation mode' is built. A Mastodon server in limited federation mode will only
 //! federate with servers its admin has explicitly allowed, and reject all other requests." A
 //! Mastodon instance in secure mode will, among other things, enable what is known as [authorized
-//! fetch]: "which requires all HTTP GET requests for ActivityPub objects to include HTTP
+//! fetch] "which requires all HTTP GET requests for ActivityPub objects to include HTTP
 //! Signatures... Servers with authorized fetch enabled generally don't enforce any fine grained
 //! access control over the actors whose signatures they require to fetch data. They usually only
 //! reject requests from actors on domains that they've blocked at the server level."
@@ -353,3 +354,44 @@
 //! I spent the best part of a year (on & off) "picking at" the problem of implementing an
 //! ActivityPub server. That initial prototyping can be found on branch `prototypes`, but `master`
 //! (and its offshoots) contains the production code.
+//!
+//! ## The ChangeLog (or the lack thereof)
+//!
+//! First, let's fix terminology. In this section, I'm using the GNU term "ChangeLog", as
+//! [discussed] in the [GNU Coding
+//! Standards](https://www.gnu.org/prep/standards/standards.html#Top): "Keep a change log to
+//! describe all the changes made to program source files. The purpose of this is so that people
+//! investigating bugs in the future will know about the changes that might have introduced the
+//! bug." This seems superfluous to me in the age of widespread SCM. In general, a user who's
+//! obtained your source code without cloning the git repo (as an Autotools-style source code
+//! distribution, say) won't immediately have the commit history available to them, so providing the
+//! file seems helpful in that case. However, indielinks at this time doesn't provide any such
+//! thing.
+//!
+//! [discussed]: https://www.gnu.org/prep/standards/standards.html#Change-Logs
+//!
+//! It _ought_ to be possible to generate a GNU style ChangeLog from a git repo, but there doesn't
+//! seem to be many tools out there to do that (which reinforces my sense that ChangeLogs just
+//! aren't that useful). I've used the [gnulib] tool [gitlog-to-changelog] to produce them from the
+//! git history on other projects, but it's otuput is not terribly good: it mostly just reformats
+//! the git commit messages; it doesn't filter-out, say, merge commits, nor does it display the list
+//! of modified files (let alone which functions were modified in those files).
+//!
+//! [gnulib]: https://www.gnu.org/software/gnulib/manual/gnulib.html#Top
+//! [gitlog-to-changelog]: https://www.gnu.org/software/gnulib/manual/gnulib.html#gitlog_002dto_002dchangelog
+//!
+//! As a ressult, I'm simply not maintaining a ChangeLog for the indielinks project.
+//!
+//! Now, [keep a changelog] seems to mean something different by the workd "changelog", declaring
+//! the "GNU changelog style guide, \[and\] the two-paragraph-long GNU NEWS file 'guideline'...
+//! inadequate or insufficient" which would be interesting if they only said in what way they were
+//! deficient. They don't, and the project's "[changelog]" looks to me like... a GNU [NEWS] file: "a
+//! list of user-visible changes worth mentioning." As a user myself I've found this useful when
+//! trouble-shooting, so I distribute them along with all my projects. I really don't do much with
+//! it until I roll a release, where my release checklist always includes updating the file. I _do_
+//! keep a section at the top of the file titled "UNRELEASED" where I note major changes during
+//! development, usually when merging a feature branch.
+//!
+//! [keep a changelog]: https://keepachangelog.com/en/1.1.0/
+//! [changelog]: https://github.com/olivierlacan/keep-a-changelog/blob/main/CHANGELOG.md
+//! [NEWS]: https://www.gnu.org/prep/standards/standards.html#NEWS-File
