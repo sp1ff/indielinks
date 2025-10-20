@@ -395,3 +395,55 @@
 //! [keep a changelog]: https://keepachangelog.com/en/1.1.0/
 //! [changelog]: https://github.com/olivierlacan/keep-a-changelog/blob/main/CHANGELOG.md
 //! [NEWS]: https://www.gnu.org/prep/standards/standards.html#NEWS-File
+//!
+//! ## Packaging
+//!
+//! Although at the time of this writing, I haven't stood-up a public indielinks instance, I'd like
+//! to make it as easy as possible for people to download & install it locally to play with. My
+//! first step has been to provide Debian & Arch binary packages, as those are the two distributions
+//! I currently use.
+//!
+//! ### Arch
+//!
+//! The obvious move here is to write a `PKGBUILD` for a "git-style" package, and maybe even place
+//! it on the AUR itself. Now, there *is* a Cargo plugin for this: [cargo-aur], but I'm not using it
+//! for a few reasons:
+//!
+//! [cargo-aur]: https://github.com/fosskers/cargo-aur
+//!
+//! - I have non-Rust projects I'd like to package in this way, so I'd like to familiarize myself
+//!   with carrying-out the process "by hand"
+//! - IME, this approach requires to the plugin author to make certain assumptions about your
+//!   project, that may not necessarily be applicable to any given project
+//! - and, indeed, it [turns out] that cargo-aur doesn't support workspaces
+//!
+//! [turns out]: https://github.com/fosskers/cargo-aur/issues/17
+//!
+//! ### Debian
+//!
+//! The same situation presents itself here with respect to [cargo-deb], though in this case the
+//! question is more complex, because both options are even less appealing: Debian packaging is
+//! [notoriously](https://optimizedbyotto.com/post/debcraft-easy-debian-packaging/)
+//! [difficult](https://www.reddit.com/r/rust/comments/ursdqx/have_you_guys_tried_cargodeb_amazing/),
+//! and [cargo-deb] seems to have adapted by not even trying to produce a compliant Debian source
+//! package.
+//!
+//! [cargo-deb]: https://github.com/kornelski/cargo-deb
+//!
+//! I spent a little time reading-up on Debian packaging in the hopes of building a proper source
+//! package (for the same reason as with Arch), but quickly found myself bewildered by the
+//! [welter](https://manpages.debian.org/bullseye/debhelper/debhelper.7.en.html)
+//! [of](https://optimizedbyotto.com/post/debcraft-easy-debian-packaging/)
+//! [tools](https://people.debian.org/~nthykier/blog/2023/a-new-debian-package-helper-debputy.html)
+//! out there for the job.
+//!
+//! The situation is particularly knotty [with respect to
+//! Rust](https://wiki.debian.org/Teams/RustPackaging/Policy): the debhelper
+//! build system that I'd _thought_ was salient, [dh-cargo], apparently doesn't support workspaces.
+//! Now, there's a _new_ debhelper build system, [dh-rust] that *does*, but that's only available in
+//! Debian 13, whereas my distro is based on Debian 12.
+//!
+//! [dh-cargo]: https://packages.debian.org/sid/dh-cargo
+//! [dh-rust]: https://packages.debian.org/search?keywords=dh-rust&searchon=names&suite=stable&section=all
+//!
+//! At this point, I threw up my hands & went with [cargo-deb].

@@ -2,6 +2,8 @@
 name = "indielinks"
 version = "0.0.1"
 edition = "2021"
+license-file = "../COPYING"
+description = "Social bookmarking in the Fediverse"
 
 [dependencies]
 argon2 = { version = "0.5.3", features = ["password-hash", "std"] }
@@ -79,3 +81,13 @@ tonic-build = "0.13.1"
 
 [dev-dependencies]
 wiremock = "0.6.5"
+
+[package.metadata.deb]
+copyright = "Copyright (C) 2024-2025 Michael Herstine"
+depends = "libssl-dev"
+assets = [
+       ["target/release/indielinksd", "/usr/bin/", "755"],
+       ["target/release/indielinks-schemas", "/usr/bin/", "755"],
+       ["target/release/indic", "/usr/bin/", "755"],
+       ["../conf/indielinks-deb.toml", "/etc/indielinks.toml", "644"],
+]
