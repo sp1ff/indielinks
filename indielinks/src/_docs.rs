@@ -419,6 +419,11 @@
 //!
 //! [turns out]: https://github.com/fosskers/cargo-aur/issues/17
 //!
+//! I've implemented a "git" package for the AUR in the `indielinks-git` repo. I took a look at
+//! doing builds in a chroot using `aurutils`, but the process seemed complex & poorly documente,d
+//! so I just fell-back to using an Arch Docker container for building binary packages, linting and
+//! testing them.
+//!
 //! ### Debian
 //!
 //! The same situation presents itself here with respect to [cargo-deb], though in this case the
