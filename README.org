@@ -2,7 +2,7 @@
 #+DESCRIPTION: Bookmarks in the Fediverse
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-10-20 Mon 11:28>
+#+DATE: <2025-10-27 Mon 15:04>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -38,7 +38,9 @@ it will show up in your followers' Mastodon feeds, where they can comment, boost
 indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.html][GPL v3.0]].
 * Pre-requisites
 
-At this time, indielinks is only available as source. Therefore, the Rust stable [[https://rustup.rs/][toolchain]] is required. To run indielinks locally, you'll either need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or [[https://www.docker.com/][Docker]] (to pull & run ScyllaDB images). The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend, as well as dpkg if you want to build the Debian binary package. The [[INSTALL.org]] file has details.
+To run indielinks locally, you'll need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or Docker (to pull & run ScyllaDB images). See the [[INSTALL.org]] file for details.
+
+To build from source, the Rust stable [[https://rustup.rs/][toolchain]] is required. The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend. 
 * Installation
 
 Presently, indielinks can only be installed locally, running against ScyllaDB, by hand. See [[INSTALL.org]] for details.

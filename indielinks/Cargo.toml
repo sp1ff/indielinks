@@ -85,6 +85,7 @@ wiremock = "0.6.5"
 [package.metadata.deb]
 copyright = "Copyright (C) 2024-2025 Michael Herstine"
 depends = "libssl-dev"
+maintainer = "Michael Herstine <sp1ff@pobox.com>"
 assets = [
        ["target/release/indielinksd", "/usr/bin/", "755"],
        ["target/release/indielinks-schemas", "/usr/bin/", "755"],

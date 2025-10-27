@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+# This script is presumably mounted in a Debian container. It will
+# use `cargo deb` to build the Debian package & minimally test it.
+set -ex
+source $HOME/.cargo/env
+cd /indielinks
+cargo deb --manifest-path=indielinks/Cargo.toml
+pkg=$(ls -1 target/debian/indielinks*.deb|head -n1)
+sudo dpkg --debug=2 -i ${pkg}
+indielinksd --version
+indielinks-schemas --version
+indic --help
+sudo dpkg --debug=2 -r indielinks
+

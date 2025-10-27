@@ -2,15 +2,16 @@
 #+DESCRIPTION: Installation instructions for indielinks
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-10-14 Tue 17:52>
+#+DATE: <2025-10-27 Mon 15:07>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
 
 * Overview
 
-Arch & Debian packages are in the works, but for now, this is a manual process. Don't treat this file as a checklist to be blindly copied: you'll need to understand each step & modify it for your particular case:
+Ultimately, I hope to see indielinks instances publicly available on the web. For now, however, it must be run locally. I'm in the process of uploading a pacman =PKGBUILD= to the [[https://aur.archlinux.org/][AUR]] (Arch User Repository), and I plan shortly to begin hosting a Debian binary package.
 
+Otherwise, you'll need to clone this git repository, build & install locally. Don't treat this file as a checklist to be blindly copied: you'll need to understand each step & modify it for your particular case:
 * Installation process:
 
 ** Install the Rust Toolchain
