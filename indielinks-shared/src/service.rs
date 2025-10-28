@@ -65,10 +65,11 @@
 //! [here]: https://www.unwoundstack.com/blog/rust-client-middleware.html
 
 use async_trait::async_trait;
+use either::Either;
 use pin_project::pin_project;
 use serde::Deserialize;
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
-use tower::{Service, retry::backoff::Backoff};
+use tower::{retry::backoff::Backoff, Service};
 
 use std::{
     error::Error as StdError,
@@ -98,7 +99,9 @@ pub enum Error {
     },
     #[snafu(display("{value} is not a valid Jitter value"))]
     Jitter { value: f64, backtrace: Backtrace },
-    #[snafu(display("The wrapped service speaking reqwest errored-out on poll_ready: {source:?}"))]
+    #[snafu(display(
+        "The wrapped service speaking reqwest errored-out on poll_ready: {source:?}"
+    ))]
     PollReady {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
@@ -109,7 +112,11 @@ pub enum Error {
     },
     #[snafu(display("While extracting a reqwest body, {source}"))]
     ReqwestBody {
-        source: reqwest::Error,
+        // I hate erasing the `source` type, but in this case it could be one of two types:
+        // reqwest::Error, or the Error associated with the body's `TryInto<reqwest::Body>`
+        // implementation, which we don't have access to here, without the addition of a generic
+        // type parameter. Going to leave it for now, and reconsider should this become a problem.
+        source: Box<dyn StdError + Send + Sync>,
         backtrace: Backtrace,
     },
     #[snafu(display("When building an http response, {source}"))]
@@ -168,16 +175,17 @@ enum State {
 
 // Note that, at this point, this struct is not Unpin!
 #[pin_project]
-pub struct ReqwestServiceFuture<S, R>
+pub struct ReqwestServiceFuture<S, R, E>
 where
     S: tower::Service<reqwest::Request>,
     R: FromResponse<InnerResponse = S::Response>,
+    E: StdError,
 {
     from_response: R,
     state: State,
     // The `Option`s are a hack to produce a type that implements `Default`, enabling us to use
     // `std::mem::take`
-    first_err: Option<reqwest::Error>,
+    first_err: Option<Either<E, reqwest::Error>>,
     #[pin]
     inner_fut: Option<S::Future>,
     #[pin]
@@ -185,15 +193,16 @@ where
     body_fut: Option<Pin<Box<dyn Future<Output = Result<http::Response<R::ResponseBody>>> + Send>>>,
 }
 
-impl<S, R> ReqwestServiceFuture<S, R>
+impl<S, R, E> ReqwestServiceFuture<S, R, E>
 where
     S: tower::Service<reqwest::Request>,
     R: FromResponse<InnerResponse = S::Response>,
+    E: StdError,
 {
     pub fn new(
         from_response: R,
-        res: StdResult<<S as Service<reqwest::Request>>::Future, reqwest::Error>,
-    ) -> ReqwestServiceFuture<S, R> {
+        res: StdResult<<S as Service<reqwest::Request>>::Future, Either<E, reqwest::Error>>,
+    ) -> ReqwestServiceFuture<S, R, E> {
         match res {
             Ok(fut) => Self {
                 from_response,
@@ -213,11 +222,12 @@ where
     }
 }
 
-impl<S, R> Future for ReqwestServiceFuture<S, R>
+impl<S, R, E> Future for ReqwestServiceFuture<S, R, E>
 where
     S: tower::Service<reqwest::Request>,
     S::Error: StdError + Send + Sync + 'static,
     R: FromResponse<InnerResponse = S::Response> + Clone + 'static,
+    E: StdError + Send + Sync + 'static,
 {
     type Output = Result<http::Response<R::ResponseBody>>;
 
@@ -226,7 +236,9 @@ where
             State::InitialConversionFailed => {
                 let this = self.project();
                 let first_err = this.first_err;
-                Poll::Ready(Err(ReqwestBodySnafu.into_error(first_err.take().unwrap())))
+                Poll::Ready(Err(
+                    ReqwestBodySnafu.into_error(Box::new(first_err.take().unwrap()))
+                ))
             }
             State::InnerPending => {
                 let inner_fut = unsafe {
@@ -265,10 +277,11 @@ where
 }
 
 /// [ReqwestService] is a [tower] [Service]
-// We still restrict the body type to types `B: Into<reqwest::Body>`
+// We still restrict the body type to types `B: TryInto<reqwest::Body>`
 impl<S, ReqBody, R> tower::Service<http::Request<ReqBody>> for ReqwestService<S, R>
 where
-    ReqBody: Into<reqwest::Body>,
+    ReqBody: TryInto<reqwest::Body>,
+    ReqBody::Error: StdError + Send + Sync + 'static,
     // Again, make sure the response that our inner service is returning matches-up with what our
     // translation trait expects,
     R: FromResponse<InnerResponse = S::Response>,
@@ -285,7 +298,7 @@ where
     type Error = Error;
     // The problem with using `TryFutureExt::and_then` is that we can't *name* the future
     // it returns; instead, we erase the type & just return a trait object.
-    type Future = ReqwestServiceFuture<S, R>;
+    type Future = ReqwestServiceFuture<S, R, ReqBody::Error>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<StdResult<(), Self::Error>> {
         self.inner
@@ -294,9 +307,19 @@ where
     }
 
     fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
+        let (parts, body) = req.into_parts();
+        let body_result = body
+            .try_into()
+            .map_err(Either::Left)
+            .and_then(|body: reqwest::Body| {
+                reqwest::Request::try_from(http::Request::<reqwest::Body>::from_parts(parts, body))
+                    .map_err(Either::Right)
+            })
+            .map(|r| self.inner.call(r));
         ReqwestServiceFuture::new(
             self.from_response.clone(),
-            reqwest::Request::try_from(req).map(|r| self.inner.call(r)),
+            // reqwest::Request::try_from(req).map(|r| self.inner.call(r)),
+            body_result,
         )
     }
 }

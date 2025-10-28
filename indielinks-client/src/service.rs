@@ -15,7 +15,8 @@
 
 use std::{fmt::Debug, path::PathBuf};
 
-use snafu::{Backtrace, Snafu};
+use indielinks_shared::api::{LoginReq, MintKeyReq, SignupReq};
+use snafu::{Backtrace, ResultExt, Snafu};
 use url::Url;
 
 #[derive(Debug, Snafu)]
@@ -74,6 +75,11 @@ pub enum Error {
         source: http::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to serialize to JSON: {source}"))]
+    Ser {
+        source: serde_json::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to setup the tracing global subscriber: {source}"))]
     Subscriber {
         source: tracing::dispatcher::SetGlobalDefaultError,
@@ -102,12 +108,26 @@ pub enum Error {
 #[derive(Clone, Debug)]
 pub enum ReqBody {
     None,
+    Signup(SignupReq),
+    Login(LoginReq),
+    MintKey(MintKeyReq),
 }
 
-impl From<ReqBody> for reqwest::Body {
-    fn from(value: ReqBody) -> Self {
+impl TryFrom<ReqBody> for reqwest::Body {
+    type Error = Error;
+
+    fn try_from(value: ReqBody) -> Result<Self, Self::Error> {
         match value {
-            ReqBody::None => (&[] as &'static [u8]).into(),
+            ReqBody::None => Ok((&[] as &'static [u8]).into()),
+            ReqBody::Signup(signup_req) => {
+                Ok(serde_json::to_string(&signup_req).context(SerSnafu)?.into())
+            }
+            ReqBody::Login(login_req) => {
+                Ok(serde_json::to_string(&login_req).context(SerSnafu)?.into())
+            }
+            ReqBody::MintKey(mint_key_req) => Ok(serde_json::to_string(&mint_key_req)
+                .context(SerSnafu)?
+                .into()),
         }
     }
 }

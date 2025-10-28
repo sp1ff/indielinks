@@ -7,6 +7,7 @@ edition = "2024"
 async-trait = "0.1.89"
 bytes = "1.10.1"
 chrono = { version = "0.4.41", features = ["serde"] }
+either = "1.15.0"
 email_address = "0.2.9"
 # `getrandom` is really a transitive dependnecy, but we need the "js"
 # feature for indielinks-fe builds (indielinks-fe depends on this

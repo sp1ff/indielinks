@@ -15,6 +15,8 @@
 
 #[path = "add-link.rs"]
 pub mod add_link;
+#[path = "add-user.rs"]
+pub mod add_user;
 pub mod import;
 #[path = "import-onetab.rs"]
 pub mod import_onetab;

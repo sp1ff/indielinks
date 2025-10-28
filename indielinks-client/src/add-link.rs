@@ -61,6 +61,11 @@ pub enum Error {
         source: http::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("indielinks returned status {status}"))]
+    Response {
+        status: http::StatusCode,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While encoding {url} to a query string: {source}"))]
     UrlEncoding {
         url: Url,
@@ -120,7 +125,7 @@ where
         .header(AUTHORIZATION, format!("Bearer {}", token.expose_secret()))
         .body(ReqBody::None)
         .context(RequestSnafu)?;
-    client
+    let response = client
         .ready()
         .await
         .context(ReadySnafu)?
@@ -128,6 +133,13 @@ where
         .await
         .context(CallSnafu)?;
 
-    // Response body ignored
-    Ok(())
+    if response.status().is_success() {
+        // Response body ignored
+        Ok(())
+    } else {
+        ResponseSnafu {
+            status: response.status(),
+        }
+        .fail()
+    }
 }

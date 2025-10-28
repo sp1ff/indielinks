@@ -31,7 +31,7 @@
 //! [RFC-3230]: https://datatracker.ietf.org/doc/html/rfc3230
 //! [RFC-9530]: https://www.ietf.org/archive/id/draft-ietf-httpbis-digest-headers-12.html#name-the-content-digest-field
 
-use std::ops::Deref;
+use std::{convert::Infallible, ops::Deref};
 
 use bytes::Bytes;
 use either::Either;
@@ -332,6 +332,7 @@ pub type ClientType = SetRequestHeader<
                                 ReqwestServiceFuture<
                                     reqwest::Client,
                                     indielinks_shared::service::Body,
+                                    Infallible,
                                 >,
                             >,
                         >,

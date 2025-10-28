@@ -7,13 +7,14 @@ edition = "2021"
 async-trait = "0.1.83"
 bytes = "1.10.1"
 chrono = { version = "0.4.39", features = ["serde"] }
-clap = { version = "4.5.23", features = ["cargo", "env"] }
+clap = { version = "4.5.23", features = ["cargo", "env", "wrap_help"] }
 futures = "0.3.31"
 http = "1.2.0"
 indielinks-shared = { path = "../indielinks-shared", features = ["backend"] }
 itertools = "0.13.0"
 pin-project = "1.1.10"
 reqwest = { version = "0.12.12", features = ["json"] }
+rpassword = "7.4.0"
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.216", features = ["derive"] }
 serde_json = "1.0.139"
@@ -22,7 +23,7 @@ snafu = "0.8.5"
 tap = "1.0.1"
 tokio = { version = "1.42.0", features = ["rt-multi-thread", "signal", "sync"] }
 toml = "0.8.19"
-tower = { version = "0.5.2", features = ["retry"] }
+tower = { version = "0.5.2", features = ["buffer", "limit", "retry"] }
 tower-http = { version = "0.6.2", features = ["auth", "cors", "request-id", "set-header", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }

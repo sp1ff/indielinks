@@ -33,12 +33,14 @@ use std::{
 
 use bytes::Bytes;
 use clap::{
-    crate_authors, crate_version, parser::ValueSource, value_parser, Arg, ArgAction, Command,
+    builder::NonEmptyStringValueParser, crate_authors, crate_version, parser::ValueSource,
+    value_parser, Arg, ArgAction, Command,
 };
 use http::{
     header::{ACCEPT, AUTHORIZATION, USER_AGENT},
     HeaderValue,
 };
+use rpassword::prompt_password;
 use secrecy::SecretString;
 use serde::Deserialize;
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
@@ -48,21 +50,20 @@ use tower::{
     ServiceBuilder,
 };
 use tower_http::set_header::SetRequestHeaderLayer;
-use tracing::{level_filters::LevelFilter, Level};
-use tracing_subscriber::{fmt, layer::SubscriberExt, Registry};
+use tracing::Level;
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 use url::Url;
 
 use indielinks_shared::{
-    entities::Tagname,
+    api::{Password, SecretPassword},
+    entities::{Tagname, UserEmail, Username},
     origin::Origin,
     service::{Body, ExponentialBackoffPolicy, RateLimit},
 };
 
 use indielinks_client::{
-    add_link::add_link,
-    import_onetab::import_onetab,
-    import_pinboard::import_pinboard,
-    service::{/*GenericRspBody,*/ ReqBody},
+    add_link::add_link, add_user::add_user, import_onetab::import_onetab,
+    import_pinboard::import_pinboard, service::ReqBody,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -74,7 +75,10 @@ enum Error {
     #[snafu(display("While adding a link, {source}"))]
     AddLink {
         source: indielinks_client::add_link::Error,
-        backtrace: Backtrace,
+    },
+    #[snafu(display("While adding a user, {source}"))]
+    AddUser {
+        source: indielinks_client::add_user::Error,
     },
     #[snafu(display("The API origin must be specified, either in config or on the command line"))]
     Api,
@@ -108,6 +112,11 @@ enum Error {
     },
     #[snafu(display("Failed to find the next ',' or ']'"))]
     Parse,
+    #[snafu(display("While prompting for a password, {source}"))]
+    Password {
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While importing links from Pinboard, {source}"))]
     Pinboard {
         source: indielinks_client::import_pinboard::Error,
@@ -264,7 +273,7 @@ impl Default for Configuration {
 /// - retry failed requests with exponential backoff
 async fn make_indielinks_client(
     user_agent: &str,
-    token: SecretString,
+    token: Option<SecretString>,
     rate_limit: &RateLimit,
 ) -> Result<
     impl Service<
@@ -276,6 +285,10 @@ async fn make_indielinks_client(
     use indielinks_shared::service::ReqwestServiceLayer;
     use secrecy::ExposeSecret;
 
+    let token = token
+        .map(|token| HeaderValue::from_str(&format!("Bearer {}", token.expose_secret())))
+        .transpose()
+        .context(TokenSnafu)?;
     ServiceBuilder::new()
         .layer(tower::retry::RetryLayer::new(ExponentialBackoffPolicy {
             backoff: tower::retry::backoff::ExponentialBackoffMaker::new(
@@ -295,11 +308,8 @@ async fn make_indielinks_client(
         // `proto_reqwest_tower::Error` to `Box<Error + Send + Sync>`
         .layer(BufferLayer::<http::Request<ReqBody>>::new(1024))
         .layer(RateLimitLayer::new(rate_limit.num, rate_limit.duration))
-        .layer(SetRequestHeaderLayer::overriding(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", token.expose_secret()))
-                .context(TokenSnafu)?,
-        ))
+        // Only set the Authorization if we have a token
+        .layer(SetRequestHeaderLayer::overriding(AUTHORIZATION, token))
         .layer(SetRequestHeaderLayer::overriding(
             USER_AGENT,
             HeaderValue::from_str(user_agent).unwrap(/* known good*/),
@@ -309,7 +319,6 @@ async fn make_indielinks_client(
             HeaderValue::from_static("application/json"),
         ))
         // Later: add some instrumentation? For debugging?
-        // .layer(ReqwestServiceLayer::new(GenericRspBody))
         .layer(ReqwestServiceLayer::new(Body))
         .service(reqwest::Client::new())
         .pipe(Ok)
@@ -354,6 +363,14 @@ sub-command is 'import', but it will be built-out as circumstances warrant.",
                 .default_value(OsStr::new("/home/mgh/.indic.toml"))
                 .env("INDIC_CONFIG")
                 .help("Specify the path to the configuration file")
+        )
+        .arg(
+            Arg::new("no-default-config")
+                .short('C')
+                .long("no-default-config")
+                .num_args(0)
+                .action(ArgAction::SetTrue)
+                .help("Don't look for a configuration file at the default location")
         )
         .arg(
             Arg::new("token")
@@ -542,17 +559,54 @@ to be escaped; the implementation will handle that.")
                         .index(1) /* Better to be explicit, I think */
                         .help("The URL to be added to indielinks"))
         )
+        .subcommand(Command::new("add-user")
+                    .about("Add a user")
+                    .long_about("Add a new user to your indielinks instance.")
+                    .arg(Arg::new("username")
+                         .short('u')
+                         .long("username")
+                         .required(true)
+                         .num_args(1)
+                         .value_parser(value_parser!(Username))
+                         .help("New user's name")
+                         .long_help("indielinks usernames must be ASCII, may be from five to sixty-four chacacters in length, and must match the regex \"^[a-zA-Z][-_.a-zA-Z0-9]+$\""))
+                    .arg(Arg::new("password")
+                         .short('p')
+                         .long("password")
+                         .required(false)
+                         .num_args(1)
+                         .value_parser(NonEmptyStringValueParser::new())
+                         .help("Specify the password")
+                         .long_help("Optionally specify the password for the new user. If not given, the program will interactively prompt for one, so this argument is provided for scripting purposes.")
+                    )
+                    .arg(Arg::new("email")
+                         .short('m')
+                         .long("email")
+                         .required(true)
+                         .num_args(1)
+                         .value_parser(value_parser!(UserEmail))
+                         .help("Specify an email address for this user."))
+        )
         .get_matches();
 
     // Alright-- if we're here, we've parsed our command line arguments. Start by configuring
     // tracing:
     tracing::subscriber::set_global_default(
         Registry::default()
-            .with(LevelFilter::from_level(if matches.get_flag("verbose") {
-                Level::DEBUG
-            } else {
-                Level::INFO
-            }))
+            .with(
+                EnvFilter::builder()
+                    .with_default_directive(if matches.get_flag("verbose") {
+                        Level::DEBUG.into()
+                    } else {
+                        Level::INFO.into()
+                    })
+                    .from_env_lossy()
+                    // I'd *really* like to suppress these two, unless they're mentioned in
+                    // RUST_LOG, but I can't see how to do that, and the odds that the user's going
+                    // to want to be interested in these two crates are low.q
+                    .add_directive("hyper_util=info".parse().unwrap(/* known good */))
+                    .add_directive("tower=info".parse().unwrap(/* known good */)),
+            )
             .with(
                 fmt::Layer::default()
                     .compact()
@@ -565,9 +619,12 @@ to be escaped; the implementation will handle that.")
     )
     .context(SubscriberSnafu)?;
 
-    // Next-up: configuration:
-    let mut cfg = match matches.get_one::<PathBuf>("config") {
-        Some(path) => match fs::read_to_string(path) {
+    // Next-up: configuration
+    let mut cfg = if matches.get_flag("no-default-config") {
+        Configuration::default()
+    } else {
+        let path = matches.get_one::<PathBuf>("config").unwrap(/* known good */);
+        match fs::read_to_string(path) {
             Ok(config_text) => toml::from_str(&config_text).context(ConfigSnafu)?,
             Err(err) => match (err.kind(), matches.value_source("config")) {
                 (io::ErrorKind::NotFound, Some(ValueSource::DefaultValue)) => {
@@ -580,8 +637,7 @@ to be escaped; the implementation will handle that.")
                     .into_error(err));
                 }
             },
-        },
-        None => Configuration::default(), // We got nada-- just whip-up a default instance.
+        }
     };
 
     // Patch-up our configuration, if we got any of these on the command line:
@@ -590,7 +646,7 @@ to be escaped; the implementation will handle that.")
 
     let client = make_indielinks_client(
         &format!("indic/{} ( sp1ff@pobox.com )", crate_version!()),
-        cfg.token().context(NoTokenSnafu)?.clone(),
+        cfg.token().cloned(),
         cfg.rate_limit(),
     )
     .await?;
@@ -683,6 +739,36 @@ to be escaped; the implementation will handle that.")
             )
             .await
             .context(AddLinkSnafu)
+        }
+        Some(("add-user", matches)) => {
+            let username = matches.get_one::<Username>("username").unwrap(/* known good */);
+            let email = matches.get_one::<UserEmail>("email").unwrap(/* known good */);
+            let password: SecretPassword = match matches.get_one::<String>("password") {
+                Some(s) => Box::new(Password(s.clone())).into(),
+                None => loop {
+                    let first = prompt_password(format!("Enter a password for user {username}: "))
+                        .context(PasswordSnafu)?;
+                    let second = prompt_password("Repeat password: ").context(PasswordSnafu)?;
+                    if first == second {
+                        break Box::new(Password(first)).into();
+                    }
+                },
+            };
+
+            let api_key = add_user(
+                client,
+                cfg.api().context(ApiSnafu)?,
+                username,
+                &password,
+                email,
+            )
+            .await
+            .context(AddUserSnafu)?;
+
+            use secrecy::ExposeSecret;
+            println!("Welcome, {username}, to indielinks. Your API key is\n{}.\nPlease make a note of it now.", api_key.expose_secret());
+
+            Ok(())
         }
         Some(_) => unimplemented!(/* impossible */),
         None => NoSubCommandSnafu.fail(),

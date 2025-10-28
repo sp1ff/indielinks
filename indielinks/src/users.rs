@@ -557,11 +557,13 @@ async fn signup(
 ) -> axum::response::Response {
     async fn signup1(signup_req: &SignupReq, state: Arc<Indielinks>) -> Result<SignupRsp> {
         let (pepper_ver, pepper_key) = state.pepper.current_pepper().context(NoPepperSnafu)?;
+        use secrecy::ExposeSecret;
         let user = User::new(
             &pepper_ver,
             &pepper_key,
             &signup_req.username,
-            &signup_req.password,
+            // Arrrgghhh!!!
+            &signup_req.password.expose_secret().0.clone().into(),
             &signup_req.email,
             None,
             signup_req.discoverable,
@@ -592,7 +594,7 @@ async fn signup(
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponseBody {
-                        error: format!("{}", feedback),
+                        error: format!("Insufficient password strength: {}", feedback),
                     }),
                 )
                     .into_response()
@@ -669,7 +671,7 @@ async fn login(
         refresh_token_lifetime: &Duration,
         signing_keys: &SigningKeys,
         origin: &Origin,
-        username: &str,
+        username: &Username,
         password: SecretString,
     ) -> Result<(LoginRsp, String, String)> {
         let user = storage
@@ -687,13 +689,10 @@ async fn login(
             })?;
 
         // It seems unlikely that a bad username could sneak in, but still.
-        let username = Username::new(username).context(UsernameSnafu {
-            username: username.to_owned(),
-        })?;
 
         let (keyid, signing_key) = signing_keys.current().context(NoKeysSnafu)?;
         let token = mint_token(
-            &username,
+            username,
             &keyid,
             &signing_key,
             origin.host(),
@@ -703,7 +702,7 @@ async fn login(
             username: username.clone(),
         })?;
         let (refresh_token, csrf_token) = mint_refresh_and_csrf_tokens(
-            &username,
+            username,
             &keyid,
             &signing_key,
             origin.host(),
@@ -713,6 +712,7 @@ async fn login(
         Ok((LoginRsp { token }, refresh_token, csrf_token))
     }
 
+    use secrecy::ExposeSecret;
     match login1(
         state.storage.as_ref(),
         &state.pepper,
@@ -721,7 +721,7 @@ async fn login(
         &state.signing_keys,
         &state.origin,
         &login_req.username,
-        login_req.password,
+        login_req.password.expose_secret().0.clone().into(),
     )
     .await
     {

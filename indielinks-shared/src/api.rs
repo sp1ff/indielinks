@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDate, Utc};
-use secrecy::SecretString;
+use secrecy::{zeroize::Zeroize, CloneableSecret, SecretBox, SerializableSecret};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -163,11 +163,26 @@ pub const REFRESH_CSRF_HEADER_NAME: &str = "X-Indielinks-Refresh-Csrf";
 
 pub const REFRESH_CSRF_HEADER_NAME_LC: &str = "x-indielinks-refresh-csrf";
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Password(pub String);
+
+impl Zeroize for Password {
+    fn zeroize(&mut self) {
+        self.0.zeroize()
+    }
+}
+
+impl CloneableSecret for Password {}
+
+impl SerializableSecret for Password {}
+
+pub type SecretPassword = SecretBox<Password>;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignupReq {
     pub username: Username,
-    pub password: SecretString,
+    pub password: SecretPassword,
     pub email: UserEmail,
     pub discoverable: Option<bool>,
     #[serde(rename = "display-name")]
@@ -181,14 +196,14 @@ pub struct SignupRsp {
     pub greeting: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoginReq {
     // I first thought to make this a `Username`, but in that case, should the caller fat-finger the
     // username to something illegal, axum will fail to deserialize the request, producing the
     // unhelpful status code 422 Unprocessable Entity
-    pub username: String,
-    pub password: SecretString,
+    pub username: Username,
+    pub password: SecretPassword,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
