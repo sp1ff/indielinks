@@ -2,6 +2,7 @@
 # There _is_ a "rust" Docker image, but the purpose of these tests
 # is to start with a bare-bones *Debian* system & see what I need to
 # do to get mpdpopm installed.
+
 FROM debian:stable-slim AS base
 
 ARG DEBIAN_FRONTEND
@@ -17,6 +18,7 @@ RUN set -ex && \
     ca-certificates locales \
     # indielinks pre-requisistes (we'll install rust separately, below) \
     pkg-config gcc gcc-multilib openssl libssl-dev protobuf-compiler \
+    libprotobuf-dev dnsutils \
     # not needed; just for my sanity while debugging \
     less procps gdb sudo info vim curl && \
     # tidy-up \

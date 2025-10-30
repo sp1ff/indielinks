@@ -11,5 +11,10 @@ sudo dpkg --debug=2 -i ${pkg}
 indielinksd --version
 indielinks-schemas --version
 indic --help
+scylla=$(dig +short scylla-node-1)
+sudo sed -i -e "s@^hosts = \\[\".*@hosts = [\"${scylla}:9042\"]@" /etc/indielinks.toml
+indielinks-post-install -s ${scylla}:9042
+# indielinks now up & running
+indic -A http://127.0.0.1:20676 add-user -u john.doe -p 'f00-b@r-sp1at' -m 'john.doe@gmail.com'
 sudo dpkg --debug=2 -r indielinks
 

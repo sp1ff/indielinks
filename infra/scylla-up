@@ -18,17 +18,6 @@ while [ ${nnodes} -ne 3 ]; do
         exit 1
     fi
 done
-# docker cp indielinks.cql scylla-node-1:/indielinks.cql
-# TODO(sp1ff): 
-# docker cp dev-charge.cql scylla-node-1:/dev-charge.cql
-
-# TODO(sp1ff): 
-# docker exec -i scylla-node-1 cqlsh -e "create keyspace if not exists indielinks with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor' : 3} and tablets = {'enabled': false};"
-# docker exec -i scylla-node-1 cqlsh -f /indielinks.cql
-# TODO(sp1ff): 
-# docker exec -i scylla-node-1 cqlsh -f /dev-charge.cql
-# RUST_LOG="debug,scylla::transport=debug" cargo run --bin indielinks-ddb -- \
-#         -p -D http://localhost:8043
 
 rust_log=debug,\
 aws_config=info,\

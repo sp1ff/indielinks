@@ -16,16 +16,10 @@ docker build -t indielinks-debian:latest \
        --build-arg GID="$(id -g)" \
        .
 
-docker_args="-it"
-docker_args="$docker_args --mount type=bind,source=${project},target=/indielinks"
-docker_args="$docker_args -v ${script}:/build-and-exercise-package:ro"
-docker_args="$docker_args --privileged"
-docker_args="$docker_args --ulimit core=-1"
-docker_args="$docker_args -u packager"
-docker_args="$docker_args --memory-swap=4096m"  # 4G total
-docker_args="$docker_args --memory=3840m"       # 3840m RAM, 256m swap
-docker_args="$docker_args --cpus 8"             # 8 cores
-# Un-comment to just drop into the container & experiment
-# cmd="docker run ${docker_args} indielinks-debian:latest"
-cmd="docker run ${docker_args} indielinks-debian:latest /build-and-exercise-package"
-exec $cmd
+docker compose -f compose.debian-packaging.yaml up -d
+echo "Waiting on 'host'..."
+docker compose -f compose.debian-packaging.yaml wait host
+status=$?
+echo "Waiting on 'host'...done($status)."
+docker logs debian-packaging-host-1
+docker compose -f compose.debian-packaging.yaml down

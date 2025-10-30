@@ -91,4 +91,5 @@ assets = [
        ["target/release/indielinks-schemas", "/usr/bin/", "755"],
        ["target/release/indic", "/usr/bin/", "755"],
        ["../conf/indielinks-deb.toml", "/etc/indielinks.toml", "644"],
+       ["../scripts/indielinks-post-install", "/usr/bin/indielinks-post-install", "755"]
 ]
