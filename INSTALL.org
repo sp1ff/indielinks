@@ -2,18 +2,25 @@
 #+DESCRIPTION: Installation instructions for indielinks
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-10-27 Mon 15:07>
+#+DATE: <2025-10-30 Thu 14:05>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
 
 * Overview
 
-Ultimately, I hope to see indielinks instances publicly available on the web. For now, however, it must be run locally. I'm in the process of uploading a pacman =PKGBUILD= to the [[https://aur.archlinux.org/][AUR]] (Arch User Repository), and I plan shortly to begin hosting a Debian binary package.
+Ultimately, I hope to see indielinks instances publicly available on the web. For now, however, it must be run locally. I'm in the process of uploading a pacman =PKGBUILD= to the [[https://aur.archlinux.org/][AUR]] (Arch User Repository) [[https://aur.archlinux.org/packages/indielinks-git][here]], and I plan shortly to begin hosting a Debian binary package at my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]].
 
-Otherwise, you'll need to clone this git repository, build & install locally. Don't treat this file as a checklist to be blindly copied: you'll need to understand each step & modify it for your particular case:
-* Installation process:
+In either of these cases, the package only puts the files in their place. After the installation, you'll need to run =indielinks-post-install=, which will create and/or update the data schema & start the server.
 
+After the initial install, you'll want to create your first user:
+
+#+BEGIN_SRC bash
+  indic -A http://localhost:20676 -v add-user -u ${USERNAME} -p ${PASSWORD} -m ${EMAIL}
+#+END_SRC
+* Local Installation Process
+
+Otherwise, you'll need to clone this git repository, build & install locally. Don't treat this file as a checklist to be blindly copied: you'll need to understand each step & modify it for your particular case.
 ** Install the Rust Toolchain
 
 If you don't have it already:
@@ -47,10 +54,10 @@ On Arch, I did the following:
 #+END_SRC
 ** Install indielinks
 
-Before doing so, you probably want to skim the file =indielinks/proto-indielinks.toml= and adjust the install location, port numberes & like that. In particular, if you don't happen to have an OTLP collector running locally, just omit the =[otlp-export]= section altogether.
+Before installing, you'll probably want to skim the file =indielinks/local-indielinks.toml= and adjust the install location, port numbers & like that. In particular, if you don't happen to have an OTLP collector running locally, just omit the =[otlp-export]= section altogether.
+
+Next, examine the file =admin/local-install= and be sure that it will install to the locations you want, consistent with the configuration in =local-indielinks.toml=. Then:
 
 #+BEGIN_SRC bash
-  cd ~/code/projects/indielinks
   admin/proto-install
 #+END_SRC
-  
