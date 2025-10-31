@@ -420,13 +420,13 @@
 //! [turns out]: https://github.com/fosskers/cargo-aur/issues/17
 //!
 //! I've implemented a "git" package for the AUR in the `indielinks-git` repo. I took a look at
-//! doing builds in a chroot using `aurutils`, but the process seemed complex & poorly documente,d
-//! so I just fell-back to using an Arch Docker container for building binary packages, linting and
+//! doing builds in a chroot using `aurutils`, but the process seemed complex & poorly documented,
+//! so I just fell back to using an Arch Docker container for building binary packages, linting and
 //! testing them.
 //!
 //! ### Debian
 //!
-//! The same situation presents itself here with respect to [cargo-deb], though in this case the
+//! The same situation presents itself with respect to [cargo-deb], though in this case the
 //! question is more complex, because both options are even less appealing: Debian packaging is
 //! [notoriously](https://optimizedbyotto.com/post/debcraft-easy-debian-packaging/)
 //! [difficult](https://www.reddit.com/r/rust/comments/ursdqx/have_you_guys_tried_cargodeb_amazing/),
@@ -436,7 +436,7 @@
 //! [cargo-deb]: https://github.com/kornelski/cargo-deb
 //!
 //! I spent a little time reading-up on Debian packaging in the hopes of building a proper source
-//! package (for the same reason as with Arch), but quickly found myself bewildered by the
+//! package (for the same reasons as with Arch), but quickly found myself bewildered by the
 //! [welter](https://manpages.debian.org/bullseye/debhelper/debhelper.7.en.html)
 //! [of](https://optimizedbyotto.com/post/debcraft-easy-debian-packaging/)
 //! [tools](https://people.debian.org/~nthykier/blog/2023/a-new-debian-package-helper-debputy.html)
