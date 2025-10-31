@@ -5,7 +5,9 @@
 set -ex
 source $HOME/.cargo/env
 cd /indielinks
-cargo deb --manifest-path=indielinks/Cargo.toml
+ver=$(printf "r%s" "$(git rev-list --count HEAD)")
+rel="0.0.1~git.${ver}"
+cargo deb --manifest-path=indielinks/Cargo.toml --deb-version=${rel}
 pkg=$(ls -1 target/debian/indielinks*.deb|head -n1)
 sudo dpkg --debug=2 -i ${pkg}
 indielinksd --version
