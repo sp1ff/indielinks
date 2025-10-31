@@ -160,8 +160,8 @@ echo "done."
 
 # 3. start indielinks
 echo -n "Starting indielinks..."
-RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info \
-    sudo indielinksd \
+RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info,opentelemetry_sdk=info \
+    sudo --preserve-env=RUST_LOG indielinksd \
     -c /etc/indielinks.toml \
     -L /var \
     --debug \
