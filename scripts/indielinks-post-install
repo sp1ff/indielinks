@@ -155,7 +155,7 @@ schema_args="-D -p scylla"
 if test -n "${creds}"; then
     schema_args="${schema_args} -c \"${creds}\""
 fi
-indielinks-schemas ${schema_args} ${scylla_host}
+indielinks-schemas -v -p ${schema_args} ${scylla_host}
 echo "done."
 
 # 3. start indielinks

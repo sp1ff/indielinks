@@ -134,16 +134,37 @@ type StdResult<T, E> = std::result::Result<T, E>;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 fn configure_logging(debug: bool, verbose: bool, quiet: bool, plain: bool) -> Result<()> {
-    let level = match (debug, verbose, quiet) {
-        (true, _, _) => Level::TRACE,
-        (false, true, _) => Level::DEBUG,
-        (false, false, true) => Level::ERROR,
-        _ => Level::INFO,
+    let (level, level_others) = match (debug, verbose, quiet) {
+        (true, _, _) => (Level::TRACE, Level::DEBUG),
+        (false, true, _) => (Level::DEBUG, Level::INFO),
+        (false, false, true) => (Level::ERROR, Level::ERROR),
+        _ => (Level::INFO, Level::WARN),
     };
     let filter = EnvFilter::builder()
         .with_default_directive(level.into())
         .from_env()
-        .context(EnvFilterSnafu)?;
+        .context(EnvFilterSnafu)?
+        // This is kinda lame, but having crates on which we depend log at the same level
+        // as us can be very confusing. The user can always override this via
+        // RUST_LOG, in any event.
+        .add_directive(format!("aws_config={level_others}").parse().unwrap(/* known good */))
+        .add_directive(format!("aws_runtime={level_others}").parse().unwrap(/* known good */))
+        .add_directive(format!("aws_sdk_dynamodb={level_others}").parse().unwrap(/* known good */))
+        .add_directive(format!("aws_sdk_sts={level_others}").parse().unwrap(/* known good */))
+        .add_directive(format!("aws_sigv4={level_others}").parse().unwrap(/* known good */))
+        .add_directive(
+            format!("aws_smithy_http_client={level_others}").parse().unwrap(/* known good */),
+        )
+        .add_directive(
+            format!("aws_smithy_runtime={level_others}").parse().unwrap(/* known good */),
+        )
+        .add_directive(
+            format!("aws_smithy_runtime_api={level_others}").parse().unwrap(/* known good */),
+        )
+        .add_directive(format!("hyper={level_others}").parse().unwrap(/* known good */))
+        .add_directive(format!("openraft={level_others}").parse().unwrap(/* known good */))
+        .add_directive(format!("scylla={level_others}").parse().unwrap(/* known good */))
+        .add_directive(format!("indielinks={level_others}").parse().unwrap(/* known good */));
     let formatter: Box<dyn Layer<Registry> + Send + Sync> = if plain {
         Box::new(
             fmt::Layer::default()

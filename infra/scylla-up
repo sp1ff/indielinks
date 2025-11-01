@@ -19,17 +19,5 @@ while [ ${nnodes} -ne 3 ]; do
     fi
 done
 
-rust_log=debug,\
-aws_config=info,\
-aws_runtime=info,\
-aws_sdk_dynamodb=info,\
-aws_sdk_sts=info,\
-aws_sigv4=info,\
-aws_smithy_runtime=info,\
-aws_smithy_runtime_api=info,\
-hyper=info,\
-openraft=info,\
-scylla=info
-
-RUST_LOG=${rust_log} cargo run --bin indielinks-schemas -- -D -p ddb http://localhost:8043
-RUST_LOG=${rust_log} cargo run --bin indielinks-schemas -- -D -p scylla 127.0.0.1:9043
+cargo run --bin indielinks-schemas -- -v -p ddb http://localhost:8043
+cargo run --bin indielinks-schemas -- -v -p scylla 127.0.0.1:9043
