@@ -297,6 +297,34 @@ define_metric! { "background.processor.tasks.failed", background_processor_tasks
 define_metric! { "background.processor.tasks.timedout", background_processor_tasks_timedout, Sort::IntegralCounter }
 define_metric! { "background.processor.tasks.inflight",  background_processor_tasks_inflight, Sort::IntegralGauge   }
 
+/// Attempt to pull a task of the queue, using retries with exponential backoff
+// Very occasionally, I see an error from the storage backend when attempting to read a task. Thing
+// is, if we naively return from the processing function, the entire server comes down. I suspect
+// that this is transient, so I'm experimenting here with a basic retry with exponential backoff
+// strategy.
+async fn take_task<C: Clone + 'static, R: Receiver<C>>(
+    receiver: &R,
+) -> Result<Option<(Box<dyn Task<C>>, R::TaskId)>> {
+    let mut num_attempts = 0u32;
+    loop {
+        match receiver.take_task().await {
+            res @ Ok(_) => break res,
+            err @ Err(Error::Id { uuid: _ }) => break err,
+            Err(err) => {
+                error!("While taking a background task off the queue: {err:?}");
+                if num_attempts < 4 {
+                    num_attempts += 1;
+                    // Kinda lame-- hard coding a wait of 100, 1000, and 10000ms
+                    tokio::time::sleep(Duration::from_millis(100u64.pow(num_attempts))).await;
+                } else {
+                    error!("Giving up after four attempts.");
+                    break Err(err);
+                }
+            }
+        }
+    }
+}
+
 /// Process background tasks. `receiver` is a [Receiver] from which we can draw tasks. `config`
 /// holds configuration parameters for the algorithm. `shutdown` is a [Notify] instance the caller
 /// can use to signal this function to exit.
@@ -316,7 +344,7 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
     while !done {
         // so long as we don't have too much on our plate, try 'n grab another task:
         if futures.len() < config.max_concurrent_tasks {
-            if let Some((task, cookie)) = receiver.take_task().await.context(TakeSnafu)? {
+            if let Some((task, cookie)) = take_task(&receiver).await.context(TakeSnafu)? {
                 let id = futures
                     .spawn(tokio::time::timeout(
                         task.timeout().unwrap_or(config.default_timeout),
@@ -404,7 +432,7 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
 }
 
 /// Create a new [Processor] given a [Receiver].
-pub fn new<C: Clone + Send + 'static, R: Receiver<C> + Send + 'static>(
+pub fn new<C: Clone + Send + 'static, R: Receiver<C> + Send + Sync + 'static>(
     receiver: R,
     context: C,
     config: Option<Config>,
