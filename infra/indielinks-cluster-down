@@ -2,8 +2,8 @@
 
 function instance() {
     local id="$1"
-    if [ -r /tmp/indielinks-${id}/run/indielinks.pid ]; then
-        local pid=$(cat /tmp/indielinks-${id}/run/indielinks.pid)
+    if [ -r /tmp/indielinks-${id}/indielinks.pid ]; then
+        local pid=$(cat /tmp/indielinks-${id}/indielinks.pid)
         if [ -n "${pid}" ]; then
             set +e
             kill ${pid}
@@ -30,11 +30,11 @@ for pid in $(ps aux|grep 'target/debug/indielinks'|grep -vE 'tmux|grep|bash|carg
     kill "${pid}"
 done
 
-rm -rf /tmp/indielinks-0
-rm -rf /tmp/indielinks-1
-rm -rf /tmp/indielinks-2
-rm -rf /tmp/indielinks-3
-rm -rf /tmp/indielinks-4
+rm -rf /tmp/indielinksd-0
+rm -rf /tmp/indielinksd-1
+rm -rf /tmp/indielinksd-2
+rm -rf /tmp/indielinksd-3
+rm -rf /tmp/indielinksd-4
 
 pid=$(ps aux|grep 'haproxy -f.*conf'|grep -v grep|awk '{print $2}')
 if [ -n "${pid}" ]; then

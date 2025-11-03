@@ -18,9 +18,9 @@ RUN set -ex && \
     ca-certificates locales \
     # indielinks pre-requisistes (we'll install rust separately, below) \
     pkg-config gcc gcc-multilib openssl libssl-dev protobuf-compiler \
-    libprotobuf-dev dnsutils git \
+    libprotobuf-dev dnsutils git adduser acl \
     # not needed; just for my sanity while debugging \
-    less procps gdb sudo info vim curl && \
+    less procps gdb sudo info vim curl lsof && \
     # tidy-up \
     apt-get clean && \
     rm -rf /tmp/* /var/tmp/* && \

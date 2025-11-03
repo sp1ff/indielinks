@@ -5,19 +5,19 @@ name: debian-packaging
 services:
 
   scylla-node-1:
-    container_name: scylla-node-1
+    container_name: deb-scylla-node-1
     image: scylladb/scylla:latest
     command: --smp 1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt # always_use_lwt?
 
   scylla-node-2:
-    container_name: scylla-node-2
+    container_name: deb-scylla-node-2
     image: scylladb/scylla:latest
     command: --smp 1 --seeds=scylla-node-1  --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt
     depends_on:
       - scylla-node-1
 
   scylla-node-3:
-    container_name: scylla-node-3
+    container_name: deb-scylla-node-3
     image: scylladb/scylla:latest
     command: --smp 1 --seeds=scylla-node-1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt
     depends_on:

@@ -10,7 +10,7 @@ set -ex
 here=$(dirname $(realpath $0))
 cd $here/../indielinks
 # Run `indielinks` as a daemon in the indielinks directory
-RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -C -c ${here}/../conf/${config}
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -C -c ${here}/../conf/${config}) > /tmp/stdout.log 2>&1 < /dev/null &
 
 sleep=0.5
 # curl can fail if the server isn't up, yet
@@ -18,11 +18,11 @@ set +e
 status=$(curl -s http://localhost:20679/healthcheck)
 ntries=1
 while [ "${status}" != "GOOD" ]; do
-    sleep 0.5
+    sleep 1.0
     status=$(curl -s http://localhost:20679/healthcheck)
     ntries=$(($ntries+1))
     # Give it five seconds
-    if [ ${ntries} -gt 10 ]; then
+    if [ ${ntries} -gt 120 ]; then
         echo "indielinksd failed to come up!" >&2
         exit 1
     fi

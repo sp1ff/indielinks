@@ -1,0 +1,41 @@
+#!/usr/bin/bash
+set -e
+
+cfg='/etc/indielinks.toml'
+group='indielinks'
+local_state='/var/run/indielinks'
+log='/var/log/indielinks'
+user='indielinks'
+case "$1" in
+    configure)
+        if ! getent group "$group" >/dev/null; then
+            addgroup --quiet --system "$group"
+        fi
+
+        if ! getent passwd "$user" >/dev/null; then
+            adduser --quiet --system \
+                    --ingroup "$group" \
+                    --no-create-home \
+                    --disabled-password \
+                    "$user"
+        fi
+
+        if [ ! -d "$local_state" ]; then
+            mkdir -p "$local_state"
+            chown -R "$user:$group" "$local_state"
+            chmod 0755 "$local_state"
+        fi
+
+        if [ ! -d "$log" ]; then
+            mkdir -p "$log"
+            chown -R "$user:$group" "$log"
+            chmod 0755 "$log"
+        fi
+
+        if [ -f "$cfg" ]; then
+            setfacl -m u:indielinks:r "$cfg"
+        fi
+    ;;
+esac
+
+exit 0

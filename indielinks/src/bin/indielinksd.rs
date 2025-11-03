@@ -32,6 +32,7 @@ use std::{
     future::IntoFuture,
     io,
     net::SocketAddr,
+    os::fd::{AsFd, AsRawFd, RawFd},
     path::{Path, PathBuf},
     str::FromStr,
     sync::{
@@ -43,11 +44,10 @@ use std::{
 use axum::{extract::State, response::IntoResponse, routing::get, Router};
 use chrono::Duration;
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
+use errno::Errno;
 use http::{HeaderName, HeaderValue};
 use lazy_static::lazy_static;
-use libc::{
-    close, dup, exit, fork, getdtablesize, getpid, lockf, open, setsid, umask, write, F_TLOCK,
-};
+use libc::c_int;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
@@ -65,7 +65,7 @@ use tower_http::{
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
 };
-use tracing::{error, info, Level};
+use tracing::{debug, error, info, Level};
 use tracing_subscriber::{
     filter::EnvFilter,
     fmt::{self, MakeWriter},
@@ -200,6 +200,10 @@ pub enum Error {
     SchemaCheck { source: indielinks::storage::Error },
     #[snafu(display("Failed to fork the indielinks process a second time: errno={errno}"))]
     SecondFork { errno: errno::Errno },
+    #[snafu(display("While resetting signal {signum}, {errno}"))]
+    Sigaction { signum: c_int, errno: Errno },
+    #[snafu(display("While resetting the process signal mask, {errno}"))]
+    Sigprocmask { errno: Errno },
     #[snafu(display("Failed to set the tracing subscriber: {source}"))]
     Subscriber {
         source: tracing::subscriber::SetGlobalDefaultError,
@@ -556,7 +560,15 @@ impl io::Write for MyMutexGuardWriter<'_> {
 ///
 /// This method can only be invoked once (as it, in turn, calls tracing's
 /// [set_global_default](tracing::subscriber::set_global_default)).
-fn configure_logging(logopts: &LogOpts, logfile: &Path) -> Result<Option<mpsc::Sender<PathBuf>>> {
+#[allow(clippy::type_complexity)]
+fn configure_logging(
+    logopts: &LogOpts,
+    logfile: &Path,
+) -> Result<(
+    Box<dyn Layer<Registry> + Send + Sync>,
+    EnvFilter,
+    Option<mpsc::Sender<PathBuf>>,
+)> {
     let filter = EnvFilter::builder()
         .with_default_directive(logopts.level.into())
         .from_env()
@@ -602,11 +614,7 @@ fn configure_logging(logopts: &LogOpts, logfile: &Path) -> Result<Option<mpsc::S
         )
     };
 
-    // Nb. this can only be invoked once (will panic on a second invocation)!
-    tracing::subscriber::set_global_default(Registry::default().with(formatter).with(filter))
-        .context(SubscriberSnafu)?;
-
-    Ok(tx)
+    Ok((formatter, filter, tx))
 }
 
 async fn otel_middleware(
@@ -752,6 +760,10 @@ async fn frontend(
         }
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           the server                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Counter for generating request IDs; I realize that a u64 gives me a lot less information than a
 /// UUID (the traditional type for request IDs), but I judge it to be enough, as well as more easily
@@ -1079,6 +1091,10 @@ async fn serve(
     Ok(())
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                    main() & process startup                                    //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// Initialize telemetry
 ///
 /// <div class="warning">
@@ -1149,44 +1165,138 @@ fn init_telemetry(collector_config: Option<&OtelExportConfig>) -> Result<Prometh
     Ok(old_school_exporter)
 }
 
-/// Make this process into a daemon
+/// Make this process into a System V-style daemon
 ///
-/// The first step in daemonizing is to dissassociate this process from it's controlling terminal &
-/// make sure it cannot acquire a new one. This, AFAIU, is to disconnect us from any job control
-/// associated with that terminal, and in particular to prevent us from being disturbed when & if
-/// that terminal is closed (I'm still hazy on the details, but at least the session leader (and
-/// perhaps it's descendants) will be sent a `SIGHUP` in that eventuality).
+/// # Introduction
 ///
-/// After that, the rest of the work seems to consist of shedding all the things we (may have)
-/// inherited from our creator. Things such as:
+/// [indielinksd](crate) may be run as a _daemon_: a process that runs in the background, quietly rendering
+/// services to other programs. "A daemon is a service process that runs in the background and
+/// supervises the system or provides functionality to other processes. Traditionally, daemons are
+/// implemented following a scheme originating in SysV Unix. Modern daemons should follow a simpler
+/// yet more powerful scheme (here called 'new-style' daemons), as implemented by systemd(1)."--
+/// [daemon(7)]
 ///
-///   - present working directory
-///   - umask
-///   - all file descriptors
-///     - stdin, stdout & stderr should be closed (we don't know from or to where they may have
-///       been redirected), and re-opened to locations appropriate to this daemon
-///     - any other file descriptors should be closed; this process can then re-open any that
-///       it needs for its work
+/// [daemon(7)]: https://man7.org/linux/man-pages/man7/daemon.7.html
 ///
-/// In the case of a Tokio program, there's an issue with the interaction between forking & the
-/// tokio runtime-- tokio will spin-up a thread pool, and threads do not mix well with `fork()'. The
-/// trick is to fork this process *before* starting-up the Tokio runtime.
+/// This function implements the SysV-style daemonization protocol. Perhaps at a later date, I'll
+/// implement "new-style" daemonization instead of or in addition to this. I choose System V-style
+/// daemonization because systemd can handle SysV-style daemons, whereas implementing "new-style"
+/// daemonization ties you to systemd AFAICT.
 ///
-/// The reader may object that this could all be handled by the
+/// # Preamble
+///
+/// There's an issue with the interaction between forking & the tokio runtime-- tokio will spin-up a
+/// thread pool, and threads do not mix well with `fork()`. The trick is to fork this process
+/// *before* starting-up the Tokio runtime.
+///
+/// Also, the reader may object that this could all be handled by the
 /// [daemonize](https://docs.rs/daemonize) crate. I chose not to introduce another dependency just
 /// for the sake of a single function, and in any event, I learned a lot about process management
 /// while doing so & wound up choosing to do a few things differently, anyway.
 ///
-/// References:
+/// # Details
 ///
-///   - <http://www.steve.org.uk/Reference/Unix/faq_2.html>
-///   - <https://en.wikipedia.org/wiki/SIGHUP>
-///   - <http://www.enderunix.org/docs/eng/daemon.php>
-fn daemonize(local_statedir: &Path, no_chdir: bool) -> Result<()> {
+/// This function will:
+///
+/// 1. Close all open file descriptors except standard input, output & error, as well as the
+///    file descriptor in use by the "bootstrapping" log file. This process' file descriptors
+///    will be inherited by the child processes created when we fork, and we don't want to
+///    maintain them. The child process can then re-open any that it needs for its work.
+///
+/// 2. Reset all signal handlers to their default (note that `SIGKILL` and `SIGSTOP` may not be
+///    changed)
+///
+/// 3. Reset the process signal mask via `sigprocmask()`
+///
+/// 4. The [daemon(7)] man page lists "sanitizing the environment block" as the next step;
+///    [indielinksd](crate) doesn't do anything in this regard.
+///
+/// We next dissassociate this process from it's controlling terminal & make sure it cannot acquire
+/// a new one. This, AFAIU, is to disconnect us from any job control associated with that terminal,
+/// and in particular to prevent us from being disturbed when & if that terminal is closed (I'm
+/// still hazy on the details, but at least the session leader (and perhaps it's descendants) will
+/// be sent a `SIGHUP` in that eventuality). This is done by:
+///
+/// 5. calling `fork()`
+///
+/// 6. in the child process, call `setsid()` to detach from any terminal and create an independent
+///    session
+///
+/// 7. `fork()` a second time, ensuring that we can never re-acquire a terminal
+///
+/// 8. In the first child process, `exit()`, so that the second child, which will become the actual
+///    daemon, is re-parented to PID 1
+///
+/// 9. Connect standard input, output & error to `/dev/null`
+///
+/// 10. Reset the process umask to 0 ("so that the file modes passed to open(), mkdir() and suchlike
+///     directly control the access mode of the created files and directories")
+///
+/// 11. Change the current directory to `/` ("in order to avoid that the daemon involuntarily blocks
+///     mount points from being unmounted")
+///
+/// 12. Write the PID file
+///
+/// 13. Drop privileges, if applicable
+///
+/// The man page then calls for the daemon process to notify the original process that it has
+/// successfully completed in an application-specific manner (though unamed pipes are suggested).
+/// This is not currently implemented.
+///
+/// Further reading:
+///
+/// - [Process Control](https://web.archive.org/web/20110817050603/http://www.steve.org.uk/Reference/Unix/faq_2.html)
+/// - [Unix Daemon Server Programming](http://www.enderunix.org/docs/eng/daemon.html)
+/// - [SIGHUP](https://en.wikipedia.org/wiki/SIGHUP)
+fn daemonize(local_statedir: &Path, no_chdir: bool, log_fd: RawFd) -> Result<()> {
     use errno::errno;
+    use libc::{
+        close, dup, exit, fdopen, fflush, fork, getdtablesize, getpid, lockf, open, setsid,
+        sigaction, sigemptyset, sigprocmask, sigset_t, umask, write, F_TLOCK, SIGKILL, SIGSTOP,
+        SIG_DFL, SIG_SETMASK,
+    };
     use std::os::unix::ffi::OsStringExt;
 
     unsafe {
+        // Start by closing all open file descriptors (other than stdin, stdout, stderr, and the log
+        // fd):
+        let mut i = getdtablesize() - 1;
+        while i > 2 {
+            if i != log_fd {
+                close(i);
+            }
+            i -= 1;
+        }
+
+        // Next, reset all signal handlers:
+        let mut mask: sigset_t = std::mem::zeroed();
+        sigemptyset(&mut mask);
+
+        let sa = sigaction {
+            sa_sigaction: SIG_DFL,
+            sa_mask: mask,
+            sa_flags: 0,
+            sa_restorer: None,
+        };
+
+        for signum in 1..=libc::SIGSYS {
+            if signum != SIGKILL
+                && signum != SIGSTOP
+                && sigaction(signum, &sa, std::ptr::null_mut()) != 0
+            {
+                return SigactionSnafu {
+                    signum,
+                    errno: errno(),
+                }
+                .fail();
+            }
+        }
+
+        let n = sigprocmask(SIG_SETMASK, &mask, std::ptr::null_mut());
+        if 0 != n {
+            return SigprocmaskSnafu { errno: errno() }.fail();
+        }
+
         // Removing ourselves from from this process' controlling terminal's job control (if any).
         // Begin by forking; this does a few things:
         //
@@ -1218,64 +1328,50 @@ fn daemonize(local_statedir: &Path, no_chdir: bool) -> Result<()> {
         }
 
         // We next change the present working directory to avoid keeping the present one in
-        // use. `indielinks`` can run pretty much anywhere, so /tmp is as good a place as any.
+        // use.
         if !no_chdir {
-            // A little unhappy about hard-coding that, but if /tmp doesn't exist I expect few
-            // things will work.
-            std::env::set_current_dir("/tmp").context(ChangedirSnafu)?;
+            std::env::set_current_dir("/").context(ChangedirSnafu)?;
         }
 
         umask(0);
 
-        // Close all file descriptors ("nuke 'em from orbit-- it's the only way to be sure")...
-        let mut i = getdtablesize() - 1;
-        while i > -1 {
-            close(i);
-            i -= 1;
-        }
-        // and re-open stdin, stdout & stderr all redirected to /dev/null. `i' will be zero, since
-        // "The file descriptor returned by a successful call will be the lowest-numbered file
-        // descriptor not currently open for the process"...
+        // Re-open stdin, stdout & stderr all redirected to /dev/null. `i' will be zero, since "The
+        // file descriptor returned by a successful call will be the lowest-numbered file descriptor
+        // not currently open for the process"...
         i = open(b"/dev/null\0" as *const [u8; 10] as _, libc::O_RDWR);
         // and these two will be 1 & 2 for the same reason.
         dup(i);
         dup(i);
 
-        let pth: PathBuf = [local_statedir.to_str().unwrap(), "run", "indielinks.pid"]
-            .iter()
-            .collect();
+        // Write our "PID file":
+        let pth: PathBuf = local_statedir.join("indielinksd.pid");
         let pth_c = CString::new(pth.into_os_string().into_vec()).unwrap();
-        let mut fd = open(
+        let fd = open(
             pth_c.as_ptr(),
             libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC,
-            0o640,
+            0o644,
         );
-        if -1 == fd {
-            // Fallback to pwd
-            let pth_c = CString::new("indielinks.pid").unwrap();
-            fd = open(
-                pth_c.as_ptr(),
-                libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC,
-                0o640,
-            );
-            if -1 == fd {
-                return OpenLockFileSnafu { errno: errno() }.fail();
-            };
-        }
         if lockf(fd, F_TLOCK, 0) < 0 {
             return LockFileSnafu { errno: errno() }.fail();
         }
 
-        // "File locks are released as soon as the process holding the locks closes some file
-        // descriptor for the file"-- just leave `fd' until this process terminates.
         let pid = getpid();
         let pid_buf = format!("{}", pid).into_bytes();
         let pid_length = pid_buf.len();
         let pid_c = CString::new(pid_buf).unwrap();
-        if write(fd, pid_c.as_ptr() as *const libc::c_void, pid_length) < pid_length as isize {
+        let n = write(fd, pid_c.as_ptr() as *const libc::c_void, pid_length);
+        if n < pid_length as isize {
+            // if write(fd, pid_c.as_ptr() as *const libc::c_void, pid_length) < pid_length as isize {
             return WritePidSnafu { errno: errno() }.fail();
         }
+        let f = fdopen(fd, CString::new("w").unwrap().as_ptr());
+        if !f.is_null() {
+            fflush(f);
+        }
+        close(fd);
     }
+
+    info!("indielinksd successfully daemonized.");
 
     Ok(())
 }
@@ -1284,39 +1380,77 @@ fn daemonize(local_statedir: &Path, no_chdir: bool) -> Result<()> {
 ///
 /// As alluded to [above](daemonize), the start-up sequence for indielinks can be a bit touchy:
 ///
-/// 1. if we're to run as a daemon, we need to fork, first, before starting the async runtime
+/// 1. if we're to run as a daemon, we need to fork, before starting the async runtime
 /// 2. we only configuring logging _after_ starting the async runtime, because, again in the case
 ///    where we're running as a daemon, the logging facility depends on it
 /// 3. we only want to enter `serve()` _after_ spinning-up logging, because it carries-out some
-///    intersting logging, and we'd like that instrumented with the instance ID
+///    interesting logging, and we'd like that instrumented with the instance ID
 ///
 /// This function is step 2 in that list-- it's intended to be invoked via `block_on()` & will
 /// configure our logging and then call `serve()`.
-async fn go_async(opts: CliOpts) -> Result<()> {
-    // Take care to configure logging *before* we call `serve()` since it's instrumented (if we
-    // don't, the span that's created on entry to `serve()` is ignored). Failure to parse at this
-    // point is fatal; below, in `serve()`, we fall back to the last "known-good" configuration &
-    // keep going.
-    let cfg = parse_config(&opts.cfg)?;
-    let log_file_hup = configure_logging(&opts.log_opts, &cfg.log_file)?;
+#[allow(clippy::type_complexity)]
+async fn go_async(
+    opts: CliOpts,
+    bootstrap_logging_guard: tracing::dispatcher::DefaultGuard,
+) -> Result<()> {
+    // Read & parse config, create our logging formater & filter (which depend on config).
+    fn go_async1(
+        opts: &CliOpts,
+    ) -> Result<(
+        ConfigV1,
+        Box<dyn Layer<Registry> + Send + Sync>,
+        EnvFilter,
+        Option<mpsc::Sender<PathBuf>>,
+    )> {
+        // Take care to configure logging *before* we call `serve()` since it's instrumented (if we
+        // don't, the span that's created on entry to `serve()` is ignored). Failure to parse at this
+        // point is fatal; below, in `serve()`, we fall back to the last "known-good" configuration &
+        // keep going.
+        let cfg = parse_config(&opts.cfg)?;
+        let (formatter, filter, log_file_hup) = configure_logging(&opts.log_opts, &cfg.log_file)?;
+        Ok((cfg, formatter, filter, log_file_hup))
+    }
 
-    // At this point we have logging-- huzzah!
-    info!(
-        "indielinks version {}, instance {} starting.",
-        crate_version!(),
-        opts.instance_id
-    );
+    match go_async1(&opts) {
+        Ok((cfg, formatter, filter, log_file_hup)) => {
+            // Setup the global logger. Nb. this can only be invoked once (will panic on a second
+            // invocation)!
+            tracing::subscriber::set_global_default(
+                Registry::default().with(formatter).with(filter),
+            )
+            .context(SubscriberSnafu)?;
+            // Drop the guard, cleaning-up the bootstrap logger
+            drop(bootstrap_logging_guard);
 
-    serve(opts, cfg, log_file_hup).await
+            // At this point we have logging-- huzzah!
+            info!(
+                "indielinks version {}, instance {} starting.",
+                crate_version!(),
+                opts.instance_id
+            );
+
+            serve(opts, cfg, log_file_hup).await
+        }
+        Err(err) => {
+            error!("While configuring logging: {err:?}");
+            Err(err)
+        }
+    }
 }
 
+const BOOTSTRAP_LOG: &str = "indielinksd.daemonization.log";
+
 fn main() -> Result<()> {
+    // Most of idielinksd's configuration options are read from file; the few command-line options
+    // that it accepts govern 1) where to find the configuration file, 2) process startup that takes
+    // place before the configuration file is parsed. They all have corresponding environment
+    // variables for the sake of convenience when running indielinks in a container.
     let opts = CliOpts::new(
         Command::new("indielinksd")
             .version(crate_version!())
             .author(crate_authors!())
             .about("Bookmarks in the Fediverse")
-            .long_about("`indielinks` is a federated bookmarking service.")
+            .long_about("`indielinks` is a federated social bookmarking service.")
             .arg(
                 Arg::new("config")
                     .short('c')
@@ -1338,7 +1472,7 @@ fn main() -> Result<()> {
                     .env("INDIELINKS_LOCALSTATEDIR")
                     .help(
                         "path (absolute or relative to the process' current directory) to the \
-                           directory in which local state shall be stored (\"/var/run\", e.g.)",
+                           directory in which local state shall be stored (\"/var/run/indielinksd\", e.g.)",
                     ),
             )
             .arg(
@@ -1409,26 +1543,74 @@ A UUID identifying this indielinks instance in a cluster. If not given, a random
             )
             .get_matches(),
     )?;
-    // There are a number of things that can go wrong in the process of daemonization *after* we've
-    // forked this process & lost the terminal to which we could write error messages. For instance:
-    //
-    //     1) the process doesn't have access to the location at which we're writing the PID file;
-    //     this can happen when running it as oneself during development when LOCALSTATEDIR is
-    //     configured to, say /usr/local/var
-    //
-    //     2) the configuration file is given as a relative path; this fails because by the time we
-    //     try to open it, we've already cd'd to /tmp
-    //
-    // If this happens, the child process will simply exit leaving no trace of what went wrong,
-    // which is extremely frustrating for operators. Regrettably, my logging implementation in turn
-    // depends upon Tokio! Perhaps I can setup a "simple" logging facility for now, to be replaced
-    // by the full-blown tracing implementation.
-    if opts.log_opts.daemon {
-        daemonize(&opts.local_statedir, opts.no_chdir)?;
-    }
 
-    // spin-up the Tokio runtime,
+    // Whether we're running as a daemon or not, there are a number of things that can go wrong
+    // before we've parsed our configuration file and configured logging for the process. What I'm
+    // going to do instead, as suggested at <https://github.com/tokio-rs/tracing/issues/2903>, is
+    // setup a *temporary* logger via `set_default()`.
+    let bootstrap_logging_guard: tracing::dispatcher::DefaultGuard = if !opts.log_opts.daemon {
+        // This case is fairly simple; we'll just log to stderr, at whatever level our command line
+        // arguments dictate.
+        let bootstrap_subscriber = tracing_subscriber::registry::Registry::default()
+            .with(tracing_subscriber::fmt::Layer::default().with_writer(std::io::stderr))
+            .with(
+                EnvFilter::builder()
+                    .with_default_directive(opts.log_opts.level.into())
+                    .from_env()
+                    .context(EnvFilterSnafu)?,
+            );
+        let bootstrap_logging_guard = tracing::subscriber::set_default(bootstrap_subscriber);
+        debug!("Temporarily logging to stderr while initializing.");
+        bootstrap_logging_guard
+    } else {
+        // There are a number of things that can go wrong in the process of daemonization *after*
+        // we've forked this process & lost the terminal to which we could write error messages. For
+        // instance:
+        //
+        //     1) the process doesn't have access to the location at which we're writing the PID
+        //     file; this can happen when running it as oneself during development when
+        //     LOCALSTATEDIR is configured to, say /usr/local/var
+        //
+        //     2) the configuration file is given as a relative path; this fails because by the time
+        //     we try to open it, we've already cd'd to /tmp
+        //
+        // If this happens, the child process will simply exit leaving no trace of what went wrong,
+        // which is extremely frustrating for the operator.
+        //
+        // We have no real choice here other than logging to file (since we'll shortly be separating
+        // from our tty), but we don't, at this point, know where the log file is configured to be,
+        // so we'll just create one in /tmp, and log it's location to stdout, (at level Debug)--
+        // that way, if something goes wrong and the operator runs the process with -v or -D,
+        // they'll be cued as to where to look.
+        let log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(opts.local_statedir.join(BOOTSTRAP_LOG))
+            .context(LogFileSnafu)?;
+        let fd = log_file.as_fd().as_raw_fd();
+
+        let bootstrap_subscriber = tracing_subscriber::registry::Registry::default()
+            .with(
+                tracing_subscriber::fmt::Layer::default()
+                    .with_ansi(false)
+                    .with_writer(log_file),
+            )
+            .with(
+                EnvFilter::builder()
+                    .with_default_directive(opts.log_opts.level.into())
+                    .from_env()
+                    .context(EnvFilterSnafu)?,
+            );
+        let bootstrap_logging_guard = tracing::subscriber::set_default(bootstrap_subscriber);
+        debug!("Temporarily logging to {BOOTSTRAP_LOG} while daemonizing.");
+        if let Err(err) = daemonize(&opts.local_statedir, opts.no_chdir, fd) {
+            error!("{err}");
+            return Err(err);
+        }
+        bootstrap_logging_guard
+    };
+
     tokio::runtime::Runtime::new()
         .context(TokioRuntimeSnafu)?
-        .block_on(go_async(opts)) // and start our server!
+        .block_on(go_async(opts, bootstrap_logging_guard)) // and start our server!
 }

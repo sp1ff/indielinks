@@ -136,14 +136,12 @@ EOF
 fi    
 
 # stop indielinks, if it's running
-if test -r /var/run/indielinks.pid; then
+if test -r /var/run/indielinks/indielinks.pid; then
     pid=$(cat /var/run/indielinks.pid)
     echo -n "Stopping indielinks (PID $pid)..."
     set +e # Failure here is not fatal
-    kill ${pid}
-    set -e
-    sleep 0.5
-    rm /var/run/indielinks.pid
+    indielinks-ctl stop
+    rm /var/run/indielinks/indielinks.pid
     echo -n "done."
 fi
 
@@ -151,21 +149,16 @@ set -e
 
 # run indielinks-schemas
 echo -n "Creating/updating the indielinks schema at ${scylla_host}..."
-schema_args="-D -p scylla"
+schema_args="-p scylla"
 if test -n "${creds}"; then
     schema_args="${schema_args} -c \"${creds}\""
 fi
-indielinks-schemas -v -p ${schema_args} ${scylla_host}
+indielinks-schemas ${schema_args} ${scylla_host}
 echo "done."
 
 # 3. start indielinks
 echo -n "Starting indielinks..."
-RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info,opentelemetry_sdk=info \
-    sudo --preserve-env=RUST_LOG indielinksd \
-    -c /etc/indielinks.toml \
-    -L /var \
-    --debug \
-    --plain
+indielinks-ctl start
 echo "done."
 
 # healthcheck the new instance

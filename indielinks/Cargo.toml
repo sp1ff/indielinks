@@ -84,12 +84,14 @@ wiremock = "0.6.5"
 
 [package.metadata.deb]
 copyright = "Copyright (C) 2024-2025 Michael Herstine"
-depends = "libssl-dev"
+depends = ["libssl-dev", "adduser", "acl"]
 maintainer = "Michael Herstine <sp1ff@pobox.com>"
+maintainer-scripts = "../admin/deb-maintainer-scripts"
 assets = [
        ["target/release/indielinksd", "/usr/bin/", "755"],
        ["target/release/indielinks-schemas", "/usr/bin/", "755"],
        ["target/release/indic", "/usr/bin/", "755"],
        ["../conf/indielinks-deb.toml", "/etc/indielinks.toml", "644"],
-       ["../scripts/indielinks-post-install", "/usr/bin/indielinks-post-install", "755"]
+       ["../scripts/indielinks-post-install", "/usr/bin/indielinks-post-install", "755"],
+       ["../scripts/indielinks-ctl", "/usr/bin/indielinks-ctl", "755"]
 ]

@@ -8,13 +8,13 @@ function hc() {
     set -e
     ntries=1
     while [ "${status}" != "GOOD" ]; do
-        sleep 0.5
+        sleep 1.0
         set +e
         status=$(curl -s http://localhost:${port}/healthcheck)
         set -e
         ntries=$(($ntries+1))
-        # Give it five seconds
-        if [ ${ntries} -gt 10 ]; then
+        # Give this a few minutes (!) since we're potentially building in a subshell
+        if [ ${ntries} -gt 120 ]; then
             echo "indielinks failed to come up on port ${port}" >&2
             return "1"
         fi
@@ -33,25 +33,29 @@ rust_log="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_s
 
 set -ex
 
+[ -d /tmp/indielinksd-0 ] || mkdir /tmp/indielinksd-0
+[ -d /tmp/indielinksd-1 ] || mkdir /tmp/indielinksd-1
+[ -d /tmp/indielinksd-2 ] || mkdir /tmp/indielinksd-2
+if [ "${nodes}" == "5" ]; then
+    [ -d /tmp/indielinksd-3 ] || mkdir /tmp/indielinksd-3
+    [ -d /tmp/indielinksd-4 ] || mkdir /tmp/indielinksd-4
+fi
+
 here=$(dirname $(realpath $0))
 cd $here/../indielinks
 
-[ -d /tmp/indielinksd-0/run ] || mkdir -p /tmp/indielinksd-0/run
-[ -d /tmp/indielinksd-1/run ] || mkdir -p /tmp/indielinksd-1/run
-[ -d /tmp/indielinksd-2/run ] || mkdir -p /tmp/indielinksd-2/run
+# Run five copies of the `indielinksd` daemon. If I don't place each `cargo run` invocation
+# into a sub-shell, `Command::output()` hangs.
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-0 -c ${here}/../conf/${config}-0.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-1 -c ${here}/../conf/${config}-1.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-2 -c ${here}/../conf/${config}-2.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
 if [ "${nodes}" == "5" ]; then
-    [ -d /tmp/indielinksd-3/run ] || mkdir -p /tmp/indielinksd-3/run
-    [ -d /tmp/indielinksd-4/run ] || mkdir -p /tmp/indielinksd-4/run
+    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-3 -c ${here}/../conf/${config}-3.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
+    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-4 -c ${here}/../conf/${config}-4.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
 fi
 
-# Run five copies of the `indielinksd` daemon
-RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-0 -c ${here}/../conf/${config}-0.toml
-RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-1 -c ${here}/../conf/${config}-1.toml
-RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-2 -c ${here}/../conf/${config}-2.toml
-if [ "${nodes}" == "5" ]; then
-    RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-3 -c ${here}/../conf/${config}-3.toml
-    RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-4 -c ${here}/../conf/${config}-4.toml
-fi
+# The problem with running these in subshells is that we arrive here with the
+# build process (potentially) in-progress, which can take quite some time.
 
 # Wait for the entire cluster to healthcheck
 hc 20679 || exit 1
