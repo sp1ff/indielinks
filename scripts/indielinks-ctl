@@ -1,0 +1,172 @@
+#!/usr/bin/bash
+#!/usr/bin/env bash
+VERSION=0.0.1
+
+# I'd like to format this more nicely, but if I don't do it this way, the variable substitution below doesn't work.
+rust_log=RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,openraft=info,opentelemetry_sdk=info,scylla=info
+
+function start() {
+    local local_state="$1"
+    local user="$2"
+    local group="$3"
+    RUST_LOG=${RUST_LOG:-"${rust_log}"}                         \
+            sudo --preserve-env=RUST_LOG -u "$user" -g "$group" \
+            indielinksd                                         \
+            -c /etc/indielinks.toml                             \
+            -L "${local_state}"                                 \
+            --debug                                             \
+            --plain
+}
+
+function stop() {
+    local local_state="$1"
+    local user="$2"
+    if [ -r "${local_state}/indielinksd.pid" ]; then
+        sudo -u "$user" kill $(cat "${local_state}/indielinksd.pid")
+    fi
+}
+
+function reload() {
+    local local_state="$1"
+    local user="$2"
+    sudo -u "$user" kill -s HUP $(cat "${local_state}/indielinksd.pid")
+}
+
+###########################################################################
+
+help=
+nargs=0
+indielinks_group='indielinks'
+indielinks_user='indielinks'
+local_state='/var/run/indielinks'
+prev_option=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -h | --he | --hel | --help)
+	        nargs=$(($nargs+1));
+            help=yes;;
+        -g | --group | --indielinks-group)
+            nargs=$(($nargs+1));
+            prev_option=indielinks_group;;
+        -g=* | --group=* | --indielinks-group=*)
+            nargs=$(($nargs+1));
+            indielinks_group="$optarg";;
+        -L | --local | --local-state)
+            nargs=$(($nargs+1));
+            prev_option=local_state;;
+        -L=* | --local=* | --local-state=*)
+            nargs=$(($nargs+1));
+            local_state="$optarg";;
+        -u | --user | --indielinks-user)
+            nargs=$(($nargs+1));
+            prev_option=indielinks_user;;
+        -u=* | --user=* | --indielinks-user=*)
+            nargs=$(($nargs+1));
+            indielinks_user="$optarg";;
+        -v | --verb | --verbose)
+	        nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+	        nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try 'indielinks-ctl --help' for more information.
+EOF
+            exit 2;;
+	    *)
+	        # $@ now contains the arguments, $# the number of arguments
+	        shift $nargs;
+	        break;;
+    esac
+
+done
+
+if test -n "${help}"; then
+    cat <<EOF
+indielinks-ctl -- control the indielinks daemon
+
+Usage:
+
+    indielinks-ctl [OPTION...] COMMAND
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+    -L DIR, --local-state=DIR Specify the local state
+                    directory (default: /var/run/indielinks)
+    -u USER, --indielinks-user=USER Specify the user as
+                    which indielinks shall run
+                    (default: indielinks)
+    -g GROUP, --indielinks-group=GROUP Specify the group as
+                    which indielinks shall run
+                    (default: indielinks)
+Commands:
+
+start, stop, restart, reload
+
+Notes:
+RUST_LOG, if set, will be respected.
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+indielinks-ctl $VERSION
+EOF
+    exit 0
+fi
+
+if test -n "${verbose}"; then
+    set -x
+fi
+
+if [ $# -ne 1 ]; then
+    cat >&2 <<EOF
+One of start, stop, restart or reload expected.
+Try 'indielinks-ctl --help' for more information.
+EOF
+    exit 2
+    
+fi
+
+case "$1" in
+    sta | star | start)
+        start "${local_state}" "${indielinks_user}" "${indielinks_group}";;
+    sto | stop)
+        stop "${local_state}" "${indielinks_user}";;
+    res | rest | resta | restar | restart)
+        stop "${local_state}" "${indielinks_user}"; start "${local_state}" "${indielinks_user}" "${indielinks_group}";;
+    rel | relo | reloa | reload)
+        reload "${local_state}" "${indielinks_user}";;
+    *)
+        cat >&2 <<EOF
+One of start, stop, restart or reload expected.
+Try 'indielinks-ctl --help' for more information.
+EOF
+            exit 2;;
+esac
+
