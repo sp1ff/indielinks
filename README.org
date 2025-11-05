@@ -2,7 +2,7 @@
 #+DESCRIPTION: Bookmarks in the Fediverse
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-10-30 Thu 13:53>
+#+DATE: <2025-11-05 Wed 07:54>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -43,9 +43,7 @@ To run indielinks locally, you'll need to have [[https://www.scylladb.com/][Scyl
 To build from source, the Rust stable [[https://rustup.rs/][toolchain]] is required. The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend. 
 * Installation
 
-Presently, indielinks can only be installed locally, running against ScyllaDB. I'm also in the process of hosting an Arch package on the [[https://aur.archlinux.org/packages/indielinks-git][AUR]], and a Debian binary package on my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]].
-
-See [[INSTALL.org]] for details.
+I hope that in the not-too-distant future, an indielinks instance will be available on the web. In the mean time, indielinks can be installed locally, running against ScyllaDB. I also maintain an Arch package on the [[https://aur.archlinux.org/packages/indielinks-git][AUR]], and a Debian binary package on my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]]. See [[INSTALL.org]] for details.
 * Status & Roadmap
 
 I'm using indielinks today, running locally on bare metal to save bookmarks & maintain reading lists. That said, it's early code, and I haven't even stood-up the first public instance, yet. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support on the backend, have made an indielinks cluster into a Raft consensus cluster (in anticipation of caching), and am currently working on a web frontend.
