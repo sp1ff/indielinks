@@ -3,7 +3,7 @@
 VERSION=0.0.1
 
 # I'd like to format this more nicely, but if I don't do it this way, the variable substitution below doesn't work.
-rust_log=RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,openraft=info,opentelemetry_sdk=info,scylla=info
+rust_log=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,openraft=info,opentelemetry_sdk=info,scylla=info
 
 function start() {
     local local_state="$1"
