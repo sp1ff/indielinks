@@ -1028,7 +1028,7 @@ impl Session {
             "select count(*) from following where user_id = ?", // CountFollowing
             "insert into likes (user_id, url, id, created, like_id) values (?, ?, ?, ?, ?) if not exists",
             "select count(*) from following where actor_id = ?", // CountFollowingByActor
-            "insert into activity_pub_posts (user_id, post_id, posted, flavor, visibility) values (?, ?, ?, ?, ?) if not exists",
+            "insert into activity_pub_posts (user_id, post_id, posted, flavor, visibility) values (?, ?, ?, ?, ?) if not exists", // AddActivityPubPost
             "insert into raft_log (node_id, log_id, entry) values (?, ?, ?)",
             "truncate raft_log",
             "truncate raft_metadata",

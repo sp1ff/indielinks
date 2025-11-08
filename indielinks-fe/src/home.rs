@@ -14,151 +14,300 @@
 // see <http://www.gnu.org/licenses/>.
 
 //! # indielinks-fe Home component
+//!
+//! This module exports a [Leptos] component rendering the indielinks Home page.
+//!
+//! [Leptos]: https://book.leptos.dev
 
 use gloo_net::http::Request;
+use indielinks_shared::{
+    api::{PostAddReq, PostsAllRsp},
+    entities::{Post, StorUrl},
+};
+use itertools::Itertools;
 use leptos::{
     either::Either,
     html::{self},
     prelude::*,
 };
 use leptos_router::hooks::use_query_map;
+use snafu::{prelude::*, Backtrace};
 use tap::Pipe;
-use tracing::{debug, error, info};
-
-use indielinks_shared::{
-    api::{PostAddReq, PostsAllRsp},
-    entities::{Post, StorUrl},
-};
+use tracing::{debug, error};
+use web_sys::MouseEvent;
 
 use crate::{
-    http::{send_with_retry, string_for_status},
+    http::{error_for_status, send_with_retry, string_for_status},
     types::{Api, Base, PageSize, Token, USER_AGENT},
 };
 
-#[component]
-/// Render a `Post` in "view" mode (as opposed to "edit" mode)
+#[derive(Debug, Snafu)]
+pub enum Error {
+    #[snafu(display("While deserializing the response body as JSON, {source}"))]
+    Json { source: gloo_net::Error },
+    #[snafu(display("While sending an HTTP request, {source}"))]
+    Request { source: gloo_net::Error },
+    #[snafu(display("while serializing {request:?} to a query string, {source}"))]
+    UrlEncode {
+        request: PostAddReq,
+        source: serde_urlencoded::ser::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("while parsing an URL, {source}"))]
+    UrlFrom {
+        source: indielinks_shared::entities::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("while parsing an URL, {source}"))]
+    UrlParse {
+        source: url::ParseError,
+        backtrace: Backtrace,
+    },
+}
+
+// Given the amount of moving/cloning in Leptos apps, I'd really prefer to *move* the `Post` into
+// the new `PostAddReq`, but since all the members are private, and since module
+// indielinks_shared::entities knows nothing about `PostAddReq`, I'm not sure how to do that.
+fn copy_post_to_add_req(post: &Post) -> PostAddReq {
+    PostAddReq {
+        url: post.url().clone(),
+        title: post.title().to_owned(),
+        notes: post.notes().map(str::to_owned),
+        tags: Some(post.tags().join(",")),
+        dt: Some(post.posted()),
+        replace: Some(true),
+        shared: Some(post.public()),
+        to_read: Some(post.unread()),
+    }
+}
+
+/// Render a [Post] for viewing (as opposed to editing)
 ///
 /// We expect the HTTP client, indielinks API location, and the login token to be available in the context.
-fn Post(
+#[component]
+fn ViewPost(
+    /// The [Post] to be rendered
     post: Post,
+    /// [WriteSignal] for setting the [Post] currently being edited
     set_editing: WriteSignal<Option<StorUrl>>,
+    /// Trigger a re-render
     rerender: ArcTrigger,
 ) -> impl IntoView {
     debug!("Post invoked.");
 
-    let api = use_context::<Api>().expect("No context for the API location!?");
-    let token = use_context::<Token>().expect("No token Cell!?");
-    let token = token.get_untracked().expect("No token!?");
+    let api = expect_context::<Api>();
+    let base = expect_context::<Base>().0;
+    let token = expect_context::<Token>().get_untracked().expect("While rendering a Post, the authorization \
+                                                                  token was found to be empty. This is a bug \
+                                                                  and should be reported.");
+    // Unlike `on_edit`, which merely updates reactive state within our app, `on_toggle` needs to
+    // call back to the indielinks API. TBH, I'm not sure this is the right primitive, but, per
+    // <https://book.leptos.dev/async/13_actions.html>: "If you’re trying to occasionally run an
+    // async function in response to something like a user clicking a button, you probably want to
+    // use an Action."
 
-    let title = post.title().to_owned();
-    let posted = post.posted().format("%Y-%m-%d %H:%M:%S").to_string();
-    let url = post.url().clone();
-
+    // Now, our event handler will ultimately invoke this Action with a call to the `dispatch()`
+    // method, which can only take a single parameter, so we need a little utility struct to package
+    // up the multiple parameters we actually need:
     #[derive(Clone, Debug)]
-    pub struct EditParams {
-        pub url: StorUrl,
-        pub set_editing: WriteSignal<Option<StorUrl>>,
-        pub rerender: ArcTrigger,
+    struct ToggleReadLaterParams {
+        pub api: Api,
+        pub token: String,
+        pub post: Post,
     }
 
-    let edit_url = url.clone();
-    let on_edit = move |_| {
-        info!("Now editing {edit_url}");
-        set_editing.set(Some(edit_url.clone()));
+    let on_toggle = Action::<ToggleReadLaterParams, Result<(), Error>>::new_unsync(
+        move |params: &ToggleReadLaterParams| {
+            let mut request = copy_post_to_add_req(&params.post);
+            request.to_read = request.to_read.map(|x| !x);
+            let params = params.clone();
+            async move {
+                let qs =
+                    serde_urlencoded::to_string(&request).context(UrlEncodeSnafu { request })?;
+                let url = url::Url::parse(&format!("{}/api/v1/posts/add?{}", params.api.0, qs))
+                    .context(UrlParseSnafu)?;
+                send_with_retry(|| {
+                    Request::post(url.as_str())
+                        .header("User-Agent", USER_AGENT)
+                        .header("Authorization", &format!("Bearer {}", params.token))
+                        .send()
+                })
+                .await
+                .and_then(error_for_status)
+                .context(RequestSnafu)
+                .map(|_| ())
+            }
+        },
+    );
+
+    // Now, when we invoke `on_toggle`, an API call back to indielinks will take place in the
+    // background. The more I work with it, the more I think `Action` *is* the right thing to use,
+    // here, because it's reactive: I can `get()` its result in a view, or use its `pending()`
+    // status in a view, and the view will re-render when the API call returns and the `Action`
+    // yields its result. By returning a `Result`, I had even thought to use it with ErrorBoundry.
+    //
+    // In this particular case, however, there's nothing to render: on success we want to trigger a
+    // re-render via `rerender`, and on failure we just log to the console. The thing to do here
+    // seems to be an `Effect`:
+    Effect::new({
+        let rerender = rerender.clone();
+        move || {
+            // This is really weird: the docs all indicate that `on_toggle.value().get()` should
+            // return `Option<thing>` where "thing" is the return type of my Action. Turns out,
+            // that's only true when "thing" is Clone! And it was _really_ hard to figure that out:
+            // the `get()` method is on the `Get` trait, which is not directly implemented by
+            // `MappedSignal` (the type returned from `value()`)-- rather, it gets it from a blanket
+            // implementation of `Get`. But that blanket implementation is conditional on "thing"
+            // being Clone. This seems to remove it from the list of blanket implementations on the
+            // documentation page for `MappedSignal`, meaning that you have to "just know" that
+            // `get()` is from `Get` and navigate from there.
+            //
+            // Rather than try 'n make `Error` Clone, I'll just go with the "with" form:
+            on_toggle.value().with(|result| {
+                if let Some(result) = result {
+                    match result {
+                        Ok(_) => rerender.notify(),
+                        Err(err) => error!("Failed to toggle 'unread': {err}"),
+                    }
+                }
+            })
+        }
+    });
+    let url = post.url().clone();
+
+    // `on_edit` is going to be *moved* out into the Leptos runtime, if not into the DOM itself. As
+    // such, needs to implement `Fn` (i.e. not `FnOnce` or `FnMut`).
+    let on_edit = {
+        // Therefore, we need to move any values it needs into the closure...
+        let url = url.clone();
+        move |_: MouseEvent| {
+            // and, since on each invocation, we're moving `url` into the `set_editing` signal, we
+            // need to clone it on each invocation, so that we can be called repeatedly.
+            set_editing.set(Some(url.clone()));
+        }
     };
 
     #[derive(Clone, Debug)]
     pub struct DeleteParams {
         pub api: Api,
         pub token: String,
-        pub rerender: ArcTrigger,
         pub url: StorUrl,
     }
 
-    let on_delete = Action::new_unsync(move |params: &DeleteParams| {
-        let params = params.clone();
-        let mut full_url =
-            url::Url::parse(&format!("{}/api/v1/posts/delete", params.api.0)).expect("Bad URL!?");
-        full_url.query_pairs_mut().append_pair("url", &params.url);
-        info!("Sending: {full_url}");
-        async move {
-            match send_with_retry(|| {
-                Request::post(full_url.as_str())
-                    .header("User-Agent", USER_AGENT)
-                    .header("Authorization", &format!("Bearer {}", params.token))
-                    .send()
-            })
-            .await
-            {
-                Ok(_) => params.rerender.notify(),
-                Err(err) => error!("Delete post: {err}"),
+    let on_delete =
+        Action::<DeleteParams, Result<(), Error>>::new_unsync(move |params: &DeleteParams| {
+            let params = params.clone();
+            async move {
+                let mut full_url =
+                    url::Url::parse(&format!("{}/api/v1/posts/delete", params.api.0))
+                        .context(UrlParseSnafu)?;
+                full_url.query_pairs_mut().append_pair("url", &params.url);
+                send_with_retry(|| {
+                    Request::post(full_url.as_str())
+                        .header("User-Agent", USER_AGENT)
+                        .header("Authorization", &format!("Bearer {}", params.token))
+                        .send()
+                })
+                .await
+                .and_then(error_for_status)
+                .context(RequestSnafu)
+                .map(|_| ())
             }
+        });
+
+    Effect::new({
+        let rerender = rerender.clone();
+        move || {
+            on_delete.value().with(|result| {
+                if let Some(result) = result {
+                    match result {
+                        Ok(_) => rerender.notify(),
+                        Err(err) => error!("Failed to delete post: {err}"),
+                    }
+                }
+            })
         }
     });
 
-    let base = use_context::<Base>().expect("No base!?").0;
+    // Alright, with that bit of reactivity setup, now I'm ready to lay-out the actual UI.
+    let posted = post.posted().format("%Y-%m-%d %H:%M:%S").to_string();
+    let title = post.title().to_owned();
 
     let query = use_query_map(); // Memo<...>
-                                 // These clones are getting out of hand... I understand I need to move them into the `View`, but
-                                 // why do they need to be cloned *again* in closures inside the `View`?
-    let a1 = api.clone();
-    let t1 = token.clone();
-    let r1 = rerender.clone();
-    let u0 = url.clone().to_string();
-    let t = format!("{base}/h?page=0");
+    let unread = query.get().get("unread").map(|s| {
+        let t = s.to_ascii_lowercase();
+        t == "true" || t == "yes" || t == "" || t == "please"
+    });
+    let mut link_base = format!("{base}/h?page=0");
+    if unread.is_some_and(|b| b) {
+        link_base += "&unread";
+    }
+
     view! {
         <div class="post">
-            <div class="post-title"><a href={ u0.clone() }> { title } </a></div>
+            <div class="post-title"><a href={ url.to_string() }> { title } </a></div>
             <div class="post-info">
-                <div class="post-info-left"> { posted }</div>
-                <div class="post-info-right">
-                    {move || {
-                        let unread = query.get().get("unread").map(|s| {
-                            let t = s.to_ascii_lowercase();
-                            t == "true" || t == "yes" || t == ""
-                        });
-                        let mut t = t.clone();
-                        if unread.is_some_and(|b|b) {
-                            t += "&unread";
-                        }
-                        post.tags().map(|tag| {
-                            // Man, this involves a *lot* of cloning-- needed?
-                            let tag: String = tag.clone().into();
-                            let tag0 = tag.clone();
+                <div class="post-info-left"> { posted } </div>
+                <div class="post-info-right"> {
+                    post
+                        .tags()
+                        .cloned()
+                        .map(|tag| {
                             view! {
-                                <a href={ format!("{t}&tag={tag0}") }> { tag } </a> " "
+                                <a href={ format!("{link_base}&tag={tag}") }>{ format!("{tag}") } </a> " "
                             }
-                        }).collect::<Vec<_>>()
-                    }}
-                </div>
+                        })
+                        .collect::<Vec<_>>()
+                } </div>
             </div>
             <div class="post-controls">
-            <a href="#" on:click=on_edit>edit</a>
-            " "
-            <a href="#" on:click=move |_| {
-                on_delete.dispatch(DeleteParams {
-                    api: a1.clone(), token: t1.clone(), rerender: r1.clone(), url: url.clone(),
-                });
-            }>delete</a>
+                <a href="#" on:click={
+                    let api = api.clone();
+                    let token = token.clone();
+                    let post = post.clone();
+                    move |_| {
+                        on_toggle.dispatch(ToggleReadLaterParams {
+                            api: api.clone(), token: token.clone(), post: post.clone()
+                        });
+                }}>"mark as "{ if post.unread() { "read" } else { "unread" } }</a>
+                " "
+                <a href="#" on:click=on_edit>edit</a>
+                " "
+                <a href="#" on:click={
+                    let api = api.clone();
+                    let token = token.clone();
+                    let url = url.clone();
+                    move |_| {
+                        on_delete.dispatch(DeleteParams {
+                            api: api.clone(), token: token.clone(), url: url.clone(),});
+                    }}>delete</a>
             </div>
         </div>
     }
 }
 
+/// Render a [Post] for editing (as opposed to viewing)
+///
+/// We expect the HTTP client, indielinks API location, and the login token to be available in the context.
 #[component]
 fn EditPost(
+    /// The [Post] to be edited
     post: Post,
+    /// [WriteSignal] for setting the [Post] currently being edited
     set_editing: WriteSignal<Option<StorUrl>>,
-    rerender: ArcTrigger,
 ) -> impl IntoView {
     debug!("EditPost invoked.");
 
-    let api = use_context::<Api>().expect("No context for the API location!?");
-
-    let token = use_context::<Token>().expect("No token Cell!?");
-    let token = token.get().expect("No token!?");
-
-    // TBH, I have *no* idea what this does:
+    let api = expect_context::<Api>();
+    let token = expect_context::<Token>().get_untracked().expect("While editing a Post, the authorization \
+                                                                  token was found to be empty. This is a bug \
+                                                                  and should be reported.");
+    // This view really just amounts to a form, with uncontrolled elements
+    // <https://book.leptos.dev/view/05_forms.html#uncontrolled-inputs>: the inputs are under the
+    // control of the browser, and we don't do anything with 'em (other than initialize them) until
+    // submit time.
+    //
+    // "NodeRef is a kind of reactive smart pointer: we can use it to access the underlying DOM node."
     let url_element: NodeRef<html::Input> = NodeRef::new();
     let title_element: NodeRef<html::Input> = NodeRef::new();
     let notes_element: NodeRef<html::Input> = NodeRef::new();
@@ -166,6 +315,106 @@ fn EditPost(
     let private_element: NodeRef<html::Input> = NodeRef::new();
     let unread_element: NodeRef<html::Input> = NodeRef::new();
 
+    // I'm still not familiar with my options in working with forms in Leptos. This, however, seems
+    // *really* painful... is there no way to make this more ergonomic?
+    fn string_for_node_ref(node: &NodeRef<html::Input>) -> String {
+        node
+            // More trait black magic. Here's how it works. We have `NodeRef: Track + ReadUntracked`. These two traits are
+            // explicitly implemented on type `NodeRef`.
+            //
+            // This means `NodeRef` picks-up, for free, a `Read` implementation, due to a blanket
+            // implementation defined by `Read`:
+            //
+            //     impl<T> Read for T
+            //     where
+            //         T: Track + ReadUntracked
+            //
+            // This, in turn, gives it a `With` implementation, which then gives it a `Get` implementation, so long as
+            // the associated type `Value` (`html::Input`) is Clone (it is).
+            //
+            // The associated type `Value` is `<<NodeRef<html::Input> as Read>::Value as Deref>::Target`-- that's
+            // `<NodeRef<html::Input>::Value as Deref>::Target` :=> (oh, man) =>
+            //
+            // ```
+            // <ReadGuard<
+            //     Option<<html::Input as ElementType>::Output>,
+            //     Derefable<Option<<html::Input as ElementType>::Output>>> as Deref>::Target
+            // ```
+            //
+            // ```
+            // Option<<html::Input as ElementType>::Output>
+            // ```
+            //
+            // ```
+            // web_sys::HtmlInputElement
+            // ```
+            .get() // returns an Option<web_sys::HtmlInputElement>
+            .expect("string_for_node_ref() invoked before the node was mounted into the DOM; this is a bug and should be reported.")
+            // So at this point, we have a plain ol' `web_sys::HtmlInputElement` instance, so we can just call `value()`
+            .value()
+    }
+    fn bool_for_node_ref(node: &NodeRef<html::Input>) -> bool {
+        node
+            .get() // returns an Option<web_sys::HtmlInputElement>
+            .expect("string_for_node_ref() invoked before the node was mounted into the DOM; this is a bug and should be reported.")
+            .checked()
+    }
+
+    let on_submit = Action::<(), Result<(), Error>>::new_local(move |_: &()| {
+        let api = api.0.clone();
+        let token = token.clone();
+        async move {
+            let notes = string_for_node_ref(&notes_element);
+            let tags = string_for_node_ref(&tags_element)
+                .split(' ')
+                .map(|s| s.to_owned())
+                .collect::<Vec<String>>()
+                .join(",");
+            let request = PostAddReq {
+                url: string_for_node_ref(&url_element)
+                    .try_into()
+                    .context(UrlFromSnafu)?,
+                title: string_for_node_ref(&title_element),
+                notes: if notes.is_empty() { None } else { Some(notes) },
+                tags: if tags.is_empty() { None } else { Some(tags) },
+                dt: None,
+                replace: Some(true),
+                shared: Some(!bool_for_node_ref(&private_element)),
+                to_read: Some(bool_for_node_ref(&unread_element)),
+            };
+
+            let url = format!(
+                "{}/api/v1/posts/add?{}",
+                api,
+                serde_urlencoded::to_string(&request).context(UrlEncodeSnafu { request })?
+            );
+            send_with_retry(|| {
+                Request::post(url.as_str())
+                    .header("User-Agent", USER_AGENT)
+                    .header("Authorization", &format!("Bearer {}", token))
+                    .send()
+            })
+            .await
+            .and_then(error_for_status)
+            .context(RequestSnafu)
+            .map(|_| ())
+        }
+    });
+
+    Effect::new({
+        move || {
+            on_submit.value().with(|result| {
+                if let Some(result) = result {
+                    match result {
+                        Ok(_) => set_editing.set(None),
+                        Err(err) => error!("Failed to edit post: {err}"),
+                    }
+                }
+            })
+        }
+    });
+
+    // Alright-- let's setup the values we'll be moving into the View:
     let url = post.url().to_string();
     let title = post.title().to_owned();
     let notes = post.notes().map(|s| s.to_owned());
@@ -178,91 +427,9 @@ fn EditPost(
     let private = !post.public();
     let unread = post.unread();
 
-    let on_submit = Action::new_local(move |_: &()| {
-        let api = api.0.clone();
-        let token = token.clone();
-        let rerender = rerender.clone();
-        async move {
-            // This seems *really* painful... is there no way to make this more elegant?
-            let url: StorUrl = match url_element
-                .get()
-                .expect("url should be mounted")
-                .value()
-                .try_into()
-            {
-                Ok(url) => url,
-                Err(err) => {
-                    error!("{err:?}");
-                    window().alert_with_message("Invalid URL").unwrap();
-                    return;
-                }
-            };
-            let title = title_element
-                .get()
-                .expect("title should be mounted")
-                .value();
-            let notes = notes_element
-                .get()
-                .expect("notes should be mounted")
-                .value();
-            let tags = tags_element
-                .get()
-                .expect("tags should be mounted")
-                .value()
-                .split(' ')
-                .map(|s| s.to_owned())
-                .collect::<Vec<String>>()
-                .join(",");
-            let shared = !private_element
-                .get()
-                .expect("shared should be mounted")
-                .checked();
-            let to_read = unread_element
-                .get()
-                .expect("unread should be mounted")
-                .checked();
-
-            let url = format!(
-                "{}/api/v1/posts/add?{}",
-                api,
-                serde_urlencoded::to_string(&PostAddReq {
-                    url,
-                    title,
-                    notes: if notes.is_empty() { None } else { Some(notes) },
-                    tags: if tags.is_empty() { None } else { Some(tags) },
-                    dt: None,
-                    replace: Some(true),
-                    shared: Some(shared),
-                    to_read: Some(to_read),
-                })
-                .expect("Bad query!?")
-            );
-            info!("Sending {url}");
-            match Request::post(&url)
-                .header("User-Agent", USER_AGENT)
-                .header("Authorization", &format!("Bearer {}", token))
-                .send()
-                .await
-                .map_err(|err| err.to_string())
-                .and_then(string_for_status)
-            {
-                Ok(_) => {
-                    info!("Updated post successfully!");
-                    set_editing.set(None);
-                    rerender.notify();
-                }
-                Err(err) => {
-                    error!("{err:?}");
-                }
-            }
-        }
-    });
-
-    use leptos::prelude::window;
-
     view! {
         <div class="post">
-            <form style="padding; 1em;" on:submit = move |ev| { // leptos::tachys::html::event::Event
+            <form style="padding; 1em;" on:submit = move |ev| {
                 ev.prevent_default();
                 on_submit.dispatch(());
             }>
@@ -294,7 +461,7 @@ fn EditPost(
                 </label>
             </div>
             <div>
-                <input type="submit" value="save"/>
+                <input type="submit" value="save" disabled=move || on_submit.pending().get()/>
                 <button type="button" on:click=move |_| {
                     set_editing.set(None);
                 }>"cancel"</button>
@@ -519,13 +686,12 @@ pub fn Home() -> impl IntoView {
                              key=|post| post.id()
                              let:post>
                             {
-                                let r0 = rerender.clone();
                                 let r1 = rerender.clone();
                                 move || {
                                     if Some(post.url()) == editing.get().as_ref() {
-                                        Either::Left(view!{<EditPost post=post.clone() set_editing rerender=r0.clone()/>})
+                                        Either::Left(view!{<EditPost post=post.clone() set_editing/>})
                                     } else {
-                                        Either::Right(view!{<Post post=post.clone() set_editing rerender=r1.clone()/>})
+                                        Either::Right(view!{<ViewPost post=post.clone() set_editing rerender=r1.clone()/>})
                                     }
                             }}
                         </For>

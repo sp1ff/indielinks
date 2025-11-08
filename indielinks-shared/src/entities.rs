@@ -308,7 +308,7 @@ impl Username {
     /// Construct a [Username] from a `&str`
     ///
     /// indielinks usernames must be ASCII, may be from six to sixty-four chacacters in length, and
-    /// must match the regex "^[a-zA-Z][-_.a-zA-Z0-9]+$". Use this constructor to create a [Username] instance
+    /// must match the regex "^\[a-zA-Z\]\[-_.a-zA-Z0-9\]+$". Use this constructor to create a [Username] instance
     /// by copying from a reference to [str]. To *move* a [String] into a [Username] (with validity checking)
     /// use [TryFrom::try_from()]
     pub fn new(name: &str) -> Result<Username> {

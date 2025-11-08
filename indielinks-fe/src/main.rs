@@ -15,22 +15,61 @@
 
 #![cfg(target_arch = "wasm32")]
 
-//! # indielinks frontend
+//! # The [indielinks] Front End
 //!
-//! ## First thoughts
+//! ## Introduction
 //!
-//! I haven't done any sort of frontend/UI development in twenty years. It seems the fundamentals of
-//! web frontends haven't changed all that much: you lay-out the UI in terms of HTML elements and
-//! make them responsive by modifying the DOM. And things _have_ gotten better: back in the day, we
-//! all had to use the `<table>` element for layout whereas HTML 5 provides a number of elements
-//! specifically designed for this purpose.
+//! This crate implements the [indielinks] front end, a client-side rendered, single-page
+//! application.
 //!
-//! I've chosen the [Leptos] Rust framework to build this app in the hopes of flattening my learning
-//! curve. [Leptos] uses the Rust macro system to define a DSL for expressing reactive UI
-//! components. Thing is, the syntax of this DSL is barely documented, and the semantics not at all.
-//! As I figure both out, I'll be documenting the code copiously.
+//! I haven't done any sort of GUI development in almost twenty years. It seems the fundamentals of
+//! web front ends haven't changed all that much: you lay-out the UI in terms of HTML elements and
+//! make them responsive by modifying the DOM from Javascript. Things _have_ gotten better during
+//! that time: back in the day, we all had to use the `<table>` element for layout whereas HTML 5
+//! provides a number of elements specifically designed for this purpose.
+//!
+//! That said, I'm completely new to reactive programming. I've chosen the [Leptos] framework to
+//! build this app in the hopes of flattening my learning curve. I'll be documenting the code
+//! copiously as a learning tool while I figure all this out.
 //!
 //! [Leptos]: https://book.leptos.dev
+//!
+//! ## Overview of a Reactive Rust Front End
+//!
+//! I think I'm finally getting my head around how this all works, and I wanted to write it down to
+//! be sure. The [Leptos] documentation is regrettably focused on examples & "howto"s, and at no
+//! point lays out a simple "theory of operations". Oddly, this sort of information _can_ be found
+//! in a pair of videos made by [Leptos]' creator, Greg Johnston:
+//!
+//! - [Let's Build a Frontend Web Framework in Rust](https://www.youtube.com/watch?v=cp3tnlTZ9IU)
+//! - [Learning Leptos: Build a fine-grained reactive system in 100 lines of code](https://www.youtube.com/watch?v=GWB3vTWeLd4&t=1659s)
+//!
+//! Each of these helped me tremendously.
+//!
+//! To understand how a [Leptos] front end (or, at least, a CSR, SPA) works, the first step is to
+//! shift your mental model of the program's execution. No longer are we implementing a Unix process
+//! whose lifetime is conicident with the execution of `main()`. Rather, we're building a
+//! WebAssembly bundle whose post-load *initialization* corresponds to the execution of `main()`.
+//! After `main()` returns, the `.wasm` lives on, making functions & data available to the the page
+//! from Javascript. The data structures allocated by `main()` are only truly cleaned-up when the
+//! user navigates away from the page and the `.wasm` bundle is unloaded.
+//!
+//! As an aside, this explains why data has to be _moved_ into the numerous lambdas handed off to
+//! the [Leptos] runtime: they must have `'static` lifetime.
+//!
+//! The `view!` macro is just syntactic sugar around a typical fluent interface for building-up the
+//! DOM you'd like your app to manage. The "builders" that make-up this fluent interface use
+//! [wasm-bindgen] to call out to the Javascript world, creating the corresponding elements in the
+//! "real" (i.e. page) DOM.
+//!
+//! [wasm-bindgen]: https://wasm-bindgen.github.io/wasm-bindgen/
+//!
+//! What makes this all reactive is the interplay between signals & effects. By tracking a "stack"
+//! of currently-executing effects, [Leptos] can automatically detect which effects depend on which
+//! signals (by looking at the top of the stack when a signal's value is accessed), and build-up a
+//! dependency graph. Those signals & effects reside in the "runtime", which AFAICT is a collection
+//! of data structures to track this graph maintained by [Leptos], inside the .wasm bundle, driven
+//! by the user's interactions with the page via Javascript event handlers.
 
 use gloo_net::http::Request;
 use leptos::prelude::*;
@@ -44,6 +83,7 @@ use thaw::{Layout, LayoutHeader, Link, Tab, TabList};
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
+use wasm_bindgen::JsValue;
 
 use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
@@ -56,12 +96,8 @@ use indielinks_fe::{
     signin::SignIn,
     types::{Api, Base, PageSize, Token, USER_AGENT},
 };
-use wasm_bindgen::JsValue;
 
 /// [indielinks-fe](crate) root component
-// Despite (naive?) appearances, this function isn't called every time we need to render this
-// component; rather it is called *once* and it returns a thing that can be converted into a `View`,
-// which I gather is the reactive entity that gets rendered & re-rendered as needed.
 #[component]
 fn App() -> impl IntoView {
     debug!("App invoked.");
@@ -117,9 +153,9 @@ fn App() -> impl IntoView {
     // The constant cloning is getting *really* tiresome:
     let t0 = token.clone();
     let t1 = token.clone();
-    let t2 = token.clone();
-    let t3 = token.clone();
-    let t4 = token.clone();
+    // let t2 = token.clone();
+    // let t3 = token.clone();
+    // let t4 = token.clone();
 
     // Seems prolix...
     async fn refresh() -> bool {
@@ -204,7 +240,7 @@ fn App() -> impl IntoView {
                                     </ul>
                                 </div>
                             </Show>
-                            <Show when = move || t2.get().is_some() && use_location().pathname.get() != "/s" >
+                            <Show when = move || token.get().is_some() && use_location().pathname.get() != "/s" >
                                 <div class="auth-actions">
                                     <ul style="list-style-type: none; font-size: smaller;">
                                         // Note the `clone()` in the on:click handler-- this is
@@ -230,7 +266,7 @@ fn App() -> impl IntoView {
                                 path=path!("/h")
                                 // Some(true) means display, Some(false) means do *not* display, and
                                 // None means that this information is still loading
-                                condition = move || Some(t3.get().is_some())
+                                condition = move || Some(token.get().is_some())
                                 redirect_path = || "/"
                                 view=move || view! { <Home />}
                             />
@@ -238,7 +274,7 @@ fn App() -> impl IntoView {
                                 path=path!("/f")
                                 // Some(true) means display, Some(false) means do *not* display, and
                                 // None means that this information is still loading
-                                condition = move || Some(t4.get().is_some())
+                                condition = move || Some(token.get().is_some())
                                 redirect_path = || "/"
                                 view=Feeds
                             />
@@ -246,7 +282,7 @@ fn App() -> impl IntoView {
                                 path=path!("/a")
                                 // Some(true) means display, Some(false) means do *not* display, and
                                 // None means that this information is still loading
-                                condition = move || Some(t4.get().is_some())
+                                condition = move || Some(token.get().is_some())
                                 redirect_path = || "/"
                                 view=AddLink
                             />
@@ -259,7 +295,7 @@ fn App() -> impl IntoView {
 }
 
 fn main() {
-    // This is actually pretty cool: we can setup a bog standard tracing-subscriber `Subscriber`,
+    // This is actually pretty cool: we can setup a standard tracing-subscriber `Subscriber`,
     // configured to output to the browser console:
     fmt()
         .with_writer(MakeConsoleWriter::default().map_trace_level_to(tracing::Level::DEBUG))
@@ -273,6 +309,6 @@ fn main() {
     // trace that includes a line in the Rust source code
     // (https://book.leptos.dev/getting_started/leptos_dx.html).
     console_error_panic_hook::set_once();
-    // Run `App()`, mount the result to the document <body>:
+    // Mount the `App` component as the document <body>:
     leptos::mount::mount_to_body(App);
 }

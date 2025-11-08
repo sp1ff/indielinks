@@ -16,7 +16,9 @@
 #[cfg(feature = "backend")]
 use scylla::{deserialize::value::DeserializeValue, serialize::value::SerializeValue};
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, ResultExt, Snafu};
+#[cfg(feature = "backend")]
+use snafu::Backtrace;
+use snafu::{ResultExt, Snafu};
 #[cfg(feature = "backend")]
 use tap::Pipe;
 

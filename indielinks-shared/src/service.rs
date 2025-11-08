@@ -68,7 +68,9 @@ use async_trait::async_trait;
 use either::Either;
 use pin_project::pin_project;
 use serde::Deserialize;
-use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
+use snafu::{Backtrace, IntoError, Snafu};
+#[cfg(feature = "backend")]
+use snafu::{OptionExt, ResultExt};
 use tower::{retry::backoff::Backoff, Service};
 
 use std::{
@@ -367,7 +369,7 @@ impl<Req: Clone, Res: std::fmt::Debug>
         Req,
         Res,
         /*indielinks_shared::service::Error*/
-        Box<(dyn std::error::Error + Send + Sync + 'static)>,
+        Box<dyn std::error::Error + Send + Sync + 'static>,
     > for ExponentialBackoffPolicy
 {
     type Future =
@@ -379,7 +381,7 @@ impl<Req: Clone, Res: std::fmt::Debug>
     fn retry(
         &mut self,
         _: &mut Req,
-        result: &mut std::result::Result<Res, Box<(dyn std::error::Error + Send + Sync + 'static)>>,
+        result: &mut std::result::Result<Res, Box<dyn std::error::Error + Send + Sync + 'static>>,
     ) -> Option<Self::Future> {
         // Regrettably, at this time, I'm reduced to using a `Buffer` layer between my `Retry` layer
         // and my `RateLimit` layer, because the latter is not Clone, and the former requires that
