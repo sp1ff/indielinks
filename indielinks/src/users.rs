@@ -79,25 +79,29 @@
 //! Finally, note that this is designed to defend against CSRF. If an attacker has a successful
 //! XSS exploit, they can refresh the token as long as they'd like!
 
-use std::sync::Arc;
+use std::{num::NonZero, sync::Arc};
 
 use axum::{
     extract::{rejection::ExtensionRejection, State},
     http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Extension, Json, Router,
+    Extension, Json, RequestExt, Router,
 };
 use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Duration, Utc};
-use http::{header::SET_COOKIE, HeaderMap};
-use indielinks_cache::cache::Cache;
+use http::{header::SET_COOKIE, uri::Scheme, HeaderMap};
+use http_body_util::BodyExt;
+use indielinks_cache::{cache::Cache, types::NodeId};
 use itertools::Itertools;
+use lru::LruCache;
+use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+use tower::{Service, ServiceExt};
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
     set_header::SetResponseHeaderLayer,
@@ -127,7 +131,7 @@ use crate::{
     http::{ErrorResponseBody, SameSite},
     indielinks::Indielinks,
     peppers::{self, Peppers},
-    signing_keys::{self, SigningKeys},
+    signing_keys::{self, SigningKey, SigningKeys},
     storage::{self, Backend as StorageBackend},
     token::{self, mint_refresh_and_csrf_tokens, mint_token, refresh_token},
 };
@@ -139,13 +143,14 @@ use crate::{
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Failed to add a key to {user:?}: {source}"))]
-    AddKey {
-        user: User,
-        source: entities::Error,
-        backtrace: Backtrace,
-    },
+    AddKey { user: User, source: entities::Error },
     #[snafu(display("Failed to add user: {source}"))]
     AddUser { source: storage::Error },
+    #[snafu(display("While converting from bytes to an axum body, {source}"))]
+    AxumBody {
+        source: axum::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("The supplied API key couldn't be parsed"))]
     BadApiKey {
         key: String,
@@ -157,11 +162,29 @@ pub enum Error {
         value: HeaderValue,
         backtrace: Backtrace,
     },
+    #[snafu(display("While deserializing a /timeline request, {source}"))]
+    BadTimelineRequest {
+        source: serde_json::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While serializing a /timeline response, {source}"))]
+    BadTimelineResponse {
+        source: serde_json::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("{username} is not a valid username"))]
     BadUsername {
         username: String,
         source: crate::entities::Error,
-        backtrace: Backtrace,
+    },
+    #[snafu(display("Attempt to continue a pagination that was never started"))]
+    BeforeWithNoBegin { backtrace: Backtrace },
+    #[snafu(display(
+        "While beginning a pagination over the home timeline for {username}, {source}"
+    ))]
+    BeginTimeline {
+        username: Username,
+        source: crate::home_timeline::Error,
     },
     #[snafu(display(
         "The CSRF token {token} doesn't match the CSRF header {header}; this is likely a bug, but could also result from a CSRF attack"
@@ -171,11 +194,27 @@ pub enum Error {
         header: String,
         backtrace: Backtrace,
     },
-    #[snafu(display("Invalid API key: {source}"))]
-    InvalidApiKey {
-        source: authn::Error,
+    #[snafu(display(
+        "While continuing a pagination over the home timeline for {username}, {source}"
+    ))]
+    ContinueTimeline {
+        username: Username,
+        source: crate::home_timeline::Error,
+    },
+    #[snafu(display("While creating a FeedPost, {source}"))]
+    FeedPost { source: crate::ap_entities::Error },
+    #[snafu(display("While computing the home timeline for {username}, {source}"))]
+    HomeTimeline {
+        username: Username,
+        source: crate::home_timeline::Error,
+    },
+    #[snafu(display("While converting bytes into an axum Body, {source}"))]
+    IntoBody {
+        source: axum::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Invalid API key: {source}"))]
+    InvalidApiKey { source: authn::Error },
     #[snafu(display("An Authorization header had a non-textual value: {source}"))]
     InvalidAuthHeaderValue {
         value: HeaderValue,
@@ -183,6 +222,10 @@ pub enum Error {
     },
     #[snafu(display("Invalid credentials: {source}"))]
     InvalidCredentials { source: authn::Error },
+    #[snafu(display("The indielinks local client reports an error: {source}"))]
+    LocalClient {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[snafu(display("Failed to find a colon in '{text}'"))]
     MissingColon { text: String, backtrace: Backtrace },
     #[snafu(display("A required authentication cookie was missing from the request"))]
@@ -194,27 +237,32 @@ pub enum Error {
     #[snafu(display("No authorization token found in the query string"))]
     NoAuthToken { backtrace: Backtrace },
     #[snafu(display("No signing keys available: {source}"))]
-    NoKeys {
-        source: signing_keys::Error,
-        backtrace: Backtrace,
+    NoKeys { source: signing_keys::Error },
+    #[snafu(display("{source}"))]
+    NoPepper { source: peppers::Error },
+    #[snafu(display("Failed to hash UserId {userid}: {source}"))]
+    NodeHash {
+        userid: UserId,
+        source: indielinks_cache::raft::Error,
     },
+    #[snafu(display("The request content type wasn't JSON"))]
+    NonJson { backtrace: Backtrace },
     #[snafu(display("The authorization header was not UTF-8: {source}"))]
     NonUtf8Header {
         source: http::header::ToStrError,
         backtrace: Backtrace,
     },
-    #[snafu(display("{source}"))]
-    NoPepper { source: peppers::Error },
+    #[snafu(display("While creating a page token, {source}"))]
+    PageToken { source: crate::home_timeline::Error },
+    #[snafu(display("While deserializing a page token, {source}"))]
+    PageTokenDe { source: crate::home_timeline::Error },
     #[snafu(display("Couldn't validate password for user {username}: {source}"))]
     Password {
         username: String,
         source: entities::Error,
     },
     #[snafu(display("Failed to mint refresh and/or CSRF tokens: {source}"))]
-    Refresh {
-        source: crate::token::Error,
-        backtrace: Backtrace,
-    },
+    Refresh { source: crate::token::Error },
     #[snafu(display(
         "Couldn't create background task for {username} following {actorid}: {source}"
     ))]
@@ -222,6 +270,13 @@ pub enum Error {
         username: Username,
         actorid: Url,
         source: background_tasks::Error,
+    },
+    #[snafu(display("Attemped a 'since' operation without ever starting a pagination"))]
+    SinceWithNoBegin { backtrace: Backtrace },
+    #[snafu(display("While retrieving the address of node {node_id}, {source}"))]
+    SocketAddr {
+        node_id: NodeId,
+        source: indielinks_cache::raft::Error,
     },
     #[snafu(display("Failed to mint a token for user {username}: {source}"))]
     Token {
@@ -240,7 +295,6 @@ pub enum Error {
     UpdateKey {
         user: User,
         source: crate::storage::Error,
-        backtrace: Backtrace,
     },
     #[snafu(display("Failed to lookup user {username}: {source}"))]
     User {
@@ -254,6 +308,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to create user: {source}"))]
     UserSignup { source: entities::Error },
+    #[snafu(display("The maximum number of posts must be greater than zero"))]
+    ZeroMaxPosts { backtrace: Backtrace },
 }
 
 impl Error {
@@ -262,9 +318,21 @@ impl Error {
             ////////////////////////////////////////////////////////////////////////////////////////
             // Broken requests-- tell the caller how to fix it
             ////////////////////////////////////////////////////////////////////////////////////////
+            Error::AxumBody { source, .. } => (
+                StatusCode::BAD_REQUEST,
+                format!("While converting bytes to an axum Body, {source}"),
+            ),
             Error::BadAuthHeaderParse { value, .. } => (
                 StatusCode::BAD_REQUEST,
                 format!("Bad Authorization header: {:?}", value),
+            ),
+            Error::BadTimelineRequest { source, .. } => (
+                StatusCode::BAD_REQUEST,
+                format!("While deserializing a /timeline request: {:?}", source),
+            ),
+            Error::BeforeWithNoBegin { .. } => (
+                StatusCode::BAD_REQUEST,
+                "You cannot continue a pagination you never started".to_owned(),
             ),
             Error::CsrfMismatch { .. } => (
                 StatusCode::BAD_REQUEST,
@@ -278,10 +346,22 @@ impl Error {
                 StatusCode::BAD_REQUEST,
                 format!("Missing colon in {}", text),
             ),
+            Error::NonJson { .. } => (
+                StatusCode::BAD_REQUEST,
+                "Expected Content-Type: application/json".to_owned(),
+            ),
             Error::NonUtf8Header { source, .. } => (StatusCode::BAD_REQUEST, format!("{source:?}")),
             Error::MultipleAuthnHeaders => (
                 StatusCode::BAD_REQUEST,
                 "Multiple authorization headers".to_string(),
+            ),
+            Error::SinceWithNoBegin { .. } => (
+                StatusCode::BAD_REQUEST,
+                "You cannot update a pagination you never started".to_owned(),
+            ),
+            Error::ZeroMaxPosts { .. } => (
+                StatusCode::BAD_REQUEST,
+                "The max posts parameter cannot be zero; to accept a default value simply omit it".to_owned(),
             ),
             ////////////////////////////////////////////////////////////////////////////////////////
             // Authorization failure-- don't tell a potential attacker the way in which they failed
@@ -323,9 +403,49 @@ impl Error {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to add user: {source}"),
             ),
+            Error::BadTimelineResponse { source, ..} => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to serialize a /timeline response: {source}"),
+            ),
+            Error::BeginTimeline { source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to initiate a timeline pagination: {source}"),
+            ),
+            Error::ContinueTimeline { source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to continue a timeline pagination: {source}"),
+            ),
+            Error::FeedPost { source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("While computing the home timeline, {source}"),
+            ),
+            Error::HomeTimeline { username, source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("While computing the home timeline for {username}, {source}"),
+            ),
+            Error::IntoBody { source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("While converting bytes into an axum body, {source}")
+            ),
+            Error::LocalClient { source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Internal communication error: {source}"),
+            ),
             Error::NoPepper { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "No pepper available".to_string(),
+            ),
+            Error::NodeHash { userid, source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to hash UserId {userid}: {source}")
+            ),
+            Error::PageToken { source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("While creating a pagination token, {source}")
+            ),
+            Error::PageTokenDe { source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("While deserializing a pagination token, {source}")
             ),
             Error::Password {
                 username, source, ..
@@ -347,6 +467,10 @@ impl Error {
                 format!(
                     "Couldn't schedule a follow request for {actorid} on behalf of {username}: {source}"
                 ),
+            ),
+            Error::SocketAddr {node_id, source } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("While retrieving the address of node {node_id}, {source}")
             ),
             Error::Token {
                 username, source, ..
@@ -1047,59 +1171,302 @@ async fn mint_key(
 
 define_metric! { "user.timeline.successful", user_timeline_successful, Sort::IntegralCounter }
 define_metric! { "user.timeline.failures", user_timeline_failures, Sort::IntegralCounter }
+define_metric! { "user.timeline.redirects", user_timeline_redirects, Sort::IntegralCounter }
 
+// Copied from axum, json.rs.
+fn json_content_type(headers: &HeaderMap) -> bool {
+    let Some(content_type) = headers.get(http::header::CONTENT_TYPE) else {
+        return false;
+    };
+
+    let Ok(content_type) = content_type.to_str() else {
+        return false;
+    };
+
+    let Ok(mime) = content_type.parse::<mime::Mime>() else {
+        return false;
+    };
+
+    mime.type_() == "application"
+        && (mime.subtype() == "json" || mime.suffix().is_some_and(|name| name == "json"))
+}
+
+/// Handle a `/timeline` request on this host
+#[allow(clippy::too_many_arguments)]
+async fn timeline_local(
+    storage: &(dyn StorageBackend + Send + Sync),
+    user: &User,
+    origin: &Origin,
+    client: &crate::client::ClientType,
+    request: TimelineReq,
+    key: &SigningKey,
+    timelines: Arc<Mutex<LruCache<UserId, HomeTimeline>>>,
+    _activity_pub_items: Arc<RwLock<Cache<GrpcClientFactory, StorUrl, Item>>>,
+) -> Result<TimelineRsp> {
+    let mut timelines = timelines.lock().await;
+    let response = match (timelines.get_mut(user.id()), request) {
+        (None, TimelineReq::Initial { max_posts }) => {
+            // First time this user's timeline has been requested; the caller is looking for the
+            // leading chunk
+            let mut timeline = HomeTimeline::new(user, origin, storage, client)
+                .await
+                .context(HomeTimelineSnafu {
+                    username: user.username().clone(),
+                })?;
+            let rsp = match timeline
+                .begin(max_posts)
+                .await
+                .context(BeginTimelineSnafu {
+                    username: user.username().clone(),
+                })? {
+                Some((items, first, last)) => {
+                    // This logic is replicated below; introduce a `TryFrom` implementation?
+                    TimelineRsp::Initial {
+                        posts: Some((
+                            items
+                                .into_nonempty_iter()
+                                .map(|item| item.into())
+                                .collect::<NEVec<_>>(),
+                            first.as_token(key).context(PageTokenSnafu)?,
+                            last.as_token(key).context(PageTokenSnafu)?,
+                        )),
+                    }
+                }
+                None => TimelineRsp::Initial { posts: None },
+            };
+            timelines.put(*user.id(), timeline);
+            rsp
+        }
+        (None, TimelineReq::Since { .. }) => {
+            // I suppose we *could* instantiate the `Timeline`, then return all posts since `since`,
+            // but that's weird enough that I'm just going to fail the request for now.
+            return SinceWithNoBeginSnafu.fail();
+        }
+        (None, TimelineReq::Before { .. }) => {
+            // Similarly, here:
+            return BeforeWithNoBeginSnafu.fail();
+        }
+        (Some(timeline), TimelineReq::Initial { max_posts }) => {
+            match timeline
+                .begin(max_posts)
+                .await
+                .context(BeginTimelineSnafu {
+                    username: user.username().clone(),
+                })? {
+                Some((items, first, last)) => TimelineRsp::Initial {
+                    posts: Some((
+                        items
+                            .into_nonempty_iter()
+                            .map(|item| item.into())
+                            .collect::<NEVec<_>>(),
+                        first.as_token(key).context(PageTokenSnafu)?,
+                        last.as_token(key).context(PageTokenSnafu)?,
+                    )),
+                },
+                None => TimelineRsp::Initial { posts: None },
+            }
+        }
+        (Some(timeline), TimelineReq::Since { since, max_posts }) => {
+            let since = (since, key).try_into().context(PageTokenDeSnafu)?;
+            let max_posts = max_posts
+                .map(|n| NonZero::new(n).context(ZeroMaxPostsSnafu))
+                .transpose()?;
+            match timeline.since(since, max_posts).await {
+                Some((items, last)) => TimelineRsp::Since {
+                    posts: Some((
+                        items
+                            .into_nonempty_iter()
+                            .map(|item| item.into())
+                            .collect::<NEVec<_>>(),
+                        last.as_token(key).context(PageTokenSnafu)?,
+                    )),
+                },
+                None => TimelineRsp::Since { posts: None },
+            }
+        }
+        (Some(timeline), TimelineReq::Before { before, max_posts }) => {
+            let before = (before, key).try_into().context(PageTokenDeSnafu)?;
+            let max_posts = max_posts
+                .map(|n| NonZero::new(n).context(ZeroMaxPostsSnafu))
+                .transpose()?;
+            match timeline
+                .before(before, max_posts)
+                .await
+                .context(ContinueTimelineSnafu {
+                    username: user.username().clone(),
+                })? {
+                Some((items, first)) => TimelineRsp::Before {
+                    posts: Some((
+                        items
+                            .into_nonempty_iter()
+                            .map(|item| item.into())
+                            .collect::<NEVec<_>>(),
+                        first.as_token(key).context(PageTokenSnafu)?,
+                    )),
+                },
+                None => TimelineRsp::Since { posts: None },
+            }
+        }
+    };
+    Ok(response)
+}
+
+/// Return a portion of the calling user's home timeline
+///
+/// I'm afraid that the home timeline is a bit large to cache (I have no data to back this up).
+/// Plus, given the complexity of the implementation, the requirement on cache values being
+/// serializable is becoming inconvenient. So, for this operation, I'm going to try something
+/// different: I'm going to partition *compute* not data-- I'll make each node in the cluster
+/// responsible for maintaining the home timelines for a certain subset of our users, and just
+/// forward this entire request appropriately.
+#[axum::debug_handler]
 async fn timeline(
     State(state): State<Arc<Indielinks>>,
     user: StdResult<Extension<User>, ExtensionRejection>,
-    Json(req): Json<TimelineReq>,
+    // Arghhhh... `FromRequest` is only implemented for `Request<Body>`
+    request: axum::extract::Request, // Json(_): Json<TimelineReq>,
 ) -> axum::response::Response {
     async fn timeline1(
-        _storage: &(dyn StorageBackend + Send + Sync),
-        _user: &User,
-        _req: TimelineReq,
-        timelines: Arc<RwLock<Cache<GrpcClientFactory, UserId, HomeTimeline>>>,
-        _activity_pub_items: Arc<RwLock<Cache<GrpcClientFactory, StorUrl, Item>>>,
+        state: Arc<Indielinks>,
+        user: &User,
+        request: axum::extract::Request,
     ) -> Result<TimelineRsp> {
-        {
-            let _: tokio::sync::RwLockWriteGuard<
-                '_,
-                Cache<GrpcClientFactory, UserId, HomeTimeline>,
-            > = timelines.write().await;
+        let mut client = state.local_client.clone();
+
+        let responsible_node = state
+            .cache_node
+            .node_for_key(user.id())
+            .await
+            .context(NodeHashSnafu { userid: *user.id() })?;
+
+        if state.cache_node.id().await != responsible_node {
+            user_timeline_redirects
+                .add(1, &[KeyValue::new("username", user.username().to_string())]);
+
+            // `req` is an `http::Request<axum::Body>`, and we need a request of type
+            // `http::request<T>`, where `T: TryInto<reqwest::Body>`. Let's use `Bytes`
+            // (regrettably, `axum::Body` doesn't work).
+            let (mut parts, body) = request.into_parts();
+            // Rewrite the URI
+            let mut uri_parts = parts.uri.into_parts();
+            uri_parts.scheme = Some(Scheme::HTTP); // I'm assuming no intra-cluster TLS.
+            let addr = state
+                .cache_node
+                .socket_addr_for_id(responsible_node)
+                .await
+                .context(SocketAddrSnafu {
+                    node_id: responsible_node,
+                })?;
+            uri_parts.authority = Some(addr.to_string().try_into().expect(
+                "Failed to forward the /timeline request; this is a bug & should be reported.",
+            ));
+            parts.uri = http::uri::Uri::from_parts(uri_parts).expect(
+                "Failed to forward the /timeline request; this is a bug & should be reported.",
+            );
+
+            let bytes = axum::body::to_bytes(body, usize::MAX)
+                .await
+                .context(AxumBodySnafu)?;
+
+            let request: http::Request<bytes::Bytes> = http::Request::from_parts(parts, bytes);
+
+            let response = client
+                .ready()
+                .await
+                .context(LocalClientSnafu)? // indielinks_shared::service::Error
+                .call(request)
+                .await
+                .context(LocalClientSnafu)?;
+
+            let (_, body) = response.into_parts();
+
+            serde_json::from_slice::<TimelineRsp>(&body).context(BadTimelineResponseSnafu)
+        } else {
+            if !json_content_type(request.headers()) {
+                return NonJsonSnafu.fail();
+            }
+
+            let bytes = request
+                .into_limited_body()
+                .collect()
+                .await
+                .context(IntoBodySnafu)?
+                .to_bytes();
+
+            let request =
+                serde_json::from_slice::<TimelineReq>(&bytes).context(BadTimelineRequestSnafu)?;
+
+            let (_, key) = state.signing_keys.current().context(NoKeysSnafu)?;
+
+            timeline_local(
+                state.storage.as_ref(),
+                user,
+                &state.origin,
+                &state.client,
+                request,
+                &key,
+                state.home_timelines.clone(),
+                state.activity_pub_items.clone(),
+            )
+            .await
         }
-        todo!()
     }
 
     match &user {
-        Ok(Extension(user)) => match timeline1(
-            state.storage.as_ref(),
-            &user,
-            req,
-            state.home_timelines.clone(),
-            state.activity_pub_items.clone(),
-        )
-        .await
-        {
-            Ok(rsp) => {
-                info!(
-                    "Generated/updated the timeline for user {}",
-                    user.username()
-                );
-                user_timeline_successful
-                    .add(1, &[KeyValue::new("username", user.username().to_string())]);
-                (StatusCode::CREATED, Json(rsp)).into_response()
+        Ok(Extension(user)) => {
+            // Alright-- it's down to us! Extract the `TimelineReq` from the body:
+            match timeline1(state.clone(), user, request).await {
+                Ok(rsp) => {
+                    info!(
+                        "Generated/updated the timeline for user {}",
+                        user.username()
+                    );
+                    user_timeline_successful
+                        .add(1, &[KeyValue::new("username", user.username().to_string())]);
+                    (StatusCode::OK, Json(rsp)).into_response()
+                }
+                Err(Error::NonJson { .. }) => {
+                    error!("A Content-Type of application/json was expected");
+                    user_timeline_failures
+                        .add(1, &[KeyValue::new("username", user.username().to_string())]);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        ErrorResponseBody {
+                            error: "A Content-Type of application/json was expected".to_owned(),
+                        },
+                    )
+                        .into_response()
+                }
+                Err(Error::BadTimelineRequest {
+                    source,
+                    backtrace: _,
+                }) => {
+                    error!("Failed to deserialize the request: {source}");
+                    user_timeline_failures
+                        .add(1, &[KeyValue::new("username", user.username().to_string())]);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        ErrorResponseBody {
+                            error: format!("Bad request: {source}"),
+                        },
+                    )
+                        .into_response()
+                }
+                // I probably need to select a few more specific errors here, and not report
+                // *everything* as an internal server error.
+                Err(err) => {
+                    user_timeline_failures
+                        .add(1, &[KeyValue::new("username", user.username().to_string())]);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        ErrorResponseBody {
+                            error: format!("{}", err),
+                        },
+                    )
+                        .into_response()
+                }
             }
-            Err(err) => {
-                user_timeline_failures
-                    .add(1, &[KeyValue::new("username", user.username().to_string())]);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ErrorResponseBody {
-                        error: format!("{}", err),
-                    },
-                )
-                    .into_response()
-            }
-        },
+        }
         Err(_) => {
             user_timeline_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()

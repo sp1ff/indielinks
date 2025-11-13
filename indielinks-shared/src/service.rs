@@ -279,6 +279,16 @@ where
 }
 
 /// [ReqwestService] is a [tower] [Service]
+///
+/// ... for any request of type `http::Request<ReqBody>` where `ReqBody: TryInto<reqwest::Body>`. We
+/// have that if and only if `reqwest::Body: TryFrom<T>`. This will trivially be true if we have
+/// `reqwest::Body: From<T>`, which means `T` can be any of:
+///
+/// - [Bytes](bytes::Bytes)
+/// - `Vec<u8>`
+/// - [String]
+///
+/// among others, although `axum::Body` is regrettably not among them
 // We still restrict the body type to types `B: TryInto<reqwest::Body>`
 impl<S, ReqBody, R> tower::Service<http::Request<ReqBody>> for ReqwestService<S, R>
 where

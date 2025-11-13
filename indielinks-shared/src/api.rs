@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZero};
 
 use chrono::{DateTime, NaiveDate, Utc};
+use nonempty_collections::NEVec;
 use secrecy::{zeroize::Zeroize, CloneableSecret, SecretBox, SerializableSecret};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -230,100 +231,41 @@ pub struct MintKeyRsp {
     pub key_text: String,
 }
 
-// TODO(sp1ff): Coding speculatively, here. The act of coding is forcing me to clarify my model of a
-// "timeline". Conceptually, each user has a "home timeline": an ever-growing list of feed items
-// posted by people that user follows, ordered by time. The list goes back in time to the earliest
-// thing posted by anyone the user follows, and is continually growing into the future as follows
-// post new items. It also grows into the past, as the user follows new people who have older
-// content.
-
-// Not only is the list growing on either end, its elements "in the middle" change as the user
-// follows new people, or unfollows current follows, the list membership will change.
-
-// If we consider each fixed set of follows to be a "generation", we can picture a user's timeline
-// as going through generational changes. A given generation of the timeline, then, will only
-// grow into the future.
-
-// In general, it would be expensive (both in terms of network calls & memory) to compute the
-// user's full timeline, even for a fixed generation. But that's OK, I can't really imagine a case,
-// outside of testing & debugging, where we'd want to. The use case would generally be:
-
-// 1. give me the most recent chunk of my timeline so I can read it
-// 2. OK, I've read it. Give me the next chunk
-// 3. I've been away for a bit. Give me any new items I've missed.
-
-// In fact, all three operations are insensitive to the generation; items 2 & 3 could be fairly
-// described in more detail as:
-
-// 2. I've read a chunk that in generation `g` was up to & included post `i`. I've added & removed
-// some follows in the meantime, bringing my timeline to generation `h`. Give me a chunk of my
-// timeline at generation `h` consisting of posts *after* `i`.
-
-// 3. I've been away for a bit. I may have added & removed follows. Give me any items in the
-// now-current generation of my timeline after the most recent post I read.
-
-// In other words, we have a well-defined datastructure (a generational list that grows forward in
-// time for each generation), but it would be inconveient to actually calculate the list even
-// for a given generation, let alone across generations (which would, for starters, require a
-// linear traversal of the list inserting & removing items). But that's OK: the operations we
-// care about don't require that.
-
-// Consider a datastructure consisting of a deque of items. The front of the deque corresponds to
-// now, the tail to the past. The first time a user's home timeline is requested, we walk their
-// follows' outboxes and assemble a leading subsequence of the timeline. If they request more, and
-// we can satisfy the request from the deque, do so. Else, walk their follows' outboxes further and
-// build-out the deck towards the tail (i.e. the past). As notifications come in to the public
-// inbox, push salient items on to the head of the deque. This is what we'll use to satisfy the
-// "catch-up" request.
-
-// When the user follows or unfollows someone, we have two choices:
-//
-// 1. update the deque, which could be inconvenient
-//
-// 2. drop the deque, but then how do we handle after/since requests? Well, we'd have to re-build
-// the deque, regardless. If it's a "before" request, we could just require the process to pull a
-// minimum number of items before the given timestamp
-//
-// I think I like option 2.
-//
-// Finally, the preceeding implicitly requires there to be a total ordering on follows' posts.
-// ActivityPub timestamps only seem to go down to the second, so that won't be enough (given enough
-// follows, eventually two will post something in the same second). For lack of anything better,
-// I propose adding a second sort key, the URL (sorted lexicographically)-- that should be enough
-// to impose a total order.
-
 // This defines a type encapsulating a "post"; not in the del.icio.us sense, not in the ActivityPub
-// sense, but in the sense of the indielinks UX. Leaving it blank, for now.
+// sense, but in the sense of the indielinks UX.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct FeedPost;
+pub struct FeedPost {
+    pub id: Url,
+    pub in_reply_to: Option<Url>,
+    pub published: DateTime<Utc>,
+    // Should this be sanitized, somehow?
+    pub content: String,
+}
 
-// I'm also going to need a page token. I'd like this to be opaque to my callers. Just had a really
-// good chat with OpenAI on this. For now, just make this a placeholder.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PageToken;
-
-// TODO(sp1ff): I *think* external tagging (the default) should work, here. `Since { since: 123,
-// max_posts: None }` should serialize, in JSON, to { "Since": { "before": 123 } }, which I think is
-// what we want.
+// External tagging (the default) should work, here. `Since { since: 123, max_posts: None }` should
+// serialize, in JSON, to { "Since": { "before": 123 } }, which I think is what we want.
+//
+// I *hate* exposing the pagination tokens as just `String`s, but using an opaque type is really
+// difficult, because I want it to be constructable only from the API's implementation in a
+// higher-level module, on the back-end only.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub enum TimelineReq {
     Initial {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_posts: Option<usize>,
+        max_posts: Option<NonZero<usize>>,
     },
     // "Return to me up to n posts since the most recent one I've seen". This will return up to `max_posts`
     // feed items whose identifiers/tags are strictly later than `since`
     Since {
-        since: PageToken,
+        since: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_posts: Option<usize>,
     },
     //
     Before {
-        before: PageToken,
+        before: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_posts: Option<usize>,
     },
@@ -332,22 +274,13 @@ pub enum TimelineReq {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub enum TimelineRsp {
-    // TODO(sp1ff): Response to the initial timeline request; an initial chunk of feed items, along
-    // with a pair of cookies identifying the first & last item in this chunk. I haven't decided
-    // exactly how to represent that, yet, but it need only be unique up to the user's `Timeline`
-    // instance. I'll just say `usize` for now.
     Initial {
-        posts: Vec<FeedPost>,
-        // Let's say [first, last), so if a user _has_ no feed items, we can return [0, 0)
-        first: PageToken,
-        last: PageToken,
+        posts: Option<(NEVec<FeedPost>, String, String)>,
     },
     Since {
-        posts: Vec<FeedPost>,
-        last: PageToken,
+        posts: Option<(NEVec<FeedPost>, String)>,
     },
     Before {
-        posts: Vec<FeedPost>,
-        first: PageToken,
+        posts: Option<(NEVec<FeedPost>, String)>,
     },
 }

@@ -57,7 +57,7 @@ use tap::{Conv, Pipe, TryConv};
 use tokio::sync::RwLock;
 use tonic::Code;
 
-use indielinks_shared::entities::{StorUrl, UserId};
+use indielinks_shared::entities::StorUrl;
 
 use indielinks_cache::{
     cache::Cache,
@@ -72,8 +72,10 @@ use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 
 use crate::{
-    ap_entities::Item, entities::FollowerId, home_timeline::Timeline as HomeTimeline,
-    indielinks::Indielinks, protobuf_interop::*,
+    ap_entities::Item,
+    entities::FollowerId,
+    indielinks::Indielinks,
+    protobuf_interop::{protobuf::CacheLookupResponse, *},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -113,6 +115,18 @@ pub enum Error {
         source: crate::protobuf_interop::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display(
+        "Invalid cache lookup response {rsp:?}; this is a bug and should be reported"
+    ))]
+    InvalidCacheLookupRsp {
+        rsp: CacheLookupResponse,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While deserializing a key from a JSON value, {source}"))]
+    KeyDe {
+        source: serde_json::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("gRPC error: {source}"))]
     Tonic {
         source: tonic::Status,
@@ -126,6 +140,11 @@ pub enum Error {
     #[snafu(display("Failed to deserialize an URL to JSON: {source}"))]
     UrlDe {
         value: serde_json::Value,
+        source: serde_json::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While deserializing a value from a JSON value, {source}"))]
+    ValueDe {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
@@ -415,7 +434,6 @@ impl SerializeValue for LogIndex {
 pub struct GrpcService {
     cache_node: CacheNode<GrpcClientFactory>,
     follower_inboxes: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
-    home_timelines: Arc<RwLock<Cache<GrpcClientFactory, UserId, HomeTimeline>>>,
     activity_pub_items: Arc<RwLock<Cache<GrpcClientFactory, StorUrl, Item>>>,
 }
 
@@ -423,13 +441,11 @@ impl GrpcService {
     pub fn new(
         cache_node: CacheNode<GrpcClientFactory>,
         follower_inboxes: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
-        home_timelines: Arc<RwLock<Cache<GrpcClientFactory, UserId, HomeTimeline>>>,
         activity_pub_items: Arc<RwLock<Cache<GrpcClientFactory, StorUrl, Item>>>,
     ) -> GrpcService {
         GrpcService {
             cache_node,
             follower_inboxes,
-            home_timelines,
             activity_pub_items,
         }
     }
@@ -443,8 +459,7 @@ fn to_tonic<E: Debug>(err: E) -> tonic::Status {
 
 // Need to set this up more systematically, but for now:
 pub const FOLLOWER_TO_PUBLIC_INBOX: u64 = 1000;
-pub const HOME_TIMELINES: u64 = 1001;
-pub const ACTIVITY_PUB_ITEMS: u64 = 1002;
+pub const ACTIVITY_PUB_ITEMS: u64 = 1001;
 
 #[tonic::async_trait]
 impl protobuf::grpc_service_server::GrpcService for GrpcService {
@@ -535,8 +550,6 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         // `cache_id`:
         if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
             cache_insert1(req, &self.follower_inboxes).await
-        } else if HOME_TIMELINES == req.cache_id {
-            cache_insert1(req, &self.home_timelines).await
         } else if ACTIVITY_PUB_ITEMS == req.cache_id {
             cache_insert1(req, &self.activity_pub_items).await
         } else {
@@ -584,8 +597,6 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         // `cache_id`:
         if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
             cache_lookup1(req, &self.follower_inboxes).await
-        } else if HOME_TIMELINES == req.cache_id {
-            cache_lookup1(req, &self.home_timelines).await
         } else if ACTIVITY_PUB_ITEMS == req.cache_id {
             cache_lookup1(req, &self.activity_pub_items).await
         } else {
@@ -752,9 +763,9 @@ impl indielinks_cache::network::Client for GrpcClient {
         cache: CacheId,
         key: impl Into<K> + Send,
     ) -> Result<Option<(u64, V)>> {
-        // TODO(sp1ff): This is kinda lame-- the protobuf message has an optional value and an
-        // optional generation. Semantically, either both must be None or neither may be None, but
-        // I'm not sure how to enforce that on the wire.
+        // This is kinda lame-- the protobuf message has an optional value and an optional
+        // generation. Semantically, either both must be None or neither may be None, but I'm not
+        // sure how to enforce that on the wire.
         let rsp = self
             .ensure_connected()
             .await?
@@ -762,12 +773,12 @@ impl indielinks_cache::network::Client for GrpcClient {
             .await
             .context(TonicSnafu)?
             .into_inner();
-        match (rsp.generation, rsp.value) {
+        match (rsp.generation, &rsp.value) {
             (None, None) => Ok(None),
             (Some(n), Some(val)) => rmp_serde::from_slice::<V>(val.as_slice())
                 .context(DeSnafu)
                 .map(|v| Some((n, v))),
-            _ => todo!(), // TODO(sp1ff): handle error
+            _ => return InvalidCacheLookupRspSnafu { rsp: rsp.clone() }.fail(),
         }
     }
 }
@@ -900,12 +911,12 @@ async fn query_cache(
         cache
             .write()
             .await
-            .get(&from_value::<K>(key.clone()).unwrap(/* TODO(sp1ff): error; was context(FollowerIdSnafu { key })? */))
+            .get(&from_value::<K>(key).context(KeyDeSnafu)?)
             .await
             .context(CacheSnafu)?
             .map(to_value)
             .transpose()
-            .unwrap(/* TODO(sp1ff): error; was: .context(UrlSnafu) */)
+            .context(ValueDeSnafu)?
             .pipe(Ok)
     }
 
@@ -913,7 +924,6 @@ async fn query_cache(
     // `cache` request parameter.
     let result = match req.cache {
         FOLLOWER_TO_PUBLIC_INBOX => query_cache1(req.key, &state.follower_inboxes).await,
-        HOME_TIMELINES => query_cache1(req.key, &state.home_timelines).await,
         ACTIVITY_PUB_ITEMS => query_cache1(req.key, &state.activity_pub_items).await,
         _ => {
             return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();
@@ -952,9 +962,9 @@ async fn insert_into_cache(
             .write()
             .await
             .insert(
-                from_value::<K>(key.clone()).unwrap(/* TODO(sp1ff): error; was: context(FollowerIdSnafu { key })? */),
+                from_value::<K>(key).context(KeyDeSnafu)?,
                 generation,
-                from_value::<V>(value.clone()).unwrap(/* TODO(sp1ff): error; was: context(UrlDeSnafu { value })? */),
+                from_value::<V>(value).context(ValueDeSnafu)?,
             )
             .await
             .context(CacheSnafu)
@@ -963,9 +973,6 @@ async fn insert_into_cache(
     let result = match req.cache {
         FOLLOWER_TO_PUBLIC_INBOX => {
             insert_into_cache1(req.key, req.generation, req.value, &state.follower_inboxes).await
-        }
-        HOME_TIMELINES => {
-            insert_into_cache1(req.key, req.generation, req.value, &state.home_timelines).await
         }
         ACTIVITY_PUB_ITEMS => {
             insert_into_cache1(

@@ -129,9 +129,11 @@ use serde_json::Value;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use tower::{Service, ServiceExt};
+use tracing::debug;
 use url::Url;
 
 use indielinks_shared::{
+    api::FeedPost,
     entities::{Post, PostId, UserPrivateKey, Username},
     origin::Origin,
 };
@@ -462,6 +464,7 @@ pub enum Type {
     Note,
     Person,
     OrderedCollection,
+    OrderedCollectionPage,
     CollectionPage,
 }
 
@@ -481,6 +484,7 @@ impl std::fmt::Display for Type {
                 Type::Note => "Note",
                 Type::Person => "Person",
                 Type::OrderedCollection => "OrderedCollection",
+                Type::OrderedCollectionPage => "OrderedCollectionPage",
                 Type::CollectionPage => "CollectionPage",
             }
         )
@@ -608,6 +612,9 @@ impl Actor {
     }
     pub fn inbox(&self) -> &Url {
         &self.inbox
+    }
+    pub fn outbox(&self) -> &Url {
+        &self.outbox
     }
     pub fn preferred_username(&self) -> &str {
         self.preferred_username.as_str()
@@ -1386,6 +1393,9 @@ impl Note {
     pub fn in_reply_to(&self) -> Option<&Url> {
         self.in_reply_to.as_ref()
     }
+    pub fn published(&self) -> &DateTime<Utc> {
+        &self.published
+    }
     pub fn to(&self) -> impl Iterator<Item = &Url> {
         self.to.iter()
     }
@@ -1468,7 +1478,7 @@ pub struct Create {
     published: DateTime<Utc>,
     to: Vec<Url>,
     cc: Vec<Url>,
-    object: serde_json::Map<String, serde_json::Value>,
+    pub object: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Create {
@@ -1531,6 +1541,47 @@ impl ToJld for Create {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             Outbox                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outbox {
+    // "id":"https://indieweb.social/users/sp1ff/outbox",
+    pub id: Url,
+    pub total_items: usize,
+    pub first: Url,
+    pub last: Url,
+}
+
+impl ToJld for Outbox {
+    fn get_type(&self) -> Type {
+        Type::OrderedCollection
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          Outbox page                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboxPage {
+    pub id: Url,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<Url>,
+    pub prev: Url,
+    pub part_of: Url,
+    pub ordered_items: Vec<Create>,
+}
+
+impl ToJld for OutboxPage {
+    fn get_type(&self) -> Type {
+        Type::OrderedCollectionPage
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                  ActivityPub Entity Utilities                                  //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1588,7 +1639,10 @@ impl Jld {
                     serde_json::to_string(&Value::Object(val_map)).context(JsonSerSnafu)?
                 ))
             }
-            _ => JsonTypeMismatchSnafu.fail(),
+            (val, _) => {
+                debug!("The value desearialized to {val:#?}");
+                JsonTypeMismatchSnafu.fail()
+            }
         }
     }
 }
@@ -1691,8 +1745,21 @@ impl Recipient {
     }
 }
 
-// TODO(sp1ff): Coding speculatively. I think there'll be more elements in the enum
+// Coding speculatively. I think there'll be more elements in the enum
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Item {
     Note(Note),
+}
+
+impl From<Item> for FeedPost {
+    fn from(value: Item) -> Self {
+        match value {
+            Item::Note(note) => FeedPost {
+                id: note.id,
+                in_reply_to: note.in_reply_to,
+                published: note.published,
+                content: note.content.to_string(),
+            },
+        }
+    }
 }

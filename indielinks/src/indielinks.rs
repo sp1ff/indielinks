@@ -17,6 +17,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use chrono::Duration;
 use indielinks_cache::{cache::Cache, raft::CacheNode};
+use lru::LruCache;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -48,11 +49,14 @@ pub struct Indielinks {
     pub users_secure_cookies: bool,
     pub allowed_origins: Vec<Origin>,
     pub client: crate::client::ClientType,
+    pub local_client: crate::client::LocalClientType,
     pub collection_page_size: usize,
     pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
+    // Currently unused
     pub follower_inboxes: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
-    pub home_timelines: Arc<RwLock<Cache<GrpcClientFactory, UserId, HomeTimeline>>>,
+    // Currently unused
     pub activity_pub_items: Arc<RwLock<Cache<GrpcClientFactory, StorUrl, Item>>>,
+    pub home_timelines: Arc<tokio::sync::Mutex<LruCache<UserId, HomeTimeline>>>,
 }

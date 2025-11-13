@@ -103,6 +103,16 @@ where
     C: crate::network::Client + 'static,
     C::ErrorType: StdError + std::fmt::Debug + 'static,
 {
+    #[snafu(display("A generation was not supplied, but on insert the provided key was found"))]
+    Appeared { backtrace: Backtrace },
+    #[snafu(display("A generation was supplied, but on insert the provided key was not found"))]
+    Disappeared { backtrace: Backtrace },
+    #[snafu(display("Generational mismatch: expected {expected}, found {found}"))]
+    Generation {
+        expected: u64,
+        found: u64,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to insert a remote cache value: {source}"))]
     Insert { source: crate::raft::CacheError<C> },
     #[snafu(display("Failed to lookup a remote cache value: {source}"))]
@@ -123,9 +133,12 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Insert { source } => write!(f, "{source}"),
-            Error::Lookup { source } => write!(f, "{source}"),
-            Error::Uninit { source, .. } => write!(f, "{source}"),
+            Error::Appeared { .. } => write!(f, "{self}"),
+            Error::Disappeared { .. } => write!(f, "{self}"),
+            Error::Generation { .. } => write!(f, "{self}"),
+            Error::Insert { source } => write!(f, "{source:#?}"),
+            Error::Lookup { source } => write!(f, "{source:#?}"),
+            Error::Uninit { source, .. } => write!(f, "{source:#?}"),
         }
     }
 }
@@ -188,20 +201,23 @@ where
             match (generation, self.map.peek(&k)) {
                 (Some(i), Some((j, _))) => {
                     if i != *j {
-                        // TODO(sp1ff): handle error
-                        panic!();
+                        return GenerationSnafu {
+                            expected: i,
+                            found: *j,
+                        }
+                        .fail();
                     }
                     self.map.put(k, (j + 1, v));
                 }
                 (None, None) => {
                     self.map.put(k, (0u64, v));
                 }
-                // TODO(sp1ff): handle error
-                _ => todo!(),
+                (Some(_), None) => {
+                    return DisappearedSnafu.fail();
+                }
+                (None, Some(_)) => return AppearedSnafu.fail(),
             }
-            // ;
             Ok(())
-            // todo!()
         } else {
             self.node
                 .cache_insert::<K, V>(nodeid, self.id, k, generation, v)

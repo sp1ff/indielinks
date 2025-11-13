@@ -1002,4 +1002,12 @@ where
     pub async fn initialize(&self, nodes: BTreeMap<NodeId, ClusterNode>) -> Result<()> {
         self.inner.write().await.initialize(nodes).await
     }
+    /// Return a [SocketAddr](std::net::SocketAddr) given a [NodeId]
+    pub async fn socket_addr_for_id(&self, id: NodeId) -> Result<std::net::SocketAddr> {
+        self.inner
+            .read()
+            .await
+            .node_for_id(id)
+            .map(|node| node.addr)
+    }
 }

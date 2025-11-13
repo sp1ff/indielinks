@@ -311,6 +311,10 @@ pub async fn send_activity_pub<
     }
 
     let body = response.into_body();
+
+    // Having the response body can be really handy for debugging
+    debug!("Response body: {:#?}", String::from_utf8_lossy(&body));
+
     serde_json::from_slice::<R>(body.as_ref()).context(RspJsonSnafu)
 }
 
@@ -779,6 +783,8 @@ impl Task<Context> for SendFollow {
             )
             .await?;
 
+            debug!("The inbox is {inbox:?}");
+
             // Let's write the new follow to the database,
             context
                 .storage
@@ -802,6 +808,8 @@ impl Task<Context> for SendFollow {
                     username: this.user.username().clone(),
                 })?,
             );
+
+            debug!("Sending: {follow:#?}");
 
             let mut client3 = context.client.clone();
             send_activity_pub_no_response::<Url, Follow>(

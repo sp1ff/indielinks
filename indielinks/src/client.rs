@@ -488,3 +488,73 @@ mod test {
         // Later: build out this test suite
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          local client                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+pub type LocalClientType = SetRequestHeader<
+    Retry<
+        ExponentialBackoffPolicy,
+        tower::buffer::Buffer<
+            http::Request<bytes::Bytes>,
+            InstrumentedServiceFuture<
+                ReqwestServiceFuture<reqwest::Client, indielinks_shared::service::Body, Infallible>,
+            >,
+        >,
+    >,
+    http::HeaderValue,
+>;
+
+/// Create an HTTP client suitable for forwarding requests among cluster members
+pub fn make_local_client(
+    user_agent: &str,
+    rate_limit: &RateLimit,
+    backoff_parameters: &ExponentialBackoffParameters,
+) -> Result<LocalClientType> {
+    ServiceBuilder::new()
+        // Apply any headers first, so that the outgoing request is only signed once. Then apply the
+        // retry middleware, and finally the instrumentation (so that metrics will be emitted on
+        // each retry):
+        //
+        // | | | | +-------------   Set User-Agent header   -------------+ | | | |
+        // | | | | | +-----------     retry on failure      -----------+ | | | | |
+        // | | | | | | +---------       Buffer layer        ---------+ | | | | | |
+        // | | | | | | | +-------      RateLimit layer      -------+ | | | | | | |
+        // | | | | | | | | +-----      instrumentation      -----+ | | | | | | | |
+        // | | | | | | | | | +---       Reqwest layer       ---+ | | | | | | | | |
+        // | | | | | | | | | |                                 | | | | | | | | | |
+        // | | | | | | | | | |             remote              | | | | | | | | | |
+        // | | | | | | | | | |                                 | | | | | | | | | |
+        // | | | | | | | | | +-->       Reqwest layer       <--+ | | | | | | | | |
+        // | | | | | | | | +---->      instrumentation      <----+ | | | | | | | |
+        // | | | | | | | +------>      RateLimit layer      <------+ | | | | | | |
+        // | | | | | | +-------->       Buffer layer        <--------+ | | | | | |
+        // | | | | | +---------->     retry on failure      <----------+ | | | | |
+        // | | | | +------------>   Set User-Agent header   <------------+ | | | |
+        .layer(SetRequestHeaderLayer::overriding(
+            USER_AGENT,
+            HeaderValue::from_str(user_agent).unwrap(/* known good*/),
+        ))
+        .layer(RetryLayer::new(ExponentialBackoffPolicy {
+            backoff: ExponentialBackoffMaker::new(
+                *backoff_parameters.lower(),
+                *backoff_parameters.upper(),
+                backoff_parameters.jitter(),
+                tower::util::rng::HasherRng::new(),
+            )
+            .context(BackoffSnafu)?
+            .make_backoff(),
+            num_attempts: backoff_parameters.num_attempts(),
+        }))
+        // `RetryLayer` requries that the `Service` it wraps is `Clone`... which `RateLimitLayer` is
+        // not. Per https://github.com/tokio-rs/axum/discussions/987#discussioncomment-2678595, we
+        // wrap it in a `BufferLayer`. Regrettably, it changes the error type from
+        // `indielinks_shared::service::Error` to `Box<Error + Send + Sync>`
+        .layer(BufferLayer::<http::Request<Bytes>>::new(1024))
+        .layer(RateLimitLayer::new(rate_limit.num, rate_limit.duration))
+        .layer(InstrumentedLayer)
+        .layer(ReqwestServiceLayer::new(Body))
+        .service(reqwest::Client::new())
+        .pipe(Ok)
+}

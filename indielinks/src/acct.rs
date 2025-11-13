@@ -263,6 +263,21 @@ impl From<Username> for String {
     }
 }
 
+impl From<&Username> for Username {
+    fn from(value: &Username) -> Self {
+        value.clone()
+    }
+}
+
+impl Serialize for Username {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
 /// An [RFC-7565]-compliant account.
 ///
 /// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565

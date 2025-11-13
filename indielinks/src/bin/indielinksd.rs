@@ -32,6 +32,7 @@ use std::{
     future::IntoFuture,
     io,
     net::SocketAddr,
+    num::NonZeroUsize,
     os::fd::{AsFd, AsRawFd, RawFd},
     path::{Path, PathBuf},
     str::FromStr,
@@ -48,6 +49,7 @@ use errno::Errno;
 use http::{HeaderName, HeaderValue};
 use lazy_static::lazy_static;
 use libc::c_int;
+use lru::LruCache;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
@@ -92,9 +94,9 @@ use indielinks::{
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
     cache::{
         make_router as make_cache_router, Backend as CacheBackend, GrpcClientFactory, GrpcService,
-        LogStore, ACTIVITY_PUB_ITEMS, FOLLOWER_TO_PUBLIC_INBOX, HOME_TIMELINES,
+        LogStore, ACTIVITY_PUB_ITEMS, FOLLOWER_TO_PUBLIC_INBOX,
     },
-    client::make_client,
+    client::{make_client, make_local_client},
     define_metric,
     delicious::make_router as make_delicious_router,
     dynamodb::Location as DynamoLocation,
@@ -188,6 +190,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to fork the indielinks process: errno={errno}"))]
     Fork { errno: errno::Errno },
+    #[snafu(display("Failed to create a local HTTP client: {source}"))]
+    LocalClient { source: indielinks::client::Error },
     #[snafu(display("Failed to lock the indielinks lock file: errno={errno}"))]
     LockFile { errno: errno::Errno },
     #[snafu(display("Failed to open the indielinks log file: {source}"))]
@@ -913,12 +917,20 @@ async fn serve(
 
     // Loop forever, handling SIGHUPs, until asked to terminate:
     loop {
+        // I need to make the rate limit configurable, and the local/remote exponential backoffs
+        // separately configurable. Waiting until I revamp the rate-limit logic.
         let client = make_client(
             &cfg.user_agent,
             &Default::default(),
             &cfg.client_exponential_backoff,
         )
         .context(ClientSnafu)?;
+        let local_client = make_local_client(
+            &cfg.user_agent,
+            &Default::default(),
+            &cfg.client_exponential_backoff,
+        )
+        .context(LocalClientSnafu)?;
 
         // Re-build our database connections each pass, in case configuration values have changed:
         let (storage, tasks, cache) =
@@ -961,10 +973,10 @@ async fn serve(
                 cache_node.clone(),
             ),
         ));
-        let home_timelines = Arc::new(RwLock::new(
-            Cache::<GrpcClientFactory, UserId, HomeTimeline>::new(
-                HOME_TIMELINES,
-                cache_node.clone(),
+        let home_timelines = Arc::new(tokio::sync::Mutex::new(
+            LruCache::<UserId, HomeTimeline>::new(
+                // Make this configurable?
+                NonZeroUsize::new(32).unwrap(/* known good */),
             ),
         ));
         let activity_pub_items = Arc::new(RwLock::new(
@@ -985,13 +997,14 @@ async fn serve(
             users_secure_cookies: cfg.users_config.secure_cookies,
             allowed_origins: cfg.users_config.allowed_origins.clone(),
             client,
+            local_client,
             collection_page_size: cfg.collection_page_size,
             assets: cfg.assets.clone().unwrap_or(PathBuf::from("assets")),
             task_sender,
             cache_node: cache_node.clone(),
             follower_inboxes: follower_inboxes.clone(),
-            home_timelines: home_timelines.clone(),
             activity_pub_items: activity_pub_items.clone(),
+            home_timelines,
         });
 
         let world_nfy = Arc::new(Notify::new());
@@ -1033,7 +1046,6 @@ async fn serve(
             GrpcServiceServer::new(GrpcService::new(
                 cache_node,
                 follower_inboxes,
-                home_timelines,
                 activity_pub_items
             )),
             grpc_nfy.notified()
