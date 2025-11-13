@@ -21,12 +21,16 @@ use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use indielinks_shared::{entities::StorUrl, instance_state::InstanceStateV0, origin::Origin};
+use indielinks_shared::{
+    entities::{StorUrl, UserId},
+    instance_state::InstanceStateV0,
+    origin::Origin,
+};
 
 use crate::{
-    background_tasks::BackgroundTasks, cache::GrpcClientFactory, entities::FollowerId,
-    http::SameSite, peppers::Peppers, signing_keys::SigningKeys,
-    storage::Backend as StorageBackend,
+    ap_entities::Item, background_tasks::BackgroundTasks, cache::GrpcClientFactory,
+    entities::FollowerId, home_timeline::Timeline as HomeTimeline, http::SameSite,
+    peppers::Peppers, signing_keys::SigningKeys, storage::Backend as StorageBackend,
 };
 
 /// Application state available to all handlers
@@ -48,5 +52,7 @@ pub struct Indielinks {
     pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
-    pub first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+    pub follower_inboxes: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+    pub home_timelines: Arc<RwLock<Cache<GrpcClientFactory, UserId, HomeTimeline>>>,
+    pub activity_pub_items: Arc<RwLock<Cache<GrpcClientFactory, StorUrl, Item>>>,
 }

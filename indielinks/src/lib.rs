@@ -36,6 +36,8 @@ pub mod dynamodb;
 #[path = "dynamodb-schemas.rs"]
 pub mod dynamodb_schemas;
 pub mod entities;
+#[path = "home-timeline.rs"]
+pub mod home_timeline;
 pub mod http;
 pub mod indielinks;
 pub mod metrics;

@@ -576,6 +576,12 @@ impl From<&Url> for StorUrl {
     }
 }
 
+impl From<&StorUrl> for StorUrl {
+    fn from(value: &StorUrl) -> Self {
+        Self(value.0.clone())
+    }
+}
+
 impl TryFrom<String> for StorUrl {
     type Error = Error;
 

@@ -74,7 +74,11 @@ use tracing_subscriber::{
 };
 use url::Url;
 
-use indielinks_shared::{entities::StorUrl, origin::Origin, service::ExponentialBackoffParameters};
+use indielinks_shared::{
+    entities::{StorUrl, UserId},
+    origin::Origin,
+    service::ExponentialBackoffParameters,
+};
 
 use indielinks_cache::{
     cache::Cache,
@@ -84,16 +88,18 @@ use indielinks_cache::{
 
 use indielinks::{
     actor::make_router as make_actor_router,
+    ap_entities::Item,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
     cache::{
         make_router as make_cache_router, Backend as CacheBackend, GrpcClientFactory, GrpcService,
-        LogStore, FOLLOWER_TO_PUBLIC_INBOX,
+        LogStore, ACTIVITY_PUB_ITEMS, FOLLOWER_TO_PUBLIC_INBOX, HOME_TIMELINES,
     },
     client::make_client,
     define_metric,
     delicious::make_router as make_delicious_router,
     dynamodb::Location as DynamoLocation,
     entities::FollowerId,
+    home_timeline::Timeline as HomeTimeline,
     indielinks::Indielinks,
     metrics::check_metric_names,
     peppers::Peppers,
@@ -949,11 +955,20 @@ async fn serve(
         .await
         .context(CacheNodeSnafu)?;
         // Alright-- setup shared state for the web service itself:
-        let first_cache = Arc::new(RwLock::new(
+        let follower_inboxes = Arc::new(RwLock::new(
             Cache::<GrpcClientFactory, FollowerId, StorUrl>::new(
                 FOLLOWER_TO_PUBLIC_INBOX,
                 cache_node.clone(),
             ),
+        ));
+        let home_timelines = Arc::new(RwLock::new(
+            Cache::<GrpcClientFactory, UserId, HomeTimeline>::new(
+                HOME_TIMELINES,
+                cache_node.clone(),
+            ),
+        ));
+        let activity_pub_items = Arc::new(RwLock::new(
+            Cache::<GrpcClientFactory, StorUrl, Item>::new(ACTIVITY_PUB_ITEMS, cache_node.clone()),
         ));
 
         let state = Arc::new(Indielinks {
@@ -974,7 +989,9 @@ async fn serve(
             assets: cfg.assets.clone().unwrap_or(PathBuf::from("assets")),
             task_sender,
             cache_node: cache_node.clone(),
-            first_cache: first_cache.clone(),
+            follower_inboxes: follower_inboxes.clone(),
+            home_timelines: home_timelines.clone(),
+            activity_pub_items: activity_pub_items.clone(),
         });
 
         let world_nfy = Arc::new(Notify::new());
@@ -1013,7 +1030,12 @@ async fn serve(
 
         let mut grpc_server = std::pin::pin!(TonicServer::builder().serve_with_shutdown(
             cfg.raft_grpc_address,
-            GrpcServiceServer::new(GrpcService::new(cache_node, first_cache)),
+            GrpcServiceServer::new(GrpcService::new(
+                cache_node,
+                follower_inboxes,
+                home_timelines,
+                activity_pub_items
+            )),
             grpc_nfy.notified()
         ));
 

@@ -1690,3 +1690,9 @@ impl Recipient {
         }
     }
 }
+
+// TODO(sp1ff): Coding speculatively. I think there'll be more elements in the enum
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Item {
+    Note(Note),
+}

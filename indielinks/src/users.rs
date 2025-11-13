@@ -91,11 +91,13 @@ use axum::{
 use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Duration, Utc};
 use http::{header::SET_COOKIE, HeaderMap};
+use indielinks_cache::cache::Cache;
 use itertools::Itertools;
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
+use tokio::sync::RwLock;
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
     set_header::SetResponseHeaderLayer,
@@ -105,19 +107,23 @@ use url::Url;
 
 use indielinks_shared::{
     api::{
-        FollowReq, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, SignupReq, SignupRsp,
-        REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
+        FollowReq, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, SignupReq, SignupRsp, TimelineReq,
+        TimelineRsp, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
+        REFRESH_CSRF_HEADER_NAME_LC,
     },
-    entities::Username,
+    entities::{StorUrl, UserId, Username},
     origin::Origin,
 };
 
 use crate::{
     activity_pub::SendFollow,
+    ap_entities::Item,
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     background_tasks::{self, BackgroundTasks, Sender},
+    cache::GrpcClientFactory,
     define_metric,
     entities::{self, FollowId, User},
+    home_timeline::Timeline as HomeTimeline,
     http::{ErrorResponseBody, SameSite},
     indielinks::Indielinks,
     peppers::{self, Peppers},
@@ -886,7 +892,8 @@ async fn logout(
                 "Logging-out user {}; note that any access tokens remain valid until they expire",
                 user.username()
             );
-            user_logouts_successful.add(1, &[]);
+            user_logouts_successful
+                .add(1, &[KeyValue::new("username", user.username().to_string())]);
             let mut refresh_cookie = format!(
                 "{}=; Max-Age=0; Path=/; HttpOnly; SameSite={}",
                 REFRESH_COOKIE, state.users_same_site
@@ -951,11 +958,13 @@ async fn follow(
     match &user {
         Ok(user) => match follow1(user, &req.id, &state.task_sender).await {
             Ok(_) => {
-                user_follows_successful.add(1, &[]);
+                user_follows_successful
+                    .add(1, &[KeyValue::new("username", user.username().to_string())]);
                 StatusCode::ACCEPTED.into_response()
             }
             Err(err) => {
-                user_follows_failures.add(1, &[]);
+                user_follows_failures
+                    .add(1, &[KeyValue::new("username", user.username().to_string())]);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorResponseBody {
@@ -1009,11 +1018,13 @@ async fn mint_key(
                         .unwrap_or("never".to_owned()),
                     user.username()
                 );
-                user_mint_key_successful.add(1, &[]);
+                user_mint_key_successful
+                    .add(1, &[KeyValue::new("username", user.username().to_string())]);
                 (StatusCode::CREATED, Json(rsp)).into_response()
             }
             Err(err) => {
-                user_mint_key_failures.add(1, &[]);
+                user_mint_key_failures
+                    .add(1, &[KeyValue::new("username", user.username().to_string())]);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorResponseBody {
@@ -1025,6 +1036,72 @@ async fn mint_key(
         },
         Err(_) => {
             user_mint_key_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         home timeline                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.timeline.successful", user_timeline_successful, Sort::IntegralCounter }
+define_metric! { "user.timeline.failures", user_timeline_failures, Sort::IntegralCounter }
+
+async fn timeline(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(req): Json<TimelineReq>,
+) -> axum::response::Response {
+    async fn timeline1(
+        _storage: &(dyn StorageBackend + Send + Sync),
+        _user: &User,
+        _req: TimelineReq,
+        timelines: Arc<RwLock<Cache<GrpcClientFactory, UserId, HomeTimeline>>>,
+        _activity_pub_items: Arc<RwLock<Cache<GrpcClientFactory, StorUrl, Item>>>,
+    ) -> Result<TimelineRsp> {
+        {
+            let _: tokio::sync::RwLockWriteGuard<
+                '_,
+                Cache<GrpcClientFactory, UserId, HomeTimeline>,
+            > = timelines.write().await;
+        }
+        todo!()
+    }
+
+    match &user {
+        Ok(Extension(user)) => match timeline1(
+            state.storage.as_ref(),
+            &user,
+            req,
+            state.home_timelines.clone(),
+            state.activity_pub_items.clone(),
+        )
+        .await
+        {
+            Ok(rsp) => {
+                info!(
+                    "Generated/updated the timeline for user {}",
+                    user.username()
+                );
+                user_timeline_successful
+                    .add(1, &[KeyValue::new("username", user.username().to_string())]);
+                (StatusCode::CREATED, Json(rsp)).into_response()
+            }
+            Err(err) => {
+                user_timeline_failures
+                    .add(1, &[KeyValue::new("username", user.username().to_string())]);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorResponseBody {
+                        error: format!("{}", err),
+                    },
+                )
+                    .into_response()
+            }
+        },
+        Err(_) => {
+            user_timeline_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()
         }
     }
@@ -1076,7 +1153,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             "/users/signup",
             post(signup)
                 // It might be nice to allow people to sign-up programmatically, but I think for now
-                // I'm giong to restrict this to the front end
+                // I'm going to restrict this to the front end
                 .layer(mk_cors(
                     false,
                     allow_headers.clone(),
@@ -1136,6 +1213,17 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/users/mint-key",
             get(mint_key)
+                // Likewise, for now I think I'll limit this to the front end
+                .layer(mk_cors(
+                    true,
+                    allow_headers.clone(),
+                    http::Method::GET,
+                    allow_origin.clone(),
+                )),
+        )
+        .route(
+            "/users/timeline",
+            get(timeline)
                 // Likewise, for now I think I'll limit this to the front end
                 .layer(mk_cors(
                     true,

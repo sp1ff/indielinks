@@ -57,7 +57,7 @@ use tap::{Conv, Pipe, TryConv};
 use tokio::sync::RwLock;
 use tonic::Code;
 
-use indielinks_shared::entities::StorUrl;
+use indielinks_shared::entities::{StorUrl, UserId};
 
 use indielinks_cache::{
     cache::Cache,
@@ -71,7 +71,10 @@ use indielinks_cache::{
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
 
-use crate::{entities::FollowerId, indielinks::Indielinks, protobuf_interop::*};
+use crate::{
+    ap_entities::Item, entities::FollowerId, home_timeline::Timeline as HomeTimeline,
+    indielinks::Indielinks, protobuf_interop::*,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -411,17 +414,23 @@ impl SerializeValue for LogIndex {
 
 pub struct GrpcService {
     cache_node: CacheNode<GrpcClientFactory>,
-    first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+    follower_inboxes: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+    home_timelines: Arc<RwLock<Cache<GrpcClientFactory, UserId, HomeTimeline>>>,
+    activity_pub_items: Arc<RwLock<Cache<GrpcClientFactory, StorUrl, Item>>>,
 }
 
 impl GrpcService {
     pub fn new(
         cache_node: CacheNode<GrpcClientFactory>,
-        first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+        follower_inboxes: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+        home_timelines: Arc<RwLock<Cache<GrpcClientFactory, UserId, HomeTimeline>>>,
+        activity_pub_items: Arc<RwLock<Cache<GrpcClientFactory, StorUrl, Item>>>,
     ) -> GrpcService {
         GrpcService {
             cache_node,
-            first_cache,
+            follower_inboxes,
+            home_timelines,
+            activity_pub_items,
         }
     }
 }
@@ -433,7 +442,9 @@ fn to_tonic<E: Debug>(err: E) -> tonic::Status {
 }
 
 // Need to set this up more systematically, but for now:
-pub static FOLLOWER_TO_PUBLIC_INBOX: u64 = 1000;
+pub const FOLLOWER_TO_PUBLIC_INBOX: u64 = 1000;
+pub const HOME_TIMELINES: u64 = 1001;
+pub const ACTIVITY_PUB_ITEMS: u64 = 1002;
 
 #[tonic::async_trait]
 impl protobuf::grpc_service_server::GrpcService for GrpcService {
@@ -487,13 +498,26 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
     ) -> StdResult<tonic::Response<protobuf::CacheInsertResponse>, tonic::Status> {
         let req = req.into_inner();
 
-        // OK-- here is where we need to "just know" the actual types for `K` & `V`, based upon the
-        // `cache_id`:
-        if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
-            let key = rmp_serde::from_slice::<crate::entities::FollowerId>(req.key.as_slice())
-                .map_err(to_tonic)?;
-            let value = rmp_serde::from_slice::<StorUrl>(req.value.as_slice()).map_err(to_tonic)?;
-            self.first_cache
+        // The implementation is quite repetitive-- provide an impl that's generic over the
+        // key/value types:
+        async fn cache_insert1<K, V>(
+            req: protobuf::CacheInsertRequest,
+            cache: &Arc<RwLock<Cache<GrpcClientFactory, K, V>>>,
+        ) -> StdResult<tonic::Response<protobuf::CacheInsertResponse>, tonic::Status>
+        where
+            K: for<'a> Deserialize<'a>
+                + Eq
+                + std::hash::Hash
+                + Serialize
+                + Send
+                + Sync
+                + Debug
+                + for<'a> std::convert::From<&'a K>,
+            V: Clone + DeserializeOwned + Serialize + Send + Sync,
+        {
+            let key = rmp_serde::from_slice::<K>(req.key.as_slice()).map_err(to_tonic)?;
+            let value = rmp_serde::from_slice::<V>(req.value.as_slice()).map_err(to_tonic)?;
+            cache
                 .write()
                 .await
                 .insert(key, value)
@@ -505,6 +529,16 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                 value: req.value,
             }
             .into())
+        }
+
+        // OK-- here is where we need to "just know" the actual types for `K` & `V`, based upon the
+        // `cache_id`:
+        if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
+            cache_insert1(req, &self.follower_inboxes).await
+        } else if HOME_TIMELINES == req.cache_id {
+            cache_insert1(req, &self.home_timelines).await
+        } else if ACTIVITY_PUB_ITEMS == req.cache_id {
+            cache_insert1(req, &self.activity_pub_items).await
         } else {
             Err(tonic::Status::invalid_argument(format!(
                 "Unknown cache {}",
@@ -517,21 +551,25 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         &self,
         req: tonic::Request<protobuf::CacheLookupRequest>,
     ) -> StdResult<tonic::Response<protobuf::CacheLookupResponse>, tonic::Status> {
-        info!("gRPC/cache_lookup: {req:?}");
         let req = req.into_inner();
 
-        // OK-- here is where we need to "just know" the actual types for `K` & `V`, based upon the
-        // `cache_id`:
-        if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
-            let key = rmp_serde::from_slice::<crate::entities::FollowerId>(req.key.as_slice())
-                .map_err(to_tonic)?;
-            let rsp = self
-                .first_cache
-                .write()
-                .await
-                .get(&key)
-                .await
-                .map_err(to_tonic)?;
+        async fn cache_lookup1<K, V>(
+            req: protobuf::CacheLookupRequest,
+            cache: &Arc<RwLock<Cache<GrpcClientFactory, K, V>>>,
+        ) -> StdResult<tonic::Response<protobuf::CacheLookupResponse>, tonic::Status>
+        where
+            K: for<'a> Deserialize<'a>
+                + Eq
+                + std::hash::Hash
+                + Serialize
+                + Send
+                + Sync
+                + Debug
+                + for<'a> std::convert::From<&'a K>,
+            V: Clone + DeserializeOwned + Serialize + Send + Sync,
+        {
+            let key = rmp_serde::from_slice::<K>(req.key.as_slice()).map_err(to_tonic)?;
+            let rsp = cache.write().await.get(&key).await.map_err(to_tonic)?;
             Ok(protobuf::CacheLookupResponse {
                 cache_id: req.cache_id,
                 value: rsp
@@ -539,6 +577,16 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                     .transpose()?,
             }
             .into())
+        }
+
+        // OK-- here is where we need to "just know" the actual types for `K` & `V`, based upon the
+        // `cache_id`:
+        if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
+            cache_lookup1(req, &self.follower_inboxes).await
+        } else if HOME_TIMELINES == req.cache_id {
+            cache_lookup1(req, &self.home_timelines).await
+        } else if ACTIVITY_PUB_ITEMS == req.cache_id {
+            cache_lookup1(req, &self.activity_pub_items).await
         } else {
             Err(tonic::Status::invalid_argument(format!(
                 "Unknown cache {}",
@@ -836,30 +884,45 @@ async fn query_cache(
     State(state): State<Arc<Indielinks>>,
     Json(req): Json<CacheLookupRequest>,
 ) -> axum::response::Response {
-    info!("Querying cache for: {req:?}");
-    // Here, we have to "just know" the concrete types for the key & value. We can do this via the
-    // `cache` request parameter. At the time of this writing, there's only one cache.
-    if FOLLOWER_TO_PUBLIC_INBOX != req.cache {
-        return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();
-    }
-
-    async fn internal(
-        state: Arc<Indielinks>,
+    async fn query_cache1<K, V>(
         key: serde_json::Value,
-    ) -> Result<Option<serde_json::Value>> {
-        state
-            .first_cache
+        cache: &Arc<RwLock<Cache<GrpcClientFactory, K, V>>>,
+    ) -> Result<Option<serde_json::Value>>
+    where
+        K: DeserializeOwned
+            + Eq
+            + std::hash::Hash
+            + Serialize
+            + Send
+            + Sync
+            + Debug
+            + for<'a> std::convert::From<&'a K>,
+        V: Clone + DeserializeOwned + Serialize + Send + Sync,
+    {
+        cache
             .write()
             .await
-            .get(&from_value::<FollowerId>(key.clone()).context(FollowerIdSnafu { key })?)
+            .get(&from_value::<K>(key.clone()).unwrap(/* TODO(sp1ff): error; was context(FollowerIdSnafu { key })? */))
             .await
             .context(CacheSnafu)?
             .map(to_value)
             .transpose()
-            .context(UrlSnafu)
+            .unwrap(/* TODO(sp1ff): error; was: .context(UrlSnafu) */)
+            .pipe(Ok)
     }
 
-    match internal(state, req.key).await {
+    // Here, we have to "just know" the concrete types for the key & value. We can do this via the
+    // `cache` request parameter.
+    let result = match req.cache {
+        FOLLOWER_TO_PUBLIC_INBOX => query_cache1(req.key, &state.follower_inboxes).await,
+        HOME_TIMELINES => query_cache1(req.key, &state.home_timelines).await,
+        ACTIVITY_PUB_ITEMS => query_cache1(req.key, &state.activity_pub_items).await,
+        _ => {
+            return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();
+        }
+    };
+
+    match result {
         Ok(val) => (StatusCode::OK, Json(val)).into_response(),
         // Really not sure how to map `err` to status codes!
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response(),
@@ -870,30 +933,47 @@ async fn insert_into_cache(
     State(state): State<Arc<Indielinks>>,
     Json(req): Json<CacheInsertRequest>,
 ) -> axum::response::Response {
-    // Here, we have to "just know" the concrete types for the key & value. We can do this via the
-    // `cache` request parameter. At the time of this writing, there's only one cache.
-    if FOLLOWER_TO_PUBLIC_INBOX != req.cache {
-        return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();
-    }
-
-    async fn internal(
-        state: Arc<Indielinks>,
+    async fn insert_into_cache1<K, V>(
         key: serde_json::Value,
         value: serde_json::Value,
-    ) -> Result<()> {
-        state
-            .first_cache
+        cache: &Arc<RwLock<Cache<GrpcClientFactory, K, V>>>,
+    ) -> Result<()>
+    where
+        K: DeserializeOwned
+            + Eq
+            + std::hash::Hash
+            + Serialize
+            + Send
+            + Sync
+            + Debug
+            + for<'a> std::convert::From<&'a K>,
+        V: Clone + DeserializeOwned + Serialize + Send + Sync,
+    {
+        cache
             .write()
             .await
             .insert(
-                from_value::<FollowerId>(key.clone()).context(FollowerIdSnafu { key })?,
-                from_value::<StorUrl>(value.clone()).context(UrlDeSnafu { value })?,
+                from_value::<K>(key.clone()).unwrap(/* TODO(sp1ff): error; was: context(FollowerIdSnafu { key })? */),
+                from_value::<V>(value.clone()).unwrap(/* TODO(sp1ff): error; was: context(UrlDeSnafu { value })? */),
             )
             .await
             .context(CacheSnafu)
     }
 
-    match internal(state, req.key, req.value).await {
+    let result = match req.cache {
+        FOLLOWER_TO_PUBLIC_INBOX => {
+            insert_into_cache1(req.key, req.value, &state.follower_inboxes).await
+        }
+        HOME_TIMELINES => insert_into_cache1(req.key, req.value, &state.home_timelines).await,
+        ACTIVITY_PUB_ITEMS => {
+            insert_into_cache1(req.key, req.value, &state.activity_pub_items).await
+        }
+        _ => {
+            return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();
+        }
+    };
+
+    match result {
         Ok(_) => (StatusCode::CREATED).into_response(),
         // Really not sure how to map `err` to status codes!
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response(),
