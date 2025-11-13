@@ -22,7 +22,7 @@
 
 use async_trait::async_trait;
 use openraft::{RaftNetwork, RaftNetworkFactory};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::types::{CacheId, ClusterNode, NodeId, TypeConfig};
 
@@ -87,6 +87,7 @@ pub trait Client {
         &mut self,
         cache: CacheId,
         key: impl Into<K> + Send,
+        generation: Option<u64>,
         value: impl Into<V> + Send,
     ) -> StdResult<(), Self::ErrorType>;
     /// Request a value for a given key from the target node
@@ -94,7 +95,7 @@ pub trait Client {
         &mut self,
         cache: CacheId,
         key: impl Into<K> + Send,
-    ) -> StdResult<Option<V>, Self::ErrorType>;
+    ) -> StdResult<Option<(u64, V)>, Self::ErrorType>;
 }
 
 /// A trait defining the interface for a factory creating connections between [indielinks-cache]

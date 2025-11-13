@@ -520,7 +520,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
             cache
                 .write()
                 .await
-                .insert(key, value)
+                .insert(key, req.generation, value)
                 .await
                 .map_err(to_tonic)?;
 
@@ -572,8 +572,9 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
             let rsp = cache.write().await.get(&key).await.map_err(to_tonic)?;
             Ok(protobuf::CacheLookupResponse {
                 cache_id: req.cache_id,
+                generation: rsp.as_ref().map(|(n, _)| *n),
                 value: rsp
-                    .map(|rsp| rmp_serde::to_vec(&rsp).map_err(to_tonic))
+                    .map(|(_, rsp)| rmp_serde::to_vec(&rsp).map_err(to_tonic))
                     .transpose()?,
             }
             .into())
@@ -732,11 +733,15 @@ impl indielinks_cache::network::Client for GrpcClient {
         &mut self,
         cache: CacheId,
         key: impl Into<K> + Send,
+        generation: Option<u64>,
         value: impl Into<V> + Send,
     ) -> Result<()> {
         self.ensure_connected()
             .await?
-            .cache_insert(try_into_cache_insert_request(cache, key, value).context(InteropSnafu)?)
+            .cache_insert(
+                try_into_cache_insert_request(cache, key, generation, value)
+                    .context(InteropSnafu)?,
+            )
             .await
             .map(|_| ())
             .context(TonicSnafu)
@@ -746,32 +751,24 @@ impl indielinks_cache::network::Client for GrpcClient {
         &mut self,
         cache: CacheId,
         key: impl Into<K> + Send,
-    ) -> Result<Option<V>> {
-        // let response = self
-        //     .ensure_connected()
-        //     .await?
-        //     .cache_lookup(try_into_cache_lookup_request(cache, key).context(InteropSnafu)?)
-        //     .await;
-        // debug!("cache_lookup(): response: {response:#?}");
-        // panic!();
-        // .context(TonicSnafu)?
-        // .into_inner()
-        // .pipe(|rsp| {
-        //     rsp.value
-        //         .map(|val| rmp_serde::from_slice::<V>(val.as_slice()).context(DeSnafu))
-        // })
-        // .transpose();
-        self.ensure_connected()
+    ) -> Result<Option<(u64, V)>> {
+        // TODO(sp1ff): This is kinda lame-- the protobuf message has an optional value and an
+        // optional generation. Semantically, either both must be None or neither may be None, but
+        // I'm not sure how to enforce that on the wire.
+        let rsp = self
+            .ensure_connected()
             .await?
             .cache_lookup(try_into_cache_lookup_request(cache, key).context(InteropSnafu)?)
             .await
             .context(TonicSnafu)?
-            .into_inner()
-            .pipe(|rsp| {
-                rsp.value
-                    .map(|val| rmp_serde::from_slice::<V>(val.as_slice()).context(DeSnafu))
-            })
-            .transpose()
+            .into_inner();
+        match (rsp.generation, rsp.value) {
+            (None, None) => Ok(None),
+            (Some(n), Some(val)) => rmp_serde::from_slice::<V>(val.as_slice())
+                .context(DeSnafu)
+                .map(|v| Some((n, v))),
+            _ => todo!(), // TODO(sp1ff): handle error
+        }
     }
 }
 
@@ -871,6 +868,7 @@ async fn change_membership(
 pub struct CacheInsertRequest {
     pub cache: CacheId,
     pub key: serde_json::Value,
+    pub generation: Option<u64>,
     pub value: serde_json::Value,
 }
 
@@ -935,6 +933,7 @@ async fn insert_into_cache(
 ) -> axum::response::Response {
     async fn insert_into_cache1<K, V>(
         key: serde_json::Value,
+        generation: Option<u64>,
         value: serde_json::Value,
         cache: &Arc<RwLock<Cache<GrpcClientFactory, K, V>>>,
     ) -> Result<()>
@@ -954,6 +953,7 @@ async fn insert_into_cache(
             .await
             .insert(
                 from_value::<K>(key.clone()).unwrap(/* TODO(sp1ff): error; was: context(FollowerIdSnafu { key })? */),
+                generation,
                 from_value::<V>(value.clone()).unwrap(/* TODO(sp1ff): error; was: context(UrlDeSnafu { value })? */),
             )
             .await
@@ -962,11 +962,19 @@ async fn insert_into_cache(
 
     let result = match req.cache {
         FOLLOWER_TO_PUBLIC_INBOX => {
-            insert_into_cache1(req.key, req.value, &state.follower_inboxes).await
+            insert_into_cache1(req.key, req.generation, req.value, &state.follower_inboxes).await
         }
-        HOME_TIMELINES => insert_into_cache1(req.key, req.value, &state.home_timelines).await,
+        HOME_TIMELINES => {
+            insert_into_cache1(req.key, req.generation, req.value, &state.home_timelines).await
+        }
         ACTIVITY_PUB_ITEMS => {
-            insert_into_cache1(req.key, req.value, &state.activity_pub_items).await
+            insert_into_cache1(
+                req.key,
+                req.generation,
+                req.value,
+                &state.activity_pub_items,
+            )
+            .await
         }
         _ => {
             return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();

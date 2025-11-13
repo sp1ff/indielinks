@@ -35,31 +35,31 @@ use std::{
 
 use async_trait::async_trait;
 use axum::{
-    Json, Router,
     extract::State,
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
-use bpaf::{Parser, construct};
+use bpaf::{construct, Parser};
 use http::StatusCode;
 use openraft::{
-    AnyError, Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogId,
-    RaftLogReader, StorageError, StorageIOError, Vote,
     error::{NetworkError, RemoteError, Unreachable},
     storage::{LogFlushed, RaftLogStorage},
+    AnyError, Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogId,
+    RaftLogReader, StorageError, StorageIOError, Vote,
 };
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{from_value, to_value};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Pipe, Tap};
 use tokio::{
     net::TcpListener,
-    signal::unix::{SignalKind, signal},
+    signal::unix::{signal, SignalKind},
     sync::{Notify, RwLock},
 };
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
-use tracing::{Level, debug, error, info, subscriber::set_global_default};
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+use tracing::{debug, error, info, subscriber::set_global_default, Level};
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
 use indielinks_cache::{
     cache::Cache,
@@ -252,6 +252,7 @@ impl network::Client for Client {
         &mut self,
         cache: CacheId,
         key: impl Into<K> + Send,
+        generation: Option<u64>,
         value: impl Into<V> + Send,
     ) -> Result<()> {
         let _: () = self
@@ -260,6 +261,7 @@ impl network::Client for Client {
                 &CacheInsertRequest {
                     cache,
                     key: to_value::<K>(key.into()).context(JsonSerSnafu)?,
+                    generation,
                     value: to_value::<V>(value.into()).context(JsonSerSnafu)?,
                 },
                 "cache/insert",
@@ -272,7 +274,7 @@ impl network::Client for Client {
         &mut self,
         cache: CacheId,
         key: impl Into<K> + Send,
-    ) -> Result<Option<V>> {
+    ) -> Result<Option<(u64, V)>> {
         let rsp: CacheLookupResponse = self
             .send_cache_rpc(
                 reqwest::Method::GET,
@@ -284,7 +286,9 @@ impl network::Client for Client {
             )
             .await?;
         match rsp.value {
-            Some(v) => Ok(Some(from_value::<V>(v).context(JsonDeSnafu)?)),
+            Some((generation, v)) => {
+                Ok(Some((generation, from_value::<V>(v).context(JsonDeSnafu)?)))
+            }
             None => Ok(None),
         }
     }
@@ -632,6 +636,7 @@ async fn cache_insert(
             .await
             .insert(
                 from_value::<String>(req.key.clone()).context(JsonDeSnafu)?,
+                req.generation,
                 from_value::<usize>(req.value).context(JsonDeSnafu)?,
             )
             .await
@@ -671,7 +676,7 @@ async fn cache_lookup(
             .get(&from_value::<String>(req.key.clone()).context(JsonDeSnafu)?)
             .await
             .context(CacheSnafu)?
-            .map(|n| to_value(n).context(JsonSerSnafu))
+            .map(|(generation, n)| to_value(n).context(JsonSerSnafu).map(|m| (generation, m)))
             .transpose()?;
 
         Ok(CacheLookupResponse { value })

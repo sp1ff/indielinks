@@ -139,6 +139,7 @@ message CacheInsertRequest {
     uint64 cache_id = 1;
     bytes key = 2;
     bytes value = 3;
+    optional uint64 generation = 4;
 }
 
 message CacheInsertResponse {
@@ -154,6 +155,7 @@ message CacheLookupRequest {
 message CacheLookupResponse {
     uint64 cache_id = 1;
     optional bytes value = 2;
+    optional uint64 generation = 3;
 }
 
 message SnapshotMeta {

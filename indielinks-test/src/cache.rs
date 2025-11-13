@@ -143,7 +143,7 @@ pub fn raft_ops(
         })
         .send()?
         .error_for_status()?
-        .json::<Option<StorUrl>>()?;
+        .json::<Option<(u64, StorUrl)>>()?;
     assert_eq!(result, None);
 
     let url: StorUrl = Url::parse("http://foo.com")?.into();
@@ -152,6 +152,7 @@ pub fn raft_ops(
         .json(&CacheInsertRequest {
             cache: 1000,
             key: serde_json::to_value(follower_id)?,
+            generation: None,
             value: serde_json::to_value(&url)?,
         })
         .send()?
@@ -165,8 +166,8 @@ pub fn raft_ops(
         })
         .send()?
         .error_for_status()?
-        .json::<Option<StorUrl>>()?;
-    assert_eq!(result, Some(url));
+        .json::<Option<(u64, StorUrl)>>()?;
+    assert_eq!(result, Some((0, url)));
 
     debug!("Completed test raft_ops-- returning success.");
 

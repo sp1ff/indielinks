@@ -609,11 +609,13 @@ impl TryFrom<protobuf::VoteResponse> for openraft::raft::VoteResponse<NodeId> {
 pub fn try_into_cache_insert_request<K: Serialize, V: Serialize>(
     cache: CacheId,
     key: impl Into<K>,
+    generation: Option<u64>,
     value: impl Into<V>,
 ) -> Result<protobuf::CacheInsertRequest> {
     Ok(protobuf::CacheInsertRequest {
         cache_id: cache,
         key: rmp_serde::to_vec(&key.into()).context(SerSnafu)?,
+        generation,
         value: rmp_serde::to_vec(&value.into()).context(SerSnafu)?,
     })
 }

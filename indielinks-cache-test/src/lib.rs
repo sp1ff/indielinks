@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub struct CacheInsertRequest {
     pub cache: CacheId,
     pub key: serde_json::Value,
+    pub generation: Option<u64>,
     pub value: serde_json::Value,
 }
 
@@ -31,5 +32,5 @@ pub struct CacheLookupRequest {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CacheLookupResponse {
-    pub value: Option<serde_json::Value>,
+    pub value: Option<(u64, serde_json::Value)>,
 }

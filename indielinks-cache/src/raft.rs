@@ -24,23 +24,23 @@ use std::{
     io::Cursor,
     num::NonZero,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
     time::Duration,
 };
 
 use openraft::{
-    Entry, LogId, OptionalSend, Raft, RaftMetrics, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
-    StorageIOError, StoredMembership,
     error::{ClientWriteError, InstallSnapshotError, RaftError},
     raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
         InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
     storage::{RaftLogStorage, RaftStateMachine},
+    Entry, LogId, OptionalSend, Raft, RaftMetrics, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
+    StorageIOError, StoredMembership,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::sync::RwLock;
@@ -52,7 +52,7 @@ use crate::{
     types::{CacheId, ClusterNode, NodeId, Request, Response, TypeConfig},
 };
 
-pub use openraft::{ChangeMembers, StorageError, raft::ClientWriteResponse};
+pub use openraft::{raft::ClientWriteResponse, ChangeMembers, StorageError};
 
 use std::error::Error as StdError;
 
@@ -218,9 +218,9 @@ pub mod test {
     use std::marker::PhantomData;
 
     use openraft::{
-        StorageError,
         storage::RaftLogStorage,
         testing::{StoreBuilder as RaftStoreBuilder, Suite},
+        StorageError,
     };
 
     use crate::types::{NodeId, TypeConfig};
@@ -340,7 +340,7 @@ impl StateMachineInner {
             "Key {:?} hashed to shard {} which maps to NodeId: {}",
             key, shard, idx
         );
-        Ok(self.ring[idx].1.0)
+        Ok(self.ring[idx].1 .0)
     }
 }
 
@@ -729,13 +729,14 @@ where
         node_id: NodeId,
         cache_id: CacheId,
         k: impl Into<K> + Send,
+        generation: Option<u64>,
         v: impl Into<V> + Send,
     ) -> StdResult<(), CacheError<F::CacheClient>> {
         assert!(node_id != self.id); // I think this is panic-worthy
         self.client_for_id(node_id)
             .await
             .context(BadIdSnafu)?
-            .cache_insert(cache_id, k, v)
+            .cache_insert(cache_id, k, generation, v)
             .await
             .context(NetworkSnafu)
     }
@@ -745,7 +746,7 @@ where
         node_id: NodeId,
         cache_id: CacheId,
         k: impl Into<K> + Send,
-    ) -> StdResult<Option<V>, CacheError<F::CacheClient>> {
+    ) -> StdResult<Option<(u64, V)>, CacheError<F::CacheClient>> {
         debug!("Inner CacheNode assert: {node_id} != {}", self.id);
         assert!(node_id != self.id); // I think this is panic-worthy
         debug!("cache_lookup: Querying node {node_id} for cache {cache_id}");
@@ -962,12 +963,13 @@ where
         node_id: NodeId,
         cache_id: CacheId,
         k: impl Into<K> + Send,
+        generation: Option<u64>,
         v: impl Into<V> + Send,
     ) -> StdResult<(), CacheError<F::CacheClient>> {
         self.inner
             .write()
             .await
-            .cache_insert(node_id, cache_id, k, v)
+            .cache_insert(node_id, cache_id, k, generation, v)
             .await
     }
     pub async fn cache_lookup<K: Serialize + Send + Sync, V: DeserializeOwned>(
@@ -975,16 +977,9 @@ where
         node_id: NodeId,
         cache_id: CacheId,
         k: impl Into<K> + Send,
-    ) -> StdResult<Option<V>, CacheError<F::CacheClient>> {
-        debug!("Outer CacheNode {node_id}: cache_lookup-- calling inner.");
+    ) -> StdResult<Option<(u64, V)>, CacheError<F::CacheClient>> {
         let mut x = self.inner.write().await;
-        debug!("CP100");
         x.cache_lookup(node_id, cache_id, k).await
-        // self.inner
-        //     .write()
-        //     .await
-        //     .cache_lookup(node_id, cache_id, k)
-        //     .await
     }
     pub async fn append_entries(
         &self,

@@ -85,7 +85,7 @@
 use std::{fmt::Debug, num::NonZeroUsize};
 
 use lru::LruCache;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tracing::debug;
 
@@ -140,8 +140,8 @@ pub type StdResult<T, E> = std::result::Result<T, E>;
 // I believe to be foldhash.
 pub struct Cache<F: ClientFactory, K, V> {
     id: CacheId,
-    node: CacheNode<F>,  // Cheaply clonable
-    map: LruCache<K, V>, // This node's partitions' storage
+    node: CacheNode<F>,         // Cheaply clonable
+    map: LruCache<K, (u64, V)>, // This node's partitions' storage
 }
 
 impl<F, K, V> Cache<F, K, V>
@@ -158,7 +158,7 @@ where
             map: LruCache::new(NonZeroUsize::new(256).unwrap(/* known good */)),
         }
     }
-    pub async fn get(&mut self, k: &K) -> StdResult<Option<V>, Error<F::CacheClient>> {
+    pub async fn get(&mut self, k: &K) -> StdResult<Option<(u64, V)>, Error<F::CacheClient>> {
         // I need to hash `k`, get the responsible node from our Raft, and, if it's not this node,
         // send a message to that node.
         let nodeid = self.node.node_for_key(k).await.context(UninitSnafu)?;
@@ -174,14 +174,37 @@ where
                 .context(LookupSnafu)?)
         }
     }
-    pub async fn insert(&mut self, k: K, v: V) -> StdResult<(), Error<F::CacheClient>> {
+    pub async fn insert(
+        &mut self,
+        k: K,
+        generation: Option<u64>,
+        v: V,
+    ) -> StdResult<(), Error<F::CacheClient>> {
         let nodeid = self.node.node_for_key(&k).await.context(UninitSnafu)?;
         if self.node.id().await == nodeid {
-            self.map.put(k, v);
+            // I *think* this is OK... it's not thread-safe, but then neither is this type as a
+            // whole-- if an instance is liable to be accessed concurrently, it's up to the owner to
+            // wrap it in some sort of guard.
+            match (generation, self.map.peek(&k)) {
+                (Some(i), Some((j, _))) => {
+                    if i != *j {
+                        // TODO(sp1ff): handle error
+                        panic!();
+                    }
+                    self.map.put(k, (j + 1, v));
+                }
+                (None, None) => {
+                    self.map.put(k, (0u64, v));
+                }
+                // TODO(sp1ff): handle error
+                _ => todo!(),
+            }
+            // ;
             Ok(())
+            // todo!()
         } else {
             self.node
-                .cache_insert::<K, V>(nodeid, self.id, k, v)
+                .cache_insert::<K, V>(nodeid, self.id, k, generation, v)
                 .await
                 .context(InsertSnafu)?;
             Ok(())
