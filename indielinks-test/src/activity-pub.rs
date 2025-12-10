@@ -131,7 +131,7 @@ pub async fn posting_creates_note(
             .body
             .as_slice(),
     );
-    assert!(create.is_ok());
+    assert!(create.is_ok(), "{create:#?}");
 
     // Now let's send a `Like` for this note
     let create = create.unwrap();

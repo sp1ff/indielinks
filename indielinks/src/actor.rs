@@ -50,8 +50,8 @@ use crate::{
     activity_pub::{derive_visibility, resolve_recipients, send_activity_pub_no_response},
     ap_entities::{
         self, make_user_followers, make_user_following, username_and_postid_from_url, Accept,
-        Actor, Announce, AnnounceOrCreate, AsAccept, Create, Follow, FollowOrLike, InstanceActor,
-        Jld, Like, Note, Recipient, ToJld, Undo,
+        Actor, Announce, AnnounceOrCreate, Create, Follow, InboxPayload, InstanceActor, Jld, Like,
+        Note, Recipient, ToJld, Undo,
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
@@ -553,8 +553,10 @@ async fn accept_create(
     debug!("In receipt of a Create: {:?}", create);
 
     // At this time, we're expecting the `Create` entity's `object` attribute to be a `Note`-- the `Note`
-    // corresponding to a Post made by some user on this instance.
-    let note = create.de_object::<Note>().context(NotNoteSnafu)?;
+    // corresponding to a Post made by some user.
+    let note = match create.object() {
+        ap_entities::CreateObject::Note(note) => note.clone(),
+    };
 
     debug!("The Create denotes the creation of the note: {:?}", note);
 
@@ -1065,10 +1067,10 @@ async fn inbox(
     State(state): State<Arc<Indielinks>>,
     axum::extract::Path(username): axum::extract::Path<Username>,
     Extension(actor): Extension<ap_entities::Actor>,
-    axum::extract::Json(body): axum::extract::Json<FollowOrLike>,
+    axum::extract::Json(body): axum::extract::Json<InboxPayload>,
 ) -> axum::response::Response {
     async fn inbox1(
-        body: &FollowOrLike,
+        body: &InboxPayload,
         username: &Username,
         actor: &ap_entities::Actor,
         origin: &Origin,
@@ -1083,19 +1085,19 @@ async fn inbox(
                 username: username.clone(),
             })?;
         match body {
-            FollowOrLike::Follow(follow) => {
+            InboxPayload::Follow(follow) => {
                 inbox_follows.add(1, &[]);
                 accept_follow(&user, follow, actor, storage, task_sender, origin).await
             }
-            FollowOrLike::Like(like) => {
+            InboxPayload::Like(like) => {
                 inbox_follows.add(1, &[]);
                 accept_like(&user, like, origin, storage).await
             }
-            FollowOrLike::Undo(undo) => {
+            InboxPayload::Undo(undo) => {
                 inbox_undos.add(1, &[]);
                 accept_undo(undo).await
             }
-            FollowOrLike::Accept(accept) => {
+            InboxPayload::Accept(accept) => {
                 inbox_accepts.add(1, &[]);
                 accept_accept(&user, actor, accept, storage).await
             }

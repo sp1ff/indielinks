@@ -18,7 +18,8 @@
 //! ## Introduction
 //!
 //! I hate these sort of "catch-all" modules named "models" or "entities", but these types are truly
-//! foundational.
+//! foundational (to [indielinks](crate); there's an even more foundational set of entites in
+//! the [indielinks-shared](indielinks_shared) module of the same name).
 
 use std::{fmt::Display, str::FromStr};
 
