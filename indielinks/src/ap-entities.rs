@@ -121,7 +121,7 @@
 //! compliant as possible, while still maintaining the possibility of "fine-tuning" serde so as to
 //! maintain compatibility with as many other apps as possible.
 
-use std::{collections::HashMap, error::Error as StdError, fmt::Display};
+use std::{collections::HashMap, fmt::Display};
 
 use chrono::{DateTime, FixedOffset, Utc};
 use either::Either;
@@ -142,7 +142,7 @@ use indielinks_shared::{
 };
 
 use crate::{
-    client::ClientType,
+    client_types::ClientType,
     entities::{FollowId, User},
 };
 
@@ -230,13 +230,13 @@ pub enum Error {
     #[snafu(display("Failed to resolve keyid {}: {source}"))]
     ResolveKeyId {
         key_id: Url,
-        source: Box<dyn StdError + Send + Sync>,
+        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
         // backtrace not included because it would make the error too large
     },
     #[snafu(display("Failed to resolve keyid {} because the Service wasn't ready: {source}"))]
     ResolveKeyIdReady {
         key_id: Url,
-        source: Box<dyn StdError + Send + Sync>,
+        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
         // backtrace not included because it would make the error too large
     },
     #[snafu(display("Failed serializing to a JSON Value: {source}"))]

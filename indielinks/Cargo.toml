@@ -19,10 +19,12 @@ bytes = "1.10.0"
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["cargo", "env"] }
 crypto-common = "0.1.6"
+dashmap = "6.1.0"
 either = { version = "1.13.0", features = ["serde"] }
 enum-map = "2.7.3"
 errno = "0.3.10"
 futures = "0.3.31"
+governor = { version = "=0.10.4", git = "https://github.com/sp1ff/governor.git", branch = "issue-193" }
 hex = "0.4.3"
 hmac = "0.12.1"
 home = "0.5.11"
@@ -35,6 +37,7 @@ itertools = "0.13.0"
 jwt = "0.16.0"
 lazy_static = "1.5.0"
 libc = "0.2.169"
+nonzero = "0.2.0"
 num-bigint = { version = "0.3.3", features = ["serde"] }
 openraft = { version = "0.9.20", features = ["serde", "storage-v2"] }
 opentelemetry = { version = "0.30.0", features = ["metrics"] }
@@ -67,6 +70,7 @@ tokio = { version = "1.42.0", features = ["rt-multi-thread", "signal", "sync"] }
 toml = "0.8.19"
 tonic = "0.13.1"
 tower = { version = "0.5.2", features = ["retry"] }
+tower-gcra = { git = "https://github.com/sp1ff/tower-gcra.git", version = "0.0.1" }
 tower-http = { version = "0.6.2", features = ["auth", "cors", "request-id", "set-header", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }

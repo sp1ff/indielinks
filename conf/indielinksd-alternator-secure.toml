@@ -76,3 +76,14 @@ heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
 election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
 election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
 
+[client-rate-limits]
+per-second = 16
+custom = []
+
+[local-rate-limits]
+per-second = 32
+custom = []
+
+[general-purpose-rate-limits]
+per-second = 8
+custom = []

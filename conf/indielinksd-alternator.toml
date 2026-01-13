@@ -87,3 +87,14 @@ nanos = 0
 secs = 3
 nanos = 0
 
+[client-rate-limits]
+per-second = 16
+custom = []
+
+[local-rate-limits]
+per-second = 32
+custom = []
+
+[general-purpose-rate-limits]
+per-second = 8
+custom = []

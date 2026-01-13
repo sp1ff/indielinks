@@ -13,6 +13,7 @@ chrono = "0.4.39"
 crypto-common = "0.1.6"
 either = { version = "1.13.0", features = ["serde"] }
 futures = "0.3.31"
+governor = { version = "=0.10.4", git = "https://github.com/sp1ff/governor.git", branch = "issue-193" }
 hex = "0.4.3"
 http = "1.2.0"
 indielinks = { path = "../indielinks" }
@@ -22,6 +23,7 @@ inventory = "0.3.17"
 itertools = "0.14.0"
 lazy_static = "1.5.0"
 libtest-mimic = "0.8.1"
+nonzero = "0.2.0"
 once_cell = "1.21.3"
 picky = "7.0.0-rc.16"
 regex = "1.11.1"
@@ -37,6 +39,7 @@ snafu = { version = "0.8.5", features = ["backtrace"] }
 tap = "1.0.1"
 tokio = { version = "1.43.0", features = ["rt"] }
 toml = "0.8.19"
+tower-gcra = { git = "https://github.com/sp1ff/tower-gcra.git", version = "0.0.1" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 uuid = "1.15.1"

@@ -31,39 +31,40 @@
 //! [RFC-3230]: https://datatracker.ietf.org/doc/html/rfc3230
 //! [RFC-9530]: https://www.ietf.org/archive/id/draft-ietf-httpbis-digest-headers-12.html#name-the-content-digest-field
 
-use std::{convert::Infallible, ops::Deref};
+use std::{convert::Infallible, fmt::Debug, hash::Hash, ops::Deref, result::Result as StdResult};
 
 use bytes::Bytes;
 use either::Either;
-use http::{header::USER_AGENT, HeaderName, HeaderValue};
+use governor::{clock::Clock, middleware::RateLimitingMiddleware, state::StateStore, RateLimiter};
+use http::{
+    header::{HOST, USER_AGENT},
+    HeaderName, HeaderValue, Request,
+};
+use itertools::Itertools;
 use opentelemetry::KeyValue;
 use pin_project::pin_project;
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tower::{
-    buffer::BufferLayer,
-    limit::RateLimitLayer,
     retry::{
         backoff::{ExponentialBackoffMaker, MakeBackoff},
-        Retry, RetryLayer,
+        RetryLayer,
     },
     Layer, Service, ServiceBuilder,
 };
-use tower_http::set_header::{SetRequestHeader, SetRequestHeaderLayer};
+use tower_gcra::keyed::{KeyExtractor, Layer as GovernorLayer};
+use tower_http::set_header::SetRequestHeaderLayer;
 use tracing::{debug, error, Level};
 
 use indielinks_shared::{
     entities::{UserPrivateKey, Username},
-    origin::Origin,
-    service::{
-        Body, ExponentialBackoffParameters, ExponentialBackoffPolicy, RateLimit,
-        ReqwestServiceFuture, ReqwestServiceLayer,
-    },
+    origin::{NetLoc, Origin},
+    service::{Body, ExponentialBackoffParameters, ExponentialBackoffPolicy, ReqwestServiceLayer},
 };
 
 use crate::{
     ap_entities::{make_instance_actor_key_id, make_key_id},
-    authn::{compute_signature, AddSha256DigestIfNotPresent, AddSha256DigestIfNotPresentLayer},
+    authn::{compute_signature, AddSha256DigestIfNotPresentLayer},
     define_metric,
     entities::User,
 };
@@ -293,75 +294,89 @@ fn add_date<B: AsRef<[u8]>>(_request: &http::Request<B>) -> Option<HeaderValue> 
 }
 
 fn add_host<B: AsRef<[u8]>>(request: &http::Request<B>) -> Option<HeaderValue> {
-    request
-        .uri()
-        .host()
-        .map(HeaderValue::from_str)
+    // Take care to include the port, if present.
+    let netloc: Option<NetLoc> = request.uri().try_into().ok();
+    netloc
+        .map(|netloc| HeaderValue::from_str(&format!("{netloc}")))
         .transpose()
         .unwrap_or(None)
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum HostKey {
+    Null,
+    Host(NetLoc),
+}
 
-// In indielinks-client, I make the client type generic, with a type constraint like:
-//
-//     impl Service<
-//         http::Request<Bytes>,
-//         Response = http::Response<Bytes>,
-//         Error = Box<dyn std::error::Error + Send + Sync>,
-//     > + Clone,
-//
-// In this crate, however, I find myself naming the type more frequently, so I'm going with a type
-// alias. This is also inconvenient, but better than making every type and function that deals with
-// our client type generic.
-//
-// If you need to update this, say due to adding or removing a layer in `make_client()`, just do a
-// `cargo build`; the `make_client()` return type won't type-check, but the compiler will write the
-// expected type to a text file in the build directory (it will be the second one)-- just copy it
-// from there over this one:
-pub type ClientType = SetRequestHeader<
-    SetRequestHeader<
-        AddSha256DigestIfNotPresent<
-            SetRequestHeader<
-                SetRequestHeader<
-                    Retry<
-                        ExponentialBackoffPolicy,
-                        tower::buffer::Buffer<
-                            http::Request<bytes::Bytes>,
-                            InstrumentedServiceFuture<
-                                ReqwestServiceFuture<
-                                    reqwest::Client,
-                                    indielinks_shared::service::Body,
-                                    Infallible,
-                                >,
-                            >,
-                        >,
-                    >,
-                    http::HeaderValue,
-                >,
-                for<'a> fn(
-                    &'a http::Request<bytes::Bytes>,
-                ) -> std::option::Option<http::HeaderValue>,
-            >,
-        >,
-        for<'a> fn(&'a http::Request<bytes::Bytes>) -> std::option::Option<http::HeaderValue>,
-    >,
-    for<'a> fn(&'a http::Request<bytes::Bytes>) -> std::option::Option<http::HeaderValue>,
->;
+#[derive(Clone)]
+pub struct HostExtractor;
 
-/// Build a [tower] [Service] based on [reqwest::Client] that will:
-///     - add a SHA-256 digest, if it's not present
+impl<B> KeyExtractor<Request<B>> for HostExtractor {
+    type Key = HostKey;
+    // Extracting the key from a `Request` *is* fallible, but if you return the `Err` variant, the
+    // request as a whole will be failed, so I'll never fail this operation:
+    type Error = Infallible;
+    fn extract(&self, req: &Request<B>) -> StdResult<Self::Key, Self::Error> {
+        // Try the "Host" header first, then fall-back to the URI.
+        req.headers()
+            .get_all(HOST)
+            .iter()
+            .at_most_one()
+            .ok()
+            .flatten()
+            .and_then(|header_value| header_value.to_str().ok())
+            .and_then(|text| text.parse::<NetLoc>().ok())
+            .or_else(|| req.uri().try_into().ok())
+            .map(HostKey::Host)
+            .unwrap_or(HostKey::Null)
+            .pipe(Ok)
+    }
+}
+
+/// Build a [tower] [Service] based on [reqwest::Client]
+///
+/// This function starts with a [reqwest::Client] and then:
+/// - adds the Host header, if it's not present
+/// - if the caller has requested ActivityPub support:
+///     - adds Date & SHA-256 digest headers, if they're not present
 ///     - add a "draft Cavage" HTTP signature
-///     - set the User Agent header
-///     - retry failed requests
-///     - rate limit requests
-///     - instrument all requests
+/// - set the User Agent header
+/// - retry failed requests
+/// - rate limit outgoing requests
+/// - instrument all requests
+///
 /// Request & response bodies are modelled as [Bytes]. Rate-limiting & exponential backoff are configurable.
-pub fn make_client(
+pub fn make_client<KE, S, C, MW>(
     user_agent: &str,
-    rate_limit: &RateLimit,
+    support_ap: bool,
+    key_extractor: KE,
+    rate_limiter: RateLimiter<<KE as KeyExtractor<Request<Bytes>>>::Key, S, C, MW>,
     backoff_parameters: &ExponentialBackoffParameters,
-) -> Result<ClientType> {
+) -> Result<crate::client_types::GenericClientType<KE, S, C, MW>>
+where
+    KE: KeyExtractor<Request<Bytes>> + Clone,
+    <KE as KeyExtractor<Request<Bytes>>>::Key: Clone + Eq + Hash,
+    S: StateStore<Key = <KE as KeyExtractor<Request<Bytes>>>::Key>,
+    C: Clock,
+    MW: RateLimitingMiddleware<<KE as KeyExtractor<Request<Bytes>>>::Key, C::Instant>,
+{
+    let (add_date, add_digest, add_signature) = if support_ap {
+        (
+            Some(SetRequestHeaderLayer::if_not_present(
+                http::header::DATE,
+                add_date as for<'a> fn(&'a http::Request<bytes::Bytes>) -> Option<HeaderValue>,
+            )),
+            Some(AddSha256DigestIfNotPresentLayer),
+            Some(SetRequestHeaderLayer::if_not_present(
+                HeaderName::from_static("signature"),
+                maybe_add_signature
+                    as for<'a> fn(&'a http::Request<bytes::Bytes>) -> Option<HeaderValue>,
+            )),
+        )
+    } else {
+        (None, None, None)
+    };
+
     ServiceBuilder::new()
         // Apply the signing middleware first, so that the outgoing request is only signed once. Then
         // apply the retry middleware, and finally the instrumentation (so that metrics will be emitted
@@ -376,8 +391,7 @@ pub fn make_client(
         // | | | +--------------- Add ActivityPub signature ---------------+ | | |
         // | | | | +-------------   Set User-Agent header   -------------+ | | | |
         // | | | | | +-----------     retry on failure      -----------+ | | | | |
-        // | | | | | | +---------       Buffer layer        ---------+ | | | | | |
-        // | | | | | | | +-------      RateLimit layer      -------+ | | | | | | |
+        // | | | | | | | +-------    rate-limiting layer    -------+ | | | | | | |
         // | | | | | | | | +-----      instrumentation      -----+ | | | | | | | |
         // | | | | | | | | | +---       Reqwest layer       ---+ | | | | | | | | |
         // | | | | | | | | | |                                 | | | | | | | | | |
@@ -385,8 +399,7 @@ pub fn make_client(
         // | | | | | | | | | |                                 | | | | | | | | | |
         // | | | | | | | | | +-->       Reqwest layer       <--+ | | | | | | | | |
         // | | | | | | | | +---->      instrumentation      <----+ | | | | | | | |
-        // | | | | | | | +------>      RateLimit layer      <------+ | | | | | | |
-        // | | | | | | +-------->       Buffer layer        <--------+ | | | | | |
+        // | | | | | | | +------>    rate-limiting layer    <------+ | | | | | | |
         // | | | | | +---------->     retry on failure      <----------+ | | | | |
         // | | | | +------------>   Set User-Agent header   <------------+ | | | |
         // | | | +--------------> Add ActivityPub signature <--------------+ | | |
@@ -397,19 +410,12 @@ pub fn make_client(
         //                                   v
         //                               responses
         .layer(SetRequestHeaderLayer::if_not_present(
-            http::header::DATE,
-            add_date as for<'a> fn(&'a http::Request<bytes::Bytes>) -> Option<HeaderValue>,
-        ))
-        .layer(SetRequestHeaderLayer::if_not_present(
             http::header::HOST,
             add_host as for<'a> fn(&'a http::Request<bytes::Bytes>) -> Option<HeaderValue>,
         ))
-        .layer(AddSha256DigestIfNotPresentLayer)
-        .layer(SetRequestHeaderLayer::if_not_present(
-            HeaderName::from_static("signature"),
-            maybe_add_signature
-                as for<'a> fn(&'a http::Request<bytes::Bytes>) -> Option<HeaderValue>,
-        ))
+        .option_layer(add_date)
+        .option_layer(add_digest)
+        .option_layer(add_signature)
         .layer(SetRequestHeaderLayer::overriding(
             USER_AGENT,
             HeaderValue::from_str(user_agent).unwrap(/* known good*/),
@@ -425,12 +431,7 @@ pub fn make_client(
             .make_backoff(),
             num_attempts: backoff_parameters.num_attempts(),
         }))
-        // `RetryLayer` requries that the `Service` it wraps is `Clone`... which `RateLimitLayer` is
-        // not. Per https://github.com/tokio-rs/axum/discussions/987#discussioncomment-2678595, we
-        // wrap it in a `BufferLayer`. Regrettably, it changes the error type from
-        // `indielinks_shared::service::Error` to `Box<Error + Send + Sync>`
-        .layer(BufferLayer::<http::Request<Bytes>>::new(1024))
-        .layer(RateLimitLayer::new(rate_limit.num, rate_limit.duration))
+        .layer(GovernorLayer::new_with_limiter(key_extractor, rate_limiter))
         .layer(InstrumentedLayer)
         .layer(ReqwestServiceLayer::new(Body))
         .service(reqwest::Client::new())
@@ -442,7 +443,9 @@ mod test {
 
     use super::*;
 
+    use governor::Quota;
     use http::Method;
+    use nonzero::nonzero;
     use tower::ServiceExt;
     use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
@@ -470,7 +473,9 @@ mod test {
 
         let mut client = make_client(
             "indielinks unit tests/0.0.1; +sp1ff@pobox.com",
-            &RateLimit::default(),
+            true,
+            HostExtractor,
+            RateLimiter::keyed(Quota::per_second(nonzero!(10u32))),
             &ExponentialBackoffParameters::default(),
         )
         .unwrap();

@@ -364,13 +364,9 @@ pub struct ExponentialBackoffPolicy {
     pub num_attempts: usize,
 }
 
-impl<Req: Clone, Res: std::fmt::Debug>
-    tower::retry::Policy<
-        Req,
-        Res,
-        /*indielinks_shared::service::Error*/
-        Box<dyn std::error::Error + Send + Sync + 'static>,
-    > for ExponentialBackoffPolicy
+impl<Req: Clone, Res: std::fmt::Debug, E>
+    tower::retry::Policy<Req, Res, /*indielinks_shared::service::Error*/ E>
+    for ExponentialBackoffPolicy
 {
     type Future =
         <tower::retry::backoff::ExponentialBackoff as tower::retry::backoff::Backoff>::Future;
@@ -381,7 +377,7 @@ impl<Req: Clone, Res: std::fmt::Debug>
     fn retry(
         &mut self,
         _: &mut Req,
-        result: &mut std::result::Result<Res, Box<dyn std::error::Error + Send + Sync + 'static>>,
+        result: &mut std::result::Result<Res, E>,
     ) -> Option<Self::Future> {
         // Regrettably, at this time, I'm reduced to using a `Buffer` layer between my `Retry` layer
         // and my `RateLimit` layer, because the latter is not Clone, and the former requires that

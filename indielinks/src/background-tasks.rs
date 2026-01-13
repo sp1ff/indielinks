@@ -596,7 +596,9 @@ mod mock {
 #[derive(Clone)]
 pub struct Context {
     pub origin: Origin,
-    pub client: crate::client::ClientType,
+    pub ap_client: crate::client_types::ClientType,
+    pub local_client: crate::client_types::ClientType,
+    pub general_purpose_client: crate::client_types::ClientType,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
 }
 

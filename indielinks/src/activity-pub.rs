@@ -27,7 +27,6 @@
 
 use std::{
     collections::{HashSet, VecDeque},
-    error::Error as StdError,
     time::Duration,
 };
 
@@ -60,7 +59,7 @@ use crate::{
         Type,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
-    client::ClientType,
+    client_types::ClientType,
     entities::{FollowId, User, Visibility},
     storage::Backend as StorageBackend,
 };
@@ -163,12 +162,12 @@ pub enum Error {
     },
     #[snafu(display("Failed to send a request: {source}"))]
     Request {
-        source: Box<dyn StdError + Send + Sync>,
+        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("While waiting to send a request, {source}"))]
     RequestReady {
-        source: Box<dyn StdError + Send + Sync>,
+        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize the request body to JSON: {source}"))]
@@ -606,7 +605,7 @@ impl Task<Context> for SendCreate {
                 .and_then(|follower| {
                     let user = user.clone();
                     let origin = context.origin.clone();
-                    let mut client = context.client.clone();
+                    let mut client = context.ap_client.clone();
                     async move {
                         SendCreate::follower_to_public_inbox(
                             &user,
@@ -653,7 +652,7 @@ impl Task<Context> for SendCreate {
                 // If we're here, it's time-- make the call. Nb. that we're not taking advantage of
                 // the retry facility offered by `send_activity_pub`-- we'll handle that here so as
                 // to interleave the retries.
-                let mut client3 = context.client.clone();
+                let mut client3 = context.ap_client.clone();
                 match send_activity_pub_no_response::<&'_ str, Create>(
                     &user,
                     &context.origin,
@@ -770,7 +769,7 @@ impl Task<Context> for SendFollow {
             // Ugh-- this needs to be cleaned-up.
             let userurl = StorUrl::from(this.actorid.clone());
 
-            let mut client2 = context.client.clone();
+            let mut client2 = context.ap_client.clone();
             let inbox = SendFollow::inbox_for_actor(
                 &this.user,
                 &context.origin,
@@ -803,7 +802,7 @@ impl Task<Context> for SendFollow {
                 })?,
             );
 
-            let mut client3 = context.client.clone();
+            let mut client3 = context.ap_client.clone();
             send_activity_pub_no_response::<Url, Follow>(
                 &this.user,
                 &context.origin,

@@ -102,6 +102,7 @@ use std::{
     str::FromStr,
 };
 
+use http::uri::Uri;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -120,6 +121,12 @@ pub enum Error {
         source: url::ParseError,
         backtrace: Backtrace,
     },
+    #[snafu(display("Uri has no host"))]
+    NoUriHost { backtrace: Backtrace },
+    #[snafu(display("Uri has no scheme"))]
+    NoUriScheme { backtrace: Backtrace },
+    #[snafu(display("Opaque netlocs are not supported"))]
+    OpaqueNetLoc { backtrace: Backtrace },
     #[snafu(display("Opaque origins are not supported"))]
     OpaqueOrigin { backtrace: Backtrace },
     #[snafu(display("Failed to parse {text} as an URL: {source}"))]
@@ -426,10 +433,120 @@ impl TryFrom<&Url> for Origin {
     }
 }
 
+impl TryFrom<Uri> for Origin {
+    type Error = Error;
+
+    fn try_from(uri: Uri) -> std::result::Result<Self, Self::Error> {
+        Self::try_from(&uri)
+    }
+}
+
+impl TryFrom<&Uri> for Origin {
+    type Error = Error;
+
+    fn try_from(uri: &Uri) -> std::result::Result<Self, Self::Error> {
+        Ok(Origin {
+            scheme: uri
+                .scheme_str()
+                .map(|s| s.parse::<Protocol>())
+                .transpose()?
+                .ok_or(NoUriSchemeSnafu.build())?,
+            host: uri
+                .host()
+                .map(|s| s.parse::<Host>())
+                .transpose()?
+                .ok_or(NoUriHostSnafu.build())?,
+            port: uri.port_u16(),
+        })
+    }
+}
+
 impl TryFrom<String> for Origin {
     type Error = Error;
 
     fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
         Origin::from_str(&value)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             NetLoc                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct NetLoc {
+    host: Host,
+    port: Option<u16>,
+}
+
+impl Display for NetLoc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.port {
+            Some(port) => write!(f, "{}:{}", self.host, port),
+            None => write!(f, "{}", self.host),
+        }
+    }
+}
+
+impl FromStr for NetLoc {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Url::parse(s)
+            .context(OriginUrlSnafu { text: s.to_owned() })?
+            .try_into()
+    }
+}
+
+impl TryFrom<Url> for NetLoc {
+    type Error = Error;
+
+    fn try_from(value: Url) -> std::result::Result<Self, Self::Error> {
+        Self::try_from(&value)
+    }
+}
+
+impl TryFrom<&Url> for NetLoc {
+    type Error = Error;
+
+    fn try_from(value: &Url) -> std::result::Result<Self, Self::Error> {
+        match value.origin() {
+            url::Origin::Opaque(_) => OpaqueNetLocSnafu.fail(),
+            url::Origin::Tuple(_scheme, host, port) => Ok(NetLoc {
+                host: host.try_into()?,
+                port: Some(port),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Uri> for NetLoc {
+    type Error = Error;
+
+    fn try_from(uri: Uri) -> std::result::Result<Self, Self::Error> {
+        Self::try_from(&uri)
+    }
+}
+
+impl TryFrom<&Uri> for NetLoc {
+    type Error = Error;
+
+    fn try_from(uri: &Uri) -> std::result::Result<Self, Self::Error> {
+        Ok(NetLoc {
+            host: uri
+                .host()
+                .map(|s| s.parse::<Host>())
+                .transpose()?
+                .ok_or(NoUriHostSnafu.build())?,
+            port: uri.port_u16(),
+        })
+    }
+}
+
+impl TryFrom<String> for NetLoc {
+    type Error = Error;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        NetLoc::from_str(&value)
     }
 }

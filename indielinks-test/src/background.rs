@@ -15,12 +15,13 @@
 
 //! Integration tests for background task processing.
 
+use governor::{Quota, RateLimiter};
 use indielinks::{
     background_tasks::{
         self, Backend as TasksBackend, BackgroundTask, BackgroundTasks, Config, Context, Sender,
         TaggedTask, Task,
     },
-    client::make_client,
+    client::{make_client, HostExtractor},
     storage::Backend as StorageBackend,
 };
 
@@ -28,7 +29,9 @@ use indielinks_shared::origin::Origin;
 
 use async_trait::async_trait;
 use libtest_mimic::Failed;
+use nonzero::nonzero;
 use serde::{Deserialize, Serialize};
+use tower_gcra::extractors::KeyedDashmapMiddleware;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -167,7 +170,9 @@ pub async fn first_background(
         Context {
             origin,
             storage,
-            client: make_client("user-agent", &Default::default(), &Default::default()).unwrap(/* known good */),
+            ap_client: make_client("user-agent", true, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(16u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
+            local_client: make_client("user-agent", false, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(32u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
+            general_purpose_client: make_client("user-agent", false, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(4u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
         },
         Some(Config {
             shutdown_timeout: Duration::from_secs(30),

@@ -55,7 +55,7 @@ use crate::{
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
-    client::ClientType,
+    client_types::ClientType,
     define_metric,
     entities::{
         self, ActivityPubPost, ActivityPubPostFlavor, Follower, Following, Reply, Share, User,
@@ -450,7 +450,7 @@ async fn verify_signature(
     match verify_signature1(
         headers,
         request,
-        state.client.clone(),
+        state.ap_client.clone(),
         state.storage.as_ref(),
         match username {
             Some(username) => Either::Left(username.0),
@@ -895,7 +895,7 @@ impl Task<Context> for AcceptFollow {
         );
 
         async fn exec1(this: Box<AcceptFollow>, context: Context) -> Result<()> {
-            let mut client2 = context.client.clone();
+            let mut client2 = context.ap_client.clone();
             send_activity_pub_no_response::<&'_ str, Accept>(
                 &this.user,
                 &this.origin,

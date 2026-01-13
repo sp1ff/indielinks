@@ -31,6 +31,8 @@ pub mod authn;
 pub mod background_tasks;
 pub mod cache;
 pub mod client;
+#[path = "client-types.rs"]
+pub mod client_types;
 pub mod delicious;
 pub mod dynamodb;
 #[path = "dynamodb-schemas.rs"]

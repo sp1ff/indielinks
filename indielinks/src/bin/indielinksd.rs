@@ -32,6 +32,7 @@ use std::{
     future::IntoFuture,
     io,
     net::SocketAddr,
+    num::NonZeroU32,
     os::fd::{AsFd, AsRawFd, RawFd},
     path::{Path, PathBuf},
     str::FromStr,
@@ -45,9 +46,11 @@ use axum::{extract::State, response::IntoResponse, routing::get, Router};
 use chrono::Duration;
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use errno::Errno;
+use governor::Quota;
 use http::{HeaderName, HeaderValue};
 use lazy_static::lazy_static;
 use libc::c_int;
+use nonzero::nonzero;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
@@ -74,7 +77,11 @@ use tracing_subscriber::{
 };
 use url::Url;
 
-use indielinks_shared::{entities::StorUrl, origin::Origin, service::ExponentialBackoffParameters};
+use indielinks_shared::{
+    entities::StorUrl,
+    origin::{NetLoc, Origin},
+    service::ExponentialBackoffParameters,
+};
 
 use indielinks_cache::{
     cache::Cache,
@@ -89,7 +96,7 @@ use indielinks::{
         make_router as make_cache_router, Backend as CacheBackend, GrpcClientFactory, GrpcService,
         LogStore, FOLLOWER_TO_PUBLIC_INBOX,
     },
-    client::make_client,
+    client::{make_client, HostKey},
     define_metric,
     delicious::make_router as make_delicious_router,
     dynamodb::Location as DynamoLocation,
@@ -360,6 +367,26 @@ pub struct OtelExportConfig {
     interval: Option<std::time::Duration>,
 }
 
+/// Rate-limit settings for indielinksd _clients_.
+///
+/// `per_second` is the permissible number of requests per second per network location (host +
+/// port). Non-default per-netloc quotas can be defined via `custom`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ClientRateLimits {
+    #[serde(rename = "per-second")]
+    per_second: NonZeroU32,
+    custom: Vec<(NetLoc, NonZeroU32)>,
+}
+
+impl Default for ClientRateLimits {
+    fn default() -> Self {
+        Self {
+            per_second: nonzero!(8u32),
+            custom: Default::default(),
+        }
+    }
+}
+
 /// Indielinks configuration, version one
 #[derive(Clone, Debug, Deserialize)]
 struct ConfigV1 {
@@ -394,6 +421,12 @@ struct ConfigV1 {
     user_agent: String,
     #[serde(rename = "client-exponential-backoff")]
     client_exponential_backoff: ExponentialBackoffParameters,
+    #[serde(rename = "client-rate-limits")]
+    client_rate_limits: ClientRateLimits,
+    #[serde(rename = "local-rate-limits")]
+    local_rate_limits: ClientRateLimits,
+    #[serde(rename = "general-purpose-rate-limits")]
+    general_purpose_rate_limits: ClientRateLimits,
     #[serde(rename = "collection-page-size")]
     collection_page_size: usize,
     assets: Option<PathBuf>,
@@ -429,7 +462,10 @@ impl Default for ConfigV1 {
             signing_keys: SigningKeysConfig::default(),
             users_config: UsersConfiguration::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
-            client_exponential_backoff: ExponentialBackoffParameters::default(),
+            client_exponential_backoff: Default::default(),
+            client_rate_limits: Default::default(),
+            local_rate_limits: Default::default(),
+            general_purpose_rate_limits: Default::default(),
             collection_page_size: 12, // Copied from Mastodon
             assets: None,
             background_tasks: background_tasks::Config::default(),
@@ -907,9 +943,63 @@ async fn serve(
 
     // Loop forever, handling SIGHUPs, until asked to terminate:
     loop {
-        let client = make_client(
+        let ap_rate_limiter =
+            governor::RateLimiter::keyed(Quota::per_second(cfg.client_rate_limits.per_second))
+                .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
+                    cfg.client_rate_limits.custom.iter().map(|(k, v)| {
+                        (
+                            HostKey::Host(k.clone()),
+                            governor::gcra::Gcra::new(Quota::per_second(*v)),
+                        )
+                    }),
+                ));
+
+        let ap_client = make_client(
             &cfg.user_agent,
-            &Default::default(),
+            true,
+            indielinks::client::HostExtractor,
+            ap_rate_limiter,
+            &cfg.client_exponential_backoff,
+        )
+        .context(ClientSnafu)?;
+
+        let local_rate_limiter =
+            governor::RateLimiter::keyed(Quota::per_second(cfg.local_rate_limits.per_second))
+                .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
+                    cfg.local_rate_limits.custom.iter().map(|(k, v)| {
+                        (
+                            HostKey::Host(k.clone()),
+                            governor::gcra::Gcra::new(Quota::per_second(*v)),
+                        )
+                    }),
+                ));
+
+        let local_client = make_client(
+            &cfg.user_agent,
+            false,
+            indielinks::client::HostExtractor,
+            local_rate_limiter,
+            &cfg.client_exponential_backoff,
+        )
+        .context(ClientSnafu)?;
+
+        let general_purpose_rate_limiter = governor::RateLimiter::keyed(Quota::per_second(
+            cfg.general_purpose_rate_limits.per_second,
+        ))
+        .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
+            cfg.general_purpose_rate_limits.custom.iter().map(|(k, v)| {
+                (
+                    HostKey::Host(k.clone()),
+                    governor::gcra::Gcra::new(Quota::per_second(*v)),
+                )
+            }),
+        ));
+
+        let general_purpose_client = make_client(
+            &cfg.user_agent,
+            false,
+            indielinks::client::HostExtractor,
+            general_purpose_rate_limiter,
             &cfg.client_exponential_backoff,
         )
         .context(ClientSnafu)?;
@@ -932,7 +1022,9 @@ async fn serve(
         // Setup the context for our tasks
         let context = Context {
             origin: cfg.public_origin.clone(),
-            client: client.clone(),
+            ap_client: ap_client.clone(),
+            local_client: local_client.clone(),
+            general_purpose_client: general_purpose_client.clone(),
             storage: storage.clone(),
         };
         // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
@@ -969,7 +1061,9 @@ async fn serve(
             users_same_site: cfg.users_config.same_site.clone(),
             users_secure_cookies: cfg.users_config.secure_cookies,
             allowed_origins: cfg.users_config.allowed_origins.clone(),
-            client,
+            ap_client,
+            local_client,
+            general_purpose_client,
             collection_page_size: cfg.collection_page_size,
             assets: cfg.assets.clone().unwrap_or(PathBuf::from("assets")),
             task_sender,
