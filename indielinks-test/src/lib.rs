@@ -72,16 +72,27 @@
 /// Integration test programs themselves go in `tests`.
 use std::{
     collections::HashSet,
+    convert::Infallible,
+    result::Result as StdResult,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 use async_trait::async_trait;
+use base64::{prelude::BASE64_STANDARD, Engine};
 use chrono::Utc;
+use http::{header, HeaderValue};
+use itertools::Itertools;
 use libtest_mimic::Failed;
 use once_cell::sync::Lazy;
-use picky::key::{PrivateKey, PublicKey};
+use picky::{
+    hash::HashAlgorithm,
+    http::{http_signature::HttpSignatureBuilder, HttpSignature},
+    key::{PrivateKey, PublicKey},
+    signature::SignatureAlgorithm,
+};
 use reqwest::Url;
 use secrecy::SecretString;
+use sha2::Digest;
 use wiremock::{
     matchers::{method, path},
     Mock, ResponseTemplate,
@@ -94,7 +105,6 @@ use indielinks_shared::{
 
 use indielinks::{
     ap_entities::{self, make_user_id},
-    authn::{ensure_sha_256, sign_request},
     entities::FollowId,
     peppers::{Pepper, Version as PepperVersion},
 };
@@ -213,6 +223,81 @@ pub async fn peer_actor(user: &PeerUser, origin: &Origin) -> Result<Mock, Failed
                 "application/activity+json",
             ),
         ))
+}
+
+// Not sure this is needed anymore, in light of my cleanup of ActivityPub logic. It's been heavily
+// hacked-up so as to compile outside the indielinks::authn module.
+pub fn ensure_sha_256(
+    request: http::Request<reqwest::Body>,
+) -> StdResult<http::Request<reqwest::Body>, Infallible> {
+    // Seems like a *lot* of work just to check for the presence of a SHA-256 digest... Ah: the joys
+    // of HTTP.
+    match request
+        .headers()
+        .get_all("digest")
+        .iter()
+        .filter_map(|h| {
+            h.to_str()
+                .map(|s| {
+                    s.to_lowercase()
+                        .starts_with("sha-256=")
+                        .then_some(s.to_owned())
+                })
+                .unwrap_or(None)
+        })
+        .at_most_one()
+        .unwrap()
+    {
+        Some(_) => Ok(request),
+        None => {
+            let (mut parts, body) = request.into_parts();
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(body.as_bytes().unwrap());
+            let sha_256_result = format!(
+                "sha-256={}",
+                BASE64_STANDARD.encode(hasher.finalize().as_slice())
+            );
+            parts
+                .headers
+                .append("digest", HeaderValue::from_str(&sha_256_result).unwrap());
+            Ok(http::Request::from_parts(parts, body))
+        }
+    }
+}
+
+// Not sure this is needed anymore, in light of my cleanup of ActivityPub logic.
+// It's been hacked-up heavily to get it to compile outside the authn module.
+pub fn sign_request(
+    request: http::Request<reqwest::Body>,
+    key_id: &str,
+    private_key: &picky::key::PrivateKey,
+) -> StdResult<(http::Request<reqwest::Body>, HttpSignature), Infallible> {
+    let (parts, body) = request.into_parts();
+
+    assert!(parts.headers.contains_key("Date"));
+
+    assert!(parts.headers.contains_key("Host"));
+
+    assert!(parts.headers.contains_key("Content-Type"));
+
+    let http_signature = HttpSignatureBuilder::new()
+        .key_id(key_id)
+        .signature_method(
+            private_key,
+            SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+        )
+        // `picky::http::http_request::HttpRequest` trait is implemented for
+        // `http::request::Parts` for `http` crate with `http_trait_impl` feature gate
+        .generate_signing_string_using_http_request(&parts)
+        .request_target()
+        .http_header(header::CONTENT_TYPE.as_str())
+        .http_header(header::DATE.as_str())
+        .http_header("digest")
+        .http_header(header::HOST.as_str())
+        .build()
+        .unwrap();
+
+    Ok((http::Request::from_parts(parts, body), http_signature))
 }
 
 /// Take an HTTP verb/method, URL and a reqwest [Body]. Return a signed reqwest Request. The signature

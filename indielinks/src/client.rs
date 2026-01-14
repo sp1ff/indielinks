@@ -339,7 +339,8 @@ impl<B> KeyExtractor<Request<B>> for HostExtractor {
 /// - adds the Host header, if it's not present
 /// - if the caller has requested ActivityPub support:
 ///     - adds Date & SHA-256 digest headers, if they're not present
-///     - add a "draft Cavage" HTTP signature
+///     - add a "draft Cavage" HTTP signature, but only if the Request extensions contain either a
+///       [User] or [UserPrivateKey]
 /// - set the User Agent header
 /// - retry failed requests
 /// - rate limit outgoing requests
