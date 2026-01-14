@@ -355,6 +355,28 @@
 //! ActivityPub server. That initial prototyping can be found on branch `prototypes`, but `master`
 //! (and its offshoots) contains the production code.
 //!
+//! ## Project Structure
+//!
+//! ### Module Dependencies
+//!
+//! I try to maintain a layered structure to the modules making-up [indielinks]. In particular, if
+//! we visualize their dependencies as a graph, it should be acyclic. I'd love to find some tooling
+//! to analyze this & even make part of the CI pipeline, but at the time of this writing, here it is
+//! (constructed manually):
+//!
+//! 1) actor, webfinger, users, delicious, webfinger
+//!    - all the public endpoints
+//! 2) indielinks, activity-pub, dynamodb, scylla, client
+//!    - implementations of lower-level abstractions
+//! 3) ap-entities, background_tasks, cache
+//!    - internal subsystems
+//! 4) client-types (authn, http)
+//! 5) authn
+//! 6) storage, token, entities, acct
+//! 7) peppers, signing-keys, http
+//! 8) util, metrics
+//!    - depend on nothing
+//!
 //! ## The ChangeLog (or the lack thereof)
 //!
 //! First, let's fix terminology. In this section, I'm using the GNU term "ChangeLog", as
@@ -452,3 +474,27 @@
 //! [dh-rust]: https://packages.debian.org/search?keywords=dh-rust&searchon=names&suite=stable&section=all
 //!
 //! At this point, I threw up my hands & went with [cargo-deb].
+//!
+//! ## ActivityPub Signatures
+//!
+//! The logic for computing & verifying ActivityPub signatures (see above) resides in a few places.
+//! Module [authn](crate::authn) contains AP signature-related utilities & tests. The actual
+//! signature is added to outgoing requests in the [client](crate::client) module, and then only if
+//! the request extensions contain either a [User](crate::entities::User) or a
+//! [UserPrivateKey](indielinks_shared::entities::UserPrivateKey) (in a middleware layer).
+//!
+//! Incoming AP requests have their sigantures checked in [actor](crate::actor), again in a (route)
+//! layer. I think this makes sense, since at validation time, we're making API-level decisions
+//! (whether or not to bounce the request, e.g.), so it probably belongs where it is.
+//!
+//! [send_activity_pub](crate::activity_pub::send_activity_pub) & friends is a higher-level
+//! "convenience" function; it takes care to:
+//!
+//! - actually build the request (given the URL, method, generic body)
+//! - converts the body to JLD
+//! - takes care to set the property extensions so the client will sign the request
+//! - send the request through the client
+//! - deserialize the response body, if any, to an indielinks AP entity
+//!
+//! At the time of this writing, however, the API is unfortunate in that it generally requires type
+//! hints from the caller.

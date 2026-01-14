@@ -7,7 +7,7 @@ use indielinks_shared::service::{ExponentialBackoffPolicy, ReqwestService};
 
 use crate::{
     authn::AddSha256DigestIfNotPresent,
-    client::{HostExtractor, HostKey, InstrumentedService},
+    http::{HostExtractor, HostKey, InstrumentedService},
 };
 
 // In indielinks-client, I make the client type generic, with a type constraint like:

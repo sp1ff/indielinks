@@ -31,18 +31,12 @@
 //! [RFC-3230]: https://datatracker.ietf.org/doc/html/rfc3230
 //! [RFC-9530]: https://www.ietf.org/archive/id/draft-ietf-httpbis-digest-headers-12.html#name-the-content-digest-field
 
-use std::{convert::Infallible, fmt::Debug, hash::Hash, ops::Deref, result::Result as StdResult};
+use std::{fmt::Debug, hash::Hash};
 
 use bytes::Bytes;
 use either::Either;
 use governor::{clock::Clock, middleware::RateLimitingMiddleware, state::StateStore, RateLimiter};
-use http::{
-    header::{HOST, USER_AGENT},
-    HeaderName, HeaderValue, Request,
-};
-use itertools::Itertools;
-use opentelemetry::KeyValue;
-use pin_project::pin_project;
+use http::{header::USER_AGENT, HeaderName, HeaderValue, Request};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tower::{
@@ -50,11 +44,10 @@ use tower::{
         backoff::{ExponentialBackoffMaker, MakeBackoff},
         RetryLayer,
     },
-    Layer, Service, ServiceBuilder,
+    ServiceBuilder,
 };
 use tower_gcra::keyed::{KeyExtractor, Layer as GovernorLayer};
 use tower_http::set_header::SetRequestHeaderLayer;
-use tracing::{debug, error, Level};
 
 use indielinks_shared::{
     entities::{UserPrivateKey, Username},
@@ -65,8 +58,8 @@ use indielinks_shared::{
 use crate::{
     ap_entities::{make_instance_actor_key_id, make_key_id},
     authn::{compute_signature, AddSha256DigestIfNotPresentLayer},
-    define_metric,
     entities::User,
+    http::InstrumentedLayer,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -105,144 +98,6 @@ pub enum Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                       InstrumentedService                                      //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-define_metric! { "client.requests",                client_requests,                Sort::IntegralCounter }
-define_metric! { "client.errors",                  client_errors,                  Sort::IntegralCounter }
-define_metric! { "client.responses.informational", client_responses_informational, Sort::IntegralCounter }
-define_metric! { "client.responses.success",       client_responses_success,       Sort::IntegralCounter }
-define_metric! { "client.responses.redirect",      client_responses_redirect,      Sort::IntegralCounter }
-define_metric! { "client.responses.client_error",  client_responses_client_error,  Sort::IntegralCounter }
-define_metric! { "client.responses.server_error",  client_responses_server_error,  Sort::IntegralCounter }
-define_metric! { "client.responses.unknown",       client_responses_unknown,       Sort::IntegralCounter }
-define_metric! { "client.responses.errors",        client_responses_errors,        Sort::IntegralCounter }
-
-/// A [Future] that wraps an inner future associated with a service that will log & emit metrics for
-/// each request
-///
-/// [Future]: std::future::Future
-// I suppose I could have used tower_http::TraceLayer, but trying to communicate state among the
-// handlers seemed more complex than just implementing my own Service & associated Future.
-#[pin_project]
-pub struct InstrumentedServiceFuture<InnerFut> {
-    host: String,
-    span: tracing::Span,
-    #[pin]
-    inner: InnerFut,
-}
-
-impl<InnerFut> InstrumentedServiceFuture<InnerFut> {
-    pub fn new<ReqBody, S>(
-        service: &mut S,
-        request: http::Request<ReqBody>,
-    ) -> InstrumentedServiceFuture<<S as Service<http::Request<ReqBody>>>::Future>
-    where
-        S: Service<http::Request<ReqBody>>,
-        ReqBody: std::fmt::Debug,
-    {
-        let host = request.uri().host().unwrap_or("localhost").to_owned();
-        let span = tracing::span!(Level::DEBUG, "indielinks-client-call");
-        let _ = span.enter();
-        debug!("Sending request to {host}: {request:?}");
-        client_requests.add(1, &[KeyValue::new("host", host.clone())]);
-        InstrumentedServiceFuture {
-            host,
-            span,
-            inner: service.call(request),
-        }
-    }
-}
-
-impl<RspBody, E, InnerFut> std::future::Future for InstrumentedServiceFuture<InnerFut>
-where
-    InnerFut: std::future::Future<Output = std::result::Result<http::Response<RspBody>, E>>,
-    E: std::error::Error,
-    RspBody: std::fmt::Debug,
-{
-    type Output = std::result::Result<http::Response<RspBody>, E>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let this = self.project();
-        let _guard = this.span.enter();
-        match this.inner.poll(cx) {
-            std::task::Poll::Ready(rsp) => match rsp {
-                Ok(rsp) => {
-                    let instrument = match rsp.status().as_u16() {
-                        100..=199 => client_responses_informational.deref(),
-                        200..=299 => client_responses_success.deref(),
-                        300..=399 => client_responses_redirect.deref(),
-                        400..=499 => client_responses_client_error.deref(),
-                        500..=599 => client_responses_server_error.deref(),
-                        _ => client_responses_unknown.deref(),
-                    };
-                    instrument.add(1, &[KeyValue::new("host", this.host.clone())]);
-                    debug!(
-                        "Response {rsp:?} from {} returned with status {}",
-                        this.host,
-                        rsp.status()
-                    );
-                    std::task::Poll::Ready(Ok(rsp))
-                }
-                Err(err) => {
-                    error!("While sending a request to {}, got {}", this.host, err);
-                    client_errors.add(1, &[KeyValue::new("host", this.host.clone())]);
-                    std::task::Poll::Ready(Err(err))
-                }
-            },
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct InstrumentedService<S> {
-    inner: S,
-}
-
-impl<S, ReqBody, RspBody> Service<http::Request<ReqBody>> for InstrumentedService<S>
-where
-    S: Service<http::Request<ReqBody>, Response = http::Response<RspBody>>,
-    <S as Service<http::Request<ReqBody>>>::Error: std::error::Error,
-    RspBody: std::fmt::Debug,
-    ReqBody: std::fmt::Debug,
-{
-    type Response = S::Response;
-
-    type Error = S::Error;
-
-    type Future = InstrumentedServiceFuture<S::Future>;
-
-    fn poll_ready(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
-    }
-
-    fn call(&mut self, request: http::Request<ReqBody>) -> Self::Future {
-        InstrumentedServiceFuture::<<S as Service<http::Request<ReqBody>>>::Future>::new(
-            &mut self.inner,
-            request,
-        )
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct InstrumentedLayer;
-
-impl<S> Layer<S> for InstrumentedLayer {
-    type Service = InstrumentedService<S>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        InstrumentedService { inner }
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -302,38 +157,7 @@ fn add_host<B: AsRef<[u8]>>(request: &http::Request<B>) -> Option<HeaderValue> {
         .unwrap_or(None)
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum HostKey {
-    Null,
-    Host(NetLoc),
-}
-
-#[derive(Clone)]
-pub struct HostExtractor;
-
-impl<B> KeyExtractor<Request<B>> for HostExtractor {
-    type Key = HostKey;
-    // Extracting the key from a `Request` *is* fallible, but if you return the `Err` variant, the
-    // request as a whole will be failed, so I'll never fail this operation:
-    type Error = Infallible;
-    fn extract(&self, req: &Request<B>) -> StdResult<Self::Key, Self::Error> {
-        // Try the "Host" header first, then fall-back to the URI.
-        req.headers()
-            .get_all(HOST)
-            .iter()
-            .at_most_one()
-            .ok()
-            .flatten()
-            .and_then(|header_value| header_value.to_str().ok())
-            .and_then(|text| text.parse::<NetLoc>().ok())
-            .or_else(|| req.uri().try_into().ok())
-            .map(HostKey::Host)
-            .unwrap_or(HostKey::Null)
-            .pipe(Ok)
-    }
-}
-
-/// Build a [tower] [Service] based on [reqwest::Client]
+/// Build a [tower] [Service](tower::Service) based on [reqwest::Client]
 ///
 /// This function starts with a [reqwest::Client] and then:
 /// - adds the Host header, if it's not present
@@ -442,12 +266,15 @@ where
 #[cfg(test)]
 mod test {
 
+    use crate::http::HostExtractor;
+
     use super::*;
 
     use governor::Quota;
     use http::Method;
     use nonzero::nonzero;
-    use tower::ServiceExt;
+    use tower::{Service, ServiceExt};
+    use tracing::debug;
     use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
     /// Type on which to hang a [Match] implementation that sanity-checks the incoming request

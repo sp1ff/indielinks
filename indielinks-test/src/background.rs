@@ -21,7 +21,8 @@ use indielinks::{
         self, Backend as TasksBackend, BackgroundTask, BackgroundTasks, Config, Context, Sender,
         TaggedTask, Task,
     },
-    client::{make_client, HostExtractor},
+    client::make_client,
+    http::HostExtractor,
     storage::Backend as StorageBackend,
 };
 

@@ -96,11 +96,12 @@ use indielinks::{
         make_router as make_cache_router, Backend as CacheBackend, GrpcClientFactory, GrpcService,
         LogStore, FOLLOWER_TO_PUBLIC_INBOX,
     },
-    client::{make_client, HostKey},
+    client::make_client,
     define_metric,
     delicious::make_router as make_delicious_router,
     dynamodb::Location as DynamoLocation,
     entities::FollowerId,
+    http::HostKey,
     indielinks::Indielinks,
     metrics::check_metric_names,
     peppers::Peppers,
@@ -957,7 +958,7 @@ async fn serve(
         let ap_client = make_client(
             &cfg.user_agent,
             true,
-            indielinks::client::HostExtractor,
+            indielinks::http::HostExtractor,
             ap_rate_limiter,
             &cfg.client_exponential_backoff,
         )
@@ -977,7 +978,7 @@ async fn serve(
         let local_client = make_client(
             &cfg.user_agent,
             false,
-            indielinks::client::HostExtractor,
+            indielinks::http::HostExtractor,
             local_rate_limiter,
             &cfg.client_exponential_backoff,
         )
@@ -998,7 +999,7 @@ async fn serve(
         let general_purpose_client = make_client(
             &cfg.user_agent,
             false,
-            indielinks::client::HostExtractor,
+            indielinks::http::HostExtractor,
             general_purpose_rate_limiter,
             &cfg.client_exponential_backoff,
         )
