@@ -31,7 +31,7 @@ use leptos::{
     prelude::*,
 };
 use leptos_router::hooks::use_query_map;
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, prelude::*};
 use tap::Pipe;
 use tracing::{debug, error};
 use web_sys::MouseEvent;

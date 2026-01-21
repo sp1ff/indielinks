@@ -54,7 +54,7 @@
 //!
 //! Then, at program startup, invoke [check_metric_names] to verify that there are no duplicate metric names.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{hash_map::Entry, HashMap};
 
 /// Instrument type
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

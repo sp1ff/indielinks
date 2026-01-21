@@ -71,7 +71,7 @@ use serde::Deserialize;
 use snafu::{Backtrace, IntoError, Snafu};
 #[cfg(feature = "backend")]
 use snafu::{OptionExt, ResultExt};
-use tower::{retry::backoff::Backoff, Service};
+use tower::{Service, retry::backoff::Backoff};
 
 use std::{
     error::Error as StdError,
@@ -101,9 +101,7 @@ pub enum Error {
     },
     #[snafu(display("{value} is not a valid Jitter value"))]
     Jitter { value: f64, backtrace: Backtrace },
-    #[snafu(display(
-        "The wrapped service speaking reqwest errored-out on poll_ready: {source:?}"
-    ))]
+    #[snafu(display("The wrapped service speaking reqwest errored-out on poll_ready: {source:?}"))]
     PollReady {
         source: Box<dyn std::error::Error + Send + Sync>,
     },

@@ -106,7 +106,7 @@ use http::uri::Uri;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, prelude::*};
 use url::Url;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

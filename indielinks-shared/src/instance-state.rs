@@ -22,7 +22,7 @@ use snafu::{ResultExt, Snafu};
 #[cfg(feature = "backend")]
 use tap::Pipe;
 
-use crate::entities::{generate_rsa_keypair, UserPrivateKey, UserPublicKey};
+use crate::entities::{UserPrivateKey, UserPublicKey, generate_rsa_keypair};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //

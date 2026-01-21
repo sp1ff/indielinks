@@ -20,14 +20,14 @@ use picky::key::{PrivateKey, PublicKey};
 use regex::Regex;
 #[cfg(feature = "backend")]
 use scylla::{
+    DeserializeRow,
     cluster::metadata::ColumnType,
-    deserialize::{value::DeserializeValue, FrameSlice},
+    deserialize::{FrameSlice, value::DeserializeValue},
     errors::{DeserializationError, SerializationError, TypeCheckError},
     serialize::{
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
     },
-    DeserializeRow,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};

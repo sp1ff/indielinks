@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDate, Utc};
-use secrecy::{zeroize::Zeroize, CloneableSecret, SecretBox, SerializableSecret};
+use secrecy::{CloneableSecret, SecretBox, SerializableSecret, zeroize::Zeroize};
 use serde::{Deserialize, Serialize};
 use url::Url;
 

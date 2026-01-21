@@ -52,16 +52,16 @@ use std::{collections::BTreeMap, ops::Deref, str::FromStr};
 use lazy_static::lazy_static;
 use regex::Regex;
 use scylla::{
-    deserialize::{DeserializationError, FrameSlice, TypeCheckError, value::DeserializeValue},
+    deserialize::{value::DeserializeValue, DeserializationError, FrameSlice, TypeCheckError},
     frame::response::result::ColumnType,
     serialize::{
-        SerializationError,
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
+        SerializationError,
     },
 };
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, prelude::*};
+use snafu::{prelude::*, Backtrace};
 
 use crate::util::Key;
 

@@ -16,5 +16,8 @@ set -e
 cargo clippy -j ${nproc} -- --no-deps -Dwarnings \
       -A clippy::result_large_err \
       -A clippy::uninlined_format_args
+cargo fmt -- --check
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps -j ${nproc}
+# Need to address these two, plus a host of warnings
+cargo audit --ignore=RUSTSEC-2023-0071 --ignore=RUSTSEC-2026-0001
 

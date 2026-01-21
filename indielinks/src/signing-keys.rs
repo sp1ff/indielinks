@@ -50,7 +50,7 @@ use std::{collections::BTreeMap, fmt::Display, str::FromStr};
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::Deserialize;
-use snafu::{Backtrace, Snafu, prelude::*};
+use snafu::{prelude::*, Backtrace, Snafu};
 
 use crate::util::Key;
 

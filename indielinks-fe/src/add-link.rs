@@ -14,7 +14,7 @@
 // see <http://www.gnu.org/licenses/>.
 
 use gloo_net::http::Request;
-use leptos::{component, context::use_context, html, prelude::*, view, IntoView};
+use leptos::{IntoView, component, context::use_context, html, prelude::*, view};
 use leptos_router::hooks::{use_location, use_navigate, use_query_map};
 use tracing::{debug, error, info};
 
