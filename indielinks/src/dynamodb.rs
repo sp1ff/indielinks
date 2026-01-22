@@ -904,6 +904,13 @@ pub async fn create_client(
             let mut loader = aws_config::from_env().region(region_provider);
             if let Some(credentials) = credentials {
                 loader = loader.credentials_provider(credentials);
+            } else {
+                // The DynamoDB (apparently) always attempts to sign its requests; if we configure
+                // it with `no_credentials()` it will simply error-out. Per here:
+                // <https://github.com/awslabs/aws-sdk-rust/issues/971> this is by design & won't be
+                // changed. The suggested workaround is to use [test_credentials()]
+                // (https://docs.rs/aws-config/latest/aws_config/struct.ConfigLoader.html#method.test_credentials).
+                loader = loader.test_credentials();
             }
             loader.load().await
         }
@@ -913,10 +920,19 @@ pub async fn create_client(
                 .peekable()
                 .peek()
                 .ok_or(NoEndpointsSnafu {}.build())?;
-            let mut loader =
-                aws_config::defaults(BehaviorVersion::latest()).endpoint_url((*ep_url).as_str());
+            let mut loader = aws_config::defaults(BehaviorVersion::latest())
+                // We *have* to specify a region for request signing (see below). Just pick one-- it doesn't matter.
+                .region("us-west-2")
+                .endpoint_url((*ep_url).as_str());
             if let Some(credentials) = credentials {
                 loader = loader.credentials_provider(credentials);
+            } else {
+                // The DynamoDB (apparently) always attempts to sign its requests; if we configure
+                // it with `no_credentials()` it will simply error-out. Per here:
+                // <https://github.com/awslabs/aws-sdk-rust/issues/971> this is by design & won't be
+                // changed. The suggested workaround is to use [test_credentials()]
+                // (https://docs.rs/aws-config/latest/aws_config/struct.ConfigLoader.html#method.test_credentials).
+                loader = loader.test_credentials();
             }
             loader.load().await
         }

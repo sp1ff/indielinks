@@ -2,6 +2,25 @@
 set -ex
 here=$(dirname $(realpath $0))
 cd $here
+
+# "make sure the aio-max-nr value is high enough (1048576 or more)"
+# <https://university.scylladb.com/setup-a-scylla-cluster/?utm_source=chatgpt.com>
+max_nr=$(cat /proc/sys/fs/aio-max-nr)
+if [ ${max_nr} -lt 1048576 ]; then
+    # I'm uncomfortable reconfiguring the system in order to get this to run,
+    # but it should be treated as an error:
+    cat >&2 <<EOF
+    This system is not correctly configured to run ScyllaDB (even in testing).
+On Linux, do the following:
+
+    echo "fs.aio-max-nr = 1048576" | sudo tee -a /etc/sysctl.conf
+    sudo sysctl -p /etc/sysctl.conf
+
+See here for more information: <https://university.scylladb.com/setup-a-scylla-cluster>.
+EOF
+   exit 1 
+fi
+
 docker compose -f compose.local.yaml up -d
 ntries=1
 nnodes=$(docker exec scylla-node-1 nodetool status|grep -F UN|wc -l)
@@ -15,9 +34,10 @@ while [ ${nnodes} -ne 3 ]; do
     # Give it ten seconds
     if [ ${ntries} -gt 25 ]; then
         echo "ScyllaDB failed to come up" >&2
+        docker ps -a
         exit 1
     fi
 done
 
-cargo run --bin indielinks-schemas -- -v -p ddb http://localhost:8043
+AWS_EC2_METADATA_DISABLED=true cargo run --bin indielinks-schemas -- -v -p ddb http://localhost:8043
 cargo run --bin indielinks-schemas -- -v -p scylla 127.0.0.1:9043

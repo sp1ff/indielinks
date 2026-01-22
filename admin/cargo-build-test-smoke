@@ -2,11 +2,20 @@
 
 set -ex
 
-nproc=$(nproc)
-nproc=$(($nproc/4))
-if [ $nproc -eq 0 ]; then
-    nproc=1
+# By default, which I anticipate will be running on the developer's machine, I
+# want to constrain the number of cores `cargo` can have. However, when running
+# in a GHA, I want `cargo` to take as many cores as it wants.
+cargo_args=
+
+# *Any* argument will disable this
+if test -z "$1"; then
+    nproc=$(nproc)
+    nproc=$(($nproc/4))
+    if [ $nproc -eq 0 ]; then
+        nproc=1
+    fi
+    cargo_args="-j ${nproc}"
 fi
-cargo build -j $nproc
-cargo build -j $nproc -p indielinks-fe --target=wasm32-unknown-unknown
-cargo test -j $nproc
+cargo build ${cargo_args}
+cargo build ${cargo_args} -p indielinks-fe --target=wasm32-unknown-unknown
+cargo test ${cargo_args}

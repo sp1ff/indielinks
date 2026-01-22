@@ -2,7 +2,8 @@
 
 # It runs on Ubuntu, using three versions of Rust: a "pined" least
 # supported version, the current stable version and the current
-# nightly version. After building, it will run the unit test suite.
+# nightly version. After building, it will run the unit & integration
+# test suites.
 
 name: Continuous Integration
 
@@ -22,7 +23,7 @@ jobs:
           - pinned
           - stable
           - nightly
-        # I'd like to expand this list; MacOs, certainly
+        # I suppose I could add older ubuntu versions, but why?
         os: [ubuntu-latest]
         include:
         - rust-build: pinned
@@ -47,6 +48,15 @@ jobs:
       with:
         toolchain: ${{ matrix.rust }}
 
+    # https://university.scylladb.com/setup-a-scylla-cluster/?utm_source=chatgpt.com
+    - name: Configure System
+      if: matrix.os == 'ubuntu-latest'
+      shell: bash
+      run: |
+        echo "fs.aio-max-nr = 1048576" | sudo tee -a /etc/sysctl.conf
+        sudo sysctl -p /etc/sysctl.conf
+        echo "127.0.0.1    indiemark.local" | sudo tee -a /etc/hosts
+
     - name: Install tools
       shell: bash
       run: |
@@ -60,6 +70,10 @@ jobs:
       shell: bash
       run: 'admin/run-linters'
 
-    - name: Build tower-gcra & run unit tests
+    # Un-comment this step to enable ssh'ing into the runner & trouble-shoot
+    # - name: Setup tmate session
+    #   uses: mxschmitt/action-tmate@v3
+
+    - name: Build indielinks & run unit & integration tests
       shell: bash
-      run: 'admin/cargo-build-test-smoke'
+      run: 'admin/cargo-build-test-smoke all-cores'
