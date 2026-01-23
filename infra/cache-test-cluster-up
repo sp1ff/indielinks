@@ -2,17 +2,19 @@
 function hc {
     local bin="$1"
     local port="$2"
+    local log="$3"
     # curl can fail if the server isn't up, yet
     set +e
     local status=$(curl -s http://localhost:${port}/healthcheck)
     local ntries=1
     while [ "${status}" != "GOOD" ]; do
-        sleep 0.5
+        sleep 1
         status=$(curl -s http://localhost:${port}/healthcheck)
         ntries=$(($ntries+1))
-        # Give it thirty seconds, out of an abundance of caution
+        # Give it sixty seconds, out of an abundance of caution
         if [ ${ntries} -gt 60 ]; then
-            echo "${bin}:${port} failed to come up" >&2
+            echo "${bin}:${port} failed to come up; log file follows on stdout:" >&2
+            cat "$log"
             set -e
             return "1"
         fi
@@ -28,7 +30,7 @@ fi
 bin="$1"
 base_port="$2"
 
-set -e
+set -ex
 here=$(dirname $(realpath $0))
 cd $here/../indielinks-cache-test
 
@@ -50,11 +52,11 @@ fi
 (RUST_BACKTRACE=1 RUST_LOG=debug cargo run --bin "${bin}" -- -c 4 127.0.0.1:$(($base_port+4))) > n4.log 2>&1 < /dev/null &
 
 # Now healthcheck each instance
-hc "${bin}" ${base_port}
-hc "${bin}" $(($base_port+1))
-hc "${bin}" $(($base_port+2))
-hc "${bin}" $(($base_port+3))
-hc "${bin}" $(($base_port+4))
+hc "${bin}" ${base_port}      n0.log
+hc "${bin}" $(($base_port+1)) n1.log
+hc "${bin}" $(($base_port+2)) n2.log
+hc "${bin}" $(($base_port+3)) n3.log
+hc "${bin}" $(($base_port+4)) n4.log
 
 # Note that we do *not* initialize the Raft cluster-- leave that for the integration tests.
 
