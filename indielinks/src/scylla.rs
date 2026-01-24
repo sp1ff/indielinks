@@ -2086,7 +2086,7 @@ impl TasksBackend for Session {
             .rows::<FlatTask>()?
             .collect::<StdResult<Vec<FlatTask>, _>>()?;
         // Next, sort 'em by creation time...
-        tasks.sort_by(|lhs, rhs| lhs.created.cmp(&rhs.created));
+        tasks.sort_by_key(|lhs| lhs.created);
         // and walk the list, trying to get a lease. There may be other writers grabbing leases, as
         // well, so just keep trying.
         async fn take_lease(

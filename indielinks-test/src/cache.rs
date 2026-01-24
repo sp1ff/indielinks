@@ -101,7 +101,7 @@ pub fn raft_ops(
         .build()?;
 
     let mut all_nodes = nodes.into_iter().collect::<Vec<(NodeId, ClusterNode)>>();
-    all_nodes.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+    all_nodes.sort_by_key(|lhs| lhs.0);
     let first_three = all_nodes
         .iter()
         .take(3)

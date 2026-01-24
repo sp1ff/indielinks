@@ -2016,7 +2016,7 @@ impl TasksBackend for Client {
             .to_vec()
             .pipe(from_items::<FlatTask>)?;
         // Next, sort 'em by creation time...
-        tasks.sort_by(|lhs, rhs| lhs.created.cmp(&rhs.created));
+        tasks.sort_by_key(|lhs| lhs.created);
 
         async fn take_lease(client: &::aws_sdk_dynamodb::Client, t: &FlatTask) -> Result<bool> {
             let new_lease = Utc::now() + Duration::seconds(60);
