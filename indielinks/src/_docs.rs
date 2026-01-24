@@ -377,6 +377,15 @@
 //! 8) util, metrics
 //!    - depend on nothing
 //!
+//! ## Continuous Integration
+//!
+//! I've setup a conntinous integration job at Github. For the most part, however, it just
+//! replicates the `signoff` script in the `admin` folder. I prefer to do my validation locally.
+//! Where a CI framework like Github Actions really shine is being able to run that validation on
+//! multiple platforms, using multiple toolchains, and so forth. Regrettably, the Github Action
+//! runners need 3-4x the time to run the suite than my development machine. So, before every
+//! commit, do an `admin/signoff`.
+//!
 //! ## The ChangeLog (or the lack thereof)
 //!
 //! First, let's fix terminology. In this section, I'm using the GNU term "ChangeLog", as
