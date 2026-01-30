@@ -1,25 +1,25 @@
 /* Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
 
-   This file is part of indielinks.
+This file is part of indielinks.
 
-   indielinks is free software: you can redistribute it and/or modify
-   it under the terms of the GNU General Public License as published
-   by the Free Software Foundation, either version 3 of the License,
-   or (at your option) any later version.
+indielinks is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published
+by the Free Software Foundation, either version 3 of the License,
+or (at your option) any later version.
 
-   indielinks is distributed in the hope that it will be useful, but
-   WITHOUT ANY WARRANTY; without even the implied warranty of
-   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-   General Public License for more details.
+indielinks is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+General Public License for more details.
 
-   You should have received a copy of the GNU General Public License
-   along with indielinks. If not, see <http://www.gnu.org/licenses/>.
+You should have received a copy of the GNU General Public License
+along with indielinks. If not, see <http://www.gnu.org/licenses/>.
 
 
-   This CQL (Cassandra Query Language) file will initialize a ScyllaDB
-   database with the indielinks schema, version zero.
+This CQL (Cassandra Query Language) file will initialize a ScyllaDB
+database with the indielinks schema, version zero.
 
-   */
+*/
 
 create keyspace if not exists indielinks
   with replication = {
@@ -81,6 +81,8 @@ create table if not exists following (
   actor_id ascii,
   id uuid,
   created timestamp,
+  /* `accepted` being true means that we've received an Accept in
+     response to the Follow we initially sent. */
   accepted boolean,
   PRIMARY KEY (user_id, actor_id)
 );
@@ -95,6 +97,9 @@ create table if not exists followers (
   actor_id ascii,
   id uuid,
   created timestamp,
+  /* `accepted` being true means that we've successfully sent an
+     Accept in response to the incoming Follow that created this
+     entry. */
   accepted boolean,
   PRIMARY KEY (user_id, actor_id)
 );
@@ -166,6 +171,8 @@ create materialized view if not exists posts_by_day as
 
 create index if not exists post_id_idx on posts (id);
 
+/* This table will be modifed in 1.cql to contain outgoing (i.e.
+   indielinks-generated) likes. */
 create table if not exists likes (
   user_id uuid,
   url ascii,

@@ -771,16 +771,35 @@ pub async fn execute_cql<S: AsRef<str>>(session: &InnerSession, cql: S) -> Resul
     .map(|_| ())
 }
 
-pub async fn create_schema(session: Arc<InnerSession>, cql: &str) -> Result<()> {
+pub async fn create_schema(
+    session: Arc<InnerSession>,
+    cql: &str,
+    schema_version: i64,
+) -> Result<()> {
     execute_cql(session.deref(), cql).await?;
+    // This logic will have to be updated if we ever rev the "instance state". Until then, on create
+    // we just write a default state, then copy it forward.
+    let instance_state = if schema_version == 0 {
+        InstanceStateV0::new().context(InstanceStateSnafu)?
+    } else {
+        session
+            .query_unpaged(
+                "select instance_state from schema_migrations where version = ?;",
+                (schema_version - 1,),
+            )
+            .await
+            .context(ExecutionSnafu)?
+            .into_rows_result()
+            .context(IntoRowsResultSnafu)?
+            .single_row::<(InstanceStateV0,)>()
+            .context(SingleRowSnafu)?
+            .0
+    };
+
     session
         .query_unpaged(
             "insert into schema_migrations (version, instance_state, applied) values (?, ?, ?);",
-            (
-                0_i64,
-                InstanceStateV0::new().context(InstanceStateSnafu)?,
-                Utc::now(),
-            ),
+            (schema_version, instance_state, Utc::now()),
         )
         .await
         .context(ExecutionSnafu)

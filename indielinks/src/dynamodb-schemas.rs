@@ -74,7 +74,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                         initial schema                                         //
+//                                        schema utilities                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 macro_rules! table_attr {
@@ -88,6 +88,62 @@ macro_rules! table_attr {
             })?
     };
 }
+
+// TODO(sp1ff): in-progress
+async fn update_schema_migrations(client: &Client, schema_version: i64) -> Result<()> {
+    let instance_state = if schema_version == 0 {
+        InstanceStateV0::new().context(InstanceStateSnafu)?
+    } else {
+        match client
+            .get_item()
+            .table_name("schema_migrations")
+            .key(
+                "version".to_owned(),
+                AttributeValue::N(format!("{}", schema_version - 1)),
+            )
+            .send()
+            .await
+            .unwrap(/* TODO(sp1ff): handle error */)
+            .item()
+            .unwrap(/* TODO(sp1ff): handle error */)
+            .get("instance_state")
+            .unwrap(/* TODO(sp1ff): handle error */)
+        {
+            AttributeValue::B(blob) => {
+                rmp_serde::from_slice::<InstanceStateV0>(blob.as_ref()).unwrap(/* TODO(sp1ff): handle error */)
+            }
+            _ => {
+                todo!(/* TODO(sp1ff): handle error */)
+            }
+        }
+    };
+
+    let buf = rmp_serde::to_vec(&instance_state).unwrap(/* known good */);
+
+    client
+        .put_item()
+        .table_name("schema_migrations")
+        .item(
+            "version".to_owned(),
+            AttributeValue::N(format!("{schema_version}")),
+        )
+        .item(
+            "instance_state".to_owned(),
+            AttributeValue::B(Blob::new(buf)),
+        )
+        .item(
+            "applied".to_owned(),
+            AttributeValue::S(format!("{}", Utc::now().timestamp())),
+        )
+        .send()
+        .await
+        .context(SchemaVersionSnafu)
+        .map(|_| ())
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         initial schema                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 async fn create_users(client: &Client) -> Result<()> {
     client
@@ -614,10 +670,6 @@ async fn create_tables(client: &Client) -> Result<()> {
 
 pub async fn create_schema(client: Client) -> Result<()> {
     create_tables(&client).await?;
-
-    let instance_state = InstanceStateV0::new().context(InstanceStateSnafu)?;
-    let buf = rmp_serde::to_vec(&instance_state).unwrap(/* known good */);
-
     // Even when a `CreateTable` request has returned success, the table is not available for
     // immediate use; it can take several seconds before the new table is ready to receive traffic.
     client
@@ -626,21 +678,215 @@ pub async fn create_schema(client: Client) -> Result<()> {
         .wait(Duration::from_secs(60))
         .await
         .context(SchemaMigrationsExistsSnafu)?;
+    update_schema_migrations(&client, 0).await
+}
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                 migration to schema version 1                                  //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+async fn create_new_tables_ver_1(client: &Client) -> Result<()> {
     client
-        .put_item()
-        .table_name("schema_migrations")
-        .item("version".to_owned(), AttributeValue::N("0".to_owned()))
-        .item(
-            "instance_state".to_owned(),
-            AttributeValue::B(Blob::new(buf)),
-        )
-        .item(
-            "applied".to_owned(),
-            AttributeValue::S(format!("{}", Utc::now().timestamp())),
-        )
+        .create_table()
+        .table_name("post_likes")
+        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
+        // DynamoDB
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("post_and_reply_id", S),
+            table_attr!("created", S),
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("post_and_reply_id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "post_and_reply_id".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("created")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "created".to_string(),
+                })?,
+        ]))
         .send()
         .await
-        .context(SchemaVersionSnafu)
-        .map(|_| ())
+        .context(CreateTableSnafu { name: "post_likes" })?;
+
+    client
+        .create_table()
+        .table_name("post_replies")
+        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
+        // DynamoDB
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("post_and_reply_id", S),
+            table_attr!("created", S),
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("post_and_reply_id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "post_and_reply_id".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("created")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "created".to_string(),
+                })?,
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu {
+            name: "post_replies",
+        })?;
+
+    client
+        .create_table()
+        .table_name("post_shares")
+        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
+        // DynamoDB
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("post_and_reply_id", S),
+            table_attr!("created", S),
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("post_and_reply_id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "post_and_reply_id".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("created")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "created".to_string(),
+                })?,
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu {
+            name: "post_shares",
+        })?;
+
+    Ok(())
+}
+
+async fn recreate_tables_ver_1(client: &Client) -> Result<()> {
+    client.delete_table().table_name("likes").send().await.unwrap(/* TODO(sp1ff): handle error */);
+    client
+        .create_table()
+        .table_name("likes")
+        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
+        // DynamoDB
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("user_id", S),
+            table_attr!("created", S),
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("user_id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "user_id".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("created")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "created".to_string(),
+                })?,
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu { name: "likes" })?;
+
+    client.delete_table().table_name("replies").send().await.unwrap(/* TODO(sp1ff): handle error */);
+    client
+        .create_table()
+        .table_name("replies")
+        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
+        // DynamoDB
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("user_id", S),
+            table_attr!("created", S),
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("user_id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "user_id".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("created")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "created".to_string(),
+                })?,
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu { name: "replies" })?;
+
+    client.delete_table().table_name("shares").send().await.unwrap(/* TODO(sp1ff): handle error */);
+    client
+        .create_table()
+        .table_name("shares")
+        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
+        // DynamoDB
+        .billing_mode(BillingMode::PayPerRequest)
+        .set_attribute_definitions(Some(vec![
+            table_attr!("user_id", S),
+            table_attr!("created", S),
+        ]))
+        .set_key_schema(Some(vec![
+            KeySchemaElement::builder()
+                .attribute_name("user_id")
+                .key_type(KeyType::Hash)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "user_id".to_string(),
+                })?,
+            KeySchemaElement::builder()
+                .attribute_name("created")
+                .key_type(KeyType::Range)
+                .build()
+                .context(GenericBuildFailureSnafu {
+                    name: "created".to_string(),
+                })?,
+        ]))
+        .send()
+        .await
+        .context(CreateTableSnafu { name: "shares" })?;
+
+    Ok(())
+}
+async fn drop_activity_pub_posts(client: &Client) -> Result<()> {
+    let _ = client.delete_table().table_name("activity_pub_posts").send().await.unwrap(/* TODO(sp1ff): handle error */);
+    Ok(())
+}
+
+pub async fn schema_migration_1(client: Client) -> Result<()> {
+    create_new_tables_ver_1(&client).await?;
+    recreate_tables_ver_1(&client).await?;
+    drop_activity_pub_posts(&client).await?;
+    update_schema_migrations(&client, 1).await
 }
