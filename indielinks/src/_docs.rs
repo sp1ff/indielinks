@@ -484,6 +484,20 @@
 //!
 //! At this point, I threw up my hands & went with [cargo-deb].
 //!
+//! ### The "Post-Install" Script
+//!
+//! In both cases, the installation process is structured so as to require a human to run a
+//! "post-install" script. This is due to the need for human intervention at a certain point:
+//! indielinks requires a backend (ScyllaDB or DynamoDB) in order to even start, meaning that a
+//! human operator is going to have to provide a network location, and, likely, credentials.
+//!
+//! As a sysadmin, I _hate_ packages that require human interaction during their installation, so I
+//! chose to structure the indielinks packages so as to do everything possible non-interactively
+//! (install the files, setup any users & groups required &c) and then stop. At this point, the
+//! user will need to edit `/etc/indielinks.toml` to provide the network location of the backend
+//! along with any required credentials, and only _then_ run `indielinks-post-install`, which
+//! will run any required schema migrations & actually start indielinks.
+//!
 //! ## ActivityPub Signatures
 //!
 //! The logic for computing & verifying ActivityPub signatures (see above) resides in a few places.

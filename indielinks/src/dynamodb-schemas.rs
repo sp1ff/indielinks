@@ -15,15 +15,19 @@
 
 //! # DynamoDB Schema Management
 
+use std::time::Duration;
+
 use aws_sdk_dynamodb::{
+    client::Waiters,
     config::http::HttpResponse,
     error::SdkError,
     operation::{create_table::CreateTableError, put_item::PutItemError},
     primitives::Blob,
     types::{
         AttributeDefinition, AttributeValue, BillingMode, GlobalSecondaryIndex, KeySchemaElement,
-        KeyType, LocalSecondaryIndex, ScalarAttributeType,
+        KeyType, LocalSecondaryIndex, Projection, ProjectionType, ScalarAttributeType,
     },
+    waiters::table_exists::WaitUntilTableExistsError,
     Client,
 };
 use chrono::Utc;
@@ -38,6 +42,7 @@ use snafu::{Backtrace, ResultExt, Snafu};
 pub enum Error {
     #[snafu(display("Failed to create table: {source}"))]
     CreateTable {
+        name: String,
         #[snafu(source(from(SdkError<CreateTableError, aws_sdk_dynamodb::config::http::HttpResponse>, Box::new)))]
         source: Box<SdkError<CreateTableError, aws_sdk_dynamodb::config::http::HttpResponse>>,
         backtrace: Backtrace,
@@ -51,6 +56,12 @@ pub enum Error {
     #[snafu(display("Failed to create the instance state: {source}"))]
     InstanceState {
         source: indielinks_shared::instance_state::Error,
+    },
+    #[snafu(display("The schema_migrations table failed to become ready: {source}"))]
+    SchemaMigrationsExists {
+        #[snafu(source(from(WaitUntilTableExistsError, Box::new)))]
+        source: Box<WaitUntilTableExistsError>,
+        backtrace: Backtrace,
     },
     #[snafu(display("Failed to write the schema version to the database: {source}"))]
     SchemaVersion {
@@ -94,7 +105,6 @@ async fn create_users(client: &Client) -> Result<()> {
                 name: "id".to_string(),
             })?]))
         .global_secondary_indexes(
-            //
             GlobalSecondaryIndex::builder()
                 .index_name("users_by_username")
                 .key_schema(
@@ -104,14 +114,18 @@ async fn create_users(client: &Client) -> Result<()> {
                         .build()
                         .unwrap(),
                 )
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::All)
+                        .build(),
+                )
                 .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "username".to_string(),
-                })?,
+                .context(GenericBuildFailureSnafu { name: "username" })?,
         )
         .send()
         .await
-        .context(CreateTableSnafu)?;
+        .context(CreateTableSnafu { name: "users" })?;
+
     client
         .create_table()
         .table_name("unique_usernames")
@@ -126,7 +140,9 @@ async fn create_users(client: &Client) -> Result<()> {
             })?]))
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu {
+            name: "unique_usernames",
+        })
         .map(|_| ())
 }
 
@@ -165,12 +181,17 @@ async fn create_following(client: &Client) -> Result<()> {
                     .key_type(KeyType::Hash)
                     .build()
                     .unwrap()]))
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::All)
+                        .build(),
+                )
                 .build()
                 .unwrap(),
         )
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu { name: "following" })
         .map(|_| ())
 }
 
@@ -203,7 +224,7 @@ async fn create_followers(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu { name: "followers" })
         .map(|_| ())
 }
 
@@ -254,6 +275,11 @@ async fn create_posts(client: &Client) -> Result<()> {
                             name: "posted".to_string(),
                         })?,
                 ]))
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::All)
+                        .build(),
+                )
                 .build()
                 .context(GenericBuildFailureSnafu {
                     name: "posts_by_posted".to_string(),
@@ -274,6 +300,11 @@ async fn create_posts(client: &Client) -> Result<()> {
                         .build()
                         .unwrap(),
                 ]))
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::All)
+                        .build(),
+                )
                 .build()
                 .unwrap(),
         )
@@ -285,12 +316,17 @@ async fn create_posts(client: &Client) -> Result<()> {
                     .key_type(KeyType::Hash)
                     .build()
                     .unwrap()]))
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::All)
+                        .build(),
+                )
                 .build()
                 .unwrap(),
         )
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu { name: "posts" })
         .map(|_| ())
 }
 
@@ -323,7 +359,7 @@ async fn create_likes(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu { name: "likes" })
         .map(|_| ())
 }
 
@@ -356,7 +392,7 @@ async fn create_replies(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu { name: "replies" })
         .map(|_| ())
 }
 
@@ -389,7 +425,7 @@ async fn create_shares(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu { name: "shares" })
         .map(|_| ())
 }
 
@@ -436,6 +472,11 @@ async fn create_activity_pub_posts(client: &Client) -> Result<()> {
                             name: "posted".to_string(),
                         })?,
                 ]))
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::All)
+                        .build(),
+                )
                 .build()
                 .context(GenericBuildFailureSnafu {
                     name: "activity_pub_posts_by_posted".to_string(),
@@ -443,7 +484,9 @@ async fn create_activity_pub_posts(client: &Client) -> Result<()> {
         )
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu {
+            name: "activity_pub_posts",
+        })
         .map(|_| ())
 }
 
@@ -464,7 +507,7 @@ async fn create_tasks(client: &Client) -> Result<()> {
             })?]))
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu { name: "tasks" })
         .map(|_| ())
 }
 
@@ -495,7 +538,7 @@ async fn create_raft_log(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu { name: "raft_log" })
         .map(|_| ())
 }
 
@@ -526,7 +569,9 @@ async fn create_raft_metadata(client: &Client) -> Result<()> {
         ]))
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu {
+            name: "raft_metadata",
+        })
         .map(|_| ())
 }
 
@@ -541,11 +586,13 @@ async fn create_schema_migrations(client: &Client) -> Result<()> {
             .key_type(KeyType::Hash)
             .build()
             .context(GenericBuildFailureSnafu {
-                name: "verseion".to_string(),
+                name: "version".to_string(),
             })?]))
         .send()
         .await
-        .context(CreateTableSnafu)
+        .context(CreateTableSnafu {
+            name: "schema_migrations",
+        })
         .map(|_| ())
 }
 
@@ -570,6 +617,15 @@ pub async fn create_schema(client: Client) -> Result<()> {
 
     let instance_state = InstanceStateV0::new().context(InstanceStateSnafu)?;
     let buf = rmp_serde::to_vec(&instance_state).unwrap(/* known good */);
+
+    // Even when a `CreateTable` request has returned success, the table is not available for
+    // immediate use; it can take several seconds before the new table is ready to receive traffic.
+    client
+        .wait_until_table_exists()
+        .table_name("schema_migrations")
+        .wait(Duration::from_secs(60))
+        .await
+        .context(SchemaMigrationsExistsSnafu)?;
 
     client
         .put_item()

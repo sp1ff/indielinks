@@ -1,0 +1,76 @@
+#+TITLE: README
+#+AUTHOR: Michael Herstine
+#+EMAIL: sp1ff@pobox.com
+#+DATE: <2026-02-03 Tue 15:23>
+#+AUTODATE: t
+#+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
+#+STARTUP: overview
+
+* Introduction
+
+This directory comprises a Dockerfile, an OpenTofu project and shell
+scripts that will build a Debian binary package for installing
+indielinks as well as test it in a few ways.
+* Discussion
+
+indielinks is packaged (for Debian & Arch, at the time of this
+writing) so as to install the salient files in the proper locations.
+Once the package is installed, the operator will presumably edit the
+indielinks configuration file to give the location and, if called for,
+credentials, for the backend (either a ScyllaDB instance, or
+DynamoDB). At that point, the operator will then need to run the
+=indielinks-post-install= script to complete the installation &
+actually start the indielinks daemon.
+
+Depending on the configuration and how =indielinks-post-install= is
+invoked, indielinks can be run as a plain, standalone, SysV-style
+daemon process, or as a systemd unit.
+
+The shell script =build-and-test-debian-package-sysv= builds the binary
+package inside a Debian container & tests the package when installing
+it as a SysV daemon. The script =test-debian-package-systemd= will
+spin-up a Debian EC2 instance in AWS, upload the package there, and
+test installation as a systemd unit.
+** Why Is This So Complicated?
+
+*** Why Are We Building the Package in a Container
+
+The reader may wonder why we do a full re-build of the project as a
+part of building the Debian binary package in a Debian contaier.
+=cargo deb=, after all, doesn't _have_ to be run on Debian, and is
+quite capable of detecting that the requried binaries have already
+been built & just picking them up (instead of rebuilding them).
+
+There are a few reasons:
+
+  - while =cargo deb= _can_ run anywhere, AFAIK, having the Debian
+    packaging utilities available makes for a better build (better
+    package dependency detection, e.g.)
+  - Debian repositories are famously slow to update; I've found that
+    the glibc version on my development machine is several versions
+    ahead of that found on Debian hosts, leading to failures to start
+    during testing; this arrangement ensures that the binaries built
+    into the package will actually run in Debian containeres & VMs
+*** Why Are We Spinning Up an EC2 Instance
+
+I at first thought to test installation as a systemd unit in the same
+manner as a SysV daemon: spin-up a container, copy the package and a
+test script into it, and exercise it there. It turns-out to be very
+difficult to get a Docker container up that runs systemd-- systemd
+really wants to be the init process (PID 1; parent of all others)
+where as Docker makes the implicit assumption that the container
+process (i.e. the COMMAND value) is the init process.
+
+podman was built with this use case in mind, and so makes it easier,
+but came with its own set of drawbacks. In my case, I was unable to
+get networking setup for =podman compose= without loading kernel
+modules, which just seemed to much to ask of the indielinks developer.
+
+A full VM seemed like a more natural solution, but it turns out that
+getting a hypervisor installed on a Linux machine was non-trivial, as
+well. Still: indielinks is deployed to AWS, and I had a fair amount of
+HCL laying around to do this sort of thing, so the path of least
+resistence seemed to be to just spin-up an EC2 instance with a Debian
+image & test there. Furthermore, any else who may end up working on
+indielinks will likely need to have an AWS account, anyway, so there's
+little-to-no additional burden on the developer.

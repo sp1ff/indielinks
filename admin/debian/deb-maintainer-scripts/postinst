@@ -35,7 +35,10 @@ case "$1" in
         if [ -f "$cfg" ]; then
             setfacl -m u:indielinks:r "$cfg"
         fi
+
     ;;
 esac
+
+#DEBHELPER#
 
 exit 0

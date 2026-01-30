@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 
-# This script is presumably mounted in a Debian container. It will
-# use `cargo deb` to build the Debian package & minimally test it.
+# This script is presumably mounted in a Debian container. It will use `cargo
+# deb` to build the Debian package, install it (as a free-standing SysV daemon)
+# & minimally test it. For testing the Debian package with systemd, please see
+# `test-debian-package-systemd`.
 set -ex
 source $HOME/.cargo/env
 cd /indielinks
 ver=$(printf "r%s" "$(git rev-list --count HEAD)")
 rel="0.0.1~git.${ver}"
+# Unhappy, but we need to build everything for Debian here (see the README)
+cargo clean
 cargo deb --manifest-path=indielinks/Cargo.toml --deb-version=${rel}
 pkg=$(ls -1 target/debian/indielinks*.deb|head -n1)
 sudo dpkg --debug=2 -i ${pkg}
@@ -14,9 +18,10 @@ indielinksd --version
 indielinks-schemas --version
 indielinks-ctl --version
 indic --help
+# simulate the operator hand-editing the indielinks config file
 scylla=$(dig +short scylla-node-1)
 sudo sed -i -e "s@^hosts = \\[\".*@hosts = [\"${scylla}:9042\"]@" /etc/indielinks.toml
-indielinks-post-install -s ${scylla}:9042
+indielinks-post-install --verbose -s ${scylla}:9042 --no-systemd
 # indielinks now up & running
 indic -A http://127.0.0.1:20676 add-user -u john.doe -p 'f00-b@r-sp1at' -m 'john.doe@gmail.com'
 indielinks-ctl -v restart

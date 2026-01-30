@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+VERSION=0.0.1
+
+creds=
+help=
+identity=
+keypair=
+nargs=0
+no_apply=
+no_cleanup=
+operator_ip=
+prev_option=
+region="us-west-2"
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -A | --no-apply | --no-tofu-apply)
+	        nargs=$(($nargs+1));
+            no_apply=yes;;
+        -C | --no-cleanup)
+	        nargs=$(($nargs+1));
+            no_cleanup=yes;;
+        -I | --identity)
+	        nargs=$(($nargs+1));
+            prev_option=identity;;
+        -I=* | --identity=*)
+	        nargs=$(($nargs+1));
+            identity=$optarg;;
+        -c | --creds | --credentials)
+	        nargs=$(($nargs+1));
+            prev_option=creds;;
+        -c=* | --creds=* | --credentials=*)
+	        nargs=$(($nargs+1));
+            creds=$optarg;;
+        -h | --he | --hel | --help)
+	        nargs=$(($nargs+1));
+            help=yes;;
+        -i | --ip | --operator-ip)
+	        nargs=$(($nargs+1));
+            prev_option=operator_ip;;
+        -i=* | --ip=* | --operator-ip=*)
+	        nargs=$(($nargs+1));
+            operator_ip=$optarg;;
+        -k | --key | --key-pair)
+	        nargs=$(($nargs+1));
+            prev_option=keypair;;
+        -k=* | --key=* | --key-pair=*)
+	        nargs=$(($nargs+1));
+            keypair=$optarg;;
+        -r | --reg | --regi | --regio | --region)
+	        nargs=$(($nargs+1));
+            prev_option=region;;
+        -r=* | --reg=* | --regi=* | --regio=* | --region=*)
+	        nargs=$(($nargs+1));
+            region=$optarg;;
+        -v | --verb | --verbose)
+	        nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+	        nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try 'test-debian-package-systemd --help' for more information.
+EOF
+            exit 2;;
+	    *)
+            cat >&2 <<EOF
+'test-debian-package-systemd' takes no arguments.
+Try 'test-debian-package-systemd --help' for more information.
+EOF
+            exit 2;;
+    esac
+
+done
+
+if test -n "${help}"; then
+    cat <<EOF
+test-debian-package-systemd -- Test the debian package under systemd.
+
+Usage:
+
+    test-debian-package-systemd [OPTION...]
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+
+    -A | --no-apply | --no-tofu-apply  Skip 'tofu apply'
+    -C | --no-cleanup                  Skip cleanup
+    -I ID | --identity=ID              Specify the private key for
+                    ssh'ing into the EC2 instance
+    -c CREDS | --credentials=CREDS     Specify credentials for accessing
+                    DynamoDB
+    -i IP | --operator-ip=IP           Specify the caller's IP address
+                    (defaults to the result of http://ipv4.icanhazip.com)
+    -k KEYPAIR | --key-pair=KEYPAIR    Specify the caller's EC2 keypair
+    -r REGION | --region=REGION        Specify the region in which to
+                    stand-up the EC2 instance (defaults to us-west-2)
+
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+test-debian-package-systemd $VERSION
+EOF
+    exit 0
+fi
+
+set -e
+
+if test -n "${verbose}"; then
+    set -x
+fi
+
+here=$(dirname $(realpath $0))
+project=${here}/../..
+pkg=$(ls -1 ../../target/debian/indielinks*.deb|head -n1)
+script=${here}/systemd-driver
+
+if test -z "${operator_ip}"; then
+    # Should probably handle failure here 👇
+    operator_ip=$(curl -s http://ipv4.icanhazip.com)
+fi
+
+if ! test -f ${pkg}; then
+    cat >&2 <<EOF
+The Debian package was not found; run 'cargo deb' before running this script.
+EOF
+    exit 1
+fi
+
+# 1. tofu apply (should be idempotent, right? add a switch, anyway)
+apply_args="-auto-approve"
+apply_args="${apply_args} -var aws_region=${region}"
+apply_args="${apply_args} -var operator_cidr=${operator_ip}/32"
+apply_args="${apply_args} -var ec2_key_name=${keypair}"
+if test -z "${no_apply}"; then
+    tofu apply ${apply_args}
+fi
+
+# 2. scp the test script & the package up
+ec2=$(tofu output instance_public_ip); ec2=${ec2#\"}; ec2=${ec2%\"}
+scp_options="-o StrictHostKeyChecking=no"
+scp_options="${scp_options} -o UserKnownHostsFile=/dev/null"
+scp ${scp_options} -i ${identity} ${pkg} admin@${ec2}:/tmp
+pkg=$(basename ${pkg})
+scp ${scp_options} -i ${identity} ${script} admin@${ec2}:/tmp
+script=$(basename ${script})
+
+# 3. invoke the test script via ssh
+ssh_options="-o StrictHostKeyChecking=no"
+ssh_options="${ssh_options} -o UserKnownHostsFile=/dev/null"
+ssh ${ssh_options} -i ${identity} admin@${ec2} "/tmp/${script} ${region} ${creds}"
+echo "ssh returns $?"
+
+# 4. cleanup (add switch to skip)
+if test -z "${no_cleanup}"; then
+    aws --region=$region dynamodb wait table-exists --table-name activity_pub_posts
+    aws --region=$region dynamodb wait table-exists --table-name followers
+    aws --region=$region dynamodb wait table-exists --table-name following
+    aws --region=$region dynamodb wait table-exists --table-name likes
+    aws --region=$region dynamodb wait table-exists --table-name posts
+    aws --region=$region dynamodb wait table-exists --table-name raft_log
+    aws --region=$region dynamodb wait table-exists --table-name raft_metadata
+    aws --region=$region dynamodb wait table-exists --table-name replies
+    aws --region=$region dynamodb wait table-exists --table-name schema_migrations
+    aws --region=$region dynamodb wait table-exists --table-name shares
+    aws --region=$region dynamodb wait table-exists --table-name tasks
+    aws --region=$region dynamodb wait table-exists --table-name unique_usernames
+    aws --region=$region dynamodb wait table-exists --table-name users
+
+    aws --region=$region dynamodb delete-table --table-name activity_pub_posts
+    aws --region=$region dynamodb delete-table --table-name followers
+    aws --region=$region dynamodb delete-table --table-name following
+    aws --region=$region dynamodb delete-table --table-name likes
+    aws --region=$region dynamodb delete-table --table-name posts
+    aws --region=$region dynamodb delete-table --table-name raft_log
+    aws --region=$region dynamodb delete-table --table-name raft_metadata
+    aws --region=$region dynamodb delete-table --table-name replies
+    aws --region=$region dynamodb delete-table --table-name schema_migrations
+    aws --region=$region dynamodb delete-table --table-name shares
+    aws --region=$region dynamodb delete-table --table-name tasks
+    aws --region=$region dynamodb delete-table --table-name unique_usernames
+    aws --region=$region dynamodb delete-table --table-name users
+    tofu apply ${apply_args} -destroy
+fi
+

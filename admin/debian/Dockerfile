@@ -1,9 +1,9 @@
-# Docker image for building, debugging & packaging     -*- mode: dockerfile -*-
-# There _is_ a "rust" Docker image, but the purpose of these tests
-# is to start with a bare-bones *Debian* system & see what I need to
-# do to get mpdpopm installed.
+# Bare-bones Debian image for packaging     -*- mode: dockerfile -*-
 
-FROM debian:stable-slim AS base
+# It's ugly, but we need to keep this in sync with the Debian version
+# used in the EC2 instance (otherwise we risk having incompatible
+# versions of glibc).
+FROM debian:12-slim AS base
 
 ARG DEBIAN_FRONTEND
 ENV DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-noninteractive}
@@ -19,6 +19,8 @@ RUN set -ex && \
     # indielinks pre-requisistes (we'll install rust separately, below) \
     pkg-config gcc gcc-multilib openssl libssl-dev protobuf-compiler \
     libprotobuf-dev dnsutils git adduser acl \
+    # optional cargo-deb dependencies \
+    dpkg dpkg-dev liblzma-dev \
     # not needed; just for my sanity while debugging \
     less procps gdb sudo info vim curl lsof && \
     # tidy-up \
@@ -32,11 +34,6 @@ RUN set -ex && \
     sed -i 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
     locale-gen en_US.UTF-8 && \
     update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 && \
-    # re-include the doc directories \
-    (test -d /usr/share/man/man1 || mkdir /usr/share/man/man1) && \
-    echo "path-include /usr/share/doc/scribbu" >> /etc/dpkg/dpkg.cfg.d/docker && \
-    echo "path-include /usr/share/man/man1/scribbu*" >> /etc/dpkg/dpkg.cfg.d/docker && \
-    echo "path-include /usr/share/info/scribbu.info" >> /etc/dpkg/dpkg.cfg.d/docker && \
     echo "Installing pre-requisites... done." && \
     # Finally, setup a non-privileged user \
     groupmod -g "$GID" users && \
@@ -45,13 +42,15 @@ RUN set -ex && \
     cp -v /etc/sudoers /etc/sudoers.orig && \
     echo 'packager ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
-# The test suite won't work if this isn't set:
 ENV LANG="en_US.UTF-8"
 
 USER packager
 
+# I prefer to build the debian package in a proper Debian environment,
+# where I can install `dpkg`, `dpkg-dev` & `liblzma-dev` which are
+# optional dependencies that can add some capabilities (as I
+# understand it).
 RUN set -ex && \
-    # install the Rust toolchain \
     curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -o /tmp/rustup.sh && \
     chmod a+x /tmp/rustup.sh && /tmp/rustup.sh -y && \
     . /home/packager/.cargo/env && \

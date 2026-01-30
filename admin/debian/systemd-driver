@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+# This script is presumably mounted in a Debian container. It will
+# use `cargo deb` to build the Debian package & minimally test it.
+# Invoke as test-debian-package-in-ec2-host REGION CREDENTIALS
+region=$1
+creds=$2
+
+set -ex
+cd /tmp
+# Make sure we've finished provisioning this EC2 instance
+sudo cloud-init status --wait
+pkg=$(ls -1 indielinks*.deb|head -n1)
+sudo dpkg --debug=2 -i ${pkg}
+indielinksd --version
+indielinks-schemas --version
+indielinks-ctl --version
+indic --help
+# Check that the systemd unit has *not* started
+set +e # systemctl returns status 3 (?)
+status=$(systemctl is-active indielinks)
+test "${status}" == "inactive" || exit 1
+set -e
+# simulate the operator hand-editing the indielinks config file
+sudo sed -i -e "s@^\\(\\[storage-config.*\\]\\)@# \\1@" /etc/indielinks.toml
+sudo sed -i -e "s@^\\(hosts = \\[\".*\\)@# \\1@" /etc/indielinks.toml
+echo "[storage-config.Dynamo]" | sudo tee -a /etc/indielinks.toml
+echo "location = \"$region\"" | sudo tee -a /etc/indielinks.toml
+IFS=',' read -r username password <<< "$creds"
+echo "credentials = [\"$username\", \"$password\"]" | sudo tee -a /etc/indielinks.toml
+ipi_args="-r $region"
+if test -n "$creds"; then
+    ipi_args="${ipi_args} -c $creds"
+fi
+indielinks-post-install $ipi_args
+# indielinks now up & running
+sudo systemctl restart indielinks
+sudo dpkg --debug=2 -r indielinks

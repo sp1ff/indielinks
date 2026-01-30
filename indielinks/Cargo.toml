@@ -15,7 +15,7 @@ aws-smithy-runtime-api = { version = "1.7.3", features = ["client"] }
 axum = { version = "0.8.1", features = ["macros", "tracing"] }
 axum-extra = { version = "0.10.0", features = ["cookie", "query", "typed-header"] }
 base64 = "0.22.1"
-bytes = "1.10.0"
+bytes = ">=1.11.1" # RUSTSEC-2026-0007
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["cargo", "env"] }
 crypto-common = "0.1.6"
@@ -90,12 +90,16 @@ wiremock = "0.6.5"
 copyright = "Copyright (C) 2024-2025 Michael Herstine"
 depends = ["libssl-dev", "adduser", "acl"]
 maintainer = "Michael Herstine <sp1ff@pobox.com>"
-maintainer-scripts = "../admin/deb-maintainer-scripts"
+maintainer-scripts = "../admin/debian/deb-maintainer-scripts"
 assets = [
        ["target/release/indielinksd", "/usr/bin/", "755"],
        ["target/release/indielinks-schemas", "/usr/bin/", "755"],
        ["target/release/indic", "/usr/bin/", "755"],
        ["../conf/indielinks-deb.toml", "/etc/indielinks.toml", "644"],
        ["../scripts/indielinks-post-install", "/usr/bin/indielinks-post-install", "755"],
-       ["../scripts/indielinks-ctl", "/usr/bin/indielinks-ctl", "755"]
+       ["../scripts/indielinks-ctl", "/usr/bin/indielinks-ctl", "755"],
 ]
+# indielinks requries a post-installation script to be run by the
+# operator before it can startup. If using stystemd, enable the unit,
+# but don't start it.
+systemd-units = { unit-name="indielinks", enable=true, start=false }

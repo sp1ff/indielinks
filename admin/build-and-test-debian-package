@@ -1,25 +1,142 @@
 #!/usr/bin/env bash
+VERSION=0.0.1
 
-# This script will bind mount the project directory into a Debian
-# container, build a Debian package, test it in the container,
-# and leave the package in `target/debian`.
-set -ex
+creds=
+help=
+identity=
+keypair=
+nargs=0
+operator_ip=
+prev_option=
+region="us-west-2"
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -I | --identity)
+	        nargs=$(($nargs+1));
+            prev_option=identity;;
+        -I=* | --identity=*)
+	        nargs=$(($nargs+1));
+            identity=$optarg;;
+        -c | --creds | --credentials)
+	        nargs=$(($nargs+1));
+            prev_option=creds;;
+        -c=* | --creds=* | --credentials=*)
+	        nargs=$(($nargs+1));
+            creds=$optarg;;
+        -h | --he | --hel | --help)
+	        nargs=$(($nargs+1));
+            help=yes;;
+        -i | --ip | --operator-ip)
+	        nargs=$(($nargs+1));
+            prev_option=operator_ip;;
+        -i=* | --ip=* | --operator-ip=*)
+	        nargs=$(($nargs+1));
+            operator_ip=$optarg;;
+        -k | --key | --key-pair)
+	        nargs=$(($nargs+1));
+            prev_option=keypair;;
+        -k=* | --key=* | --key-pair=*)
+	        nargs=$(($nargs+1));
+            keypair=$optarg;;
+        -r | --reg | --regi | --regio | --region)
+	        nargs=$(($nargs+1));
+            prev_option=region;;
+        -r=* | --reg=* | --regi=* | --regio=* | --region=*)
+	        nargs=$(($nargs+1));
+            region=$optarg;;
+        -v | --verb | --verbose)
+	        nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+	        nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try 'build-and-test-debian-package --help' for more information.
+EOF
+            exit 2;;
+	    *)
+            cat >&2 <<EOF
+'build-and-test-debian-package' takes no arguments.
+Try 'build-and-test-debian-package --help' for more information.
+EOF
+            exit 2;;
+    esac
+
+done
+
+if test -n "${help}"; then
+    cat <<EOF
+build-and-test-debian-package -- build a Debian binary package for indielinks,
+and test it both as a SysV daemon and as a systemd unit
+
+Usage:
+
+    build-and-test-debian-package [OPTION...]
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+    -I ID | --identity=ID              Specify the private key for
+                    ssh'ing into the EC2 instance
+    -c CREDS | --credentials=CREDS     Specify credentials for accessing
+                    DynamoDB
+    -i IP | --operator-ip=IP           Specify the caller's IP address
+                    (defaults to the result of http://ipv4.icanhazip.com)
+    -k KEYPAIR | --key-pair=KEYPAIR    Specify the caller's EC2 keypair
+    -r REGION | --region=REGION        Specify the region in which to
+                    stand-up the EC2 instance (defaults to us-west-2)
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+build-and-test-debian-package $VERSION
+EOF
+    exit 0
+fi
+
+set -e
+
+if test -n "${verbose}"; then
+    set -x
+fi
 
 here=$(dirname $(realpath $0))
-project=${here}/..
-script=${here}/build-and-test-debian-package-in-container
-cd ${here}
-docker build -t indielinks-debian:latest \
-       -f Dockerfile-debian-packaging \
-       --label "indielinks-debian" \
-       --build-arg UID="$(id -u)" \
-       --build-arg GID="$(id -g)" \
-       .
+cd ${here}/debian
 
-docker compose -f compose.debian-packaging.yaml up -d
-echo "Waiting on 'host'..."
-docker compose -f compose.debian-packaging.yaml wait host
-status=$?
-echo "Waiting on 'host'...done($status)."
-docker logs debian-packaging-host-1
-docker compose -f compose.debian-packaging.yaml down
+SECONDS=0
+./build-and-test-debian-package-sysv
+args=
+test -n "${verbose}"     && args="$args -v"
+test -n "${identity}"    && args="$args -I ${identity}"
+test -n "${creds}"       && args="$args -c $creds"
+test -n "${operator_ip}" && args="$args -i ${operator_ip}"
+test -n "${keypair}"     && args="$args -k ${keypair}"
+test -n "${region}"      && args="$args -r ${region}"
+./test-debian-package-systemd ${args}
+
+echo "Built Debian binary package tests-out in $SECONDS seconds 🍻"

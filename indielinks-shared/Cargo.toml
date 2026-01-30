@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"
-bytes = "1.10.1"
+bytes = ">=1.11.1" # RUSTSEC-2026-0007
 chrono = { version = "0.4.41", features = ["serde"] }
 either = "1.15.0"
 email_address = "0.2.9"

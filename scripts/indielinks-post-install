@@ -3,11 +3,14 @@ VERSION=0.0.1
 
 creds=
 help=
+ddb_host=
 grpc_port="20678"
 local_port="20677"
 port="20676"
 nargs=0
+no_systemd=
 prev_option=
+region=
 scylla_host=
 verbose=
 version=
@@ -36,9 +39,12 @@ do
         -c=* | --creds=* | --credentials=*)
 	        nargs=$(($nargs+1));
             creds=$optarg;;
-        -c=* | --creds=* | --credentials=*)
+        -d | --ddb | --ddb-host)
 	        nargs=$(($nargs+1));
-            creds=$optarg;;
+            prev_option=ddb_host;;
+        -d=* | --ddb=* | --ddb-host=*)
+	        nargs=$(($nargs+1));
+            ddb_host=$optarg;;
         -g | --grpc-port | --indielinks-grpc-port)
 	        nargs=$(($nargs+1));
             prev_option=grpc_port;;
@@ -60,12 +66,21 @@ do
         -p=* | --port=* | --indielinks-port=*)
 	        nargs=$(($nargs+1));
             indielinks_port=$optarg;;
+        -r | --region)
+	        nargs=$(($nargs+1));
+            prev_option=region;;
+        -r=* | --region=*)
+	        nargs=$(($nargs+1));
+            region=$optarg;;
         -s | --scylla | --scylla-host)
 	        nargs=$(($nargs+1));
             prev_option=scylla_host;;
         -s=* | --scylla=* | --scylla-host=*)
 	        nargs=$(($nargs+1));
             scylla_host=$optarg;;
+        -N | --no-systemd)
+	        nargs=$(($nargs+1));
+            no_systemd="yes";;
         -v | --verb | --verbose)
 	        nargs=$(($nargs+1));
             verbose=yes;;
@@ -92,7 +107,7 @@ indielinks-post-install -- indielinks post-installation script
 
 Usage:
 
-    indielinks-post-install [OPTION...] HOST
+    indielinks-post-install [OPTION...]
 
 Options:
 
@@ -100,7 +115,12 @@ Options:
     -V, --version   Print this script's version & exit
     -v, --verbose   Produce prolix output
     -c CREDS, --creds=CREDS Provide credentials for ScyllaDB
-                    in the form "user,password"
+                    in the form "user,password" (for DynamoDB,
+                    this will be "keyID,secretKey")
+    -d HOST, --ddb-host) The host at which the DynamoDB API
+                    is being hosted (presumably, this will be
+                    the ScyllaDB Alternator interface, something
+                    like "localhost:9042")
     -s HOST, --scylla=HOST  Socket address at which ScyllaDB
                     can be reached (e.g. "127.0.0.1:9042")
     -p PORT, --port=PORT Specify the port on which your
@@ -112,6 +132,16 @@ Options:
     -g PORT, --grpc-port=PORT Specify the port on which your
                     local indielinks is hosting its
                     gRPC API (default: 20678)
+    -r REGION, --region=REGION   The AWS region in which to
+                    to use DynamoDB
+    -N, --no-systemd  Specify this flag if you're running
+                    indielinks as a standalone, SysV daemon,
+                    and not under systemd (the default)
+
+Notes
+
+When running indielinks under systemd, you may be prompted
+for your sudo password (to stop & start the systemd unit).
 EOF
     exit 0
 fi
@@ -127,38 +157,63 @@ if test -n "${verbose}"; then
     set -x
 fi
 
-if test -z "${scylla_host}"; then
-            cat >&2 <<EOF
-ScyllaDB host not specified.
-Try 'indielinks-post-install --help' for more information.
-EOF
-            exit 2
-fi    
+# I should really tighten-up argument validation, here
 
 # stop indielinks, if it's running
-if test -r /var/run/indielinks/indielinks.pid; then
-    pid=$(cat /var/run/indielinks.pid)
-    echo -n "Stopping indielinks (PID $pid)..."
-    set +e # Failure here is not fatal
-    indielinks-ctl stop
-    rm /var/run/indielinks/indielinks.pid
-    echo -n "done."
+if test -n "${no_systemd}"; then
+    
+    if test -r /var/run/indielinks/indielinks.pid; then
+        pid=$(cat /var/run/indielinks.pid)
+        echo -n "Stopping indielinks (PID $pid)..."
+        set +e # Failure here is not fatal
+        indielinks-ctl stop
+        rm /var/run/indielinks/indielinks.pid
+        echo -n "done."
+    fi  
+
+else
+
+    sudo systemctl stop indielinks
 fi
 
 set -e
 
-# run indielinks-schemas
-echo -n "Creating/updating the indielinks schema at ${scylla_host}..."
-schema_args="-p scylla"
-if test -n "${creds}"; then
-    schema_args="${schema_args} -c \"${creds}\""
+# run the schema migrations
+schema_args="-p"
+echo -n "Creating/updating the indielinks schema at "
+if test -n "$ddb_host"; then
+    echo -n "$ddb_host..."
+    schema_args="${schema_args} ddb"
+    if test -n "${creds}"; then
+        schema_args="${schema_args} -c ${creds}"
+    fi
+    schema_args="${schema_args} ${ddb_host}"
+elif test -n "$region"; then
+    echo -n "$region..."
+    schema_args="${schema_args} ddb"
+    if test -n "${creds}"; then
+        schema_args="${schema_args} -c ${creds}"
+    fi
+    schema_args="${schema_args} ${region}"
+else
+    echo -n "$scylla_host..."
+    schema_args="${schema_args} scylla"
+    if test -n "${creds}"; then
+        schema_args="${schema_args} -c ${creds}"
+    fi
+    schema_args="${schema_args} ${scylla_host}"
 fi
-indielinks-schemas ${schema_args} ${scylla_host}
+rust_log=debug,aws_config=info,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,openraft=info,opentelemetry_sdk=info
+RUST_LOG=${rust_log} indielinks-schemas ${schema_args}
 echo "done."
 
 # 3. start indielinks
 echo -n "Starting indielinks..."
-indielinks-ctl start
+if test -n "${no_systemd}"; then
+    indielinks-ctl start
+else
+    sudo systemctl start indielinks
+fi
 echo "done."
 
 # healthcheck the new instance

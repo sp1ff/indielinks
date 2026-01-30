@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+# This script will bind mount the project directory into a Debian container,
+# build a Debian package, test it in the container (installing indielinks as a
+# free-standing Sys V daemon), and leave the package in `target/debian`.
+
+# indielinks builds the Debian package via cargo-deb, which can run on
+# pretty-much any Linux machine, but I prefer to build it in a proper Debian
+# environment, where I can install `dpkg`, `dpkg-dev` & `liblzma-dev` which are
+# optional dependencies that can add some capabilities (as I understand it).
+
+set -ex
+
+here=$(dirname $(realpath $0))
+project=${here}/..
+script=${here}/build-and-test-debian-package-in-container
+cd ${here}
+docker build -t indielinks-debian:latest \
+       -f Dockerfile \
+       --label "indielinks-debian" \
+       --build-arg UID="$(id -u)" \
+       --build-arg GID="$(id -g)" \
+       .
+
+docker compose -f compose.yaml up -d
+echo "Waiting on 'host'..."
+docker compose -f compose.yaml wait host
+status=$?
+echo "Waiting on 'host'...done($status)."
+docker logs debian-packaging-host-1
+docker compose -f compose.yaml down
+
+exit $status
+

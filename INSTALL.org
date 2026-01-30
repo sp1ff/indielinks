@@ -2,16 +2,16 @@
 #+DESCRIPTION: Installation instructions for indielinks
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2025-10-30 Thu 14:05>
+#+DATE: <2026-02-04 Wed 10:05>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
 
 * Overview
 
-Ultimately, I hope to see indielinks instances publicly available on the web. For now, however, it must be run locally. I'm in the process of uploading a pacman =PKGBUILD= to the [[https://aur.archlinux.org/][AUR]] (Arch User Repository) [[https://aur.archlinux.org/packages/indielinks-git][here]], and I plan shortly to begin hosting a Debian binary package at my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]].
+Ultimately, I hope to see indielinks instances publicly available on the web. For now, however, it must be run locally. I've uploaded a pacman =PKGBUILD= to the [[https://aur.archlinux.org/][AUR]] (Arch User Repository) [[https://aur.archlinux.org/packages/indielinks-git][here]], and I'm hosting Debian binary packages at my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]].
 
-In either of these cases, the package only puts the files in their place. After the installation, you'll need to run =indielinks-post-install=, which will create and/or update the data schema & start the server.
+In either of these cases, the package only puts the files in their place. After the installation, you'll need to hand-edit =/etc/indielinks.toml= to say where to reach ScyllaDB or DynamoDB, along with any required credentials, then run =indielinks-post-install=, which will create and/or update the data schema & start the server.
 
 After the initial install, you'll want to create your first user:
 
@@ -59,5 +59,5 @@ Before installing, you'll probably want to skim the file =indielinks/local-indie
 Next, examine the file =admin/local-install= and be sure that it will install to the locations you want, consistent with the configuration in =local-indielinks.toml=. Then:
 
 #+BEGIN_SRC bash
-  admin/proto-install
+  admin/local-install
 #+END_SRC
