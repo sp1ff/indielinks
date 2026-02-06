@@ -42,14 +42,13 @@ use sha2::{Digest, Sha512_224};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::pipe::Pipe;
 use tracing::debug;
-use url::Url;
 use uuid::Uuid;
 use zxcvbn::{feedback::Feedback, zxcvbn, Score};
 
 use indielinks_shared::{
     define_id,
     entities::{
-        generate_rsa_keypair, Post, StorUrl, UserEmail, UserId, UserPrivateKey, UserPublicKey,
+        generate_rsa_keypair, PostId, StorUrl, UserEmail, UserId, UserPrivateKey, UserPublicKey,
         Username,
     },
     native_type_check,
@@ -744,77 +743,59 @@ impl SerializeValue for Visibility {
     }
 }
 
+/// An incoming "like" to a [Post] on this indielinks instance.
+///
+/// [Post]: indielinks_shared::entities::Post
 #[derive(
     Clone, Debug, Deserialize, DeserializeRow, Eq, Hash, PartialEq, Serialize, SerializeRow,
 )]
-pub struct Like {
-    user_id: UserId,
-    url: StorUrl,
-    id: LikeId,
+pub struct PostLike {
+    post_id: PostId,
+    like_url: StorUrl,
     created: DateTime<Utc>,
-    like_id: StorUrl,
 }
 
-impl Like {
-    pub fn user_id(&self) -> &UserId {
-        &self.user_id
+impl PostLike {
+    pub fn new(post_id: impl Into<PostId>, like_url: impl Into<StorUrl>) -> PostLike {
+        PostLike {
+            post_id: post_id.into(),
+            like_url: like_url.into(),
+            created: Utc::now(),
+        }
     }
-    pub fn url(&self) -> &StorUrl {
-        &self.url
+    pub fn post_id(&self) -> &PostId {
+        &self.post_id
     }
-    pub fn id(&self) -> &LikeId {
-        &self.id
+    pub fn like_url(&self) -> &StorUrl {
+        &self.like_url
     }
     pub fn created(&self) -> &DateTime<Utc> {
         &self.created
     }
-    pub fn like_id(&self) -> &StorUrl {
-        &self.like_id
-    }
-    pub fn from_parts(user_id: impl Into<UserId>, post: &Post, like_id: &Url) -> Like {
-        Like {
-            user_id: user_id.into(),
-            url: post.url().clone(),
-            id: LikeId::default(),
-            created: Utc::now(),
-            like_id: like_id.into(),
-        }
-    }
 }
 
 #[derive(
     Clone, Debug, Deserialize, DeserializeRow, Eq, Hash, PartialEq, Serialize, SerializeRow,
 )]
-pub struct Reply {
-    user_id: UserId,
-    url: StorUrl,
-    id: ReplyId,
+pub struct PostReply {
+    post_id: PostId,
+    reply_url: StorUrl,
     created: DateTime<Utc>,
-    reply_id: StorUrl,
     visibility: Visibility,
 }
 
-impl Reply {
+impl PostReply {
     pub fn new(
-        user_id: impl Into<UserId>,
-        post: &Post,
-        reply_id: &Url,
+        post_id: impl Into<PostId>,
+        reply_url: impl Into<StorUrl>,
         visibility: Visibility,
-    ) -> Reply {
-        Reply {
-            user_id: user_id.into(),
-            url: post.url().clone(),
-            id: ReplyId::default(),
+    ) -> PostReply {
+        PostReply {
+            post_id: post_id.into(),
+            reply_url: reply_url.into(),
             created: Utc::now(),
-            reply_id: reply_id.into(),
             visibility,
         }
-    }
-    pub fn url(&self) -> &url::Url {
-        self.url.as_ref()
-    }
-    pub fn user_id(&self) -> &UserId {
-        &self.user_id
     }
 }
 
@@ -823,36 +804,25 @@ impl Reply {
 #[derive(
     Clone, Debug, Deserialize, DeserializeRow, Eq, Hash, PartialEq, Serialize, SerializeRow,
 )]
-pub struct Share {
-    user_id: UserId,
-    url: StorUrl,
-    id: ShareId,
+pub struct PostShare {
+    post_id: PostId,
+    share_url: StorUrl,
     created: DateTime<Utc>,
-    share_id: StorUrl,
     visibility: Visibility,
 }
 
-impl Share {
+impl PostShare {
     pub fn new(
-        user_id: impl Into<UserId>,
-        post: &Post,
-        share_id: &Url,
+        post_id: impl Into<PostId>,
+        share_url: impl Into<StorUrl>,
         visibility: Visibility,
-    ) -> Share {
-        Share {
-            user_id: user_id.into(),
-            url: post.url().clone(),
-            id: ShareId::default(),
+    ) -> PostShare {
+        PostShare {
+            post_id: post_id.into(),
+            share_url: share_url.into(),
             created: Utc::now(),
-            share_id: share_id.into(),
             visibility,
         }
-    }
-    pub fn url(&self) -> &url::Url {
-        self.url.as_ref()
-    }
-    pub fn user_id(&self) -> &UserId {
-        &self.user_id
     }
 }
 
@@ -893,32 +863,5 @@ impl SerializeValue for ActivityPubPostFlavor {
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
         SerializeValue::serialize(&(*self as i8), typ, writer)
-    }
-}
-
-/// Represents an external post in the ActivityPub sense of the term
-#[derive(Clone, Debug, Deserialize, DeserializeRow, Eq, PartialEq, Serialize, SerializeRow)]
-pub struct ActivityPubPost {
-    user_id: UserId,
-    post_id: StorUrl,
-    posted: DateTime<Utc>,
-    flavor: ActivityPubPostFlavor,
-    visibility: Visibility,
-}
-
-impl ActivityPubPost {
-    pub fn new(
-        user_id: impl Into<UserId>,
-        post_id: impl Into<StorUrl>,
-        flavor: ActivityPubPostFlavor,
-        visibility: Visibility,
-    ) -> ActivityPubPost {
-        ActivityPubPost {
-            user_id: user_id.into(),
-            post_id: post_id.into(),
-            posted: Utc::now(),
-            flavor,
-            visibility,
-        }
     }
 }

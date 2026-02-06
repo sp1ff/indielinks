@@ -21,18 +21,23 @@ use aws_sdk_dynamodb::{
     client::Waiters,
     config::http::HttpResponse,
     error::SdkError,
-    operation::{create_table::CreateTableError, put_item::PutItemError},
+    operation::{
+        create_table::CreateTableError, delete_table::DeleteTableError, get_item::GetItemError,
+        put_item::PutItemError,
+    },
     primitives::Blob,
     types::{
         AttributeDefinition, AttributeValue, BillingMode, GlobalSecondaryIndex, KeySchemaElement,
         KeyType, LocalSecondaryIndex, Projection, ProjectionType, ScalarAttributeType,
     },
-    waiters::table_exists::WaitUntilTableExistsError,
+    waiters::{
+        table_exists::WaitUntilTableExistsError, table_not_exists::WaitUntilTableNotExistsError,
+    },
     Client,
 };
 use chrono::Utc;
 use indielinks_shared::instance_state::InstanceStateV0;
-use snafu::{Backtrace, ResultExt, Snafu};
+use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -47,16 +52,43 @@ pub enum Error {
         source: Box<SdkError<CreateTableError, aws_sdk_dynamodb::config::http::HttpResponse>>,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to deserialize instance state from MessagePack: {source}"))]
+    DeInstanceState {
+        source: rmp_serde::decode::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("When deserializing instance state, got an AttributeValue of {attr_val:#?}"))]
+    DeInstanceStateAttrVal {
+        attr_val: AttributeValue,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While deleting {table_name}: {source}"))]
+    DeleteTable {
+        table_name: String,
+        source: SdkError<DeleteTableError, HttpResponse>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to build {name}: {source}"))]
     GenericBuildFailure {
         name: String,
         source: aws_sdk_dynamodb::error::BuildError,
         backtrace: Backtrace,
     },
+    #[snafu(display("While fetching instance state: {source}"))]
+    GetInstanceState {
+        source: SdkError<GetItemError, HttpResponse>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to create the instance state: {source}"))]
     InstanceState {
         source: indielinks_shared::instance_state::Error,
     },
+    #[snafu(display(
+        "The request to fetch instance state succeeded, but had no instance_state field"
+    ))]
+    InvalidInstanceState { backtrace: Backtrace },
+    #[snafu(display("The request to fetch instance state succeeded, but returned None"))]
+    MissingInstanceState { backtrace: Backtrace },
     #[snafu(display("The schema_migrations table failed to become ready: {source}"))]
     SchemaMigrationsExists {
         #[snafu(source(from(WaitUntilTableExistsError, Box::new)))]
@@ -67,6 +99,18 @@ pub enum Error {
     SchemaVersion {
         #[snafu(source(from(SdkError<PutItemError, HttpResponse>, Box::new)))]
         source: Box<SdkError<PutItemError, HttpResponse>>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While serializing the instance state to MessagePack: {source}"))]
+    SerInstanceState {
+        source: rmp_serde::encode::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Table {table_name} failed to delete: {source}"))]
+    TableNotExists {
+        table_name: String,
+        #[snafu(source(from(WaitUntilTableNotExistsError, Box::new)))]
+        source: Box<WaitUntilTableNotExistsError>,
         backtrace: Backtrace,
     },
 }
@@ -89,7 +133,6 @@ macro_rules! table_attr {
     };
 }
 
-// TODO(sp1ff): in-progress
 async fn update_schema_migrations(client: &Client, schema_version: i64) -> Result<()> {
     let instance_state = if schema_version == 0 {
         InstanceStateV0::new().context(InstanceStateSnafu)?
@@ -103,22 +146,24 @@ async fn update_schema_migrations(client: &Client, schema_version: i64) -> Resul
             )
             .send()
             .await
-            .unwrap(/* TODO(sp1ff): handle error */)
+            .context(GetInstanceStateSnafu)?
             .item()
-            .unwrap(/* TODO(sp1ff): handle error */)
+            .context(MissingInstanceStateSnafu)?
             .get("instance_state")
-            .unwrap(/* TODO(sp1ff): handle error */)
+            .context(InvalidInstanceStateSnafu)?
         {
-            AttributeValue::B(blob) => {
-                rmp_serde::from_slice::<InstanceStateV0>(blob.as_ref()).unwrap(/* TODO(sp1ff): handle error */)
-            }
-            _ => {
-                todo!(/* TODO(sp1ff): handle error */)
+            AttributeValue::B(blob) => rmp_serde::from_slice::<InstanceStateV0>(blob.as_ref())
+                .context(DeInstanceStateSnafu)?,
+            attr_val => {
+                return DeInstanceStateAttrValSnafu {
+                    attr_val: attr_val.clone(),
+                }
+                .fail();
             }
         }
     };
 
-    let buf = rmp_serde::to_vec(&instance_state).unwrap(/* known good */);
+    let buf = rmp_serde::to_vec(&instance_state).context(SerInstanceStateSnafu)?;
 
     client
         .put_item()
@@ -693,23 +738,23 @@ async fn create_new_tables_ver_1(client: &Client) -> Result<()> {
         // DynamoDB
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![
-            table_attr!("post_and_reply_id", S),
-            table_attr!("created", S),
+            table_attr!("post_id", S),
+            table_attr!("like_url", S),
         ]))
         .set_key_schema(Some(vec![
             KeySchemaElement::builder()
-                .attribute_name("post_and_reply_id")
+                .attribute_name("post_id")
                 .key_type(KeyType::Hash)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "post_and_reply_id".to_string(),
+                    name: "post_id".to_string(),
                 })?,
             KeySchemaElement::builder()
-                .attribute_name("created")
+                .attribute_name("like_url")
                 .key_type(KeyType::Range)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "created".to_string(),
+                    name: "like_url".to_string(),
                 })?,
         ]))
         .send()
@@ -723,23 +768,23 @@ async fn create_new_tables_ver_1(client: &Client) -> Result<()> {
         // DynamoDB
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![
-            table_attr!("post_and_reply_id", S),
-            table_attr!("created", S),
+            table_attr!("post_id", S),
+            table_attr!("reply_url", S),
         ]))
         .set_key_schema(Some(vec![
             KeySchemaElement::builder()
-                .attribute_name("post_and_reply_id")
+                .attribute_name("post_id")
                 .key_type(KeyType::Hash)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "post_and_reply_id".to_string(),
+                    name: "post_id".to_string(),
                 })?,
             KeySchemaElement::builder()
-                .attribute_name("created")
+                .attribute_name("reply_url")
                 .key_type(KeyType::Range)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "created".to_string(),
+                    name: "reply_url".to_string(),
                 })?,
         ]))
         .send()
@@ -755,23 +800,23 @@ async fn create_new_tables_ver_1(client: &Client) -> Result<()> {
         // DynamoDB
         .billing_mode(BillingMode::PayPerRequest)
         .set_attribute_definitions(Some(vec![
-            table_attr!("post_and_reply_id", S),
-            table_attr!("created", S),
+            table_attr!("post_id", S),
+            table_attr!("share_url", S),
         ]))
         .set_key_schema(Some(vec![
             KeySchemaElement::builder()
-                .attribute_name("post_and_reply_id")
+                .attribute_name("post_id")
                 .key_type(KeyType::Hash)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "post_and_reply_id".to_string(),
+                    name: "post_id".to_string(),
                 })?,
             KeySchemaElement::builder()
-                .attribute_name("created")
+                .attribute_name("share_url")
                 .key_type(KeyType::Range)
                 .build()
                 .context(GenericBuildFailureSnafu {
-                    name: "created".to_string(),
+                    name: "share_url".to_string(),
                 })?,
         ]))
         .send()
@@ -784,7 +829,22 @@ async fn create_new_tables_ver_1(client: &Client) -> Result<()> {
 }
 
 async fn recreate_tables_ver_1(client: &Client) -> Result<()> {
-    client.delete_table().table_name("likes").send().await.unwrap(/* TODO(sp1ff): handle error */);
+    client
+        .delete_table()
+        .table_name("likes")
+        .send()
+        .await
+        .context(DeleteTableSnafu {
+            table_name: "likes",
+        })?;
+    client
+        .wait_until_table_not_exists()
+        .table_name("likes")
+        .wait(Duration::from_secs(60))
+        .await
+        .context(TableNotExistsSnafu {
+            table_name: "likes",
+        })?;
     client
         .create_table()
         .table_name("likes")
@@ -815,7 +875,22 @@ async fn recreate_tables_ver_1(client: &Client) -> Result<()> {
         .await
         .context(CreateTableSnafu { name: "likes" })?;
 
-    client.delete_table().table_name("replies").send().await.unwrap(/* TODO(sp1ff): handle error */);
+    client
+        .delete_table()
+        .table_name("replies")
+        .send()
+        .await
+        .context(DeleteTableSnafu {
+            table_name: "replies",
+        })?;
+    client
+        .wait_until_table_not_exists()
+        .table_name("replies")
+        .wait(Duration::from_secs(60))
+        .await
+        .context(TableNotExistsSnafu {
+            table_name: "replies",
+        })?;
     client
         .create_table()
         .table_name("replies")
@@ -846,7 +921,22 @@ async fn recreate_tables_ver_1(client: &Client) -> Result<()> {
         .await
         .context(CreateTableSnafu { name: "replies" })?;
 
-    client.delete_table().table_name("shares").send().await.unwrap(/* TODO(sp1ff): handle error */);
+    client
+        .delete_table()
+        .table_name("shares")
+        .send()
+        .await
+        .context(DeleteTableSnafu {
+            table_name: "shares",
+        })?;
+    client
+        .wait_until_table_not_exists()
+        .table_name("shares")
+        .wait(Duration::from_secs(60))
+        .await
+        .context(TableNotExistsSnafu {
+            table_name: "shares",
+        })?;
     client
         .create_table()
         .table_name("shares")
@@ -880,7 +970,14 @@ async fn recreate_tables_ver_1(client: &Client) -> Result<()> {
     Ok(())
 }
 async fn drop_activity_pub_posts(client: &Client) -> Result<()> {
-    let _ = client.delete_table().table_name("activity_pub_posts").send().await.unwrap(/* TODO(sp1ff): handle error */);
+    let _ = client
+        .delete_table()
+        .table_name("activity_pub_posts")
+        .send()
+        .await
+        .context(DeleteTableSnafu {
+            table_name: "activity_pub_posts",
+        })?;
     Ok(())
 }
 

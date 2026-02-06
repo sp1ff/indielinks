@@ -98,7 +98,8 @@ pub enum Error {
     DdbClient { source: indielinks::dynamodb::Error },
     #[snafu(display("While updating the DynamoDB schema, {source:#?}"))]
     DdbSchemaUpdate {
-        source: indielinks::dynamodb_schemas::Error,
+        #[snafu(source(from(indielinks::dynamodb_schemas::Error, Box::new)))]
+        source: Box<indielinks::dynamodb_schemas::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("While fetching the current schema version, {source:#?}"))]

@@ -30,7 +30,7 @@ use axum::{
 };
 use chrono::Utc;
 use either::Either;
-use futures::{stream, StreamExt};
+use futures::StreamExt;
 use http::Method;
 use itertools::Itertools;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
@@ -57,12 +57,10 @@ use crate::{
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     client_types::ClientType,
     define_metric,
-    entities::{
-        self, ActivityPubPost, ActivityPubPostFlavor, Follower, Following, Reply, Share, User,
-    },
+    entities::{Follower, Following, PostLike, PostReply, PostShare, User},
     http::ErrorResponseBody,
     indielinks::Indielinks,
-    storage::{self, Backend as StorageBackend, Error as StorError},
+    storage::{self, Backend as StorageBackend},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -565,12 +563,12 @@ async fn accept_create(
 
     debug!("This Create has visibility {:?}", visibility);
 
-    // Any local users mentioned?
-    let mention = local_recipients
-        .iter()
-        .filter(|recipient| matches!(recipient, Recipient::Direct(_)))
-        .collect::<Vec<_>>()
-        .is_empty();
+    // NEXT: Any local users mentioned?
+    // let mention = local_recipients
+    //     .iter()
+    //     .filter(|recipient| matches!(recipient, Recipient::Direct(_)))
+    //     .collect::<Vec<_>>()
+    //     .is_empty();
 
     let mut recipients = resolve_recipients(local_recipients.iter(), storage)
         .await
@@ -578,7 +576,9 @@ async fn accept_create(
             recipients: local_recipients.clone(),
         })?;
 
-    let reply = match note
+    // NEXT:
+    /*let reply =*/
+    match note
         .in_reply_to()
         .and_then(|reply| username_and_postid_from_url(origin, reply).ok())
     {
@@ -588,6 +588,7 @@ async fn accept_create(
                 postid, username
             );
 
+            // Seems inefficient
             let user = storage
                 .user_for_name(username.as_ref())
                 .await
@@ -599,14 +600,8 @@ async fn accept_create(
                     .build(),
                 )?;
 
-            let post = storage
-                .get_post_by_id(&postid)
-                .await
-                .context(StorageSnafu)?
-                .context(NoPostSnafu { username, postid })?;
-
             storage
-                .add_reply(&Reply::new(user.id(), &post, note.id(), visibility))
+                .add_post_reply(&PostReply::new(postid, note.id(), visibility))
                 .await
                 .context(StorageSnafu)?;
 
@@ -617,20 +612,12 @@ async fn accept_create(
         None => false,
     };
 
-    let flavor = match (reply, mention) {
-        (true, _) => ActivityPubPostFlavor::Reply,
-        (false, true) => ActivityPubPostFlavor::Mention,
-        (false, false) => ActivityPubPostFlavor::Post,
-    };
-
-    stream::iter(recipients.into_iter())
-        .map(|recipient| ActivityPubPost::new(recipient, note.id(), flavor, visibility))
-        .then(|post| async move { storage.add_activity_pub_post(&post).await })
-        .collect::<Vec<StdResult<(), StorError>>>()
-        .await
-        .into_iter()
-        .collect::<StdResult<Vec<()>, StorError>>()
-        .context(StorageSnafu)?;
+    // NEXT: Regardless of the type, add this to the recipients' home timelines
+    // let flavor = match (reply, mention) {
+    //     (true, _) => ActivityPubPostFlavor::Reply,
+    //     (false, true) => ActivityPubPostFlavor::Mention,
+    //     (false, false) => ActivityPubPostFlavor::Post,
+    // };
 
     Ok(())
 }
@@ -692,14 +679,8 @@ async fn accept_share(
             .build(),
         )?;
 
-    let post = storage
-        .get_post_by_id(&postid)
-        .await
-        .context(StorageSnafu)?
-        .context(NoPostSnafu { username, postid })?;
-
     storage
-        .add_share(&Share::new(user.id(), &post, announce.id(), visibility))
+        .add_post_share(&PostShare::new(postid, announce.id().clone(), visibility))
         .await
         .context(StorageSnafu)?;
 
@@ -712,22 +693,23 @@ async fn accept_share(
         })?;
     recipients.remove(user.id());
 
-    stream::iter(recipients.into_iter())
-        .map(|recipient| {
-            ActivityPubPost::new(
-                recipient,
-                // Dear God this is dumb...
-                StorUrl::try_from(post.url().to_string()).unwrap(),
-                ActivityPubPostFlavor::Share,
-                visibility,
-            )
-        })
-        .then(|post| async move { storage.add_activity_pub_post(&post).await })
-        .collect::<Vec<StdResult<(), StorError>>>()
-        .await
-        .into_iter()
-        .collect::<StdResult<Vec<()>, StorError>>()
-        .context(StorageSnafu)?;
+    // NEXT: add this to recipients' timelines
+    // stream::iter(recipients.into_iter())
+    //     .map(|recipient| {
+    //         ActivityPubPost::new(
+    //             recipient,
+    //             // Dear God this is dumb...
+    //             StorUrl::try_from(post.url().to_string()).unwrap(),
+    //             ActivityPubPostFlavor::Share,
+    //             visibility,
+    //         )
+    //     })
+    //     .then(|post| async move { storage.add_activity_pub_post(&post).await })
+    //     .collect::<Vec<StdResult<(), StorError>>>()
+    //     .await
+    //     .into_iter()
+    //     .collect::<StdResult<Vec<()>, StorError>>()
+    //     .context(StorageSnafu)?;
 
     Ok(())
 }
@@ -1010,16 +992,10 @@ async fn accept_like(
         .fail();
     }
 
-    // Use the `PostId` to retrieve the `Post`...
-    let post = storage
-        .get_post_by_id(&postid)
+    storage
+        .add_post_like(&PostLike::new(postid, like.id().clone()))
         .await
-        .context(StorageSnafu)?
-        .context(NoPostSnafu { username, postid })?;
-
-    let like = entities::Like::from_parts(user.id(), &post, like.id());
-
-    storage.add_like(&like).await.context(StorageSnafu)?;
+        .context(StorageSnafu)?;
 
     Ok(())
 }

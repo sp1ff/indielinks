@@ -179,33 +179,38 @@ echo "ssh returns $?"
 
 # 4. cleanup (add switch to skip)
 if test -z "${no_cleanup}"; then
-    aws --region=$region dynamodb wait table-exists --table-name activity_pub_posts
+    aws --region=$region dynamodb wait table-exists --table-name users
+    aws --region=$region dynamodb wait table-exists --table-name unique_usernames
     aws --region=$region dynamodb wait table-exists --table-name followers
     aws --region=$region dynamodb wait table-exists --table-name following
     aws --region=$region dynamodb wait table-exists --table-name likes
+    aws --region=$region dynamodb wait table-exists --table-name replies
+    aws --region=$region dynamodb wait table-exists --table-name shares
     aws --region=$region dynamodb wait table-exists --table-name posts
+    aws --region=$region dynamodb wait table-exists --table-name post_likes
+    aws --region=$region dynamodb wait table-exists --table-name post_replies
+    aws --region=$region dynamodb wait table-exists --table-name post_shares
     aws --region=$region dynamodb wait table-exists --table-name raft_log
     aws --region=$region dynamodb wait table-exists --table-name raft_metadata
-    aws --region=$region dynamodb wait table-exists --table-name replies
     aws --region=$region dynamodb wait table-exists --table-name schema_migrations
-    aws --region=$region dynamodb wait table-exists --table-name shares
     aws --region=$region dynamodb wait table-exists --table-name tasks
-    aws --region=$region dynamodb wait table-exists --table-name unique_usernames
-    aws --region=$region dynamodb wait table-exists --table-name users
 
-    aws --region=$region dynamodb delete-table --table-name activity_pub_posts
+    aws --region=$region dynamodb delete-table --table-name users
+    aws --region=$region dynamodb delete-table --table-name unique_usernames
     aws --region=$region dynamodb delete-table --table-name followers
     aws --region=$region dynamodb delete-table --table-name following
     aws --region=$region dynamodb delete-table --table-name likes
+    aws --region=$region dynamodb delete-table --table-name replies
+    aws --region=$region dynamodb delete-table --table-name shares
     aws --region=$region dynamodb delete-table --table-name posts
+    aws --region=$region dynamodb delete-table --table-name post_likes
+    aws --region=$region dynamodb delete-table --table-name post_replies
+    aws --region=$region dynamodb delete-table --table-name post_shares
     aws --region=$region dynamodb delete-table --table-name raft_log
     aws --region=$region dynamodb delete-table --table-name raft_metadata
-    aws --region=$region dynamodb delete-table --table-name replies
     aws --region=$region dynamodb delete-table --table-name schema_migrations
-    aws --region=$region dynamodb delete-table --table-name shares
     aws --region=$region dynamodb delete-table --table-name tasks
-    aws --region=$region dynamodb delete-table --table-name unique_usernames
-    aws --region=$region dynamodb delete-table --table-name users
+
     tofu apply ${apply_args} -destroy
 fi
 

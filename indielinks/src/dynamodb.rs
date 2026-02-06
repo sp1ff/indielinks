@@ -24,7 +24,7 @@ use crate::{
     cache::{
         to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
     },
-    entities::{ActivityPubPost, ApiKeys, FollowId, Follower, Following, Like, Reply, Share, User},
+    entities::{ApiKeys, FollowId, Follower, Following, PostLike, PostReply, PostShare, User},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::{Credentials, UpToThree},
 };
@@ -1117,15 +1117,6 @@ struct Tags {
 
 #[async_trait]
 impl storage::Backend for Client {
-    async fn add_activity_pub_post(&self, post: &ActivityPubPost) -> StdResult<(), StorError> {
-        self.client
-            .put_item()
-            .table_name("activity_pub_posts")
-            .set_item(Some(serde_dynamo::to_item(post)?))
-            .send()
-            .await?;
-        Ok(())
-    }
     async fn add_follower(&self, user: &User, follower: &StorUrl) -> StdResult<(), StorError> {
         add_followers(&self.client, user, &HashSet::from([follower.clone()]))
             .await
@@ -1143,17 +1134,11 @@ impl storage::Backend for Client {
             .map_err(StorError::new)
     }
 
-    async fn add_like(&self, like: &Like) -> StdResult<(), StorError> {
+    async fn add_post_like(&self, like: &PostLike) -> StdResult<(), StorError> {
         self.client
             .put_item()
-            .table_name("likes")
-            .item(
-                "user_id_and_url",
-                AttributeValue::S(format!("{}#{}", like.user_id(), like.url())),
-            )
-            .item("id", AttributeValue::S(like.id().to_string()))
-            .item("like_id", AttributeValue::S(like.like_id().to_string()))
-            .item("created", AttributeValue::S(format!("{}", like.created())))
+            .table_name("post_likes")
+            .set_item(Some(serde_dynamo::to_item(like)?))
             .send()
             .await?;
         Ok(())
@@ -1221,40 +1206,23 @@ impl storage::Backend for Client {
         }
     }
 
-    async fn add_reply(&self, reply: &Reply) -> StdResult<(), StorError> {
-        let mut item: HashMap<String, AttributeValue> = serde_dynamo::to_item(reply)?;
-        item.remove("user_id");
-        item.remove("url");
-        item.insert(
-            "user_id_and_url".to_owned(),
-            AttributeValue::S(format!("{}#{}", reply.user_id(), reply.url())),
-        );
-
+    async fn add_post_reply(&self, reply: &PostReply) -> StdResult<(), StorError> {
         self.client
             .put_item()
-            .table_name("replies")
-            .set_item(Some(item))
+            .table_name("post_replies")
+            .set_item(Some(to_item(reply)?))
             .send()
             .await?;
         Ok(())
     }
 
-    async fn add_share(&self, share: &Share) -> StdResult<(), StorError> {
-        let mut item: HashMap<String, AttributeValue> = serde_dynamo::to_item(share)?;
-        item.remove("user_id");
-        item.remove("url");
-        item.insert(
-            "user_id_and_url".to_owned(),
-            AttributeValue::S(format!("{}#{}", share.user_id(), share.url())),
-        );
-
+    async fn add_post_share(&self, share: &PostShare) -> StdResult<(), StorError> {
         self.client
             .put_item()
-            .table_name("shares")
-            .set_item(Some(item))
+            .table_name("post_shares")
+            .set_item(Some(to_item(share)?))
             .send()
             .await?;
-
         Ok(())
     }
 

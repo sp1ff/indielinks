@@ -39,8 +39,7 @@ create table if not exists post_likes (
   post_id uuid,
   like_url ascii,
   created timestamp,
-  visibility tinyint,
-  PRIMARY KEY ((post_id, reply_id), created)
+  PRIMARY KEY (post_id, like_url)
 );
 
 create table if not exists post_replies (
@@ -48,7 +47,7 @@ create table if not exists post_replies (
   reply_url ascii,
   created timestamp,
   visibility tinyint,
-  PRIMARY KEY ((post_id, reply_id), created)
+  PRIMARY KEY (post_id, reply_url)
 );
 
 create table if not exists post_shares (
@@ -56,7 +55,7 @@ create table if not exists post_shares (
   share_url ascii,
   created timestamp,
   visibility tinyint,
-  PRIMARY KEY ((post_id, reply_id), created)
+  PRIMARY KEY (post_id, share_url)
 );
 
 /* I'm going to need to query this:

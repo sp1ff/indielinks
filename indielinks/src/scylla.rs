@@ -71,9 +71,7 @@ use crate::{
     cache::{
         to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
     },
-    entities::{
-        ActivityPubPost, FollowId, Follower, FollowerId, Following, Like, Reply, Share, User,
-    },
+    entities::{FollowId, Follower, FollowerId, Following, PostLike, PostReply, PostShare, User},
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::UpToThree,
 };
@@ -896,7 +894,6 @@ enum PreparedStatements {
     CountFollowing,
     AddLike,
     CountFollowingByActor,
-    AddActivityPubPost,
     InsertIntoRaftLog,
     TruncateRaftLog,
     TruncateRaftMeta,
@@ -1038,16 +1035,15 @@ impl Session {
             "update tasks set lease_expires = ? where id = ? if lease_expires = ?",
             "update tasks set done=true where id=?",
             "select * from users where id=?",
-            "insert into replies (user_id, url, id, created, reply_id, visibility) values (?, ?, ?, ?, ?, ?) if not exists", // AddReply
-            "insert into shares (user_id, url, id, created, share_id, visibility) values (?, ?, ?, ?, ?, ?) if not exists", // AddShare
+            "insert into post_replies (post_id, reply_url, created, visibility) values (?, ?, ?, ?) if not exists", // AddReply
+            "insert into post_shares (post_id, share_url, created, visibility) values (?, ?, ?, ?) if not exists", // AddShare
             "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollows
             "update following set accepted = true where user_id = ? and actor_id = ?",
             "insert into followers (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollowerss
             "select count(*) from followers where user_id = ?", // CountFollowers
             "select count(*) from following where user_id = ?", // CountFollowing
-            "insert into likes (user_id, url, id, created, like_id) values (?, ?, ?, ?, ?) if not exists",
+            "insert into post_likes (post_id, like_url, created) values (?, ?, ?) if not exists", // AddLike
             "select count(*) from following where actor_id = ?", // CountFollowingByActor
-            "insert into activity_pub_posts (user_id, post_id, posted, flavor, visibility) values (?, ?, ?, ?, ?) if not exists", // AddActivityPubPost
             "insert into raft_log (node_id, log_id, entry) values (?, ?, ?)",
             "truncate raft_log",
             "truncate raft_metadata",
@@ -1083,7 +1079,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 92] = prepared_statements
+        let prepared_statements: [PreparedStatement; 91] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -1186,19 +1182,6 @@ impl std::convert::From<scylla::response::query_result::SingleRowError> for BckE
 
 #[async_trait]
 impl storage::Backend for Session {
-    async fn add_activity_pub_post(&self, post: &ActivityPubPost) -> StdResult<(), StorError> {
-        self.session
-            .execute_unpaged(
-                &self.prepared_statements[PreparedStatements::AddActivityPubPost],
-                post,
-            )
-            .await?;
-        // Unfortunately, this implementation gives us no way of knowing whether the statement had
-        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
-        // that.
-        Ok(())
-    }
-
     async fn add_follower(&self, user: &User, follower: &StorUrl) -> StdResult<(), StorError> {
         add_followers(
             &self.session,
@@ -1228,7 +1211,7 @@ impl storage::Backend for Session {
         .map_err(StorError::new)
     }
 
-    async fn add_like(&self, like: &Like) -> StdResult<(), StorError> {
+    async fn add_post_like(&self, like: &PostLike) -> StdResult<(), StorError> {
         self.session
             .execute_unpaged(&self.prepared_statements[PreparedStatements::AddLike], like)
             .await?;
@@ -1281,7 +1264,7 @@ impl storage::Backend for Session {
         Ok(!result.is_rows())
     }
 
-    async fn add_reply(&self, reply: &Reply) -> StdResult<(), StorError> {
+    async fn add_post_reply(&self, reply: &PostReply) -> StdResult<(), StorError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::AddReply],
@@ -1294,7 +1277,7 @@ impl storage::Backend for Session {
         Ok(())
     }
 
-    async fn add_share(&self, share: &Share) -> StdResult<(), StorError> {
+    async fn add_post_share(&self, share: &PostShare) -> StdResult<(), StorError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::AddShare],

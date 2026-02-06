@@ -28,7 +28,7 @@ echo "[storage-config.Dynamo]" | sudo tee -a /etc/indielinks.toml
 echo "location = \"$region\"" | sudo tee -a /etc/indielinks.toml
 IFS=',' read -r username password <<< "$creds"
 echo "credentials = [\"$username\", \"$password\"]" | sudo tee -a /etc/indielinks.toml
-ipi_args="-r $region"
+ipi_args="-v -r $region"
 if test -n "$creds"; then
     ipi_args="${ipi_args} -c $creds"
 fi

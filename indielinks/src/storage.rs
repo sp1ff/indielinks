@@ -18,7 +18,7 @@
 //! Abstractions for the indielinks storage layer.
 
 use crate::{
-    entities::{ActivityPubPost, ApiKeys, FollowId, Follower, Following, Like, Reply, Share, User},
+    entities::{ApiKeys, FollowId, Follower, Following, PostLike, PostReply, PostShare, User},
     util::UpToThree,
 };
 
@@ -80,7 +80,6 @@ impl DateRange {
 
 #[async_trait]
 pub trait Backend {
-    async fn add_activity_pub_post(&self, post: &ActivityPubPost) -> Result<(), Error>;
     /// Add a follower to a user's collection
     async fn add_follower(&self, user: &User, follower: &StorUrl) -> Result<(), Error>;
     /// Add a follow to a user's collection
@@ -90,8 +89,8 @@ pub trait Backend {
         following: &StorUrl,
         id: &FollowId,
     ) -> Result<(), Error>;
-    /// Ad a [Like]
-    async fn add_like(&self, reply: &Like) -> Result<(), Error>;
+    /// Add a [PostLike]
+    async fn add_post_like(&self, reply: &PostLike) -> Result<(), Error>;
     /// Add a Post for `user`; return true if a new post was actually created, false if the post
     /// already existed and `replace` was set to false.
     #[allow(clippy::too_many_arguments)]
@@ -108,16 +107,10 @@ pub trait Backend {
         to_read: bool,
         tags: &HashSet<Tagname>,
     ) -> Result<bool, Error>;
-    /// Add a Reply for an existing post-- the backend is responsibile for verifying that [User]
-    /// `user` actually made a post with [PostId] `postid`! This is to preserve the possibility for
-    /// the implementation to optimize that implementation (by doing it a single request with a
-    /// "WHERE" clause, for instance)
-    async fn add_reply(&self, reply: &Reply) -> Result<(), Error>;
-    /// Add a Share for an existing post-- the backend is responsibile for verifying that [User]
-    /// `user` actually made a post with [PostId] `postid`! This is to preserve the possibility for
-    /// the implementation to optimize that implementation (by doing it a single request with a
-    /// "WHERE" clause, for instance)
-    async fn add_share(&self, share: &Share) -> Result<(), Error>;
+    /// Add a Reply for an existing post
+    async fn add_post_reply(&self, reply: &PostReply) -> Result<(), Error>;
+    /// Add a Share for an existing post
+    async fn add_post_share(&self, share: &PostShare) -> Result<(), Error>;
     /// Add a new user
     async fn add_user(&self, user: &User) -> Result<(), Error>;
     /// Confirm a follow for a user
