@@ -60,7 +60,7 @@ use tap::Pipe;
 use tokio::{
     net::TcpListener,
     signal::unix::{signal, SignalKind},
-    sync::{mpsc, Notify, RwLock},
+    sync::{mpsc, Notify},
 };
 use tonic::transport::Server as TonicServer;
 use tower_http::{
@@ -1041,12 +1041,11 @@ async fn serve(
         )
         .await
         .context(CacheNodeSnafu)?;
+
         // Alright-- setup shared state for the web service itself:
-        let first_cache = Arc::new(RwLock::new(
-            Cache::<GrpcClientFactory, FollowerId, StorUrl>::new(
-                FOLLOWER_TO_PUBLIC_INBOX,
-                cache_node.clone(),
-            ),
+        let first_cache = Arc::new(Cache::<GrpcClientFactory, FollowerId, StorUrl>::new(
+            FOLLOWER_TO_PUBLIC_INBOX,
+            cache_node.clone(),
         ));
 
         let state = Arc::new(Indielinks {

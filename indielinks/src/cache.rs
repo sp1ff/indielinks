@@ -54,7 +54,6 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{from_value, to_value};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Conv, Pipe, TryConv};
-use tokio::sync::RwLock;
 use tonic::Code;
 
 use indielinks_shared::entities::StorUrl;
@@ -411,13 +410,13 @@ impl SerializeValue for LogIndex {
 
 pub struct GrpcService {
     cache_node: CacheNode<GrpcClientFactory>,
-    first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+    first_cache: Arc<Cache<GrpcClientFactory, FollowerId, StorUrl>>,
 }
 
 impl GrpcService {
     pub fn new(
         cache_node: CacheNode<GrpcClientFactory>,
-        first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+        first_cache: Arc<Cache<GrpcClientFactory, FollowerId, StorUrl>>,
     ) -> GrpcService {
         GrpcService {
             cache_node,
@@ -494,8 +493,6 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                 .map_err(to_tonic)?;
             let value = rmp_serde::from_slice::<StorUrl>(req.value.as_slice()).map_err(to_tonic)?;
             self.first_cache
-                .write()
-                .await
                 .insert(key, value)
                 .await
                 .map_err(to_tonic)?;
@@ -525,13 +522,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
             let key = rmp_serde::from_slice::<crate::entities::FollowerId>(req.key.as_slice())
                 .map_err(to_tonic)?;
-            let rsp = self
-                .first_cache
-                .write()
-                .await
-                .get(&key)
-                .await
-                .map_err(to_tonic)?;
+            let rsp = self.first_cache.get(&key).await.map_err(to_tonic)?;
             Ok(protobuf::CacheLookupResponse {
                 cache_id: req.cache_id,
                 value: rsp
@@ -849,8 +840,6 @@ async fn query_cache(
     ) -> Result<Option<serde_json::Value>> {
         state
             .first_cache
-            .write()
-            .await
             .get(&from_value::<FollowerId>(key.clone()).context(FollowerIdSnafu { key })?)
             .await
             .context(CacheSnafu)?
@@ -883,8 +872,6 @@ async fn insert_into_cache(
     ) -> Result<()> {
         state
             .first_cache
-            .write()
-            .await
             .insert(
                 from_value::<FollowerId>(key.clone()).context(FollowerIdSnafu { key })?,
                 from_value::<StorUrl>(value.clone()).context(UrlDeSnafu { value })?,

@@ -18,7 +18,6 @@ use std::{path::PathBuf, sync::Arc};
 use chrono::Duration;
 use indielinks_cache::{cache::Cache, raft::CacheNode};
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use indielinks_shared::{entities::StorUrl, instance_state::InstanceStateV0, origin::Origin};
@@ -50,5 +49,7 @@ pub struct Indielinks {
     pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
-    pub first_cache: Arc<RwLock<Cache<GrpcClientFactory, FollowerId, StorUrl>>>,
+    // Proof of concept; will probably be moved out into a more general service.
+    // Also, behind an `Arc` because we need to share access with the Grpc server.
+    pub first_cache: Arc<Cache<GrpcClientFactory, FollowerId, StorUrl>>,
 }

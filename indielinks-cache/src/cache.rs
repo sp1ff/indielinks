@@ -82,12 +82,12 @@
 //! responsible. I'll add this to the project backlog of features to be added 1) later and 2) if
 //! there seems to be a need.
 
-use std::{fmt::Debug, num::NonZeroUsize};
+use std::{fmt::Debug, sync::Mutex};
 
 use lru::LruCache;
+use nonzero::nonzero;
 use serde::{Serialize, de::DeserializeOwned};
 use snafu::{Backtrace, ResultExt, Snafu};
-use tracing::debug;
 
 use crate::{network::ClientFactory, raft::CacheNode, types::CacheId};
 
@@ -140,8 +140,12 @@ pub type StdResult<T, E> = std::result::Result<T, E>;
 // I believe to be foldhash.
 pub struct Cache<F: ClientFactory, K, V> {
     id: CacheId,
-    node: CacheNode<F>,  // Cheaply clonable
-    map: LruCache<K, V>, // This node's partitions' storage
+    node: CacheNode<F>, // Cheaply clonable
+    /// This node's partitions' storage. The [Mutex] is regrettable, but, I suppose, not surprising,
+    /// given that we are using an LRU cache. Even a fetch will mutate the datastructure, and in a
+    /// way in which it would be tough to provide some kind of per-entry locking. I have a task to
+    /// look for more efficient, concurrent implementations.
+    map: Mutex<LruCache<K, V>>,
 }
 
 impl<F, K, V> Cache<F, K, V>
@@ -155,18 +159,16 @@ where
         Cache {
             id,
             node: node.into(),
-            map: LruCache::new(NonZeroUsize::new(256).unwrap(/* known good */)),
+            map: Mutex::new(LruCache::new(nonzero!(256usize))),
         }
     }
-    pub async fn get(&mut self, k: &K) -> StdResult<Option<V>, Error<F::CacheClient>> {
+    pub async fn get(&self, k: &K) -> StdResult<Option<V>, Error<F::CacheClient>> {
         // I need to hash `k`, get the responsible node from our Raft, and, if it's not this node,
         // send a message to that node.
         let nodeid = self.node.node_for_key(k).await.context(UninitSnafu)?;
-        debug!("Cache::get(): nodeid {}", nodeid);
         if self.node.id().await == nodeid {
-            Ok(self.map.get(k).cloned())
+            Ok(self.map.lock().expect("Mutex poisoned").get(k).cloned())
         } else {
-            debug!("Querying node {nodeid} for the key");
             Ok(self
                 .node
                 .cache_lookup::<K, V>(nodeid, self.id, k)
@@ -174,10 +176,10 @@ where
                 .context(LookupSnafu)?)
         }
     }
-    pub async fn insert(&mut self, k: K, v: V) -> StdResult<(), Error<F::CacheClient>> {
+    pub async fn insert(&self, k: K, v: V) -> StdResult<(), Error<F::CacheClient>> {
         let nodeid = self.node.node_for_key(&k).await.context(UninitSnafu)?;
         if self.node.id().await == nodeid {
-            self.map.put(k, v);
+            self.map.lock().expect("Mutex poisoned").put(k, v);
             Ok(())
         } else {
             self.node
