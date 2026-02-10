@@ -29,7 +29,7 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
-use either::Either;
+use either::Either::{self, Left};
 use futures::StreamExt;
 use http::Method;
 use itertools::Itertools;
@@ -47,11 +47,11 @@ use indielinks_shared::{
 };
 
 use crate::{
-    activity_pub::{derive_visibility, resolve_recipients, send_activity_pub_no_response},
+    activity_pub::{derive_visibility, resolve_recipients},
     ap_entities::{
-        self, make_user_followers, make_user_following, username_and_postid_from_url, Accept,
-        Actor, Announce, AnnounceOrCreate, Create, Follow, InboxPayload, InstanceActor, Jld, Like,
-        Note, Recipient, ToJld, Undo,
+        self, ap_request_no_response, make_user_followers, make_user_following,
+        username_and_postid_from_url, Accept, Actor, Announce, AnnounceOrCreate, Create, Follow,
+        InboxPayload, InstanceActor, Jld, Like, Note, Recipient, ToJld, Undo,
     },
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
@@ -199,7 +199,7 @@ pub enum Error {
         source: crate::activity_pub::Error,
     },
     #[snafu(display("Failed to buld an http request: {source}"))]
-    Request { source: crate::activity_pub::Error },
+    Request { source: crate::ap_entities::Error },
     #[snafu(display("Failed to resolve a key ID to an Actor: {source}"))]
     ResolveKeyId { source: crate::ap_entities::Error },
     #[snafu(display("Couldn't parse the signature string: {source}"))]
@@ -369,7 +369,7 @@ async fn verify_signature(
         let actor = ap_entities::resolve_key_id(
             &Url::parse(key_id).context(BadKeyIdSnafu)?,
             &mut client,
-            principal,
+            principal.as_ref(),
             origin,
         )
         .await
@@ -878,17 +878,15 @@ impl Task<Context> for AcceptFollow {
 
         async fn exec1(this: Box<AcceptFollow>, context: Context) -> Result<()> {
             let mut client2 = context.ap_client.clone();
-            send_activity_pub_no_response::<&'_ str, Accept>(
-                &this.user,
-                &this.origin,
-                Method::POST,
-                this.actor_inbox.as_ref(),
-                Some(
-                    &Accept::for_follow(this.user.username(), &this.follow, &this.origin)
-                        .context(AcceptResponseSnafu)?,
-                ),
-                None,
+            ap_request_no_response(
                 &mut client2,
+                &this.origin,
+                Left(&this.user),
+                &this.actor_inbox,
+                Method::POST,
+                None,
+                &Accept::for_follow(this.user.username(), &this.follow, &this.origin)
+                    .context(AcceptResponseSnafu)?,
             )
             .await
             .context(RequestSnafu)

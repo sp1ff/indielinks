@@ -26,6 +26,8 @@ pub mod activity_pub;
 pub mod actor;
 #[path = "ap-entities.rs"]
 pub mod ap_entities;
+#[path = "ap-resolution.rs"]
+pub mod ap_resolution;
 pub mod authn;
 #[path = "background-tasks.rs"]
 pub mod background_tasks;
@@ -38,6 +40,7 @@ pub mod dynamodb;
 #[path = "dynamodb-schemas.rs"]
 pub mod dynamodb_schemas;
 pub mod entities;
+pub mod grpc;
 pub mod http;
 pub mod indielinks;
 pub mod metrics;

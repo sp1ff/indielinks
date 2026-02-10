@@ -82,7 +82,7 @@ use scylla::DeserializeRow;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tokio::{
-    sync::Notify,
+    sync::{Mutex, Notify},
     task::{Id, JoinError, JoinHandle, JoinSet},
 };
 use tracing::error;
@@ -90,7 +90,7 @@ use uuid::Uuid;
 
 use indielinks_shared::origin::Origin;
 
-use crate::{define_metric, storage::Backend as StorageBackend};
+use crate::{ap_resolution::ApResolver, define_metric, storage::Backend as StorageBackend};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module error type                                        //
@@ -600,6 +600,7 @@ pub struct Context {
     pub local_client: crate::client_types::ClientType,
     pub general_purpose_client: crate::client_types::ClientType,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
+    pub ap_resolver: Arc<Mutex<ApResolver>>,
 }
 
 /// In order to "register" a background task type, you need to assign a tag (just using a [Uuid] for

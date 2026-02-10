@@ -123,6 +123,7 @@
 
 use std::{collections::HashMap, fmt::Display};
 
+use bytes::Bytes;
 use chrono::{DateTime, FixedOffset, Utc};
 use either::Either;
 use http::{Method, Request};
@@ -160,12 +161,22 @@ pub enum Error {
     },
     #[snafu(display("Unexpected object `id` type"))]
     BadObjectId { backtrace: Backtrace },
+    #[snafu(display("Failed to set request body: {source}"))]
+    Body {
+        source: http::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("{url} cannot be a base, which is not permitted"))]
     CannotBeABase { url: Box<Url>, backtrace: Backtrace },
     #[snafu(display("More than one capture when attempting to parse an Actor ID"))]
     Capture { backtrace: Backtrace },
     #[snafu(display("No captures when attempting to parse an Actor ID"))]
     Captures { backtrace: Backtrace },
+    #[snafu(display("ActivityPub request failed: {rsp:?}"))]
+    FailedAp {
+        rsp: Box<http::Response<bytes::Bytes>>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to deserialize from a JSON Value: {source}"))]
     FromValue {
         source: serde_json::Error,
@@ -227,6 +238,16 @@ pub enum Error {
         source: http::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("While sending an ActivityPub request, {source}"))]
+    RequestCall {
+        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While waiting to send a request, {source}"))]
+    RequestReady {
+        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to resolve keyid {}: {source}"))]
     ResolveKeyId {
         key_id: Url,
@@ -238,6 +259,11 @@ pub enum Error {
         key_id: Url,
         source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
         // backtrace not included because it would make the error too large
+    },
+    #[snafu(display("Failed to deserialize the request body to JSON: {source}"))]
+    RspJson {
+        source: serde_json::Error,
+        backtrace: Backtrace,
     },
     #[snafu(display("Failed serializing to a JSON Value: {source}"))]
     ToValue {
@@ -518,6 +544,7 @@ impl Jld {
                     serde_json::to_string(&Value::Object(val_map)).context(JsonSerSnafu)?
                 ))
             }
+            (Value::Null, _) => Ok(Jld(String::new())),
             _ => JsonTypeMismatchSnafu.fail(),
         }
     }
@@ -1799,37 +1826,257 @@ mod twitter_text {
 //                                  ActivityPub Entity Utilities                                  //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Refactor this in terms of send_activity_pub? Nb. we can't know a priori if the peer implements
-// authorized fetch, so we pretty-much *have* to sign every `GET` request with the instance actor's
-// private key.
+/// Core logic for sending ActivityPub requests; logic common to [ap_request] and [ap_request_no_rsp]
+///
+/// This is where we set the [Request] [Extension] that will trigger request signing as well as the
+/// required headers.
+async fn ap_request_core<B: ToJld>(
+    client: &mut ClientType,
+    origin: &Origin,
+    principal: Either<&User, &UserPrivateKey>,
+    url: &Url,
+    method: Method,
+    context: Option<Context>,
+    body: &B,
+) -> Result<http::Response<Bytes>> {
+    let request = Request::builder()
+        .method(method)
+        .uri(url.as_str())
+        .extension((principal.cloned(), origin.clone()))
+        .header(http::header::ACCEPT, "application/activity+json")
+        .header(http::header::CONTENT_TYPE, "application/activity+json")
+        .body::<Bytes>(Jld::new(body, context)?.into())
+        .context(BodySnafu)?;
+
+    client
+        .ready()
+        .await
+        .context(RequestReadySnafu)?
+        .call(request)
+        .await
+        .context(RequestCallSnafu)
+}
+
+/// Send an ActivityPub request
+///
+/// Strongly-typed request function: the caller can invoke it in terms of the request payload and
+/// the expected response. If the request carries no body, pass `&()`. If the response is expected
+/// to carry no body, see [ap_request_no_response].
+pub async fn ap_request<B: ToJld, R: serde::de::DeserializeOwned>(
+    client: &mut ClientType,
+    origin: &Origin,
+    principal: Either<&User, &UserPrivateKey>,
+    url: &Url,
+    method: Method,
+    context: Option<Context>,
+    body: &B,
+) -> Result<R> {
+    let response = ap_request_core(client, origin, principal, url, method, context, body).await?;
+    if !response.status().is_success() {
+        return FailedApSnafu { rsp: response }.fail();
+    }
+
+    serde_json::from_slice::<R>(response.into_body().as_ref()).context(RspJsonSnafu)
+}
+
+/// Send an ActivityPub request where the response is expected to carry no body
+///
+/// Strongly-typed request function: the caller can invoke it in terms of the request payload and
+/// the expected response. If the request carries no body, pass `&()`. If the response is expected
+/// to carry a body, see [ap_request].
+pub async fn ap_request_no_response<B: ToJld>(
+    client: &mut ClientType,
+    origin: &Origin,
+    principal: Either<&User, &UserPrivateKey>,
+    url: &Url,
+    method: Method,
+    context: Option<Context>,
+    body: &B,
+) -> Result<()> {
+    let response = ap_request_core(client, origin, principal, url, method, context, body).await?;
+    if !response.status().is_success() {
+        return FailedApSnafu { rsp: response }.fail();
+    }
+
+    Ok(())
+}
+
 /// Resolve a key ID to a PublicKey
+// We can't know a priori if the peer implements authorized fetch, so we pretty-much *have* to sign
+// every `GET` request with the instance actor's private key.
 pub async fn resolve_key_id(
     key_id: &Url,
     client: &mut ClientType,
-    principal: Either<User, UserPrivateKey>,
+    principal: Either<&User, &UserPrivateKey>,
     origin: &Origin,
 ) -> Result<Actor> {
-    let request = Request::builder()
-        .method(Method::GET)
-        .header(http::header::ACCEPT, "application/activity+json")
-        .header(http::header::CONTENT_TYPE, "application/activity+json")
-        .extension((principal, origin.clone()))
-        .uri(key_id.as_str())
-        .body(bytes::Bytes::new())
-        .context(RequestSnafu)?;
+    ap_request(client, origin, principal, key_id, Method::GET, None, &()).await
+}
 
-    let body = client
-        .ready()
-        .await
-        .context(ResolveKeyIdReadySnafu {
-            key_id: key_id.clone(),
-        })?
-        .call(request)
-        .await
-        .context(ResolveKeyIdSnafu {
-            key_id: key_id.clone(),
-        })?
-        .into_body();
+#[cfg(test)]
+mod prototype {
+    use either::Either::Right;
+    use governor::{Quota, RateLimiter};
+    use indielinks_shared::{
+        entities::generate_rsa_keypair,
+        origin::{Host, Protocol, RegName},
+    };
+    use nonzero::nonzero;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
 
-    serde_json::from_slice::<Actor>(body.as_ref()).context(ActorDeSnafu { body })
+    use crate::{client::make_client, http::HostExtractor};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_ap_request() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/users/sp1ff"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(TEST_ACTOR_DOCUMENT))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/users/sp1ff/inbox"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut client = make_client(
+            "ap_entities::prototype Client/0.0.1 +sp1ff@pobox.com",
+            true,
+            HostExtractor,
+            RateLimiter::keyed(Quota::per_second(nonzero!(16u32)))
+                .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from([])),
+            &Default::default(),
+        )
+        .expect("Malformed client!?");
+        let origin = (
+            Protocol::Http,
+            Host::RegName(RegName::new("localhost").unwrap()),
+            1234,
+        )
+            .into();
+        let (_, private_key) = generate_rsa_keypair().unwrap();
+        let url =
+            Url::parse(&format!("{}/users/sp1ff", &mock_server.uri())).expect("Malformed URL!?");
+
+        let actor: Actor = ap_request(
+            &mut client,
+            &origin,
+            Right(&private_key),
+            &url,
+            Method::GET,
+            None,
+            &(),
+        )
+        .await
+        .unwrap();
+
+        // Anything-- just make sure the call went through
+        assert!(actor.preferred_username() == "sp1ff");
+
+        let accept = Accept::new(
+            ObjectField::Iri(Url::parse("https://indiemark.local/follows/1234").unwrap()),
+            ActorField::Iri(url),
+        );
+        let url = Url::parse(&format!("{}/users/sp1ff/inbox", &mock_server.uri()))
+            .expect("Malformed URL!?");
+        let _: () = ap_request_no_response(
+            &mut client,
+            &origin,
+            Right(&private_key),
+            &url,
+            Method::POST,
+            None,
+            &accept,
+        )
+        .await
+        .unwrap();
+    }
+    static TEST_ACTOR_DOCUMENT: &str = r#"{
+    "@context":[
+        "https://www.w3.org/ns/activitystreams",
+        "https://w3id.org/security/v1",
+        {
+            "manuallyApprovesFollowers":"as:manuallyApprovesFollowers",
+            "toot":"http://joinmastodon.org/ns#",
+            "featured":{
+                "@id":"toot:featured",
+                "@type":"@id"
+            },
+            "featuredTags":{
+                "@id":"toot:featuredTags",
+                "@type":"@id"
+            },
+            "alsoKnownAs":{
+                "@id":"as:alsoKnownAs",
+                "@type":"@id"
+            },
+            "movedTo":{
+                "@id":"as:movedTo",
+                "@type":"@id"
+            },
+            "schema":"http://schema.org#",
+            "PropertyValue":"schema:PropertyValue",
+            "value":"schema:value",
+            "discoverable":"toot:discoverable",
+            "suspended":"toot:suspended",
+            "memorial":"toot:memorial",
+            "indexable":"toot:indexable",
+            "attributionDomains":{
+                "@id":"toot:attributionDomains",
+                "@type":"@id"
+            },
+            "focalPoint":{
+                "@container":"@list",
+                "@id":"toot:focalPoint"
+            }
+        }
+    ],
+    "id":"https://indieweb.social/users/sp1ff",
+    "type":"Person",
+    "following":"https://indieweb.social/users/sp1ff/following",
+    "followers":"https://indieweb.social/users/sp1ff/followers",
+    "inbox":"https://indieweb.social/users/sp1ff/inbox",
+    "outbox":"https://indieweb.social/users/sp1ff/outbox",
+    "featured":"https://indieweb.social/users/sp1ff/collections/featured",
+    "featuredTags":"https://indieweb.social/users/sp1ff/collections/tags",
+    "preferredUsername":"sp1ff",
+    "name":"Michael",
+    "summary":"<p>I hack in Rust, Idris, Rocq, Lisp &amp; C++. interests include the Indieweb, the Fediverse, Emacs &amp; type theory. <a href=\"https://www.unwoundstack.com\" target=\"_blank\" rel=\"nofollow noopener\" translate=\"no\"><span class=\"invisible\">https://www.</span><span class=\"\">unwoundstack.com</span><span class=\"invisible\"></span></a></p>",
+    "url":"https://indieweb.social/@sp1ff",
+    "manuallyApprovesFollowers":false,
+    "discoverable":true,
+    "indexable":false,
+    "published":"2022-03-10T00:00:00Z",
+    "memorial":false,
+    "publicKey":{
+        "id":"https://indieweb.social/users/sp1ff#main-key",
+        "owner":"https://indieweb.social/users/sp1ff",
+        "publicKeyPem":"-----BEGIN PUBLIC KEY----- MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvT9wAaYPOvFLUU0eqMlz RI0ze26hkCYcYdwF3+CM986TmOEUhdQCRAQi4GruqPe6AIK9H4OjftnVbJ8B6Bwc ocIkAM4H7uk2nafcH6lVMvA2LeRQ40gY72D8n+8k1a5bZAl36Dq95uUolKsX6xq/ MnDs3N23YdNEAtIoSWGYWJGLhc0hZ/j1rmowlSTzRanpC+JhUMrG6/av9OSSoc7Y lJkG38TrPP/zPmWAUN3YYFrNR9+KlthKkBiE+ixRxMEz6WUT8m9s8zNOXfY1AgWo OBt7VRgdJucWZKvh53QLkbFN5Q7lYEAENvt2ZCNPTmrDXmtJ631J6+V8sVmR4mzf cwIDAQAB -----END PUBLIC KEY----- "
+    },
+    "tag":[
+    ],
+    "attachment":[
+    ],
+    "endpoints":{
+        "sharedInbox":"https://indieweb.social/inbox"
+    },
+    "icon":{
+        "type":"Image",
+        "mediaType":"image/jpeg",
+        "url":"https://cdn.masto.host/indiewebsocial/accounts/avatars/107/934/171/185/300/184/original/3c61e964400b8d4e.jpg"
+    },
+    "image":{
+        "type":"Image",
+        "mediaType":"image/jpeg",
+        "url":"https://cdn.masto.host/indiewebsocial/accounts/headers/107/934/171/185/300/184/original/8c2ab41be165ea81.jpeg"
+    }
+}"#;
 }

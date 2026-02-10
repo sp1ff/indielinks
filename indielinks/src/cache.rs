@@ -18,21 +18,12 @@
 //! The [indielinks](crate) interface to [indielinks-cache].
 
 use std::{
-    collections::BTreeMap,
     fmt::Debug,
-    net::SocketAddr,
     ops::{Bound, RangeBounds},
     sync::Arc,
 };
 
 use async_trait::async_trait;
-use axum::{
-    extract::{Json, State},
-    response::IntoResponse,
-    routing::{get, post},
-    Router,
-};
-use http::{header::CONTENT_TYPE, HeaderValue, StatusCode};
 use num_bigint::BigInt;
 use openraft::{
     error::NetworkError,
@@ -51,26 +42,20 @@ use scylla::{
     DeserializeRow, SerializeRow,
 };
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{from_value, to_value};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
-use tap::{Conv, Pipe, TryConv};
+use tap::{Pipe, TryConv};
 use tonic::Code;
-
-use indielinks_shared::entities::StorUrl;
+use tracing::{debug, error};
 
 use indielinks_cache::{
-    cache::Cache,
     network::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotError, InstallSnapshotRequest,
         InstallSnapshotResponse, RPCError, RPCOption, RaftError, VoteRequest, VoteResponse,
     },
-    raft::CacheNode,
     types::{CacheId, ClusterNode, NodeId, TypeConfig},
 };
-use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
-use tracing::{debug, error, info};
 
-use crate::{entities::FollowerId, indielinks::Indielinks, protobuf_interop::*};
+use crate::protobuf_interop::*;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -78,14 +63,6 @@ use crate::{entities::FollowerId, indielinks::Indielinks, protobuf_interop::*};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("Cache error: {source}"))]
-    Cache {
-        // The obvious approach, 👇, creates a cycle!
-        // source: indielinks_cache::cache::Error<GrpcClient>,
-        #[snafu(source(from(indielinks_cache::cache::Error::<GrpcClient>, Box::new)))]
-        source: Box<dyn std::error::Error + Send + Sync + 'static>,
-        backtrace: Backtrace,
-    },
     #[snafu(display("Failed to connect to gRPC endpoint: {source}"))]
     Conn {
         source: tonic::transport::Error,
@@ -98,12 +75,6 @@ pub enum Error {
     },
     #[snafu(display("Attempted to deserialize an invalid value for Flavor: {n}"))]
     FlavorDe { n: i8, backtrace: Backtrace },
-    #[snafu(display("Failed to deserialize {key} as a FollowerId: {source}"))]
-    FollowerId {
-        key: serde_json::Value,
-        source: serde_json::Error,
-        backtrace: Backtrace,
-    },
     #[snafu(display("openraft/protbuf interoperability error: {source}"))]
     Interop {
         source: crate::protobuf_interop::Error,
@@ -114,23 +85,14 @@ pub enum Error {
         source: tonic::Status,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to serialize an URL to JSON: {source}"))]
-    Url {
-        source: serde_json::Error,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("Failed to deserialize an URL to JSON: {source}"))]
-    UrlDe {
-        value: serde_json::Value,
-        source: serde_json::Error,
-        backtrace: Backtrace,
-    },
 }
 
 type Result<T> = std::result::Result<T, Error>;
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          Raft support                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -405,141 +367,6 @@ impl SerializeValue for LogIndex {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                          gRPC Service                                          //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-pub struct GrpcService {
-    cache_node: CacheNode<GrpcClientFactory>,
-    first_cache: Arc<Cache<GrpcClientFactory, FollowerId, StorUrl>>,
-}
-
-impl GrpcService {
-    pub fn new(
-        cache_node: CacheNode<GrpcClientFactory>,
-        first_cache: Arc<Cache<GrpcClientFactory, FollowerId, StorUrl>>,
-    ) -> GrpcService {
-        GrpcService {
-            cache_node,
-            first_cache,
-        }
-    }
-}
-
-// It seems a shame to lose the original error information, but there isn't a great way to map
-// internal errors to tonic errors.
-fn to_tonic<E: Debug>(err: E) -> tonic::Status {
-    tonic::Status::internal(format!("{err:?}"))
-}
-
-// Need to set this up more systematically, but for now:
-pub static FOLLOWER_TO_PUBLIC_INBOX: u64 = 1000;
-
-#[tonic::async_trait]
-impl protobuf::grpc_service_server::GrpcService for GrpcService {
-    async fn append_entries(
-        &self,
-        req: tonic::Request<protobuf::AppendEntriesRequest>,
-    ) -> StdResult<tonic::Response<protobuf::AppendEntriesResponse>, tonic::Status> {
-        self.cache_node
-            .append_entries(
-                AppendEntriesRequest::<TypeConfig>::try_from(req.into_inner()).map_err(to_tonic)?,
-            )
-            .await
-            .map_err(to_tonic)?
-            .try_conv::<protobuf::AppendEntriesResponse>()
-            .map_err(to_tonic)?
-            .conv::<tonic::Response<protobuf::AppendEntriesResponse>>()
-            .pipe(Ok)
-    }
-    async fn install_snapshot(
-        &self,
-        req: tonic::Request<protobuf::InstallSnapshotRequest>,
-    ) -> StdResult<tonic::Response<protobuf::InstallSnapshotResponse>, tonic::Status> {
-        self.cache_node
-            .install_snapshot(
-                InstallSnapshotRequest::<TypeConfig>::try_from(req.into_inner())
-                    .map_err(to_tonic)?,
-            )
-            .await
-            .map_err(to_tonic)?
-            .conv::<protobuf::InstallSnapshotResponse>()
-            .conv::<tonic::Response<protobuf::InstallSnapshotResponse>>()
-            .pipe(Ok)
-    }
-    /// Submit a vote during leader election
-    async fn vote(
-        &self,
-        req: tonic::Request<protobuf::VoteRequest>,
-    ) -> StdResult<tonic::Response<protobuf::VoteResponse>, tonic::Status> {
-        self.cache_node
-            .vote(VoteRequest::<NodeId>::try_from(req.into_inner()).map_err(to_tonic)?)
-            .await
-            .map_err(to_tonic)?
-            .conv::<protobuf::VoteResponse>()
-            .conv::<tonic::Response<protobuf::VoteResponse>>()
-            .pipe(Ok)
-    }
-    /// Insert a key, value pair into a cache
-    async fn cache_insert(
-        &self,
-        req: tonic::Request<protobuf::CacheInsertRequest>,
-    ) -> StdResult<tonic::Response<protobuf::CacheInsertResponse>, tonic::Status> {
-        let req = req.into_inner();
-
-        // OK-- here is where we need to "just know" the actual types for `K` & `V`, based upon the
-        // `cache_id`:
-        if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
-            let key = rmp_serde::from_slice::<crate::entities::FollowerId>(req.key.as_slice())
-                .map_err(to_tonic)?;
-            let value = rmp_serde::from_slice::<StorUrl>(req.value.as_slice()).map_err(to_tonic)?;
-            self.first_cache
-                .insert(key, value)
-                .await
-                .map_err(to_tonic)?;
-
-            Ok(protobuf::CacheInsertResponse {
-                cache_id: req.cache_id,
-                value: req.value,
-            }
-            .into())
-        } else {
-            Err(tonic::Status::invalid_argument(format!(
-                "Unknown cache {}",
-                req.cache_id
-            )))
-        }
-    }
-    /// Lookup a value given a key
-    async fn cache_lookup(
-        &self,
-        req: tonic::Request<protobuf::CacheLookupRequest>,
-    ) -> StdResult<tonic::Response<protobuf::CacheLookupResponse>, tonic::Status> {
-        info!("gRPC/cache_lookup: {req:?}");
-        let req = req.into_inner();
-
-        // OK-- here is where we need to "just know" the actual types for `K` & `V`, based upon the
-        // `cache_id`:
-        if FOLLOWER_TO_PUBLIC_INBOX == req.cache_id {
-            let key = rmp_serde::from_slice::<crate::entities::FollowerId>(req.key.as_slice())
-                .map_err(to_tonic)?;
-            let rsp = self.first_cache.get(&key).await.map_err(to_tonic)?;
-            Ok(protobuf::CacheLookupResponse {
-                cache_id: req.cache_id,
-                value: rsp
-                    .map(|rsp| rmp_serde::to_vec(&rsp).map_err(to_tonic))
-                    .transpose()?,
-            }
-            .into())
-        } else {
-            Err(tonic::Status::invalid_argument(format!(
-                "Unknown cache {}",
-                req.cache_id
-            )))
-        }
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                          gRPC Client                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -690,20 +517,6 @@ impl indielinks_cache::network::Client for GrpcClient {
         cache: CacheId,
         key: impl Into<K> + Send,
     ) -> Result<Option<V>> {
-        // let response = self
-        //     .ensure_connected()
-        //     .await?
-        //     .cache_lookup(try_into_cache_lookup_request(cache, key).context(InteropSnafu)?)
-        //     .await;
-        // debug!("cache_lookup(): response: {response:#?}");
-        // panic!();
-        // .context(TonicSnafu)?
-        // .into_inner()
-        // .pipe(|rsp| {
-        //     rsp.value
-        //         .map(|val| rmp_serde::from_slice::<V>(val.as_slice()).context(DeSnafu))
-        // })
-        // .transpose();
         self.ensure_connected()
             .await?
             .cache_lookup(try_into_cache_lookup_request(cache, key).context(InteropSnafu)?)
@@ -716,190 +529,4 @@ impl indielinks_cache::network::Client for GrpcClient {
             })
             .transpose()
     }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                     Cluster Admin Service                                      //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-async fn init_cluster(
-    State(state): State<Arc<Indielinks>>,
-    Json(req): Json<BTreeMap<NodeId, ClusterNode>>,
-) -> axum::response::Response {
-    info!(
-        "Initializing a Raft cluster with members: {:?}",
-        req.iter().collect::<Vec<(&NodeId, &ClusterNode)>>()
-    );
-    // This implementation seems awfully chatty, but I need to drill down into the `Err` variant in
-    // case we just failed because the cluster is already initialized.
-    match state.cache_node.initialize(req).await {
-        Ok(_) => {
-            info!("Successfully initialized your Raft cluster");
-            (StatusCode::OK).into_response()
-        }
-        Err(indielinks_cache::raft::Error::RaftInit { source }) => match *source {
-            RaftError::APIError(err) => match err {
-                openraft::error::InitializeError::NotAllowed(_) => {
-                    info!("Your Raft cluster is already initialized");
-                    (StatusCode::OK).into_response()
-                }
-                openraft::error::InitializeError::NotInMembers(not_in_members) => {
-                    error!("Initialization failed: {not_in_members:#?}");
-                    (StatusCode::BAD_REQUEST, Json(not_in_members)).into_response()
-                }
-            },
-            RaftError::Fatal(fatal) => {
-                error!("Fatal error while initializing the Raft cluster: {fatal:#?}");
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(fatal)).into_response()
-            }
-        },
-        Err(err) => {
-            error!("While initializing the Raft cluster: {err:#?}");
-            // It would be nice if I could just make `indielinks_cache::raft::Error` serializable,
-            // but various source error types themselves are not.
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response()
-        }
-    }
-}
-
-async fn metrics(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
-    Json(state.cache_node.metrics().await).into_response()
-}
-
-async fn add_learner(
-    State(state): State<Arc<Indielinks>>,
-    Json((id, addr)): Json<(NodeId, SocketAddr)>,
-) -> axum::response::Response {
-    info!("Adding Node ({id}, {addr}) in state 'learning' to the cluster");
-    match state
-        .cache_node
-        .add_learner(id, ClusterNode { addr }, true)
-        .await
-    {
-        Ok(rsp) => {
-            info!("Successfully added the new node as a learner.");
-            (StatusCode::OK, Json(rsp)).into_response()
-        }
-        Err(err) => {
-            error!("Failed to add the new node as a learner: {err:?}");
-            // It might be nice to forward this request to the leader (if we're not the leader), but
-            // for now just fail. Also, this can fail for a few reasons, not all of which are on the
-            // user's side... I should make this more fine-grained.
-            (StatusCode::BAD_REQUEST, Json(err)).into_response()
-        }
-    }
-}
-
-async fn change_membership(
-    State(state): State<Arc<Indielinks>>,
-    Json(req): Json<Vec<NodeId>>,
-) -> axum::response::Response {
-    info!("Changing Raft cluster membership to {:?}", req);
-    match state.cache_node.change_membership(req, false).await {
-        Ok(rsp) => {
-            info!("Successfully changed membership");
-            (StatusCode::OK, Json(rsp)).into_response()
-        }
-        Err(err) => {
-            error!("Failed to change membership: {err:?}");
-            // It might be nice to forward this request to the leader (if we're not the leader), but
-            // for now just fail. Also, this can fail for a few reasons, not all of which are on the
-            // user's side... I should make this more fine-grained.
-            (StatusCode::BAD_REQUEST, format!("{err:#?}")).into_response()
-        }
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CacheInsertRequest {
-    pub cache: CacheId,
-    pub key: serde_json::Value,
-    pub value: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CacheLookupRequest {
-    pub cache: CacheId,
-    pub key: serde_json::Value,
-}
-
-async fn query_cache(
-    State(state): State<Arc<Indielinks>>,
-    Json(req): Json<CacheLookupRequest>,
-) -> axum::response::Response {
-    info!("Querying cache for: {req:?}");
-    // Here, we have to "just know" the concrete types for the key & value. We can do this via the
-    // `cache` request parameter. At the time of this writing, there's only one cache.
-    if FOLLOWER_TO_PUBLIC_INBOX != req.cache {
-        return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();
-    }
-
-    async fn internal(
-        state: Arc<Indielinks>,
-        key: serde_json::Value,
-    ) -> Result<Option<serde_json::Value>> {
-        state
-            .first_cache
-            .get(&from_value::<FollowerId>(key.clone()).context(FollowerIdSnafu { key })?)
-            .await
-            .context(CacheSnafu)?
-            .map(to_value)
-            .transpose()
-            .context(UrlSnafu)
-    }
-
-    match internal(state, req.key).await {
-        Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-        // Really not sure how to map `err` to status codes!
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response(),
-    }
-}
-
-async fn insert_into_cache(
-    State(state): State<Arc<Indielinks>>,
-    Json(req): Json<CacheInsertRequest>,
-) -> axum::response::Response {
-    // Here, we have to "just know" the concrete types for the key & value. We can do this via the
-    // `cache` request parameter. At the time of this writing, there's only one cache.
-    if FOLLOWER_TO_PUBLIC_INBOX != req.cache {
-        return (StatusCode::BAD_REQUEST, format!("No cache {}", req.cache)).into_response();
-    }
-
-    async fn internal(
-        state: Arc<Indielinks>,
-        key: serde_json::Value,
-        value: serde_json::Value,
-    ) -> Result<()> {
-        state
-            .first_cache
-            .insert(
-                from_value::<FollowerId>(key.clone()).context(FollowerIdSnafu { key })?,
-                from_value::<StorUrl>(value.clone()).context(UrlDeSnafu { value })?,
-            )
-            .await
-            .context(CacheSnafu)
-    }
-
-    match internal(state, req.key, req.value).await {
-        Ok(_) => (StatusCode::CREATED).into_response(),
-        // Really not sure how to map `err` to status codes!
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response(),
-    }
-}
-
-pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
-    // Should probably add logging, maybe request ID?
-    Router::new()
-        .route("/init-cluster", post(init_cluster))
-        .route("/metrics", get(metrics))
-        .route("/add-learner", post(add_learner))
-        .route("/membership", post(change_membership))
-        .route("/cache-query", get(query_cache))
-        .route("/cache-insert", post(insert_into_cache))
-        .layer(SetResponseHeaderLayer::if_not_present(
-            CONTENT_TYPE,
-            HeaderValue::from_static("text/json; charset=utf-8"),
-        ))
-        .layer(CorsLayer::permissive())
-        .with_state(state)
 }

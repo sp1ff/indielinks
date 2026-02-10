@@ -21,17 +21,12 @@ use libtest_mimic::Failed;
 use reqwest::{blocking::Client, Url};
 use tracing::{debug, error};
 
-use indielinks_shared::entities::StorUrl;
-
 use indielinks_cache::{
     raft::StorageError,
     types::{ClusterNode, NodeId},
 };
 
-use indielinks::{
-    cache::{Backend, CacheInsertRequest, CacheLookupRequest, LogStore},
-    entities::FollowerId,
-};
+use indielinks::cache::{Backend, LogStore};
 
 struct Dropper {
     // backend: Arc<RwLock<dyn Backend + Send + Sync>>,
@@ -132,41 +127,7 @@ pub fn raft_ops(
         Some(0)
     );
 
-    // Alright-- let's hit the cache:
-    let follower_id = FollowerId::default();
-
-    let result = client
-        .get(ops.join("ops/cache/cache-query")?)
-        .json(&CacheLookupRequest {
-            cache: 1000,
-            key: serde_json::to_value(follower_id)?,
-        })
-        .send()?
-        .error_for_status()?
-        .json::<Option<StorUrl>>()?;
-    assert_eq!(result, None);
-
-    let url: StorUrl = Url::parse("http://foo.com")?.into();
-    client
-        .post(ops.join("ops/cache/cache-insert")?)
-        .json(&CacheInsertRequest {
-            cache: 1000,
-            key: serde_json::to_value(follower_id)?,
-            value: serde_json::to_value(&url)?,
-        })
-        .send()?
-        .error_for_status()?; // No particular return value ATM.
-
-    let result = client
-        .get(ops.join("ops/cache/cache-query")?)
-        .json(&CacheLookupRequest {
-            cache: 1000,
-            key: serde_json::to_value(follower_id)?,
-        })
-        .send()?
-        .error_for_status()?
-        .json::<Option<StorUrl>>()?;
-    assert_eq!(result, Some(url));
+    // Would be nice to be able to test the cache facility, here.
 
     debug!("Completed test raft_ops-- returning success.");
 

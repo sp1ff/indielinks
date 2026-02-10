@@ -175,3 +175,98 @@ where
         }
     }
 }
+
+// Don't gate this on cfg(test) so that other crates in the workspace can use it.
+pub mod null_client {
+
+    use std::convert::Infallible;
+
+    use async_trait::async_trait;
+    use openraft::{
+        error::{InstallSnapshotError, RPCError, RaftError},
+        network::RPCOption,
+        raft::{
+            AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
+            InstallSnapshotResponse, VoteRequest, VoteResponse,
+        },
+    };
+
+    use crate::{
+        network::Client,
+        types::{ClusterNode, NodeId, TypeConfig},
+    };
+
+    use super::*;
+
+    /// A trivial [Client] implementation, suitable only for use with single-node clusters
+    ///
+    /// Each method is `unimplemented!()`, which is alright because, in a single-node cluster,
+    /// they'll never be invoked.
+    #[derive(Clone, Debug)]
+    pub struct NullClient;
+
+    #[async_trait]
+    impl Client for NullClient {
+        type ErrorType = Infallible;
+        /// Append Raft log entries to the target node's log store
+        async fn append_entries(
+            &mut self,
+            _req: AppendEntriesRequest<TypeConfig>,
+            _option: RPCOption,
+        ) -> StdResult<
+            AppendEntriesResponse<NodeId>,
+            RPCError<NodeId, ClusterNode, RaftError<NodeId>>,
+        > {
+            unimplemented!()
+        }
+        /// Install a state snapshot on the target node
+        async fn install_snapshot(
+            &mut self,
+            _req: InstallSnapshotRequest<TypeConfig>,
+            _option: RPCOption,
+        ) -> StdResult<
+            InstallSnapshotResponse<NodeId>,
+            RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>,
+        > {
+            unimplemented!()
+        }
+        /// Request a leadership vote from the target node
+        async fn vote(
+            &mut self,
+            _req: VoteRequest<NodeId>,
+            _option: RPCOption,
+        ) -> StdResult<VoteResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>>
+        {
+            unimplemented!()
+        }
+        /// Ask the target node to insert a key/value pair into it's LRU cache
+        async fn cache_insert<K: Serialize + Sync, V: Serialize + Sync>(
+            &mut self,
+            _cache: CacheId,
+            _key: impl Into<K> + Send,
+            _value: impl Into<V> + Send,
+        ) -> StdResult<(), Self::ErrorType> {
+            unimplemented!()
+        }
+        /// Request a value for a given key from the target node
+        async fn cache_lookup<K: Serialize, V: DeserializeOwned>(
+            &mut self,
+            _cache: CacheId,
+            _key: impl Into<K> + Send,
+        ) -> StdResult<Option<V>, Self::ErrorType> {
+            unimplemented!()
+        }
+    }
+
+    /// A trivial [ClientFactory] suitable for testing one-node clusters.
+    #[derive(Clone, Debug)]
+    pub struct NullClientFactory;
+
+    #[async_trait]
+    impl ClientFactory for NullClientFactory {
+        type CacheClient = NullClient;
+        async fn new_client(&mut self, _target: NodeId, _node: &ClusterNode) -> Self::CacheClient {
+            NullClient
+        }
+    }
+}

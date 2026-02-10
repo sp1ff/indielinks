@@ -364,22 +364,23 @@
 //! to analyze this & even make part of the CI pipeline, but at the time of this writing, here it is
 //! (constructed manually):
 //!
-//! 1) actor, webfinger, users, delicious, webfinger
+//! 1) actor, webfinger, users, delicious, webfinger, grpc
 //!    - all the public endpoints
 //! 2) indielinks, activity-pub, dynamodb, scylla, client
 //!    - implementations of lower-level abstractions
-//! 3) ap-entities, background_tasks, cache
+//! 3) ap-entities, background_tasks
 //!    - internal subsystems
-//! 4) client-types (authn, http)
-//! 5) authn
-//! 6) storage, token, entities, acct
-//! 7) peppers, signing-keys, http
-//! 8) util, metrics
+//! 4) ap-resolution
+//! 5) client-types (authn, http)
+//! 6) authn
+//! 7) storage, token, entities, acct
+//! 8) peppers, signing-keys, http
+//! 9) util, metrics, cache
 //!    - depend on nothing
 //!
 //! ## Continuous Integration
 //!
-//! I've setup a conntinous integration job at Github. For the most part, however, it just
+//! I've setup a continous integration job at Github. For the most part, however, it just
 //! replicates the `signoff` script in the `admin` folder. I prefer to do my validation locally.
 //! Where a CI framework like Github Actions really shine is being able to run that validation on
 //! multiple platforms, using multiple toolchains, and so forth. Regrettably, the Github Action
@@ -413,7 +414,7 @@
 //!
 //! As a ressult, I'm simply not maintaining a ChangeLog for the indielinks project.
 //!
-//! Now, [keep a changelog] seems to mean something different by the workd "changelog", declaring
+//! Now, [keep a changelog] seems to mean something different by the word "changelog", declaring
 //! the "GNU changelog style guide, \[and\] the two-paragraph-long GNU NEWS file 'guideline'...
 //! inadequate or insufficient" which would be interesting if they only said in what way they were
 //! deficient. They don't, and the project's "[changelog]" looks to me like... a GNU [NEWS] file: "a
@@ -510,7 +511,7 @@
 //! layer. I think this makes sense, since at validation time, we're making API-level decisions
 //! (whether or not to bounce the request, e.g.), so it probably belongs where it is.
 //!
-//! [send_activity_pub](crate::activity_pub::send_activity_pub) & friends is a higher-level
+//! [ap_request](crate::ap_entities::ap_request) & friends is a higher-level
 //! "convenience" function; it takes care to:
 //!
 //! - actually build the request (given the URL, method, generic body)

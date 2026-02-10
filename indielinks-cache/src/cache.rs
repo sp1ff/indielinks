@@ -152,7 +152,7 @@ impl<F, K, V> Cache<F, K, V>
 where
     F: ClientFactory + Send + Sync + Clone + 'static,
     F::CacheClient: Clone + Send + Sync + 'static,
-    K: Eq + std::hash::Hash + Serialize + Send + Sync + Debug + for<'a> std::convert::From<&'a K>,
+    K: Clone + Eq + std::hash::Hash + Serialize + Send + Sync + Debug,
     V: Clone + DeserializeOwned + Serialize + Send + Sync,
 {
     pub fn new(id: CacheId, node: impl Into<CacheNode<F>>) -> Cache<F, K, V> {
@@ -171,7 +171,7 @@ where
         } else {
             Ok(self
                 .node
-                .cache_lookup::<K, V>(nodeid, self.id, k)
+                .cache_lookup::<K, V>(nodeid, self.id, k.clone())
                 .await
                 .context(LookupSnafu)?)
         }
@@ -188,5 +188,32 @@ where
                 .context(InsertSnafu)?;
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use crate::{network::null_client::NullClientFactory, types::InMemoryLogStore};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_trivial_cache() {
+        let cache_node = CacheNode::<NullClientFactory>::new(
+            &Default::default(),
+            NullClientFactory,
+            InMemoryLogStore::default(),
+        )
+        .await
+        .unwrap();
+        cache_node
+            .initialize([(0, Default::default())].into())
+            .await
+            .unwrap();
+        let cache: Cache<NullClientFactory, String, usize> = Cache::new(0, cache_node);
+        let key = "Hello".to_owned();
+        cache.insert(key.clone(), 11).await.unwrap();
+        assert!(cache.get(&key).await.unwrap().unwrap() == 11);
     }
 }

@@ -15,33 +15,40 @@
 
 //! Integration tests for background task processing.
 
-use governor::{Quota, RateLimiter};
-use indielinks::{
-    background_tasks::{
-        self, Backend as TasksBackend, BackgroundTask, BackgroundTasks, Config, Context, Sender,
-        TaggedTask, Task,
-    },
-    client::make_client,
-    http::HostExtractor,
-    storage::Backend as StorageBackend,
-};
-
-use indielinks_shared::origin::Origin;
-
-use async_trait::async_trait;
-use libtest_mimic::Failed;
-use nonzero::nonzero;
-use serde::{Deserialize, Serialize};
-use tower_gcra::extractors::KeyedDashmapMiddleware;
-use tracing::debug;
-use uuid::Uuid;
-
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
+};
+
+use async_trait::async_trait;
+use governor::{Quota, RateLimiter};
+use libtest_mimic::Failed;
+use nonzero::nonzero;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
+use tower_gcra::extractors::KeyedDashmapMiddleware;
+use tracing::debug;
+use url::Url;
+use uuid::Uuid;
+
+use indielinks_shared::origin::Origin;
+
+use indielinks_cache::{cache::Cache, raft::CacheNode, types::InMemoryLogStore};
+
+use indielinks::{
+    ap_entities::{Actor, Note},
+    ap_resolution::ApResolver,
+    background_tasks::{
+        self, Backend as TasksBackend, BackgroundTask, BackgroundTasks, Config, Context, Sender,
+        TaggedTask, Task,
+    },
+    cache::GrpcClientFactory,
+    client::make_client,
+    http::HostExtractor,
+    storage::Backend as StorageBackend,
 };
 
 static DATA1: AtomicBool = AtomicBool::new(false);
@@ -164,6 +171,35 @@ pub async fn first_background(
     // specialize at send time:
     let sender = tasks.clone();
 
+    let ap_client = make_client("user-agent",
+                                true,
+                                HostExtractor,
+                                RateLimiter::keyed(Quota::per_second(nonzero!(16u32)))
+                                    .use_middleware(KeyedDashmapMiddleware::from(vec![])),
+                                &Default::default())
+        .unwrap(/* known good */);
+
+    let cache_node = CacheNode::new(
+        &Default::default(),
+        GrpcClientFactory,
+        InMemoryLogStore::default(),
+    )
+    .await
+    .unwrap();
+    cache_node
+        .initialize([(0, Default::default())].into())
+        .await
+        .unwrap();
+    let actor_cache: Cache<GrpcClientFactory, Url, Actor> = Cache::new(0, cache_node.clone());
+    let note_cache: Cache<GrpcClientFactory, Url, Note> = Cache::new(1, cache_node);
+
+    let ap_resolver = Arc::new(Mutex::new(ApResolver::new(
+        origin.clone(),
+        ap_client.clone(),
+        Arc::new(actor_cache),
+        Arc::new(note_cache),
+    )));
+
     // `processor` is now the thing which we can control; we don't need `tasks` any more, so just
     // move it into the processor:
     let processor = background_tasks::new(
@@ -171,9 +207,10 @@ pub async fn first_background(
         Context {
             origin,
             storage,
-            ap_client: make_client("user-agent", true, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(16u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
+            ap_client,
             local_client: make_client("user-agent", false, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(32u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
             general_purpose_client: make_client("user-agent", false, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(4u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
+            ap_resolver
         },
         Some(Config {
             shutdown_timeout: Duration::from_secs(30),

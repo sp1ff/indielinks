@@ -16,16 +16,16 @@
 use std::{path::PathBuf, sync::Arc};
 
 use chrono::Duration;
-use indielinks_cache::{cache::Cache, raft::CacheNode};
+use indielinks_cache::raft::CacheNode;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use indielinks_shared::{entities::StorUrl, instance_state::InstanceStateV0, origin::Origin};
+use indielinks_shared::{instance_state::InstanceStateV0, origin::Origin};
 
 use crate::{
-    background_tasks::BackgroundTasks, cache::GrpcClientFactory, entities::FollowerId,
-    http::SameSite, peppers::Peppers, signing_keys::SigningKeys,
-    storage::Backend as StorageBackend,
+    ap_resolution::ApResolver, background_tasks::BackgroundTasks, http::SameSite, peppers::Peppers,
+    signing_keys::SigningKeys, storage::Backend as StorageBackend,
 };
 
 /// Application state available to all handlers
@@ -49,7 +49,5 @@ pub struct Indielinks {
     pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
-    // Proof of concept; will probably be moved out into a more general service.
-    // Also, behind an `Arc` because we need to share access with the Grpc server.
-    pub first_cache: Arc<Cache<GrpcClientFactory, FollowerId, StorUrl>>,
+    pub ap_resolver: Arc<Mutex<ApResolver>>,
 }

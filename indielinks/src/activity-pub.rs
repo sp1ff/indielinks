@@ -18,10 +18,10 @@
 //! ## Introduction
 //!
 //! I'm coding tentatively, here, but I'm feeling the need for a module that sits _above_
-//! [ap_entities] and _below_ modules containing public endpoints. The most immediate need is for a
-//! home for the logic for sending ActivityPub activities to federated servers, but I've been
-//! feeling that [actor]'s due for a re-factor for some time & it's likely things from there will
-//! end-up here, too.
+//! [ap_entities](crate::ap_entities) and _below_ modules containing public endpoints. The most
+//! immediate need is for a home for the logic for sending ActivityPub activities to federated
+//! servers, but I've been feeling that [actor]'s due for a re-factor for some time & it's likely
+//! things from there will end-up here, too.
 //!
 //! [actor]: crate::actor
 
@@ -31,32 +31,29 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use either::Either;
+use either::Either::{self, Left};
 use futures::{stream, StreamExt, TryStreamExt};
-use http::{header, Method, Request};
+use http::Method;
 use itertools::Itertools;
 use lazy_static::lazy_static;
-use reqwest::IntoUrl;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
 use tokio::time::Instant;
-use tower::{Service, ServiceExt};
 use tracing::{debug, warn};
 use url::Url;
 use uuid::Uuid;
 
 use indielinks_shared::{
-    entities::{PostId, StorUrl, UserId, UserPrivateKey, Username},
+    entities::{PostId, StorUrl, UserId, Username},
     origin::Origin,
 };
 
 use crate::{
     ap_entities::{
-        self, make_follow_id, make_user_id, Actor, Create, Follow, Jld, Note, Recipient, ToJld,
-        Type,
+        ap_request, ap_request_no_response, make_follow_id, make_user_id, Actor, Create, Follow,
+        Note, Recipient, ToJld, Type,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
     client_types::ClientType,
@@ -213,104 +210,13 @@ type StdResult<T, E> = std::result::Result<T, E>;
 //                                           Utilities                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// This allows us to call `send_activity_pub*` for requests with no body by specifying `()` aas the
+// This allows us to call `send_activity_pub*` for requests with no body by specifying `()` as the
 // body type. The return value doesn't matter-- the trait method will never be invoked in this case.
 // Still not sure this is how I want to model it.
 impl ToJld for () {
     fn get_type(&self) -> Type {
         Type::Accept // Just pick anything
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn send_activity_pub_core<U: IntoUrl, B: ToJld + std::fmt::Debug>(
-    user: &User,
-    origin: &Origin,
-    method: Method,
-    url: U,
-    body: Option<&B>,
-    context: Option<ap_entities::Context>,
-    client: &mut ClientType,
-) -> Result</*reqwest::Response*/ http::Response<Bytes>> {
-    let url = url.into_url().context(UrlSnafu)?;
-
-    let request = Request::builder()
-        .method(method)
-        .uri(url.as_str())
-        .extension((
-            Either::<User, UserPrivateKey>::Left(user.clone()),
-            origin.clone(),
-        ))
-        .header(header::ACCEPT, "application/activity+json")
-        .header(header::CONTENT_TYPE, "application/activity+json")
-        .body::<Bytes>(
-            body.map(|b| Jld::new(b, context).context(JldSnafu))
-                .transpose()?
-                .map(|jld| jld.into())
-                .unwrap_or_default(),
-        )
-        .context(BuildRequestSnafu)?;
-
-    client
-        .ready()
-        .await
-        .context(RequestReadySnafu)?
-        .call(request)
-        .await
-        .context(RequestSnafu)
-}
-
-// Consider a redesign of this API once ActivityPub support is fully implemented
-#[allow(clippy::too_many_arguments)]
-pub async fn send_activity_pub_no_response<U: IntoUrl, B: ToJld + std::fmt::Debug>(
-    user: &User,
-    origin: &Origin,
-    method: Method,
-    url: U,
-    body: Option<&B>,
-    context: Option<ap_entities::Context>,
-    client: &mut ClientType,
-) -> Result<()> {
-    let response = send_activity_pub_core(user, origin, method, url, body, context, client).await?;
-
-    debug!("Got a response of {:?}", response);
-
-    if !response.status().is_success() {
-        return FailedApSnafu {
-            rsp: Box::new(response),
-        }
-        .fail();
-    }
-
-    Ok(())
-}
-
-/// Send an ActivityPub entity, return the response as an ActivityPub entity
-// Consider a redesign of this API once ActivityPub support is fully implemented
-#[allow(clippy::too_many_arguments)]
-pub async fn send_activity_pub<
-    U: IntoUrl,
-    B: ToJld + std::fmt::Debug,
-    R: for<'de> Deserialize<'de>,
->(
-    user: &User,
-    origin: &Origin,
-    method: Method,
-    url: U,
-    body: Option<&B>,
-    context: Option<ap_entities::Context>,
-    client: &mut ClientType,
-) -> Result<R> {
-    let response = send_activity_pub_core(user, origin, method, url, body, context, client).await?;
-
-    debug!("Got a response of {:?}", response);
-
-    if !response.status().is_success() {
-        return FailedApSnafu { rsp: response }.fail();
-    }
-
-    let body = response.into_body();
-    serde_json::from_slice::<R>(body.as_ref()).context(RspJsonSnafu)
 }
 
 /// Resolve a collection of [Recipient]s to a set of indielinks [User]s
@@ -492,32 +398,6 @@ impl SendCreate {
             create_time: *create_time,
         }
     }
-    /// Resolve a follower (in the form of a [UserUrl]) to a public inbox
-    // This should be factored-out
-    async fn follower_to_public_inbox(
-        user: &User,
-        origin: &Origin,
-        follower: &StorUrl,
-        client: &mut ClientType,
-    ) -> Result<Url> {
-        debug!("Resolving follower {:?} to a public inbox...", follower);
-        send_activity_pub::<&'_ str, (), Actor>(
-            user,
-            origin,
-            Method::GET,
-            follower.as_ref(),
-            None,
-            None,
-            client,
-        )
-        .await?
-        .shared_inbox()
-        .context(NoSharedInboxSnafu {
-            username: user.username().clone(),
-        })?
-        .clone()
-        .pipe(Ok)
-    }
 }
 
 struct PendingCall {
@@ -592,9 +472,7 @@ impl Task<Context> for SendCreate {
 
             debug!("Will send: {:?}", create);
 
-            // `pending_calls` is a list of, well, pending calls. This is kinda lame: we're making a
-            // network call to resolve each follower to a public inbox, when that's unlikely to
-            // change (since the last such call). I'm going to need to build a cache.
+            // `pending_calls` is a list of, well, pending calls.
             let (proto_calls, errs): (Vec<_>, Vec<_>) = context
                 .storage
                 .get_followers(&user)
@@ -604,17 +482,20 @@ impl Task<Context> for SendCreate {
                 })?
                 .and_then(|follower| {
                     let user = user.clone();
-                    let origin = context.origin.clone();
-                    let mut client = context.ap_client.clone();
+                    let ap_resolver = context.ap_resolver.clone();
                     async move {
-                        SendCreate::follower_to_public_inbox(
-                            &user,
-                            &origin,
-                            follower.actor_id(),
-                            &mut client,
-                        )
-                        .await
-                        .map_err(crate::storage::Error::new)
+                        ap_resolver
+                            .lock()
+                            .await
+                            .actor_id_to_shared_inbox(Left(&user), follower.actor_id().as_ref())
+                            .await
+                            .map_err(crate::storage::Error::new)?
+                            .ok_or(crate::storage::Error::new(
+                                NoSharedInboxSnafu {
+                                    username: user.username().clone(),
+                                }
+                                .build(),
+                            ))
                     }
                 })
                 .collect::<Vec<StdResult<Url, _>>>()
@@ -653,14 +534,14 @@ impl Task<Context> for SendCreate {
                 // the retry facility offered by `send_activity_pub`-- we'll handle that here so as
                 // to interleave the retries.
                 let mut client3 = context.ap_client.clone();
-                match send_activity_pub_no_response::<&'_ str, Create>(
-                    &user,
-                    &context.origin,
-                    Method::POST,
-                    this_call.inbox.as_ref(),
-                    Some(&create),
-                    None,
+                match ap_request_no_response(
                     &mut client3,
+                    &context.origin,
+                    Left(&user),
+                    &this_call.inbox,
+                    Method::POST,
+                    None,
+                    &create,
                 )
                 .await
                 {
@@ -740,19 +621,10 @@ impl SendFollow {
         actorid: &Url,
         client: &mut ClientType,
     ) -> Result<Url> {
-        send_activity_pub::<&'_ str, (), Actor>(
-            user,
-            origin,
-            Method::GET,
-            actorid.as_str(),
-            None,
-            None,
-            client,
-        )
-        .await?
-        .inbox()
-        .clone()
-        .pipe(Ok)
+        let actor: Actor = ap_request(client, origin, Left(user), actorid, Method::GET, None, &())
+            .await
+            .context(ApSnafu)?;
+        actor.inbox().clone().pipe(Ok)
     }
 }
 
@@ -803,16 +675,17 @@ impl Task<Context> for SendFollow {
             );
 
             let mut client3 = context.ap_client.clone();
-            send_activity_pub_no_response::<Url, Follow>(
-                &this.user,
-                &context.origin,
-                Method::POST,
-                inbox,
-                Some(&follow),
-                None,
+            ap_request_no_response(
                 &mut client3,
+                &context.origin,
+                Left(&this.user),
+                &inbox,
+                Method::POST,
+                None,
+                &follow,
             )
             .await
+            .context(ApSnafu)
         }
 
         exec1(self, context)

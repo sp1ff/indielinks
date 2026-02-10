@@ -976,15 +976,8 @@ where
         cache_id: CacheId,
         k: impl Into<K> + Send,
     ) -> StdResult<Option<V>, CacheError<F::CacheClient>> {
-        debug!("Outer CacheNode {node_id}: cache_lookup-- calling inner.");
         let mut x = self.inner.write().await;
-        debug!("CP100");
         x.cache_lookup(node_id, cache_id, k).await
-        // self.inner
-        //     .write()
-        //     .await
-        //     .cache_lookup(node_id, cache_id, k)
-        //     .await
     }
     pub async fn append_entries(
         &self,

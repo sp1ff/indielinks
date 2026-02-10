@@ -44,6 +44,7 @@ toml = "0.8.19"
 tower-gcra = { git = "https://github.com/sp1ff/tower-gcra.git", version = "0.0.1" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+url = "2.5.8"
 uuid = "1.15.1"
 wiremock = "0.6.3"
 

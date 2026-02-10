@@ -60,7 +60,7 @@ use tap::Pipe;
 use tokio::{
     net::TcpListener,
     signal::unix::{signal, SignalKind},
-    sync::{mpsc, Notify},
+    sync::{mpsc, Mutex as TokioMutex, Notify},
 };
 use tonic::transport::Server as TonicServer;
 use tower_http::{
@@ -78,7 +78,6 @@ use tracing_subscriber::{
 use url::Url;
 
 use indielinks_shared::{
-    entities::StorUrl,
     origin::{NetLoc, Origin},
     service::ExponentialBackoffParameters,
 };
@@ -91,16 +90,15 @@ use indielinks_cache::{
 
 use indielinks::{
     actor::make_router as make_actor_router,
+    ap_entities::{Actor, Note},
+    ap_resolution::ApResolver,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
-    cache::{
-        make_router as make_cache_router, Backend as CacheBackend, GrpcClientFactory, GrpcService,
-        LogStore, FOLLOWER_TO_PUBLIC_INBOX,
-    },
+    cache::{Backend as CacheBackend, GrpcClientFactory, LogStore},
     client::make_client,
     define_metric,
     delicious::make_router as make_delicious_router,
     dynamodb::Location as DynamoLocation,
-    entities::FollowerId,
+    grpc::{make_router as make_cache_router, GrpcService, ACTOR_ID_TO_ACTOR, NOTE_ID_TO_NOTE},
     http::HostKey,
     indielinks::Indielinks,
     metrics::check_metric_names,
@@ -1015,6 +1013,31 @@ async fn serve(
             .await
             .context(SchemaCheckSnafu)?;
 
+        // This will need to be re-thought as the number (and types) of caches grows, but for now:
+        let cache_node = CacheNode::<GrpcClientFactory>::new(
+            &cfg.raft_config,
+            GrpcClientFactory,
+            LogStore::new(cache),
+        )
+        .await
+        .context(CacheNodeSnafu)?;
+
+        // Alright-- setup shared state for the web service itself:
+        let actors = Arc::new(Cache::<GrpcClientFactory, Url, Actor>::new(
+            ACTOR_ID_TO_ACTOR,
+            cache_node.clone(),
+        ));
+        let notes = Arc::new(Cache::<GrpcClientFactory, Url, Note>::new(
+            NOTE_ID_TO_NOTE,
+            cache_node.clone(),
+        ));
+        let ap_resolver = Arc::new(TokioMutex::new(ApResolver::new(
+            cfg.public_origin.clone(),
+            ap_client.clone(),
+            actors.clone(),
+            notes.clone(),
+        )));
+
         // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`
         // is a task processing implementation backed by our datastore.
         let nosql_tasks = Arc::new(BackgroundTasks::new(tasks));
@@ -1027,26 +1050,13 @@ async fn serve(
             local_client: local_client.clone(),
             general_purpose_client: general_purpose_client.clone(),
             storage: storage.clone(),
+            ap_resolver: ap_resolver.clone(),
         };
         // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
         // processing in an orderly manner:
         let task_processor =
             background_tasks::new(nosql_tasks, context, Some(cfg.background_tasks().clone()))
                 .context(BackgroundTasksSnafu)?;
-        // This will need to be re-thought as the number (and types) of caches grows, but for now:
-        let cache_node = CacheNode::<GrpcClientFactory>::new(
-            &cfg.raft_config,
-            GrpcClientFactory,
-            LogStore::new(cache),
-        )
-        .await
-        .context(CacheNodeSnafu)?;
-
-        // Alright-- setup shared state for the web service itself:
-        let first_cache = Arc::new(Cache::<GrpcClientFactory, FollowerId, StorUrl>::new(
-            FOLLOWER_TO_PUBLIC_INBOX,
-            cache_node.clone(),
-        ));
 
         let state = Arc::new(Indielinks {
             origin: cfg.public_origin.clone(),
@@ -1068,7 +1078,7 @@ async fn serve(
             assets: cfg.assets.clone().unwrap_or(PathBuf::from("assets")),
             task_sender,
             cache_node: cache_node.clone(),
-            first_cache: first_cache.clone(),
+            ap_resolver,
         });
 
         let world_nfy = Arc::new(Notify::new());
@@ -1107,7 +1117,7 @@ async fn serve(
 
         let mut grpc_server = std::pin::pin!(TonicServer::builder().serve_with_shutdown(
             cfg.raft_grpc_address,
-            GrpcServiceServer::new(GrpcService::new(cache_node, first_cache)),
+            GrpcServiceServer::new(GrpcService::new(cache_node, actors, notes)),
             grpc_nfy.notified()
         ));
 
