@@ -2,7 +2,7 @@
 #+DESCRIPTION: Installation instructions for indielinks
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2026-02-04 Wed 10:05>
+#+DATE: <2026-02-14 Sat 07:32>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -12,6 +12,8 @@
 Ultimately, I hope to see indielinks instances publicly available on the web. For now, however, it must be run locally. I've uploaded a pacman =PKGBUILD= to the [[https://aur.archlinux.org/][AUR]] (Arch User Repository) [[https://aur.archlinux.org/packages/indielinks-git][here]], and I'm hosting Debian binary packages at my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]].
 
 In either of these cases, the package only puts the files in their place. After the installation, you'll need to hand-edit =/etc/indielinks.toml= to say where to reach ScyllaDB or DynamoDB, along with any required credentials, then run =indielinks-post-install=, which will create and/or update the data schema & start the server.
+
+You have to decide whether to run indielinks as a systemd unit, or as an independent, System V-style daemon process. In the latter case, run =indielinks-post-install= with the =--no-systemd= flag, and use the =indielinks-ctl= script to control it. Either way, run =indielinks-post-install --help= to see the options you'll need to provide (ScyllaDB/DynamoDB location, credentials & like that).
 
 After the initial install, you'll want to create your first user:
 

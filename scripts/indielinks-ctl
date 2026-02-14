@@ -9,6 +9,13 @@ function start() {
     local local_state="$1"
     local user="$2"
     local group="$3"
+
+    if [ ! -d "$local_state" ]; then
+        sudo mkdir -p "$local_state"
+        sudo chown -R "$user:$group" "$local_state"
+        sudo chmod 0755 "$local_state"
+    fi
+
     RUST_LOG=${RUST_LOG:-"${rust_log}"}                         \
             sudo --preserve-env=RUST_LOG -u "$user" -g "$group" \
             indielinksd                                         \
