@@ -51,7 +51,7 @@
 //! Instead, I'm landing in between by (ab)using the data store to hold serialized tasks while a
 //! single background task (in each process) picks them up from that queue & executes them. This
 //! preserves indlielinks' ability to run in a cluster by pushing the synchronization down to the
-//! datastore. Handlers> can "send" tasks to the system; once that operation returns successfully,
+//! datastore. Handlers can "send" tasks to the system; once that operation returns successfully,
 //! they can proceed with the guarantee that the task has been persisted and hence won't be "lost"
 //! should indielinks shut-down before it's executed. The task will use DynamoDB & Scylla primitives
 //! to atomically update persisted tasks with a "lease" indicating that no one else should pick-up
@@ -160,7 +160,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Trait defining a "task" for our purposes.
 ///
 /// This is intentionally as general as possible: this system can handle any task that is [Send],
-/// and that convert itself into an async function yielding a `Result<()>`. Persuant to the last
+/// and that converts itself into an async function yielding a `Result<()>`. Persuant to the last
 /// point, note especially that the `exec()` method consumes the task!
 // This trait *must* be object-safe in order to allow `process()` (below) to handle tasks in a
 // generic way.

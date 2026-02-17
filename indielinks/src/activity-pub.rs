@@ -638,31 +638,52 @@ impl Task<Context> for SendFollow {
         );
 
         async fn exec1(this: Box<SendFollow>, context: Context) -> Result<()> {
-            // Ugh-- this needs to be cleaned-up.
-            let userurl = StorUrl::from(this.actorid.clone());
+            let mut client = context.ap_client.clone();
 
-            let mut client2 = context.ap_client.clone();
-            let inbox = SendFollow::inbox_for_actor(
-                &this.user,
+            // It's possible that `actorid` may not be the ActivityPub ID of the actor we wish to
+            // follow. For instance, when testing against Mastodon locally,
+            // `http://localhost:3001/users/admin` might have an ID of
+            // `http://localhost:3001/ap/users/116133685929577914`. Since that's what will come back
+            // in the Accept message, we need them to match.
+            let actor: Actor = ap_request(
+                &mut client,
                 &context.origin,
+                Left(&this.user),
                 &this.actorid,
-                &mut client2,
+                Method::GET,
+                None,
+                &(),
             )
-            .await?;
+            .await
+            .context(ApSnafu)?;
+            debug!("Got a response of {actor:#?}");
+            debug!("actor.id() returns: {}", actor.id());
+            let actorid = actor.id().clone();
+
+            debug!("Resolved the ActorID to {actorid}");
+
+            let inbox =
+                SendFollow::inbox_for_actor(&this.user, &context.origin, &actorid, &mut client)
+                    .await?;
+
+            debug!("Resolved the actor inbox to {inbox}");
 
             // Let's write the new follow to the database,
+            let userurl = StorUrl::from(actorid.clone()); // Just... ugh.
             context
                 .storage
                 .add_following(&this.user, &userurl, &this.id)
                 .await
                 .context(AddFollowingSnafu {
                     username: this.user.username().clone(),
-                    actorid: Box::new(this.actorid.clone()),
+                    actorid: Box::new(actorid.clone()),
                 })?;
+
+            debug!("Wrote {actorid} into the \"following\" table.\"");
 
             // then send the `Follow`
             let follow = Follow::new(
-                this.actorid.clone(),
+                actorid.clone(),
                 make_follow_id(this.user.username(), &this.id, &context.origin).context(
                     FollowIdSnafu {
                         username: this.user.username().clone(),
@@ -674,9 +695,10 @@ impl Task<Context> for SendFollow {
                 })?,
             );
 
-            let mut client3 = context.ap_client.clone();
-            ap_request_no_response(
-                &mut client3,
+            debug!("Sending {follow:?}");
+
+            let res = ap_request_no_response(
+                &mut client,
                 &context.origin,
                 Left(&this.user),
                 &inbox,
@@ -685,7 +707,11 @@ impl Task<Context> for SendFollow {
                 &follow,
             )
             .await
-            .context(ApSnafu)
+            .context(ApSnafu);
+
+            debug!("SendFollow :=> {res:?}");
+
+            res
         }
 
         exec1(self, context)

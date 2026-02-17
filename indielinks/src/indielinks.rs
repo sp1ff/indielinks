@@ -16,17 +16,22 @@
 use std::{path::PathBuf, sync::Arc};
 
 use chrono::Duration;
-use indielinks_cache::raft::CacheNode;
+use lru::LruCache;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use indielinks_shared::{instance_state::InstanceStateV0, origin::Origin};
+use indielinks_shared::{entities::UserId, instance_state::InstanceStateV0, origin::Origin};
+
+use indielinks_cache::raft::CacheNode;
 
 use crate::{
-    ap_resolution::ApResolver, background_tasks::BackgroundTasks, http::SameSite, peppers::Peppers,
-    signing_keys::SigningKeys, storage::Backend as StorageBackend,
+    ap_resolution::ApResolver, background_tasks::BackgroundTasks, home_timeline::Timeline,
+    http::SameSite, peppers::Peppers, signing_keys::SigningKeys,
+    storage::Backend as StorageBackend,
 };
+
+pub type HomeTimelines = LruCache<UserId, Timeline>;
 
 /// Application state available to all handlers
 pub struct Indielinks {
@@ -49,5 +54,13 @@ pub struct Indielinks {
     pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
+    // Shared, mutable access to the resolver needed, therefore we need an
+    // `Arc<thing that can give a mutable borrow>`; `ApResolver`, being a cache, pretty-much always
+    // requires a mutable borrow, so I used a `Mutex` instead of an `RwLock`.
+    //
+    // This is pretty sub-optimal, since it means we're going to be locking access to the resolver
+    // for the duration of internet calls, making this a real bottleneck.
     pub ap_resolver: Arc<Mutex<ApResolver>>,
+    // Similarly here.
+    pub home_timelines: Arc<Mutex<HomeTimelines>>,
 }

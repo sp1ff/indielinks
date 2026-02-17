@@ -113,7 +113,7 @@ impl Accept {
             .transpose()
             .context(HeaderValueSnafu)?
             .map(|s| {
-                tracing::warn!("s is ``{}''", s);
+                debug!("s is ``{}''", s);
                 if s.contains("application/ld+json") || s.contains("application/activity+json") {
                     Ok(Accept::ActivityPub)
                 } else if s == "text/html" || s == "*/*" {

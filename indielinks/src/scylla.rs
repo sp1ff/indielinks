@@ -1038,7 +1038,7 @@ impl Session {
             "insert into post_replies (post_id, reply_url, created, visibility) values (?, ?, ?, ?) if not exists", // AddReply
             "insert into post_shares (post_id, share_url, created, visibility) values (?, ?, ?, ?) if not exists", // AddShare
             "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollows
-            "update following set accepted = true where user_id = ? and actor_id = ?",
+            "update following set accepted = true where user_id = ? and actor_id = ? if exists", // ConfirmFollow
             "insert into followers (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollowerss
             "select count(*) from followers where user_id = ?", // CountFollowers
             "select count(*) from following where user_id = ?", // CountFollowing
@@ -1313,7 +1313,7 @@ impl storage::Backend for Session {
         &self,
         user: &User,
         following: &StorUrl,
-    ) -> StdResult<(), StorError> {
+    ) -> StdResult<bool, StorError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::ConfirmFollow],
@@ -1321,7 +1321,9 @@ impl storage::Backend for Session {
             )
             .await
             .map_err(StorError::new)?;
-        Ok(())
+        // This is unfortunate: "there is no way to know whether creation or update occurred."
+        // <https://opensource.docs.scylladb.com/stable/cql/dml/update.html>
+        Ok(true) // This seems like a bug.
     }
 
     async fn delete_post(&self, user: &User, url: &StorUrl) -> StdResult<bool, StorError> {

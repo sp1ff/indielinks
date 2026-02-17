@@ -41,9 +41,12 @@ pub mod dynamodb;
 pub mod dynamodb_schemas;
 pub mod entities;
 pub mod grpc;
+#[path = "home-timeline.rs"]
+pub mod home_timeline;
 pub mod http;
 pub mod indielinks;
 pub mod metrics;
+pub mod ops;
 pub mod peppers;
 #[path = "protobuf-interop.rs"]
 pub mod protobuf_interop;

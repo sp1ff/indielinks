@@ -364,18 +364,19 @@
 //! to analyze this & even make part of the CI pipeline, but at the time of this writing, here it is
 //! (constructed manually):
 //!
-//! 1) actor, webfinger, users, delicious, webfinger, grpc
+//! 1) actor, webfinger, users, delicious, webfinger, grpc, ops
 //!    - all the public endpoints
 //! 2) indielinks, activity-pub, dynamodb, scylla, client
 //!    - implementations of lower-level abstractions
-//! 3) ap-entities, background_tasks
+//! 3) home-timeline
+//! 4) ap-entities, background_tasks
 //!    - internal subsystems
-//! 4) ap-resolution
-//! 5) client-types (authn, http)
-//! 6) authn
-//! 7) storage, token, entities, acct
-//! 8) peppers, signing-keys, http
-//! 9) util, metrics, cache
+//! 5) ap-resolution
+//! 6) client-types (authn, http)
+//! 7) authn
+//! 8) storage, token, entities, acct
+//! 9) peppers, signing-keys, http
+//! 10) util, metrics, cache
 //!    - depend on nothing
 //!
 //! ## Continuous Integration

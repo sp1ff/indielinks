@@ -100,13 +100,16 @@ use indielinks::{
     dynamodb::Location as DynamoLocation,
     grpc::{make_router as make_cache_router, GrpcService, ACTOR_ID_TO_ACTOR, NOTE_ID_TO_NOTE},
     http::HostKey,
-    indielinks::Indielinks,
+    indielinks::{HomeTimelines, Indielinks},
     metrics::check_metric_names,
+    ops::make_router as make_timelines_router,
     peppers::Peppers,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
-    users::{make_router as make_user_router, Configuration as UsersConfiguration},
+    users::{
+        make_router as make_user_router, timeline_internal, Configuration as UsersConfiguration,
+    },
     util::Credentials,
     webfinger::webfinger,
 };
@@ -881,6 +884,8 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
 fn make_local_router(state: Arc<Indielinks>) -> Router {
     Router::new()
         .nest("/ops/cache", make_cache_router(state.clone()))
+        .nest("/ops/timelines", make_timelines_router(state.clone()))
+        .route("/ops/timeline", get(timeline_internal))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1079,6 +1084,7 @@ async fn serve(
             task_sender,
             cache_node: cache_node.clone(),
             ap_resolver,
+            home_timelines: Arc::new(TokioMutex::new(HomeTimelines::new(nonzero!(256usize)))),
         });
 
         let world_nfy = Arc::new(Notify::new());

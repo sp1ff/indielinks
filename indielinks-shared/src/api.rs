@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZero};
 
 use chrono::{DateTime, NaiveDate, Utc};
+use nonempty_collections::NEVec;
 use secrecy::{CloneableSecret, SecretBox, SerializableSecret, zeroize::Zeroize};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -229,3 +230,106 @@ pub struct MintKeyReq {
 pub struct MintKeyRsp {
     pub key_text: String,
 }
+
+/// Opaque type representing a pagination token
+///
+/// Callers cannot create instances of this type; they are returned in response to timeline requests
+/// and represent a particular post in a user's timeline. They are intended to be specified as as
+/// "before" or "since" parameters to subsequent timeline requests.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TimelineToken(String);
+
+impl AsRef<[u8]> for TimelineToken {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl TimelineToken {
+    // Super-lame: I want this type to be visible to everyone, but only constructable from the API's
+    // implementation in a higher-level module, on the back-end only.
+    #[cfg(feature = "__internal")]
+    #[doc(hidden)]
+    pub fn new_internal(token: String) -> TimelineToken {
+        Self(token)
+    }
+}
+
+/// A timeline request body
+// External tagging (the default) should work, here. `Since { since: 123, max_posts: None }` should
+// serialize, in JSON, to { "Since": { "before": 123 } }, which I think is what we want.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub enum TimelineReq {
+    /// Request the initial chunk of a user's timeline
+    Initial {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_posts: Option<NonZero<usize>>,
+    },
+    /// Request a page of posts since a particular point in a user's timeline
+    // "Return to me up to n posts since the most recent one I've seen". This will return up to
+    // `max_posts` feed items whose identifiers/tags are strictly later than `since`
+    Since {
+        since: TimelineToken,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_posts: Option<NonZero<usize>>,
+    },
+    /// Request a page of posts prior to a particular point in a user's timeline
+    Before {
+        before: TimelineToken,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_posts: Option<NonZero<usize>>,
+    },
+}
+
+/// A timeline post.
+///
+/// This defines a type encapsulating a "post"; not in the del.icio.us sense, not in the ActivityPub
+/// sense, but in the sense of the indielinks UX.
+// This is early code; I just knocked this together for front end prototyping purposes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeedPost {
+    pub id: Url,
+    pub in_reply_to: Option<Url>,
+    pub published: DateTime<Utc>,
+    // I'm not sure how I want to represent this; when & how should this be sanitized?
+    pub content: String,
+}
+
+// For each sort of timeline request, the response may contain no posts, even on
+// success (there could simply *be* no posts of the requested sort).
+
+/// An initial page of a non-empty timeline
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineInitialPage {
+    pub posts: NEVec<FeedPost>,
+    pub since: TimelineToken,
+    pub before: TimelineToken,
+}
+
+/// Response payload for an initial timeline request
+pub type TimelineInitialRsp = Option<TimelineInitialPage>;
+
+/// A page of more-recent posts from a timeline
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineSincePage {
+    pub posts: NEVec<FeedPost>,
+    pub since: TimelineToken,
+}
+
+/// Response payload for a timeline request for posts more recent than a given point
+pub type TimelineSinceRsp = Option<TimelineSincePage>;
+
+/// A page of older posts from a timeline
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimelineBeforePage {
+    pub posts: NEVec<FeedPost>,
+    pub before: TimelineToken,
+}
+
+/// Response payload for a timeline request for posts older than a given point
+pub type TimelineBeforeRsp = Option<TimelineBeforePage>;

@@ -1,7 +1,7 @@
 #+TITLE: README
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2026-02-03 Tue 15:23>
+#+DATE: <2026-02-14 Sat 16:04>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -50,7 +50,7 @@ There are a few reasons:
     the glibc version on my development machine is several versions
     ahead of that found on Debian hosts, leading to failures to start
     during testing; this arrangement ensures that the binaries built
-    into the package will actually run in Debian containeres & VMs
+    into the package will actually run in Debian containers & VMs
 *** Why Are We Spinning Up an EC2 Instance
 
 I at first thought to test installation as a systemd unit in the same

@@ -29,14 +29,15 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::Utc;
-use either::Either::{self, Left};
-use futures::StreamExt;
+use either::Either::{self, Left, Right};
+use futures::{stream::iter, StreamExt};
 use http::Method;
 use itertools::Itertools;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
@@ -51,15 +52,16 @@ use crate::{
     ap_entities::{
         self, ap_request_no_response, make_user_followers, make_user_following,
         username_and_postid_from_url, Accept, Actor, Announce, AnnounceOrCreate, Create, Follow,
-        InboxPayload, InstanceActor, Jld, Like, Note, Recipient, ToJld, Undo,
+        InboxPayload, InstanceActor, Item, Jld, Like, Note, Recipient, Share, ToJld, Undo,
     },
+    ap_resolution::ApResolver,
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     client_types::ClientType,
     define_metric,
     entities::{Follower, Following, PostLike, PostReply, PostShare, User},
     http::ErrorResponseBody,
-    indielinks::Indielinks,
+    indielinks::{HomeTimelines, Indielinks},
     storage::{self, Backend as StorageBackend},
 };
 
@@ -89,6 +91,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to create an ActivityPub ID: {source}"))]
     ApId { source: crate::ap_entities::Error },
+    #[snafu(display("ActivityPub resolution error {source}"))]
+    ApResolution { source: crate::ap_resolution::Error },
     #[snafu(display("{url} could not be parsed as an in-reply-to"))]
     BadInReplyTo {
         url: Url,
@@ -239,6 +243,7 @@ impl Error {
             ),
             Error::AcceptResponse { .. } => (StatusCode::BAD_GATEWAY, format!("{}", self)),
             Error::Actor { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
+            Error::ApResolution { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
             Error::BadKeyId { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
             Error::BadSignature { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
             Error::Cavage2323 { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
@@ -530,6 +535,7 @@ async fn accept_create(
     create: &Create,
     storage: &(dyn StorageBackend + Send + Sync),
     origin: &Origin,
+    timelines: Arc<Mutex<HomeTimelines>>,
 ) -> Result<()> {
     // I expect to have a `Create` whose `object` field is a `Note` containing an `inReplyTo` field
     // naming a post on this instance. Ah... ActivityPub!
@@ -561,24 +567,20 @@ async fn accept_create(
     let (visibility, local_recipients) =
         derive_visibility(create.to(), create.cc(), origin).context(VisibilitySnafu)?;
 
-    debug!("This Create has visibility {:?}", visibility);
+    debug!(
+        "This Create has visibility {:?} and local recipients {:?}",
+        visibility, local_recipients
+    );
 
-    // NEXT: Any local users mentioned?
-    // let mention = local_recipients
-    //     .iter()
-    //     .filter(|recipient| matches!(recipient, Recipient::Direct(_)))
-    //     .collect::<Vec<_>>()
-    //     .is_empty();
-
-    let mut recipients = resolve_recipients(local_recipients.iter(), storage)
+    let recipients = resolve_recipients(local_recipients.iter(), storage)
         .await
         .context(RecipientsSnafu {
             recipients: local_recipients.clone(),
         })?;
 
-    // NEXT:
-    /*let reply =*/
-    match note
+    debug!("Recipients: {recipients:#?}");
+
+    let _reply = match note
         .in_reply_to()
         .and_then(|reply| username_and_postid_from_url(origin, reply).ok())
     {
@@ -588,36 +590,30 @@ async fn accept_create(
                 postid, username
             );
 
-            // Seems inefficient
-            let user = storage
-                .user_for_name(username.as_ref())
-                .await
-                .map_err(|err| StorageSnafu.into_error(err))?
-                .ok_or(
-                    NoUserSnafu {
-                        username: username.clone(),
-                    }
-                    .build(),
-                )?;
-
             storage
                 .add_post_reply(&PostReply::new(postid, note.id(), visibility))
                 .await
                 .context(StorageSnafu)?;
-
-            recipients.remove(user.id());
 
             true
         }
         None => false,
     };
 
-    // NEXT: Regardless of the type, add this to the recipients' home timelines
-    // let flavor = match (reply, mention) {
-    //     (true, _) => ActivityPubPostFlavor::Reply,
-    //     (false, true) => ActivityPubPostFlavor::Mention,
-    //     (false, false) => ActivityPubPostFlavor::Post,
-    // };
+    // Regardless of the precise flavor of `Create`, add this to the recipients' home timelines as a
+    // `Note`:
+    iter(recipients.into_iter())
+        .for_each(|recipient| {
+            let timelines = timelines.clone();
+            let note = note.clone();
+            async move {
+                if let Some(timeline) = timelines.lock().await.get_mut(&recipient) {
+                    debug!("Inserting this Note into the timeline for {recipient}");
+                    timeline.add(Item::Note(Box::new(note)))
+                }
+            }
+        })
+        .await;
 
     Ok(())
 }
@@ -630,6 +626,9 @@ async fn accept_share(
     announce: &Announce,
     storage: &(dyn StorageBackend + Send + Sync),
     origin: &Origin,
+    instance_actor_priv: &UserPrivateKey,
+    ap_resolver: Arc<Mutex<ApResolver>>,
+    timelines: Arc<Mutex<HomeTimelines>>,
 ) -> Result<()> {
     // I expect to have a `Create` whose `object` field references a `Note` containing the original
     // post on this instance. Ah... ActivityPub!
@@ -654,10 +653,9 @@ async fn accept_share(
 
     debug!("This Announce relates to the object {}", object);
 
-    let (username, postid) =
-        username_and_postid_from_url(origin, object).context(BadObjectSnafu {
-            url: announce.object().clone(),
-        })?;
+    let (_, postid) = username_and_postid_from_url(origin, object).context(BadObjectSnafu {
+        url: announce.object().clone(),
+    })?;
 
     let (visibility, local_recipients) =
         derive_visibility(announce.to(), announce.cc(), origin).context(VisibilitySnafu)?;
@@ -668,17 +666,6 @@ async fn accept_share(
         local_recipients
     );
 
-    let user = storage
-        .user_for_name(username.as_ref())
-        .await
-        .map_err(|err| StorageSnafu.into_error(err))?
-        .ok_or(
-            NoUserSnafu {
-                username: username.clone(),
-            }
-            .build(),
-        )?;
-
     storage
         .add_post_share(&PostShare::new(postid, announce.id().clone(), visibility))
         .await
@@ -686,30 +673,37 @@ async fn accept_share(
 
     // Alright-- at this point, we've stored the share, but there may be other recipients to whom
     // this message was addressed, including recpients in the form of "https://so-and-so/followers"
-    let mut recipients = resolve_recipients(local_recipients.iter(), storage)
+    let recipients = resolve_recipients(local_recipients.iter(), storage)
         .await
         .context(RecipientsSnafu {
             recipients: local_recipients.clone(),
         })?;
-    recipients.remove(user.id());
 
-    // NEXT: add this to recipients' timelines
-    // stream::iter(recipients.into_iter())
-    //     .map(|recipient| {
-    //         ActivityPubPost::new(
-    //             recipient,
-    //             // Dear God this is dumb...
-    //             StorUrl::try_from(post.url().to_string()).unwrap(),
-    //             ActivityPubPostFlavor::Share,
-    //             visibility,
-    //         )
-    //     })
-    //     .then(|post| async move { storage.add_activity_pub_post(&post).await })
-    //     .collect::<Vec<StdResult<(), StorError>>>()
-    //     .await
-    //     .into_iter()
-    //     .collect::<StdResult<Vec<()>, StorError>>()
-    //     .context(StorageSnafu)?;
+    // Add this to the recipients' home timelines as a `Note`. First, we need to recover the
+    // actual note:
+    let note = ap_resolver
+        .lock()
+        .await
+        .note_id_to_note(Right(instance_actor_priv), announce.object())
+        .await
+        .context(ApResolutionSnafu)?;
+
+    iter(recipients.into_iter())
+        .for_each(|recipient| {
+            let timelines = timelines.clone();
+            let note = note.clone();
+            async move {
+                if let Some(timeline) = timelines.lock().await.get_mut(&recipient) {
+                    timeline.add(Item::Share(Box::new(Share::from_parts(
+                        announce.id().clone(),
+                        *announce.published(),
+                        announce.object().clone(),
+                        note.content().clone(),
+                    ))))
+                }
+            }
+        })
+        .await;
 
     Ok(())
 }
@@ -729,22 +723,44 @@ async fn shared_inbox(
         body: &AnnounceOrCreate,
         storage: &(dyn StorageBackend + Send + Sync),
         origin: &Origin,
+        instance_actor_priv: &UserPrivateKey,
+        ap_resolver: Arc<Mutex<ApResolver>>,
+        timelines: Arc<Mutex<HomeTimelines>>,
     ) -> Result<()> {
         match body {
             // AFAIK, an `Announce` is strictly used to notify us that someone has shared one of our
             // posts.
             AnnounceOrCreate::Announce(announce) => {
                 shared_inbox_announcements.add(1, &[]);
-                accept_share(actor, announce, storage, origin).await
+                accept_share(
+                    actor,
+                    announce,
+                    storage,
+                    origin,
+                    instance_actor_priv,
+                    ap_resolver,
+                    timelines,
+                )
+                .await
             }
             AnnounceOrCreate::Create(create) => {
                 shared_inbox_creates.add(1, &[]);
-                accept_create(actor, create, storage, origin).await
+                accept_create(actor, create, storage, origin, timelines).await
             }
         }
     }
 
-    match shared_inbox1(&actor, &body, state.storage.as_ref(), &state.origin).await {
+    match shared_inbox1(
+        &actor,
+        &body,
+        state.storage.as_ref(),
+        &state.origin,
+        &state.instance_state.private_key,
+        state.ap_resolver.clone(),
+        state.home_timelines.clone(),
+    )
+    .await
+    {
         Ok(_) => {
             shared_inbox_successes.add(1, &[]);
             (StatusCode::ACCEPTED, ()).into_response()
@@ -1026,10 +1042,14 @@ async fn accept_accept(
         }
         .fail();
     }
-    storage
+    if !storage
         .confirm_following(user, &actor.id().into())
         .await
-        .context(StorageSnafu)
+        .context(StorageSnafu)?
+    {
+        warn!("Failed to accept {accept:?} in storage!")
+    }
+    Ok(())
 }
 
 /// ActivityPub user inbox

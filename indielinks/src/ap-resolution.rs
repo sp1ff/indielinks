@@ -86,6 +86,16 @@ pub struct ApResolver {
     notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
 }
 
+// A note on the API: I would of course prefer to return references to these various attributes;
+// e.g. have something like:
+//
+// ```
+// pub async actor_id_to_outbox(...) -> Result<&Url>
+// ```
+//
+// The problem is, `ApResolver` under the hood works in terms of `Cache`-- a Raft cluster working
+// together to implement a key/value cache. Since the underlying `Actor` may have been hosted on
+// another node, we only have a temporary copy in our method, and so can't return a reference.
 impl ApResolver {
     pub fn new(
         origin: Origin,
@@ -137,6 +147,15 @@ impl ApResolver {
     ) -> Result<Url> {
         let actor = self.get_actor(principal, url).await?;
         Ok(actor.inbox().clone())
+    }
+    /// Given an AP "actor ID", retrieve the location of their outbox
+    pub async fn actor_id_to_outbox(
+        &mut self,
+        principal: Either<&User, &UserPrivateKey>,
+        url: &Url,
+    ) -> Result<Url> {
+        let actor = self.get_actor(principal, url).await?;
+        Ok(actor.outbox().clone())
     }
     /// Given an AP "actor ID", retrieve the location of their shared inbox
     pub async fn actor_id_to_shared_inbox(

@@ -114,7 +114,7 @@ pub trait Backend {
     /// Add a new user
     async fn add_user(&self, user: &User) -> Result<(), Error>;
     /// Confirm a follow for a user
-    async fn confirm_following(&self, user: &User, following: &StorUrl) -> Result<(), Error>;
+    async fn confirm_following(&self, user: &User, following: &StorUrl) -> Result<bool, Error>;
     /// Remove a post-- return true if a [Post] was actually removed, false else
     async fn delete_post(&self, user: &User, url: &StorUrl) -> Result<bool, Error>;
     /// Delete a tag for a user; since we've denormalized the tags (i.e. we store them along with the

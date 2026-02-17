@@ -1241,18 +1241,23 @@ impl storage::Backend for Client {
         &self,
         user: &User,
         following: &StorUrl,
-    ) -> StdResult<(), StorError> {
+    ) -> StdResult<bool, StorError> {
         self.client
             .update_item()
             .table_name("following")
             .key("user_id", AttributeValue::S(user.id().to_string()))
             .key("actor_id", AttributeValue::S(following.to_string()))
             .update_expression("set confirmed = :c")
+            .condition_expression("attribute_exists(user_id) AND attribute_exists(actor_id)")
             .expression_attribute_values(":c", AttributeValue::Bool(true))
+            // Asking for the old attributes lets us determine whether a deletion actually occurred; if
+            // it did not, `attributes()`, below, will be None.
+            .return_values(ReturnValue::AllOld)
             .send()
-            .await
-            .map_err(StorError::new)?;
-        Ok(())
+            .await?
+            .attributes()
+            .is_some()
+            .pipe(Ok)
     }
 
     async fn delete_post(&self, user: &User, url: &StorUrl) -> StdResult<bool, StorError> {

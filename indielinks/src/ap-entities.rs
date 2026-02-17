@@ -124,7 +124,7 @@
 use std::{collections::HashMap, fmt::Display};
 
 use bytes::Bytes;
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, Utc};
 use either::Either;
 use http::{Method, Request};
 use lazy_static::lazy_static;
@@ -138,6 +138,7 @@ use tower::{Service, ServiceExt};
 use url::Url;
 
 use indielinks_shared::{
+    api::FeedPost,
     entities::{Post, PostId, UserPrivateKey, Username},
     origin::Origin,
 };
@@ -491,6 +492,7 @@ pub enum Type {
     Note,
     Person,
     OrderedCollection,
+    OrderedCollectionPage,
     CollectionPage,
 }
 
@@ -510,6 +512,7 @@ impl std::fmt::Display for Type {
                 Type::Note => "Note",
                 Type::Person => "Person",
                 Type::OrderedCollection => "OrderedCollection",
+                Type::OrderedCollectionPage => "OrderedCollectionPage",
                 Type::CollectionPage => "CollectionPage",
             }
         )
@@ -717,6 +720,9 @@ impl Actor {
     pub fn inbox(&self) -> &Url {
         &self.inbox
     }
+    pub fn outbox(&self) -> &Url {
+        &self.outbox
+    }
     pub fn preferred_username(&self) -> &str {
         self.preferred_username.as_str()
     }
@@ -843,7 +849,7 @@ pub struct Announce {
     object: Url,
     id: Url,
     actor: ActorField,
-    published: DateTime<FixedOffset>,
+    published: DateTime<Utc>,
     to: Vec<Url>,
     cc: Vec<Url>,
 }
@@ -857,6 +863,9 @@ impl Announce {
     }
     pub fn object(&self) -> &Url {
         &self.object
+    }
+    pub fn published(&self) -> &DateTime<Utc> {
+        &self.published
     }
     pub fn to(&self) -> impl Iterator<Item = &Url> {
         self.to.iter()
@@ -1090,6 +1099,9 @@ impl Note {
     pub fn url(&self) -> &Url {
         &self.url
     }
+    pub fn published(&self) -> &DateTime<Utc> {
+        &self.published
+    }
 }
 
 impl ToJld for Note {
@@ -1164,9 +1176,51 @@ impl ToJld for Create {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             Outbox                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outbox {
+    // "id":"https://indieweb.social/users/sp1ff/outbox",
+    pub id: Url,
+    pub total_items: usize,
+    pub first: Url,
+    pub last: Url,
+}
+
+impl ToJld for Outbox {
+    fn get_type(&self) -> Type {
+        Type::OrderedCollection
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          Outbox page                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboxPage {
+    pub id: Url,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<Url>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev: Option<Url>,
+    pub part_of: Url,
+    pub ordered_items: Vec<AnnounceOrCreate>,
+}
+
+impl ToJld for OutboxPage {
+    fn get_type(&self) -> Type {
+        Type::OrderedCollectionPage
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // This is the interesting bit: when implementing the user inbox, the payload could
-// be any of an Follow`, or `Like`:
+// be any of the following:
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "type")]
 pub enum InboxPayload {
@@ -1176,7 +1230,67 @@ pub enum InboxPayload {
     Accept(Accept),
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+/// A "share" of an indielinks user post
+// When another user "shares" an indielinks post, it arrives at the instance's shared inbox in the
+// form of an `Announce` (typically of a `Note`). If we just represented this in users' Home
+// timelines, it would be indistinguishable from the original author's `Note`. This type gives us a
+// way of distinguishing between the two.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Share {
+    /// ActivityPub ID of the _share_ not the underlying note!
+    id: Url,
+    published: DateTime<Utc>,
+    original_id: Url,
+    content: Html,
+}
+
+impl Share {
+    pub fn from_parts(id: Url, published: DateTime<Utc>, original_id: Url, content: Html) -> Self {
+        Self {
+            id,
+            published,
+            original_id,
+            content,
+        }
+    }
+    pub fn id(&self) -> &Url {
+        &self.id
+    }
+    pub fn published(&self) -> &DateTime<Utc> {
+        &self.published
+    }
+}
+
+/// An element in a user's Home timeline
+// User Home timelines store these
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Item {
+    /// This could be a new [Note] posted by a follow, a mention, or a reply
+    Note(Box<Note>),
+    /// A share of an indielinks users' [Note]
+    Share(Box<Share>),
+}
+
+impl From<Item> for FeedPost {
+    fn from(value: Item) -> Self {
+        match value {
+            Item::Note(note) => FeedPost {
+                id: note.id,
+                in_reply_to: note.in_reply_to,
+                published: note.published,
+                content: note.content.to_string(),
+            },
+            Item::Share(share) => FeedPost {
+                id: share.id,
+                in_reply_to: None,
+                published: share.published,
+                content: share.content.to_string(),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type")]
 #[allow(clippy::large_enum_variant)]
 pub enum AnnounceOrCreate {

@@ -239,7 +239,7 @@ pub async fn send_follow(
         .map(|x| x.len())
         .unwrap_or(0);
     let mut n = 0;
-    while num_requests < 2 && n < 8 {
+    while num_requests < 3 && n < 8 {
         tokio::time::sleep(Duration::from_millis(250)).await;
         num_requests = mock_server
             .received_requests()
@@ -249,7 +249,7 @@ pub async fn send_follow(
         n += 1;
     }
 
-    assert_eq!(num_requests, 2);
+    assert_eq!(num_requests, 3);
 
     // Next, we send the Accept on behalf of our mock server
     let request = make_signed_request(
