@@ -56,7 +56,6 @@ use crate::{
         Note, Recipient, ToJld, Type,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
-    client_types::ClientType,
     entities::{FollowId, User, Visibility},
     storage::Backend as StorageBackend,
 };
@@ -69,6 +68,8 @@ use crate::{
 pub enum Error {
     #[snafu(display("ActivityPub entities error: {source}"))]
     Ap { source: crate::ap_entities::Error },
+    #[snafu(display("ActivityPub entity resolver error: {source}"))]
+    ApResolver { source: crate::ap_resolution::Error },
     #[snafu(display("Failed to write a follow for {username} of {actorid}: {source}"))]
     AddFollowing {
         username: Username,
@@ -615,17 +616,6 @@ impl SendFollow {
     pub fn new(user: User, actorid: Url, id: FollowId) -> SendFollow {
         SendFollow { user, actorid, id }
     }
-    async fn inbox_for_actor(
-        user: &User,
-        origin: &Origin,
-        actorid: &Url,
-        client: &mut ClientType,
-    ) -> Result<Url> {
-        let actor: Actor = ap_request(client, origin, Left(user), actorid, Method::GET, None, &())
-            .await
-            .context(ApSnafu)?;
-        actor.inbox().clone().pipe(Ok)
-    }
 }
 
 #[async_trait]
@@ -656,20 +646,22 @@ impl Task<Context> for SendFollow {
             )
             .await
             .context(ApSnafu)?;
-            debug!("Got a response of {actor:#?}");
-            debug!("actor.id() returns: {}", actor.id());
             let actorid = actor.id().clone();
 
             debug!("Resolved the ActorID to {actorid}");
 
-            let inbox =
-                SendFollow::inbox_for_actor(&this.user, &context.origin, &actorid, &mut client)
-                    .await?;
+            let inbox = context
+                .ap_resolver
+                .lock()
+                .await
+                .actor_id_to_inbox(Left(&this.user), &actorid)
+                .await
+                .context(ApResolverSnafu)?;
 
             debug!("Resolved the actor inbox to {inbox}");
 
             // Let's write the new follow to the database,
-            let userurl = StorUrl::from(actorid.clone()); // Just... ugh.
+            let userurl = StorUrl::from(&actorid);
             context
                 .storage
                 .add_following(&this.user, &userurl, &this.id)
