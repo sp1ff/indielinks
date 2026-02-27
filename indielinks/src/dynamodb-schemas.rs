@@ -323,6 +323,33 @@ async fn create_followers(client: &Client) -> Result<()> {
                     name: "actor_id".to_string(),
                 })?,
         ]))
+        // I forgot this in the original version. I _should_ introduce this as part of a schema
+        // migration, but it's so small, and this app has so few users at this point, I'm just going
+        // to sneak it in. If anyone complains, here's the command to "patch" your install:
+        //
+        // aws dynamodb update-table \
+        //   --table-name followers
+        //   --attribute-definitions \
+        //     AttributeName=user_id,AttributeType=S \
+        //     AttributeName=actor_id,AttributeType=S \
+        //   --global-secondary-index-updates \
+        //     "[{\"Create\":{\"IndexName\":\"follows_by_actor_id\",\"KeySchema\":[{\"AttributeName\":\"actor_id\",\"KeyType\":\"HASH\"}],\"Projection\":{\"ProjectionType\":\"ALL\"}}}]"
+        .global_secondary_indexes(
+            GlobalSecondaryIndex::builder()
+                .index_name("follows_by_actor_id")
+                .set_key_schema(Some(vec![KeySchemaElement::builder()
+                    .attribute_name("actor_id")
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .unwrap()]))
+                .projection(
+                    Projection::builder()
+                        .projection_type(ProjectionType::All)
+                        .build(),
+                )
+                .build()
+                .unwrap(),
+        )
         .send()
         .await
         .context(CreateTableSnafu { name: "followers" })

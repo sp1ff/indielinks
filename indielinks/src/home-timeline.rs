@@ -601,7 +601,12 @@ impl<'a> serde::ser::Serialize for JsonRepr<'a> {
     {
         let t = self.0;
         let mut st = serializer.serialize_struct("Timeline", 2)?;
-        st.serialize_field("items", &t.items)?;
+        let pairs = t
+            .items
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<Vec<(PostKey, Item)>>();
+        st.serialize_field("items", &pairs)?;
         st.serialize_field("num_streams", &t.streams.len())?;
         st.end()
     }

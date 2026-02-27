@@ -1328,7 +1328,7 @@ impl storage::Backend for Client {
             "followers",
             "actor_id",
             actor_id,
-            Some("following_by_actor_id".to_owned()),
+            Some("follows_by_actor_id".to_owned()),
         )
         .await
         .map_err(StorError::new)?;
@@ -1339,7 +1339,7 @@ impl storage::Backend for Client {
                 "actor_id",
                 actor_id,
                 count,
-                Some("following_by_actor_id".to_owned()),
+                Some("follows_by_actor_id".to_owned()),
             )
             .await
             .map_err(StorError::new)?,

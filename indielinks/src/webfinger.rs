@@ -150,6 +150,14 @@ impl Link {
             })?,
         })
     }
+    /// Create a "self" [Link] for the instance actor
+    fn from_instance_actor(origin: &Origin) -> Result<Self> {
+        Ok(Link {
+            rel: LinkRelation::Myself,
+            r#type: MediaType::ActivityPub,
+            href: Url::parse(&format!("{}/actor", origin)).context(UrlParseSnafu)?,
+        })
+    }
 }
 
 /// Webfinger response body
@@ -209,6 +217,13 @@ impl ResponseBody {
             subject: acct.clone(),
         })
     }
+    pub fn instance_actor(acct: &Account, origin: &Origin) -> Result<ResponseBody> {
+        Ok(ResponseBody {
+            links: vec![Link::from_instance_actor(origin)?],
+            aliases: vec![],
+            subject: acct.clone(),
+        })
+    }
 }
 
 impl axum::response::IntoResponse for ResponseBody {
@@ -248,6 +263,11 @@ pub async fn webfinger(
     ) -> Result<ResponseBody> {
         if *account.host() != *origin.host() {
             return HostnameSnafu.fail();
+        }
+
+        // Special case the instance actor
+        if format!("{}", account.user()) == format!("{}", origin.host()) {
+            return ResponseBody::instance_actor(account, origin);
         }
 
         match storage

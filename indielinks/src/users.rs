@@ -37,7 +37,7 @@
 //! refresh cookie will be sent along with any other cookies on that domain, and the attacker could
 //! harvest the access token.
 //!
-//! In general, the `/usrers/refresh` endpoint may be cross-origin from the front end, so SameSite
+//! In general, the `/users/refresh` endpoint may be cross-origin from the front end, so SameSite
 //! settings will be of no help-- we need to mitigate CSRF on this one endpoint. There are two
 //! general approaches: the [Synchronizer Token Pattern] & the [Double-Submit Cookie Pattern]. The
 //! former require us to store per-session state on the server, which I would prefer not to do. The
@@ -73,7 +73,7 @@
 //! When it's time to refresh the access token, the front end will send a request to the
 //! `/users/refresh` endpoint, with the refresh token & CSRF token in the cookies, and copying the
 //! CSRF token from the cookie into a custom header. The duplicated CSRF token proves the caller can
-//! copy cookies into requests. The CSRF token contents proves that the caller obtained it (the CSRF
+//! copy cookies into requests. The CSRF token contents prove that the caller obtained it (the CSRF
 //! token) for the proferred refresh token, and that it obtained it from this server.
 //!
 //! Finally, note that this is designed to defend against CSRF. If an attacker has a successful

@@ -562,7 +562,7 @@ async fn accept_create(
         ap_entities::CreateObject::Note(note) => note.clone(),
     };
 
-    debug!("The Create denotes the creation of the note: {:?}", note);
+    debug!("The Create denotes the creation of the note {:?}", note);
 
     let (visibility, local_recipients) =
         derive_visibility(create.to(), create.cc(), origin).context(VisibilitySnafu)?;
