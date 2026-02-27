@@ -812,18 +812,24 @@ impl From<Url> for ObjectField {
 #[serde(rename_all = "camelCase")]
 pub struct InstanceActor {
     id: Url,
-    preferred_username: indielinks_shared::origin::Host,
+    // Required by Mastodon
+    preferred_username: String,
     public_key: PublicKey,
     endpoints: Endpoints,
+    // Required by Mastodon
+    inbox: Url,
+    outbox: Url,
 }
 
 impl InstanceActor {
     pub fn new<S: AsRef<str>>(origin: &Origin, public_key_pem: S) -> Result<InstanceActor> {
         Ok(InstanceActor {
             id: Url::parse(&format!("{}/actor", origin)).context(UrlParseSnafu)?,
-            preferred_username: origin.host().clone(),
+            preferred_username: format!("{}", origin.host()),
             public_key: PublicKey::for_instance_actor(origin, public_key_pem)?,
             endpoints: Endpoints::new(origin)?,
+            inbox: Url::parse(&format!("{}/actor/inbox", origin)).context(UrlParseSnafu)?,
+            outbox: Url::parse(&format!("{}/actor/outbox", origin)).context(UrlParseSnafu)?,
         })
     }
 }
@@ -1011,13 +1017,13 @@ pub struct Note {
     summary: Option<String>,
     in_reply_to: Option<Url>,
     published: DateTime<Utc>,
-    url: Url,
+    url: Option<Url>,
     attributed_to: Url,
     to: Vec<Url>,
     cc: Vec<Url>,
     content: Html,
     // Should be using crate `isolang`: <https://docs.rs/isolang/latest/isolang/>
-    content_map: HashMap<String, Html>,
+    content_map: Option<HashMap<String, Html>>,
     // Yet to be implemented:
     // - tag
     // - replies (Collection)
@@ -1038,13 +1044,13 @@ impl Note {
             // Setting this to the same value as `id` for now, but Mastodon sets them to different
             // values: `http://indieweb.social/users/sp1ff/statuses/...` versus
             // `http://indieweb.social/@sp1ff/...`
-            url: make_user_post_id(username, &post.id(), origin)?,
+            url: Some(make_user_post_id(username, &post.id(), origin)?),
             attributed_to: make_user_id(username, origin)?,
             to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
                 .context(UrlParseSnafu)?],
             cc: vec![make_user_followers(username, origin)?],
             content: post_html.clone(),
-            content_map: HashMap::from([("en".to_owned(), post_html)]),
+            content_map: Some(HashMap::from([("en".to_owned(), post_html)])),
         })
     }
     pub fn new_from_parts<T, U>(
@@ -1066,12 +1072,12 @@ impl Note {
             summary: None,
             in_reply_to,
             published: Utc::now(),
-            url,
+            url: Some(url),
             attributed_to,
             to: to.collect::<Vec<Url>>(),
             cc: cc.collect::<Vec<Url>>(),
             content: content.clone(),
-            content_map: HashMap::from([("en".to_owned(), content)]),
+            content_map: Some(HashMap::from([("en".to_owned(), content)])),
         })
     }
     // Ack! Placeholder!
@@ -1096,8 +1102,8 @@ impl Note {
     pub fn cc(&self) -> impl Iterator<Item = &Url> {
         self.cc.iter()
     }
-    pub fn url(&self) -> &Url {
-        &self.url
+    pub fn url(&self) -> Option<&Url> {
+        self.url.as_ref()
     }
     pub fn published(&self) -> &DateTime<Utc> {
         &self.published
@@ -1301,6 +1307,7 @@ pub enum AnnounceOrCreate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Recipient {
     Direct(Username),
+    // The `Url` is the ActivityPub ID of the actor being followed
     Followers(Url),
 }
 

@@ -306,7 +306,11 @@ where
             if *url == *PUBLIC {
                 public_is_in_to = true;
             };
-            origin_is_eq(url, origin).then_some(url.clone())
+            if url.path().ends_with("/followers") || origin_is_eq(url, origin) {
+                Some(url.clone())
+            } else {
+                None
+            }
         })
         .collect::<HashSet<Url>>();
 
@@ -316,7 +320,11 @@ where
             if *url == *PUBLIC {
                 public_is_in_cc = true;
             };
-            origin_is_eq(url, origin).then_some(url.clone())
+            if url.path().ends_with("/followers") || origin_is_eq(url, origin) {
+                Some(url.clone())
+            } else {
+                None
+            }
         })
         .collect::<HashSet<Url>>();
 

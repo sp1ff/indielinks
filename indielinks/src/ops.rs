@@ -22,6 +22,7 @@ use indielinks_shared::entities::Username;
 use serde::{ser::SerializeStruct, Deserialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
+use tracing::error;
 
 use crate::{
     http::ErrorResponseBody,
@@ -143,10 +144,13 @@ async fn dump_timelines(
 
     match dump_timelines1(state.clone(), dump_req).await {
         Ok(response) => response,
-        Err(err) => axum::Json(ErrorResponseBody {
-            error: format!("{err}"),
-        })
-        .into_response(),
+        Err(err) => {
+            error!("{err:#?}");
+            axum::Json(ErrorResponseBody {
+                error: format!("{err}"),
+            })
+            .into_response()
+        }
     }
 }
 

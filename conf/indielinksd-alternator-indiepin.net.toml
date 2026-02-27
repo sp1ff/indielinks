@@ -41,7 +41,7 @@ scheme = "http"
 port = 18080
 [users-config.allowed-origins.host]
 Ipv4Address = "127.0.0.1"
-[[users-config.allowed-origins]]     # http://localhost:20676
+[[users-config.allowed-origins]]     # http://localhost:20694
 scheme = "http"
 port = 20694
 [users-config.allowed-origins.host]
