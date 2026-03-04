@@ -25,12 +25,14 @@ use crate::{
 use indielinks_shared::{
     entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
     instance_state::InstanceStateV0,
+    nonempty_string::NonEmptyString,
 };
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use snafu::{prelude::*, Backtrace};
+use url::Url;
 
 use std::collections::{HashMap, HashSet};
 
@@ -98,11 +100,11 @@ pub trait Backend {
         &self,
         user: &User,
         replace: bool,
-        uri: &StorUrl,
+        uri: &Url,
         id: &PostId,
         title: &str,
         dt: &DateTime<Utc>,
-        notes: &Option<String>,
+        notes: Option<&NonEmptyString>,
         shared: bool,
         to_read: bool,
         tags: &HashSet<Tagname>,

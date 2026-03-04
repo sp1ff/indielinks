@@ -25,7 +25,9 @@ use std::{
 };
 
 use futures::{stream::iter, StreamExt};
-use indielinks_shared::{api::PostAddReq, entities::Tagname, origin::Origin};
+use indielinks_shared::{
+    api::PostAddReq, entities::Tagname, nonempty_string::NonEmptyString, origin::Origin,
+};
 use itertools::Itertools;
 use secrecy::SecretString;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
@@ -58,6 +60,11 @@ pub enum Error {
     },
     #[snafu(display("Failed to parse {line}"))]
     Parse { line: String, backtrace: Backtrace },
+    #[snafu(display("The post title must not be empty"))]
+    Title {
+        source: indielinks_shared::nonempty_string::Empty,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to parse {text} as an URL: {source}"))]
     Url {
         text: String,
@@ -73,13 +80,13 @@ type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Debug)]
 struct ExportedPost {
     url: Url,
-    title: String,
+    title: NonEmptyString,
 }
 
 impl ExportedPost {
     fn into_post_add_req(self, tags: &str, private: bool, to_read: bool) -> PostAddReq {
         PostAddReq {
-            url: self.url.into(),
+            url: self.url,
             title: self.title,
             notes: None,
             tags: Some(tags.to_owned()),
@@ -100,7 +107,7 @@ impl FromStr for ExportedPost {
             .context(ParseSnafu { line: s.to_owned() })?;
         Ok(ExportedPost {
             url: Url::parse(a).context(UrlSnafu { text: a.to_owned() })?,
-            title: b.trim().to_owned(),
+            title: b.trim().try_into().context(TitleSnafu)?,
         })
     }
 }

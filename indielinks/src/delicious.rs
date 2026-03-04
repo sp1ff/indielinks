@@ -64,9 +64,9 @@ use indielinks_shared::{
 };
 
 use crate::{
-    activity_pub::SendCreate,
+    app_logic::add_post as inner_add_post,
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
-    background_tasks::{BackgroundTasks, Sender},
+    background_tasks::BackgroundTasks,
     define_metric,
     entities::User,
     http::ErrorResponseBody,
@@ -84,7 +84,7 @@ pub enum Error {
     AllPosts { source: storage::Error },
     #[snafu(display("/posts/add failed: {source}"))]
     AddPost {
-        source: crate::storage::Error,
+        source: crate::app_logic::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("The supplied API key couldn't be parsed"))]
@@ -609,44 +609,23 @@ async fn add_post(
         // Pull the `tag` parameter out of the request, separate the individual tags by comma, and
         // check that they're all legit `Tagname`s:
         let tags = parse_tag_parameter(&req.tags)?;
-        // Figure-out the post time:
-        let dt = req.dt.unwrap_or(Utc::now());
-        // Gin-up a new `PostId`, in case this is a new post:
-        let postid = PostId::default();
         let shared = req.shared.unwrap_or(false);
-        let added = storage
-            .add_post(
-                &user,
-                // Question: should we resolve defaults here, or in the storage backend?
-                req.replace.unwrap_or(true),
-                &req.url,
-                &postid,
-                &req.title,
-                &dt,
-                &req.notes,
-                shared,
-                req.to_read.unwrap_or(false),
-                &tags,
-            )
-            .await
-            .context(AddPostSnafu)?;
-        if added {
-            storage
-                .update_user_post_times(&user, &dt)
-                .await
-                .context(UpdateUserPostTimesSnafu)?;
-            if shared {
-                debug!(
-                    "Scheduling Post {} for communication to all federated servers",
-                    postid
-                );
-                sender
-                    .send(SendCreate::new(&postid, &dt))
-                    .await
-                    .context(SendCreateSnafu { postid })?;
-            }
-        }
-        Ok(added)
+        inner_add_post(
+            &user,
+            &req.url,
+            &req.title,
+            req.dt.as_ref(),
+            req.notes.as_ref(),
+            &tags,
+            req.replace.unwrap_or(true),
+            shared,
+            req.to_read.unwrap_or(false),
+            storage,
+            sender.clone(),
+        )
+        .await
+        .context(AddPostSnafu)?
+        .pipe(Ok)
     }
 
     // The Pinboard API seems to just return status code 200 OK no matter what-- the caller has to

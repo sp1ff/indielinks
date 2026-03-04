@@ -330,7 +330,7 @@ async fn make_indielinks_client(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let matches = Command::new("indic")
+    let mut matches = Command::new("indic")
         .version(crate_version!())
         .author(crate_authors!())
         .about("The INDIelinks Client")
@@ -541,7 +541,7 @@ to be escaped; the implementation will handle that.")
                         .long("title")
                         .required(true)
                         .num_args(1)
-                        .value_parser(value_parser!(String))
+                        .value_parser(NonEmptyStringValueParser::new())
                         .help("Title to be used for this link")
                 )
                 .arg(
@@ -651,8 +651,8 @@ to be escaped; the implementation will handle that.")
     )
     .await?;
 
-    match matches.subcommand() {
-        Some(("import-pinboard", matches)) => {
+    match matches.remove_subcommand() {
+        Some((name, matches)) if name == "import-pinboard" => {
             import_pinboard(
                 client,
                 cfg.api().context(ApiSnafu)?,
@@ -665,7 +665,7 @@ to be escaped; the implementation will handle that.")
             .await
             .context(PinboardSnafu)
         }
-        Some(("import-onetab", matches)) => {
+        Some((name, matches)) if name == "import-onetab" => {
             import_onetab(
                 client,
                 cfg.api().context(ApiSnafu)?,
@@ -681,7 +681,7 @@ to be escaped; the implementation will handle that.")
             .await
             .context(OnetabSnafu)
         }
-        Some(("add-link", matches)) => {
+        Some((name, mut matches)) if name == "add-link" => {
             // The rules:
 
             // - if no target given, then the command line arguments `tag`, `replace`, `shared` &
@@ -729,8 +729,11 @@ to be escaped; the implementation will handle that.")
                 client,
                 cfg.api().context(ApiSnafu)?,
                 cfg.token().context(MissingTokenSnafu)?,
-                matches.get_one::<Url>("URL").unwrap(/* impossible */),
-                matches.get_one::<String>("title").unwrap(/* impossible */),
+                matches.remove_one::<Url>("URL").unwrap(/* impossible */),
+                matches.remove_one::<String>("title")
+                    .unwrap(/* impossible */)
+                    .try_into()
+                    .unwrap(/* known good */),
                 None, // no notes, as yet
                 tags.iter(),
                 replace,
@@ -740,7 +743,7 @@ to be escaped; the implementation will handle that.")
             .await
             .context(AddLinkSnafu)
         }
-        Some(("add-user", matches)) => {
+        Some((name, matches)) if name == "add-user" => {
             let username = matches.get_one::<Username>("username").unwrap(/* known good */);
             let email = matches.get_one::<UserEmail>("email").unwrap(/* known good */);
             let password: SecretPassword = match matches.get_one::<String>("password") {

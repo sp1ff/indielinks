@@ -28,9 +28,12 @@ pub mod actor;
 pub mod ap_entities;
 #[path = "ap-resolution.rs"]
 pub mod ap_resolution;
+#[path = "app-logic.rs"]
+pub mod app_logic;
 pub mod authn;
 #[path = "background-tasks.rs"]
 pub mod background_tasks;
+pub mod bookmarklets;
 pub mod cache;
 pub mod client;
 #[path = "client-types.rs"]

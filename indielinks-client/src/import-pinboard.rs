@@ -31,7 +31,9 @@ use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tower::Service;
 use url::Url;
 
-use indielinks_shared::{api::PostAddReq, entities::Tagname, origin::Origin};
+use indielinks_shared::{
+    api::PostAddReq, entities::Tagname, nonempty_string::NonEmptyString, origin::Origin,
+};
 
 use crate::{import::import_posts, service::ReqBody};
 
@@ -280,8 +282,8 @@ mod test {
 #[derive(Debug, Deserialize)]
 struct ExportedPost {
     href: Url,
-    description: String,
-    extended: String,
+    description: NonEmptyString,
+    extended: Option<NonEmptyString>,
     time: DateTime<Utc>,
     #[serde(deserialize_with = "de_exported_post::de_bool")]
     shared: bool,
@@ -329,13 +331,9 @@ mod de_exported_post {
 impl From<ExportedPost> for PostAddReq {
     fn from(value: ExportedPost) -> Self {
         PostAddReq {
-            url: value.href.into(),
+            url: value.href,
             title: value.description,
-            notes: if value.extended.is_empty() {
-                None
-            } else {
-                Some(value.extended)
-            },
+            notes: value.extended,
             tags: if value.tags.is_empty() {
                 None
             } else {

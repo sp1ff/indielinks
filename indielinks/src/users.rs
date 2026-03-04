@@ -1482,7 +1482,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         // I suppose it would be more "RESTful" to have a `user/users` resource and have callers
         // perform this action by POSTing to it (they could retrieve a user via GETting
         // `user/users/:username`), but that model doesn't really map to the set of things one can
-        // do via this API (how would we model minting a new API key, for instance? Or loggig-in?)
+        // do via this API (how would we model minting a new API key, for instance? Or logging-in?)
         .route(
             "/users/signup",
             post(signup)

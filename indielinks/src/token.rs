@@ -259,13 +259,13 @@ mod access_token_tests {
 //                                  the indielinks Refresh Token                                  //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// indielinks refresh [JWT] [claims]
+/// indielinks refresh JWT [claims]
 ///
 /// [claims]: https://pragmaticwebsecurity.com/articles/apisecurity/hard-parts-of-jwt.html
 ///
 /// Differs from [Claims] in that it incorporates a session ID
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct RefreshClaims {
+pub struct RefreshClaims {
     #[serde(rename = "iat")]
     issued_at: DateTime<Utc>,
     #[serde(rename = "iss")]
@@ -282,15 +282,21 @@ struct RefreshClaims {
     subject: Username,
 }
 
+impl RefreshClaims {
+    pub fn subject(&self) -> &Username {
+        &self.subject
+    }
+}
+
 // Similarly to the `jwt` crate, we'll use typestate to parameterize our CSRF token type
 
-struct Unsigned;
+pub struct Unsigned;
 
-struct Signed {
+pub struct Signed {
     token_string: String,
 }
 
-struct RefreshCsrfToken<S> {
+pub struct RefreshCsrfToken<S> {
     session: Uuid,
     // The OWASP cheat sheet suggests adding a nonce for "collision avoidance"; it's tough for me to
     // see what that adds to a UUID in terms of hash collisions, but out of paranoia I'll add a
@@ -340,7 +346,7 @@ impl RefreshCsrfToken<Signed> {
 
 pub struct Verified;
 
-pub struct Unverfiied<'a> {
+pub struct Unverified<'a> {
     pub session_str: &'a str,
     pub nonce_str: &'a str,
     pub signature_str: &'a str,
@@ -368,12 +374,12 @@ fn split_components(token: &str) -> Result<[&str; 3]> {
     Ok([session, nonce, signature])
 }
 
-impl<'a> RefreshCsrfToken<Unverfiied<'a>> {
-    pub fn parse_unverified(token_str: &'a str) -> Result<RefreshCsrfToken<Unverfiied<'a>>> {
+impl<'a> RefreshCsrfToken<Unverified<'a>> {
+    pub fn parse_unverified(token_str: &'a str) -> Result<RefreshCsrfToken<Unverified<'a>>> {
         let [session_str, nonce_str, signature_str] = split_components(token_str)?;
         let session = Uuid::from_base64(session_str).context(InvalidBase64Snafu)?;
         let nonce = u64::from_base64(nonce_str).context(InvalidBase64Snafu)?;
-        let signature = Unverfiied {
+        let signature = Unverified {
             session_str,
             nonce_str,
             signature_str,
@@ -388,13 +394,13 @@ impl<'a> RefreshCsrfToken<Unverfiied<'a>> {
 }
 
 impl<'a> jwt::token::verified::VerifyWithKey<RefreshCsrfToken<Verified>>
-    for RefreshCsrfToken<Unverfiied<'a>>
+    for RefreshCsrfToken<Unverified<'a>>
 {
     fn verify_with_key(
         self,
         key: &impl VerifyingAlgorithm,
     ) -> StdResult<RefreshCsrfToken<Verified>, jwt::error::Error> {
-        let Unverfiied {
+        let Unverified {
             session_str,
             nonce_str,
             signature_str,
@@ -477,16 +483,20 @@ pub fn mint_refresh_and_csrf_tokens(
     ))
 }
 
-/// Validate a refresh token & its associated CSRF token; vend a new access token on success. Return
-/// the [Username] to which this refresh token corresponds as a courtesy to the caller (for logging
-/// purposes, e.g.)
-pub fn refresh_token(
+/// The rather awkward signature of this function is for the benefit of [refresh_token], although I
+/// suppose it might be handly for other callers to know the key ID, signing key & derived key that
+/// were used to form the refresh token.
+#[allow(clippy::type_complexity)]
+pub fn verify_refresh_token(
     refresh_token_text: &str,
-    refresh_csrf_token_text: &str,
     keys: &SigningKeys,
     issuer: &Host,
-    lifetime: &Duration,
-) -> Result<(String, Username)> {
+) -> Result<(
+    Token<Header, RefreshClaims, jwt::Verified>,
+    KeyId,
+    SigningKey,
+    Hmac<Sha256>,
+)> {
     let now = Utc::now();
     let token: Token<Header, AccessClaims, _ /* Unverified<'_> */> =
         Token::parse_unverified(refresh_token_text).context(ParseSnafu)?;
@@ -532,11 +542,29 @@ pub fn refresh_token(
         .fail();
     }
 
+    Ok((token, keyid, signing_key, key))
+}
+
+/// Validate a refresh token & its associated CSRF token; vend a new access token on success. Return
+/// the [Username] to which this refresh token corresponds as a courtesy to the caller (for logging
+/// purposes, e.g.)
+pub fn refresh_token(
+    refresh_token_text: &str,
+    refresh_csrf_token_text: &str,
+    keys: &SigningKeys,
+    issuer: &Host,
+    lifetime: &Duration,
+) -> Result<(String, Username)> {
+    let (token, keyid, signing_key, derived_key) =
+        verify_refresh_token(refresh_token_text, keys, issuer)?;
+
     let csrf_token: RefreshCsrfToken<Verified> = refresh_csrf_token_text
-        .verify_with_key(&key)
+        .verify_with_key(&derived_key)
         .context(CsrfSnafu {
             token: refresh_csrf_token_text.to_owned(),
         })?;
+
+    let claims = token.claims();
 
     if csrf_token.session != claims.session {
         return CsrfMismatchSnafu {

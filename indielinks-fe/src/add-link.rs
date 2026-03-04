@@ -17,8 +17,9 @@ use gloo_net::http::Request;
 use leptos::{IntoView, component, context::use_context, html, prelude::*, view};
 use leptos_router::hooks::{use_location, use_navigate, use_query_map};
 use tracing::{debug, error, info};
+use url::Url;
 
-use indielinks_shared::{api::PostAddReq, entities::StorUrl};
+use indielinks_shared::{api::PostAddReq, entities::StorUrl, nonempty_string::NonEmptyString};
 
 use crate::{
     http::string_for_status,
@@ -70,23 +71,41 @@ pub fn AddLink() -> impl IntoView {
         async move {
             // This seems *really* painful... is there no way to make this more elegant? Also, it
             // largely replicates the logic in `EditPost`
-            let url: StorUrl = match url_element
+            // let url: StorUrl = match url_element
+            //     .get()
+            //     .expect("url should be mounted")
+            //     .value()
+            //     .try_into()
+            // {
+            //     Ok(url) => url,
+            //     Err(err) => {
+            //         error!("{err:?}");
+            //         window().alert_with_message("Invalid URL").unwrap();
+            //         return;
+            //     }
+            // };
+            let url: Url =
+                match Url::parse(&url_element.get().expect("url should be mounted").value()) {
+                    Ok(url) => url,
+                    Err(err) => {
+                        error!("{err:?}");
+                        window().alert_with_message("Invalid URL").unwrap();
+                        return;
+                    }
+                };
+            let title: NonEmptyString = match title_element
                 .get()
-                .expect("url should be mounted")
+                .expect("title should be mounted")
                 .value()
                 .try_into()
             {
-                Ok(url) => url,
-                Err(err) => {
-                    error!("{err:?}");
-                    window().alert_with_message("Invalid URL").unwrap();
+                Ok(title) => title,
+                Err(_) => {
+                    error!("Title must be non-empty");
+                    window().alert_with_message("Empty title").unwrap();
                     return;
                 }
             };
-            let title = title_element
-                .get()
-                .expect("title should be mounted")
-                .value();
             let notes = notes_element
                 .get()
                 .expect("notes should be mounted")
@@ -114,7 +133,11 @@ pub fn AddLink() -> impl IntoView {
                 serde_urlencoded::to_string(&PostAddReq {
                     url,
                     title,
-                    notes: if notes.is_empty() { None } else { Some(notes) },
+                    notes: if notes.is_empty() {
+                        None
+                    } else {
+                        Some(notes.try_into().unwrap(/* known good */))
+                    },
                     tags: if tags.is_empty() { None } else { Some(tags) },
                     dt: None,
                     replace: Some(true),

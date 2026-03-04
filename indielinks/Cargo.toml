@@ -7,6 +7,7 @@ description = "Social bookmarking in the Fediverse"
 
 [dependencies]
 argon2 = { version = "0.5.3", features = ["password-hash", "std"] }
+askama = { version = "0.15", features = ["code-in-doc"] }
 async-stream = "0.3.6"
 async-trait = "0.1.83"
 aws-config = { version = "1.5.12", features = ["behavior-version-latest"] }

@@ -32,6 +32,7 @@ use crate::{
 use indielinks_shared::{
     entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
     instance_state::InstanceStateV0,
+    nonempty_string::NonEmptyString,
 };
 
 use async_trait::async_trait;
@@ -1150,35 +1151,34 @@ impl storage::Backend for Client {
         &self,
         user: &User,
         replace: bool,
-        uri: &StorUrl,
+        uri: &Url,
         id: &PostId,
         title: &str,
         dt: &DateTime<Utc>,
-        notes: &Option<String>,
+        notes: Option<&NonEmptyString>,
         shared: bool,
         to_read: bool,
         tags: &HashSet<Tagname>,
     ) -> std::result::Result<bool, StorError> {
         let day: PostDay = dt.into();
         let post = Post::new(
-            uri,
+            // I hate the clone, but AFAIK the alternative for &Url -> &StorUrl is unsafe code
+            &uri.clone().into(),
             id,
             user.id(),
             dt,
             &day,
             title,
-            notes,
+            &notes.cloned(),
             tags,
             shared,
             to_read,
         );
-        let item = to_item(post).unwrap();
-
         let mut builder = self
             .client
             .put_item()
             .table_name("posts")
-            .set_item(Some(item));
+            .set_item(Some(to_item(post)?));
 
         if !replace {
             builder = builder.condition_expression(

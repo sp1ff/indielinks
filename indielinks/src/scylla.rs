@@ -39,6 +39,7 @@ use futures::{
 };
 use indielinks_cache::types::{NodeId, TypeConfig};
 use indielinks_shared::instance_state::InstanceStateV0;
+use indielinks_shared::nonempty_string::NonEmptyString;
 use itertools::Itertools;
 use num_bigint::BigInt;
 use openraft::{
@@ -59,6 +60,7 @@ use secrecy::ExposeSecret;
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
 use tracing::{debug, error, info};
+use url::Url;
 use uuid::Uuid;
 
 use indielinks_shared::entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
@@ -1225,11 +1227,11 @@ impl storage::Backend for Session {
         &self,
         user: &User,
         replace: bool,
-        uri: &StorUrl,
+        uri: &Url,
         id: &PostId,
         title: &str,
         dt: &DateTime<Utc>,
-        notes: &Option<String>,
+        notes: Option<&NonEmptyString>,
         shared: bool,
         to_read: bool,
         tags: &HashSet<Tagname>,
@@ -1238,6 +1240,8 @@ impl storage::Backend for Session {
         // row is created if none existed before, and updated otherwise. This behavior can be
         // changed by using ScyllaDB’s Lightweight Transaction IF NOT EXISTS or IF EXISTS clauses.
         let day: PostDay = dt.into();
+        // I hate the clone here, but the alternative, AFAIK, is unsafe code:
+        let uri: StorUrl = uri.clone().into();
         let result = self
             .session
             .execute_unpaged(

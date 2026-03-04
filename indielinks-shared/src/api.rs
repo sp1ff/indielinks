@@ -21,7 +21,10 @@ use secrecy::{CloneableSecret, SecretBox, SerializableSecret, zeroize::Zeroize};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::entities::{Post, PostDay, StorUrl, Tagname, UserEmail, Username};
+use crate::{
+    entities::{Post, PostDay, StorUrl, Tagname, UserEmail, Username},
+    nonempty_string::NonEmptyString,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                          Requests & Response for the del.icio.us API                           //
@@ -37,11 +40,11 @@ pub struct UpdateRsp {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PostAddReq {
-    pub url: StorUrl,
+    pub url: Url,
     #[serde(rename = "description")]
-    pub title: String,
+    pub title: NonEmptyString,
     #[serde(rename = "extended")]
-    pub notes: Option<String>,
+    pub notes: Option<NonEmptyString>,
     pub tags: Option<String>,
     pub dt: Option<DateTime<Utc>>,
     pub replace: Option<bool>,

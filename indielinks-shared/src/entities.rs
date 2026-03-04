@@ -39,6 +39,8 @@ use uuid::Uuid;
 
 use std::{collections::HashSet, fmt::Display, ops::Deref, str::FromStr};
 
+use crate::nonempty_string::NonEmptyString;
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -144,8 +146,7 @@ pub fn mk_ser_err(err: impl std::error::Error + Send + Sync + 'static) -> Serial
     SerializationError::new(err)
 }
 
-/*pub*/
-fn mk_serde_de_err<'de, D: serde::Deserializer<'de>>(err: impl std::error::Error) -> D::Error {
+pub fn mk_serde_de_err<'de, D: serde::Deserializer<'de>>(err: impl std::error::Error) -> D::Error {
     <D::Error as serde::de::Error>::custom(format!("{:?}", err))
 }
 
@@ -883,7 +884,7 @@ pub struct Post {
     posted: DateTime<Utc>,
     day: PostDay,
     title: String,
-    notes: Option<String>,
+    notes: Option<NonEmptyString>,
     tags: HashSet<Tagname>,
     public: bool,
     unread: bool,
@@ -898,7 +899,7 @@ impl Post {
         posted: &DateTime<Utc>,
         day: &PostDay,
         title: &str,
-        notes: &Option<String>,
+        notes: &Option<NonEmptyString>,
         tags: &HashSet<Tagname>,
         public: bool,
         unread: bool,

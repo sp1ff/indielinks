@@ -44,6 +44,7 @@ pub struct Indielinks {
     pub token_lifetime: Duration,
     pub refresh_token_lifetime: Duration,
     pub signing_keys: SigningKeys,
+    pub pinboard_token: Option<String>,
     pub users_same_site: SameSite,
     pub users_secure_cookies: bool,
     pub allowed_origins: Vec<Origin>,

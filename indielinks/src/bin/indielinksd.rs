@@ -93,6 +93,7 @@ use indielinks::{
     ap_entities::{Actor, Note},
     ap_resolution::ApResolver,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
+    bookmarklets::make_router as make_bookmarklets_router,
     cache::{Backend as CacheBackend, GrpcClientFactory, LogStore},
     client::make_client,
     define_metric,
@@ -436,6 +437,8 @@ struct ConfigV1 {
     background_tasks: background_tasks::Config,
     #[serde(rename = "raft-config")]
     raft_config: RaftConfiguration,
+    #[serde(rename = "pinboard-token")]
+    pinboard_token: Option<String>,
 }
 
 impl ConfigV1 {
@@ -472,6 +475,7 @@ impl Default for ConfigV1 {
             assets: None,
             background_tasks: background_tasks::Config::default(),
             raft_config: RaftConfiguration::default(),
+            pinboard_token: None,
         }
     }
 }
@@ -838,6 +842,7 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
         .merge(make_actor_router(state.clone()))
         .nest("/api/v1", make_delicious_router(state.clone()))
         .nest("/api/v1", make_user_router(state.clone()))
+        .nest("/bookmarklets", make_bookmarklets_router(state.clone()))
         // Reproducing this diagram from <https://docs.rs/axum/latest/axum/middleware/index.html>
         // because the towwer_http docs
         // <https://docs.rs/tower-http/0.6.2/tower_http/request_id/index.html> are incorrect: we
@@ -1073,6 +1078,7 @@ async fn serve(
             token_lifetime: cfg.signing_keys.token_lifetime,
             refresh_token_lifetime: cfg.signing_keys.refresh_token_lifetime,
             signing_keys: cfg.signing_keys.signing_keys.clone(),
+            pinboard_token: cfg.pinboard_token.clone(),
             users_same_site: cfg.users_config.same_site.clone(),
             users_secure_cookies: cfg.users_config.secure_cookies,
             allowed_origins: cfg.users_config.allowed_origins.clone(),

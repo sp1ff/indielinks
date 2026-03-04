@@ -22,7 +22,9 @@ use snafu::{Backtrace, ResultExt, Snafu};
 use tower::{Service, ServiceExt};
 use url::Url;
 
-use indielinks_shared::{api::PostAddReq, entities::Tagname, origin::Origin};
+use indielinks_shared::{
+    api::PostAddReq, entities::Tagname, nonempty_string::NonEmptyString, origin::Origin,
+};
 
 use crate::service::ReqBody;
 
@@ -86,9 +88,9 @@ pub async fn add_link<'a, C, I>(
     mut client: C,
     api: &Origin,
     token: &SecretString,
-    url: &Url,
-    title: &str,
-    notes: Option<&str>,
+    url: Url,
+    title: NonEmptyString,
+    notes: Option<&NonEmptyString>,
     tags: I,
     replace: bool,
     shared: bool,
@@ -107,9 +109,9 @@ where
 
     let tags = tags.map(|tag| tag.to_string()).join(",");
     let add_req = PostAddReq {
-        url: url.into(),
-        title: title.to_owned(),
-        notes: notes.map(|s| s.to_owned()),
+        url,
+        title,
+        notes: notes.cloned(),
         tags: if tags.is_empty() { None } else { Some(tags) },
         dt: None,
         replace: Some(replace),

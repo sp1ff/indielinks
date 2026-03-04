@@ -34,6 +34,7 @@ use leptos_router::hooks::use_query_map;
 use snafu::{Backtrace, prelude::*};
 use tap::Pipe;
 use tracing::{debug, error};
+use url::Url;
 use web_sys::MouseEvent;
 
 use crate::{
@@ -47,6 +48,11 @@ pub enum Error {
     Json { source: gloo_net::Error },
     #[snafu(display("While sending an HTTP request, {source}"))]
     Request { source: gloo_net::Error },
+    #[snafu(display("The post title must not be empty"))]
+    Title {
+        source: indielinks_shared::nonempty_string::Empty,
+        backtrace: Backtrace,
+    },
     #[snafu(display("while serializing {request:?} to a query string, {source}"))]
     UrlEncode {
         request: PostAddReq,
@@ -70,9 +76,22 @@ pub enum Error {
 // indielinks_shared::entities knows nothing about `PostAddReq`, I'm not sure how to do that.
 fn copy_post_to_add_req(post: &Post) -> PostAddReq {
     PostAddReq {
-        url: post.url().clone(),
-        title: post.title().to_owned(),
-        notes: post.notes().map(str::to_owned),
+        url: post.url().clone().into(),
+        // This is awful-- decded whether `Post::title` can be empty or not
+        title: post
+            .title()
+            .try_into()
+            .unwrap_or("<untitled>".try_into().unwrap(/* known good */)),
+        notes: match post.notes() {
+            Some(s) => {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.try_into().unwrap(/* known good */))
+                }
+            }
+            None => None,
+        },
         tags: Some(post.tags().join(",")),
         dt: Some(post.posted()),
         replace: Some(true),
@@ -371,11 +390,15 @@ fn EditPost(
                 .collect::<Vec<String>>()
                 .join(",");
             let request = PostAddReq {
-                url: string_for_node_ref(&url_element)
+                url: Url::parse(&string_for_node_ref(&url_element)).context(UrlParseSnafu)?,
+                title: string_for_node_ref(&title_element)
                     .try_into()
-                    .context(UrlFromSnafu)?,
-                title: string_for_node_ref(&title_element),
-                notes: if notes.is_empty() { None } else { Some(notes) },
+                    .context(TitleSnafu)?,
+                notes: if notes.is_empty() {
+                    None
+                } else {
+                    Some(notes.try_into().unwrap(/* known good */))
+                },
                 tags: if tags.is_empty() { None } else { Some(tags) },
                 dt: None,
                 replace: Some(true),

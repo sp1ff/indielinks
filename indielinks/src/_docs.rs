@@ -254,10 +254,9 @@
 //! - [refined-type](https://github.com/tomoikey/refined_type) takes the approach of requiring
 //!   you to implement a trait for each rule, but uses proc macros to combine them
 //!
-//! - [refined]: the most promising approach I've found; it
-//!   promises no macros as well as composibility. Unfortunately, this crate is young and (perhaps
-//!   understandably) seems to have made a choice to depend on the nightly toolchain rather than
-//!   stable.
+//! - [refined]: the most promising approach I've found; it promises no macros as well as
+//!   composibility. Unfortunately, this crate is young and (perhaps understandably) seems to have
+//!   made a choice to depend on the nightly toolchain rather than stable.
 //!
 //! [refined]: https://github.com/jkaye2012/refined
 //!
@@ -364,7 +363,7 @@
 //! to analyze this & even make part of the CI pipeline, but at the time of this writing, here it is
 //! (constructed manually):
 //!
-//! 1) actor, webfinger, users, delicious, webfinger, grpc, ops
+//! 1) actor, webfinger, users, delicious, webfinger, grpc, ops, bookmarklets
 //!    - all the public endpoints
 //! 2) indielinks, activity-pub, dynamodb, scylla, client
 //!    - implementations of lower-level abstractions
