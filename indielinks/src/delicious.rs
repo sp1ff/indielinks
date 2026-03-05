@@ -773,7 +773,7 @@ async fn get_posts(
                 posts: Vec::new(),
             }),
             Some(dt) => {
-                let tags = UpToThree::new(parse_tag_parameter(&posts_get_req.tag)?.into_iter())
+                let tags = UpToThree::new(parse_tag_parameter(&posts_get_req.tag)?)
                     .context(NoMoreThanThreeTagsSnafu)?;
                 let posts = storage
                     .get_posts(&user, &tags, &dt.into(), &posts_get_req.uri)
@@ -824,7 +824,7 @@ async fn get_recent(
         user: User,
         posts_recent_req: PostsRecentReq,
     ) -> Result<PostsRecentRsp> {
-        let tags = UpToThree::new(parse_tag_parameter(&posts_recent_req.tag)?.into_iter())
+        let tags = UpToThree::new(parse_tag_parameter(&posts_recent_req.tag)?)
             .context(NoMoreThanThreeTagsSnafu)?;
         let count = posts_recent_req.count.unwrap_or(10);
         let update_time = user.last_update().context(NoPostsSnafu {
@@ -869,7 +869,7 @@ async fn posts_dates(
         user: User,
         posts_dates_req: PostsDatesReq,
     ) -> Result<PostsDatesRsp> {
-        let tags = UpToThree::new(parse_tag_parameter(&posts_dates_req.tag)?.into_iter())
+        let tags = UpToThree::new(parse_tag_parameter(&posts_dates_req.tag)?)
             .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsDatesRsp {
             user: user.username().clone(),
@@ -970,7 +970,7 @@ async fn all_posts(
         user: User,
         posts_all_req: PostsAllReq,
     ) -> Result<PostsAllRsp> {
-        let tags = UpToThree::new(parse_tag_parameter(&posts_all_req.tag)?.into_iter())
+        let tags = UpToThree::new(parse_tag_parameter(&posts_all_req.tag)?)
             .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsAllRsp {
             user: user.username().clone(),

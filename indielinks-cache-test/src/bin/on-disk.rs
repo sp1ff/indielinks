@@ -728,7 +728,7 @@ async fn admin_init(
             .collect::<Result<Vec<(NodeId, ClusterNode)>>>()?;
         state
             .node
-            .initialize(BTreeMap::from_iter(req.into_iter()))
+            .initialize(BTreeMap::from_iter(req))
             .await
             .tap(|result| info!("Initialization of the Raft yielded: {:?}", result))
             .context(RaftSnafu)?;

@@ -627,8 +627,7 @@ impl Timeline {
                 .context(FollowSnafu)?
                 .try_collect::<Vec<Following>>()
                 .await
-                .context(FollowSnafu)?
-                .into_iter(),
+                .context(FollowSnafu)?,
         )
         .then(|following| {
             let ap_resolver = ap_resolver.clone();

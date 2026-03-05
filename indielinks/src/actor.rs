@@ -602,7 +602,7 @@ async fn accept_create(
 
     // Regardless of the precise flavor of `Create`, add this to the recipients' home timelines as a
     // `Note`:
-    iter(recipients.into_iter())
+    iter(recipients)
         .for_each(|recipient| {
             let timelines = timelines.clone();
             let note = note.clone();
@@ -688,7 +688,7 @@ async fn accept_share(
         .await
         .context(ApResolutionSnafu)?;
 
-    iter(recipients.into_iter())
+    iter(recipients)
         .for_each(|recipient| {
             let timelines = timelines.clone();
             let note = note.clone();
