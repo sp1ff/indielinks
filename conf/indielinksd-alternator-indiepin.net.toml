@@ -97,4 +97,4 @@ custom = []
 
 [general-purpose-rate-limits]
 per-second = 8
-custom = []
+custom = [("api.pinboard.in", 1)]

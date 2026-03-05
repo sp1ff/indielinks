@@ -18,6 +18,7 @@ use std::{path::PathBuf, sync::Arc};
 use chrono::Duration;
 use lru::LruCache;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
+use secrecy::SecretString;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -44,7 +45,7 @@ pub struct Indielinks {
     pub token_lifetime: Duration,
     pub refresh_token_lifetime: Duration,
     pub signing_keys: SigningKeys,
-    pub pinboard_token: Option<String>,
+    pub pinboard_token: Option<SecretString>,
     pub users_same_site: SameSite,
     pub users_secure_cookies: bool,
     pub allowed_origins: Vec<Origin>,

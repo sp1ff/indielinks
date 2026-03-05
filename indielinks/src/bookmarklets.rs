@@ -68,28 +68,31 @@ use crypto_common::KeyInit;
 use hmac::Hmac;
 use http::{
     header::{CONTENT_TYPE, SET_COOKIE},
-    HeaderMap, HeaderValue, StatusCode,
+    HeaderMap, HeaderValue, Method, Request, StatusCode,
 };
 use indielinks_shared::{
     api::REFRESH_COOKIE,
     entities::{Tagname, Username},
     nonempty_string::NonEmptyString,
 };
+use itertools::Itertools;
 use jwt::VerifyWithKey;
 use opentelemetry::KeyValue;
 use rand::{rngs::OsRng, RngCore};
-use secrecy::ExposeSecret;
-use serde::Deserialize;
+use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
+use tower::{Service, ServiceExt};
 use tower_http::set_header::SetResponseHeaderLayer;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use url::Url;
 use uuid::Uuid;
 
 use crate::{
     app_logic::add_post,
+    client_types::ClientType,
     define_metric,
     indielinks::Indielinks,
     signing_keys::SigningKey,
@@ -104,6 +107,11 @@ use crate::{
 pub enum Error {
     #[snafu(display("While adding this post, {source}"))]
     AddPost { source: crate::app_logic::Error },
+    #[snafu(display("While making the Pinboard request, {source}"))]
+    Client {
+        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While setting a cookie, {source}"))]
     CookieAsHeader {
         source: http::header::InvalidHeaderValue,
@@ -124,6 +132,26 @@ pub enum Error {
     MissingCookie { backtrace: Backtrace },
     #[snafu(display("No user by this name"))]
     NoSuchUser { backtrace: Backtrace },
+    #[snafu(display("Pinboard request failed: {result_code}"))]
+    Pinboard {
+        result_code: String,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While encoding the Pinboard request parameters, {source}"))]
+    PinboardParams {
+        source: serde_urlencoded::ser::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While building the Pinboard HTTP request, {source}"))]
+    PinboardRequest {
+        source: http::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize a Pinboard response body: {source}"))]
+    PinboardResponse {
+        source: serde_json::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While rendering the Askana template, {source}"))]
     Render {
         source: askama::Error,
@@ -405,11 +433,91 @@ struct AddRequest {
     csrf_token: String,
     url: Url,
     title: NonEmptyString,
-    description: Option<NonEmptyString>,
-    // whitespace-delimited
+    // This has to be a string, because the bookmarklet will send the description regardless
+    description: String,
+    // Will show-up whitespace-delimited
     tags: String,
     private: Option<bool>,
     to_read: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PinboardAddRequest {
+    url: Url,
+    description: NonEmptyString,
+    notes: Option<NonEmptyString>,
+    // Again whitespace-delimited
+    tags: String,
+    private: bool,
+    toread: bool,
+    auth_token: String,
+    r#format: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PinboardAddResponse {
+    result_code: String,
+}
+
+async fn send_to_pinboard(
+    token: &SecretString,
+    mut client: ClientType,
+    request: AddRequest,
+    tags: HashSet<Tagname>,
+) -> Result<()> {
+    let request = PinboardAddRequest {
+        url: request.url,
+        description: request.title,
+        notes: if request.description.is_empty() {
+            None
+        } else {
+            Some(request.description.try_into().unwrap(/* known good */))
+        },
+        tags: tags.into_iter().map(|t| t.to_string()).join(" "),
+        private: request.private.unwrap_or(true),
+        toread: request.to_read.unwrap_or(true),
+        auth_token: token.expose_secret().to_owned(),
+        r#format: "json".to_owned(),
+    };
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(format!(
+            "https://api.pinboard.in/v1/posts/add?{}",
+            serde_urlencoded::to_string(&request).context(PinboardParamsSnafu)?
+        ))
+        .body(Default::default())
+        .context(PinboardRequestSnafu)?;
+    debug!("Pinboard request: {request:#?}");
+    let response = client
+        .ready()
+        .await
+        .context(ClientSnafu)?
+        .call(request)
+        .await
+        .context(ClientSnafu)?;
+
+    // Regrettably, the Pinboard API often returns 200 even on failure-- we have to examine the
+    // response body to determine whether our request succeeded or not.
+    if !response.status().is_success() {
+        let response_text =
+            String::from_utf8_lossy(response.into_body().to_vec().as_slice()).into_owned();
+        return PinboardSnafu {
+            result_code: response_text,
+        }
+        .fail();
+    }
+
+    let response: PinboardAddResponse =
+        serde_json::from_slice(response.into_body().to_vec().as_slice())
+            .context(PinboardResponseSnafu)?;
+    if response.result_code != "done" {
+        return PinboardSnafu {
+            result_code: response.result_code,
+        }
+        .fail();
+    }
+
+    Ok(())
 }
 
 /// Complete the bookmarklet form submission
@@ -467,12 +575,18 @@ async fn add(
             .context(NoSuchUserSnafu)?;
 
         // and add the post:
+        let description: Option<NonEmptyString> = if request.description.is_empty() {
+            None
+        } else {
+            Some(request.description.clone().try_into().unwrap(/* known good */))
+            // Ugh
+        };
         let _ = add_post(
             &user,
             &request.url,
             &request.title,
             Some(&Utc::now()),
-            request.description.as_ref(),
+            description.as_ref(),
             &tags,
             true,
             !request.private.unwrap_or(false),
@@ -483,8 +597,10 @@ async fn add(
         .await
         .context(AddPostSnafu)?;
 
-        if let Some(_token) = &state.pinboard_token {
-            info!("Not yet implemented: send this link to Pinboard, too!");
+        // This is a "feature" I've added essentially for my own use-- if indielinks is configured
+        // with a Pinboard API token, we'll send this link there, too.
+        if let Some(token) = &state.pinboard_token {
+            send_to_pinboard(token, state.general_purpose_client.clone(), request, tags).await?;
         }
 
         Ok(())

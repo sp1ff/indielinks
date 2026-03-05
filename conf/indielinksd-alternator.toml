@@ -7,6 +7,7 @@ private-address = "127.0.0.1:20680"
 raft-grpc-address = "127.0.0.1:20681"
 user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
 collection-page-size = 64
+pinboard-token = "sp1ff:DDC8CB0BDF6BE3EFC468"
 
 [public-origin]
 scheme = "http"

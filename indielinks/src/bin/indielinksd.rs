@@ -54,6 +54,7 @@ use nonzero::nonzero;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
+use secrecy::SecretString;
 use serde::Deserialize;
 use snafu::{prelude::*, IntoError};
 use tap::Pipe;
@@ -438,7 +439,7 @@ struct ConfigV1 {
     #[serde(rename = "raft-config")]
     raft_config: RaftConfiguration,
     #[serde(rename = "pinboard-token")]
-    pinboard_token: Option<String>,
+    pinboard_token: Option<SecretString>,
 }
 
 impl ConfigV1 {
