@@ -2,7 +2,7 @@
 #+DESCRIPTION: Installation instructions for indielinks
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2026-02-14 Sat 07:32>
+#+DATE: <2026-03-05 Thu 13:12>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -63,3 +63,10 @@ Next, examine the file =admin/local-install= and be sure that it will install to
 #+BEGIN_SRC bash
   admin/local-install
 #+END_SRC
+** Optional: install the bookmarklet
+
+indielinks now offers a bookmarklet: a browser bookmark, that when selected will open a form, pre-populated for the current page & when submitted will save the page to your indielinks. Just copy the code below, *taking care to edit the indielinks location*: in this example, indielinks is at "http://localhost:20679", which is where I run a development version-- your will differ:
+
+#+BEGIN_EXAMPLE
+  javascript:q=location.href;if(document.getSelection){d=document.getSelection();}else{d='';};p=document.title;void(open('http://localhost:20679/bookmarklets/save?showtags=yes&url='+encodeURIComponent(q)+'&description='+encodeURIComponent(d)+'&title='+encodeURIComponent(p),'Pinboard','toolbar=no,scrollbars=yes,width=750,height=700'));
+#+END_EXAMPLE
