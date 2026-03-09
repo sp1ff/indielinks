@@ -14,12 +14,12 @@
 // see <http://www.gnu.org/licenses/>.
 
 use gloo_net::http::Request;
-use leptos::{IntoView, component, context::use_context, html, prelude::*, view};
+use leptos::{component, context::use_context, html, prelude::*, view, IntoView};
 use leptos_router::hooks::{use_location, use_navigate, use_query_map};
 use tracing::{debug, error, info};
 use url::Url;
 
-use indielinks_shared::{api::PostAddReq, entities::StorUrl, nonempty_string::NonEmptyString};
+use indielinks_shared::{api::PostAddReq, nonempty_string::NonEmptyString};
 
 use crate::{
     http::string_for_status,

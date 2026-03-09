@@ -98,4 +98,4 @@ custom = []
 
 [general-purpose-rate-limits]
 per-second = 8
-custom = []
+custom = [[{ host = { RegName = "api.indiepin.net" }, port = 443 }, 1]]

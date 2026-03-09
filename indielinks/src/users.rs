@@ -1381,8 +1381,11 @@ async fn timeline(
                 Ok(rsp) => {
                     user_timeline_successful
                         .add(1, &[KeyValue::new("username", user.username().to_string())]);
-                    debug!("Returning {rsp:?} for user {}", user.username());
-                    (StatusCode::OK, Json(rsp)).into_response()
+                    match rsp {
+                        TimelineRsp::Initial(rsp) => (StatusCode::OK, Json(rsp)).into_response(),
+                        TimelineRsp::Since(rsp) => (StatusCode::OK, Json(rsp)).into_response(),
+                        TimelineRsp::Before(rsp) => (StatusCode::OK, Json(rsp)).into_response(),
+                    }
                 }
                 Err(err) => {
                     user_timeline_failures
@@ -1472,6 +1475,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         CONTENT_TYPE,
         http::header::USER_AGENT,
         http::header::REFERER,
+        http::header::AUTHORIZATION,
     ];
     let allow_origin = state
         .allowed_origins

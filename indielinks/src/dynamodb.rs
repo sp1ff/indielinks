@@ -1325,21 +1325,22 @@ impl storage::Backend for Client {
     ) -> StdResult<BoxStream<'a, StdResult<Following, StorError>>, StorError> {
         let count = count_range(
             &self.client,
-            "followers",
+            "following",
             "actor_id",
             actor_id,
-            Some("follows_by_actor_id".to_owned()),
+            Some("following_by_actor_id".to_owned()),
         )
         .await
         .map_err(StorError::new)?;
+        tracing::debug!("{actor_id} has {count} followers");
         Ok(Box::pin(
             PagedResultsStream::new(
                 &self.client,
-                "followers",
+                "following",
                 "actor_id",
                 actor_id,
                 count,
-                Some("follows_by_actor_id".to_owned()),
+                Some("following_by_actor_id".to_owned()),
             )
             .await
             .map_err(StorError::new)?,

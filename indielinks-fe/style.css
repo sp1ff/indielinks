@@ -96,3 +96,35 @@
     flex-direction: column;
     /* align-items: flex-start; */
 }
+
+.feeds-sidebar {
+    width: clamp(150px, 12%, 300px);
+    margin: 6px;
+    border: 1px solid #cccccc;
+}
+
+.feeds-content {
+    margin: 6px;
+    border: 1px solid #cccccc;
+    flex: 1;
+    display: flex;
+}
+
+.feed {
+    flex: 1;
+    margin: 4px;
+    border: 1px solid #cccccc;
+    padding: 4px;
+}
+
+.feed-item {
+    margin: 4px;
+    border: 1px solid #bbbbbb;
+    padding: 4px;
+}
+
+.feed-nav {
+    margin: 4px;
+    border: 1px solid #bbbbbb;
+    padding: 4px;
+}

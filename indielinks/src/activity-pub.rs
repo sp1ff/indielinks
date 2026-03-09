@@ -245,6 +245,7 @@ where
                 }
                 Recipient::Followers(actor_id) => {
                     // Now, getting ahold of the stream can fail...
+                    debug!("I have a Followers for {actor_id}");
                     storage
                         .followers_for_actor(&actor_id.into())
                         .await
@@ -252,9 +253,12 @@ where
                         // as can each invocation of `poll_next()`-- at this point, we have a `Stream`
                         // that yields `StdResult<Following, StorError>`, and we want one what yields
                         // `Result<UserId>`:
-                        .map(|res| match res {
-                            Ok(following) => Ok(*following.user_id()),
-                            Err(err) => Err(FollowingSnafu.into_error(err)),
+                        .map(|res| {
+                            debug!("{res:#?}");
+                            match res {
+                                Ok(following) => Ok(*following.user_id()),
+                                Err(err) => Err(FollowingSnafu.into_error(err)),
+                            }
                         })
                         // collect that into a `Vec`...
                         .collect::<Vec<Result<UserId>>>()
@@ -314,6 +318,8 @@ where
         })
         .collect::<HashSet<Url>>();
 
+    debug!("to: {to_local_recipients:?}");
+
     let mut public_is_in_cc = false;
     let cc_local_recipients = cc
         .filter_map(|url| {
@@ -328,10 +334,14 @@ where
         })
         .collect::<HashSet<Url>>();
 
+    debug!("cc: {cc_local_recipients:?}");
+
     let local_recipients = to_local_recipients
         .union(&cc_local_recipients)
         .map(|url| Recipient::new(origin, url).map_err(|err| ApSnafu.into_error(err)))
         .collect::<Result<Vec<Recipient>>>()?;
+
+    debug!("local_recipients: {local_recipients:?}");
 
     // - public: to contains =https://www.w3.org/ns/activitystreams#Public=, cc contains ={actor ID}/followers=
     // - unlisted: to contains ={actor ID}/followers=, cc contains =https://www.w3.org/ns/activitystreams#Public=
