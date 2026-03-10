@@ -294,6 +294,7 @@ pub enum TimelineReq {
 #[serde(deny_unknown_fields)]
 pub struct FeedPost {
     pub id: Url,
+    pub actor: Url,
     pub in_reply_to: Option<Url>,
     pub published: DateTime<Utc>,
     // I'm not sure how I want to represent this; when & how should this be sanitized?
@@ -336,3 +337,10 @@ pub struct TimelineBeforePage {
 
 /// Response payload for a timeline request for posts older than a given point
 pub type TimelineBeforeRsp = Option<TimelineBeforePage>;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LikeRequest {
+    pub id: Url,
+    pub actor: Url,
+}

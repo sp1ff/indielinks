@@ -109,7 +109,7 @@ use url::Url;
 
 use indielinks_shared::{
     api::{
-        FollowReq, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, SignupReq, SignupRsp,
+        FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, SignupReq, SignupRsp,
         TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp,
         TimelineReq, TimelineSincePage, TimelineSinceRsp, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
         REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
@@ -119,11 +119,11 @@ use indielinks_shared::{
 };
 
 use crate::{
-    activity_pub::SendFollow,
+    activity_pub::{SendFollow, SendLike},
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     background_tasks::{self, BackgroundTasks, Sender},
     define_metric,
-    entities::{self, FollowId, User},
+    entities::{self, FollowId, LikeId, User},
     home_timeline::{FirstPage, PostKey, Timeline},
     http::{ErrorResponseBody, SameSite},
     indielinks::Indielinks,
@@ -251,6 +251,12 @@ pub enum Error {
     SendFollow {
         username: Username,
         actorid: Url,
+        source: background_tasks::Error,
+    },
+    #[snafu(display("Couldn't create background task for {username} liking {id}: {source}"))]
+    SendLike {
+        username: Username,
+        id: Url,
         source: background_tasks::Error,
     },
     #[snafu(display("While serializing an internal timeline request, {source}"))]
@@ -426,6 +432,17 @@ impl Error {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!(
                     "Couldn't schedule a follow request for {actorid} on behalf of {username}: {source}"
+                ),
+            ),
+            Error::SendLike {
+                username,
+                id,
+                source,
+                ..
+            } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Couldn't schedule a like request for {id} on behalf of {username}: {source}"
                 ),
             ),
             Error::SerInternalTimelineReq { source, .. } => (
@@ -1081,6 +1098,67 @@ async fn follow(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         `/users/like`                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.likes.successful", user_likes_successful, Sort::IntegralCounter }
+define_metric! { "user.likes.failures", user_likes_failures, Sort::IntegralCounter }
+
+/// Send an ActivityPub [Like]
+async fn like(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(req): Json<LikeRequest>,
+) -> axum::response::Response {
+    async fn like1(
+        origin: &Origin,
+        user: &User,
+        id: &Url,
+        actor: &Url,
+        sender: &Arc<BackgroundTasks>,
+    ) -> Result<()> {
+        sender
+            .send(SendLike::new(
+                origin.clone(),
+                user.clone(),
+                id.clone(),
+                LikeId::default(),
+                actor.clone(),
+            ))
+            .await
+            .context(SendLikeSnafu {
+                username: user.username().clone(),
+                id: id.clone(),
+            })?;
+        Ok(())
+    }
+
+    match &user {
+        Ok(user) => match like1(&state.origin, user, &req.id, &req.actor, &state.task_sender).await
+        {
+            Ok(_) => {
+                user_likes_successful.add(1, &[]);
+                StatusCode::ACCEPTED.into_response()
+            }
+            Err(err) => {
+                user_likes_failures.add(1, &[]);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorResponseBody {
+                        error: format!("{}", err),
+                    },
+                )
+                    .into_response()
+            }
+        },
+        Err(_) => {
+            user_likes_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       `/users/mint-key`                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1540,6 +1618,17 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/users/follow",
             post(follow)
+                // Likewise, for now I think I'll limit this to the front end
+                .layer(mk_cors(
+                    true,
+                    allow_headers.clone(),
+                    http::Method::POST,
+                    allow_origin.clone(),
+                )),
+        )
+        .route(
+            "/users/like",
+            post(like)
                 // Likewise, for now I think I'll limit this to the front end
                 .layer(mk_cors(
                     true,

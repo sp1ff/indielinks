@@ -115,12 +115,24 @@
     margin: 4px;
     border: 1px solid #cccccc;
     padding: 4px;
+    display: flex;
+    flex-direction: column;
+}
+
+.feed-title {
+    margin: 4px;
+    border: 1px solid #cccccc;
+    padding: 4px;
 }
 
 .feed-item {
     margin: 4px;
     border: 1px solid #bbbbbb;
     padding: 4px;
+}
+
+.feed-item-actions {
+    font-size: 0.85rem;
 }
 
 .feed-nav {

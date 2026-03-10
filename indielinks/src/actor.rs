@@ -696,6 +696,7 @@ async fn accept_share(
                 if let Some(timeline) = timelines.lock().await.get_mut(&recipient) {
                     timeline.add(Item::Share(Box::new(Share::from_parts(
                         announce.id().clone(),
+                        announce.actor().clone(),
                         *announce.published(),
                         announce.object().clone(),
                         note.content().clone(),

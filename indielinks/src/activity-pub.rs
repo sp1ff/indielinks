@@ -52,11 +52,11 @@ use indielinks_shared::{
 
 use crate::{
     ap_entities::{
-        ap_request, ap_request_no_response, make_follow_id, make_user_id, Actor, Create, Follow,
-        Note, Recipient, ToJld, Type,
+        ap_request, ap_request_no_response, make_follow_id, make_like_id, make_user_id, Actor,
+        ActorField, Create, Follow, Like, Note, Recipient, ToJld, Type,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
-    entities::{FollowId, User, Visibility},
+    entities::{FollowId, LikeId, User, Visibility},
     storage::Backend as StorageBackend,
 };
 
@@ -744,5 +744,102 @@ inventory::submit! {
     BackgroundTask {
         id: SEND_FOLLOW,
         de: |buf| { Ok(Box::new(rmp_serde::from_slice::<SendFollow>(buf).unwrap())) }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            SendLike                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A UUID identifying the background task [SendLike]
+// 48434f6c-4d54-448d-82e0-7cfb67f7e030
+const SEND_LIKE: Uuid = Uuid::from_fields(
+    0x48434f6c,
+    0x4d54,
+    0x448d,
+    &[0x82, 0xe0, 0x7c, 0xfb, 0x67, 0xf7, 0xe0, 0x30],
+);
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SendLike {
+    origin: Origin,
+    user: User,
+    apid: Url,
+    id: LikeId,
+    actor: Url,
+}
+
+impl SendLike {
+    pub fn new(origin: Origin, user: User, apid: Url, id: LikeId, actor: Url) -> SendLike {
+        SendLike {
+            origin,
+            user,
+            apid,
+            id,
+            actor,
+        }
+    }
+}
+
+#[async_trait]
+impl Task<Context> for SendLike {
+    async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
+        debug!(
+            "Sending a like for {} on behalf of {}",
+            self.apid,
+            self.user.username()
+        );
+
+        async fn exec1(this: Box<SendLike>, context: Context) -> Result<()> {
+            let mut client = context.ap_client.clone();
+
+            let inbox = context
+                .ap_resolver
+                .lock()
+                .await
+                .actor_id_to_inbox(Left(&this.user), &this.actor)
+                .await
+                .context(ApResolverSnafu)?;
+
+            debug!("Resolved the actor inbox to {inbox}");
+
+            let like = Like::new(
+                this.apid,
+                make_like_id(this.user.username(), &this.id, &this.origin).context(ApSnafu)?,
+                ActorField::Iri(make_user_id(this.user.username(), &this.origin).context(ApSnafu)?),
+            );
+            ap_request_no_response(
+                &mut client,
+                &this.origin,
+                Left(&this.user),
+                &inbox,
+                Method::POST,
+                None,
+                &like,
+            )
+            .await
+            .context(ApSnafu)
+        }
+
+        exec1(self, context)
+            .await
+            .map_err(background_tasks::Error::new)
+    }
+    fn timeout(&self) -> Option<Duration> {
+        Some(Duration::from_secs(60))
+    }
+}
+
+impl TaggedTask<Context> for SendLike {
+    type Tag = Uuid;
+    fn get_tag() -> Self::Tag {
+        SEND_LIKE
+    }
+}
+
+inventory::submit! {
+    BackgroundTask {
+        id: SEND_LIKE,
+        de: |buf| { Ok(Box::new(rmp_serde::from_slice::<SendLike>(buf).unwrap())) }
     }
 }

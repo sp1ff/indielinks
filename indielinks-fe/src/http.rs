@@ -77,6 +77,10 @@ pub async fn send_with_retry<F, Fut>(
 ) -> Result<gloo_net::http::Response, gloo_net::Error>
 where
     F: Fn() -> Fut,
+    // It would be nice to derive the error type from F. The approach: Change refresh_token() to
+    // return a dedicated error type (it could be a sum type). Make callers implement `From<this
+    // type>` for their error types. Then, they can write their functors to return their own error
+    // types.
     Fut: Future<Output = Result<gloo_net::http::Response, gloo_net::Error>>,
 {
     // Huh. Seems prolix.

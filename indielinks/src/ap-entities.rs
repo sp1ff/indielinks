@@ -145,7 +145,7 @@ use indielinks_shared::{
 
 use crate::{
     client_types::ClientType,
-    entities::{FollowId, User},
+    entities::{FollowId, LikeId, User},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -287,6 +287,11 @@ type Result<T> = std::result::Result<T, Error>;
 /// Return an URL naming a follow activity
 pub fn make_follow_id(username: &Username, id: &FollowId, origin: &Origin) -> Result<Url> {
     Url::parse(&format!("{}/users/{}/follows/{}", origin, username, id)).context(UrlParseSnafu)
+}
+
+/// Return an URL naming a like activity
+pub fn make_like_id(username: &Username, id: &LikeId, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/likes/{}", origin, username, id)).context(UrlParseSnafu)
 }
 
 /// Return an URL naming the instance actor public key
@@ -1087,6 +1092,9 @@ impl Note {
     pub fn as_jld(&self, context: Option<Context>) -> Result<Jld> {
         Jld::new(self, context)
     }
+    pub fn attributed_to(&self) -> &Url {
+        &self.attributed_to
+    }
     pub fn content(&self) -> &Html {
         &self.content
     }
@@ -1245,19 +1253,31 @@ pub enum InboxPayload {
 pub struct Share {
     /// ActivityPub ID of the _share_ not the underlying note!
     id: Url,
+    /// The actor who shared this content
+    actor: Url,
     published: DateTime<Utc>,
     original_id: Url,
     content: Html,
 }
 
 impl Share {
-    pub fn from_parts(id: Url, published: DateTime<Utc>, original_id: Url, content: Html) -> Self {
+    pub fn from_parts(
+        id: Url,
+        actor: Url,
+        published: DateTime<Utc>,
+        original_id: Url,
+        content: Html,
+    ) -> Self {
         Self {
             id,
+            actor,
             published,
             original_id,
             content,
         }
+    }
+    pub fn actor(&self) -> &Url {
+        &self.actor
     }
     pub fn id(&self) -> &Url {
         &self.id
@@ -1282,12 +1302,14 @@ impl From<Item> for FeedPost {
         match value {
             Item::Note(note) => FeedPost {
                 id: note.id,
+                actor: note.attributed_to,
                 in_reply_to: note.in_reply_to,
                 published: note.published,
                 content: note.content.to_string(),
             },
             Item::Share(share) => FeedPost {
                 id: share.id,
+                actor: share.actor,
                 in_reply_to: None,
                 published: share.published,
                 content: share.content.to_string(),

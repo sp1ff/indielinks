@@ -97,4 +97,4 @@ custom = []
 
 [general-purpose-rate-limits]
 per-second = 8
-custom = [("api.pinboard.in", 1)]
+custom = [[{ host = { RegName = "api.indiepin.net" }, port = 443 }, 1]]
