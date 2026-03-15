@@ -1,0 +1,210 @@
+#+TITLE: HACKING
+#+DESCRIPTION: How to hack on indielinks
+#+DATE: <2026-03-14 Sat 20:36>
+#+AUTODATE: t
+#+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
+#+STARTUP: overview
+
+* Introduction
+
+This document provides an introduction to hacking on indielinks, from building it & running the test suite to running a development instance and even connecting your development build to the internet & federating with instances of other Fediverse apps. It's early days: at the time of this writing, this is largely a document dump from my personal notes. Contributions are welcome.
+
+See also the documentation-only source file in =indielinks/src/_docs.rs=.
+* Project Overview
+
+indielinks itself is a workspace containing a number of crates:
+
+  - indielinks :: the indielinks server
+  - indielinks-test :: integration tests for the indielinks crate
+  - indielinks-cache :: logic for turning a cluster of indielinks nodes into a distributed cache backed by the Raft consensus protocol
+  - indielinks-cache-test :: integration tests for indielinks-cache
+  - indielinks-fe :: the indielinks web front end
+  - indielinks-client :: a CLI for interacting with the indielinks server
+  - indielinks-shared :: types shared between indielinks & its clients
+
+other directories:
+
+  - admin :: project management scripts
+  - assets :: static assets for the Github page
+  - conf :: indielinks configuration files
+  - infra :: scripts & configuration related to infrastructure surrounding indielinks
+  - scripts :: scripts for installing & administering indielinks
+* Compiling
+
+indielinks builds on stable Rust. Assuming you've got the toolchain installed (see [[INSTALL.org]]), just do:
+
+#+BEGIN_SRC bash
+  cargo build
+#+END_SRC
+
+You may find it useful to generate rustdocs (especially the aforementioned documentation-only moduel):
+
+#+BEGIN_SRC bash
+  cargo doc --open
+#+END_SRC
+* Testing
+
+The indielinks test suite is a weak spot, but the project _does_ contain both unit & integration tests.
+
+#+BEGIN_SRC bash
+  cargo test
+#+END_SRC
+
+will run the entire suite.
+* Quick Start
+
+You've got a build & it tests-out. Now you want to actually run the thing & see it doing something. This section is intended to give a step-by-step checklist for doing this:
+** Stand-up a ScyllaDB Cluster
+
+#+BEGIN_SRC bash
+  cd infra && ./scylla-down && ./scylla-up && cd ..
+#+END_SRC
+
+This will stand-up a containerized three-node ScyllaDB cluster on the local machine.
+** Start the indielinks Server
+
+#+BEGIN_SRC bash
+  cd indielinks && \
+  RUST_BACKTRACE=1 RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info,opentelemetry_sdk=info,axum::rejection=trace cargo run --bin indielinksd -- -D -p -c ../conf/indielinksd-scylla.toml -F
+#+END_SRC
+
+This will start the server, in the foreground, talking to the ScyllaDB cluster over the native ScyllaDB protocol.
+
+In a different shell:
+
+#+BEGIN_SRC bash
+  curl -v -H 'Content-Type: application/json' http://localhost:20680/ops/cache/init-cluster --data '{"0":{"addr":"127.0.0.1:20681"}}' && \
+  curl -v http://localhost:20679/healthcheck
+#+END_SRC
+
+This will configure the indielinks server as a single-node Raft cluster, and then healthcheck it. The healthcheck invocation should return status 200 and the response body should be the string "GOOD".
+** Provision a User
+
+Pick a username. Don't choose a trivial password: the signup endpoint requires a minimum complexity. Don't worry about the email address; indielinks doesn't validate it at this point.
+
+#+BEGIN_SRC bash
+  export user=<your username here>
+  cargo run -p indielinks-client --bin=indic -- -v -C -A http://localhost:20679 add-user -u ${user} -p 'f00-b@r-sp1at' -m '${user}@gmail.com'
+#+END_SRC
+
+Make a note of the API key that's printed on stdout. If the key is "abc", do:
+
+#+BEGIN_SRC bash
+  api_key=${user}:abc
+#+END_SRC
+** Start the Front End
+
+#+BEGIN_SRC bash
+  cd indielinks-fe && \
+  INDIELINKS_FE_API="http://localhost:20694" trunk serve --port=18080 index.html
+#+END_SRC
+
+Point your favorite browser to http://localhost:18080. You should be able to sign-in, add posts & view them. The Feeds page is in progress.
+* Commit Procedure
+
+  - cut a branch
+  - hack
+  - commit
+  - repeat
+
+When you're ready to merge, get signoff. I prefer to run as much in terms of pre-commit checks locally because developers' machines are typically far more performant than what you can get in the cloud. From the project root, run:
+
+#+BEGIN_SRC bash
+  admin/signoff
+#+END_SRC
+
+Before pushing, go over your commits & consider squashing some or all. The goal here is to have each commit represent an individually revertible unit of fucntionality. Don't skimp on commit messages: begin with a one-line summary. Then give a paragraph or two describing the commit's functionality & noting any salient implementation decisions.
+
+Cut a PR.
+* Operational Overview
+
+The indielinks server may be run in the foreground, in which case it will log to stdout. It may also be run as a standard SysV daemon. Run =indielinks --help= for a full list of command-line options.
+
+Once running, it will listen on three ports:
+
+  - public API :: the indielinks public API (20679 by default)
+  - local API :: the administrative API, only accessible from localhost (20680 by default)
+  - gRPC API :: the distributed cache API (20681 by default)
+* ScyllaDB Ops
+
+** ScyllaDB
+
+#+BEGIN_SRC bash
+  # stand-up the local cluster using `docker compose` (not idempotent)
+  infra/scylla-up
+  # teardown the local cluster
+  infra/scylla-down
+  # check the cluster status
+  docker exec -it scylla-node-1 nodetool status
+  # tear down the local cluster using `docker compose`
+  infra/scylla-down
+  # check the logs for the first node
+  docker logs scylla-node-1
+  # get a cql shell on the first node
+  docker exec -it scylla-node-1 cqlsh
+#+END_SRC
+** Alternator
+
+#+BEGIN_SRC bash
+  # stand-up the local cluster using `docker compose` (not idempotent)
+  infra/scylla-up
+  # teardown the local cluster
+  infra/scylla-down
+  # describe a table
+  aws --endpoint-url http://localhost:8043 dynamodb describe-table --table-name="<table name>"
+  # query a table
+  aws --endpoint-url http://localhost:8043 dynamodb get-item --table-name "users" --key '{"id":{"S":"9a1df092cd694c6491f7b8fb4022ea49"}}'
+#+END_SRC
+* Connecting Your Instance to the Internet
+
+This is a bit more complex, but it's possible to connect your build to the internet. In this way, you can communicate with other Fediverse apps such as Mastodon. This is a sketch of how to do that:
+
+  - get a domain name
+  - get a Cloudflare account
+  - bring your domain name to Cloudflare tunnels; configure the tunnel to route to your local instance
+  - run the Cloudflare daemon on your development machine
+
+Test your setup: if your domain name is example.com, =curl -v https://example.com/healthcheck= should healthcheck.
+
+Send a follow request:
+
+#+BEGIN_SRC bash
+  curl -v -H "Authorization: Bearer $api_key" http://localhost:20679/api/v1/users/follow --data '{"id":"https://indieweb.social/users/sp1ff"}' -H 'Content-Type: application/json'
+#+END_SRC
+
+Navigate to the Feeds page-- posts should show-up.
+* Cheat Sheet
+
+Ports:
+
+  - 20676
+  - 20679 :: public, indielinksd-{alternator, alternator-0, scylla}
+  - 20680 :: local, indielinksd-{alternator, alternator-0, scylla}
+  - 20681 :: gRPC, indielinksd-{alternator, alternator-0, scylla}
+  - 20682 :: public, indielinksd-{alternator, scylla}-1
+  - 20683 :: public, indielinksd-{alternator, scylla}-1
+  - 20684 :: public, indielinksd-{alternator, scylla}-1
+  - 20685 :: public, indielinksd-{alternator, scylla}-2
+  - 20686 :: public, indielinksd-{alternator, scylla}-2
+  - 20687 :: public, indielinksd-{alternator, scylla}-2
+  - 20688 :: public, indielinksd-{alternator, scylla}-3
+  - 20689 :: public, indielinksd-{alternator, scylla}-3
+  - 20690 :: public, indielinksd-{alternator, scylla}-3
+  - 20691 :: public, indielinksd-{alternator, scylla}-4
+  - 20692 :: public, indielinksd-{alternator, scylla}-4
+  - 20693 :: public, indielinksd-{alternator, scylla}-4
+
+Running the server locally on bare metal:
+
+#+BEGIN_SRC bash
+  # run indielinks in the foreground with the ScyllaDB backend
+  RUST_BACKTRACE=1 RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info,opentelemetry_sdk=info,axum::rejection=trace cargo run --bin indielinksd -- -D -p -c ../conf/indielinksd-scylla.toml -F
+  # run indielinks in the foreground with the Alternator backend
+  RUST_BACKTRACE=1 RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info,opentelemetry_sdk=info cargo run,axum::rejection=trace --bin indielinksd -- -D -p -c ../conf/indielinksd-alternator.toml -F
+  # run indielinks as a daemon
+  RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info,opentelemetry_sdk=info,axum::rejection=trace cargo run --bin indielinksd -- -D -p -c dev-config-scylla.toml -C -L /tmp
+  # SIGHUP the process
+  kill -s HUP $(ps aux|grep 'target/.*/indielinks'|grep -v grep|awk '{print $2}')
+  # SIGKILL the process
+  kill $(ps aux|grep 'target/.*/indielinks'|grep -v grep|awk '{print $2}')
+#+END_SRC

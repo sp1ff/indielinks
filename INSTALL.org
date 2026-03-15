@@ -1,8 +1,6 @@
 #+TITLE: INSTALL
 #+DESCRIPTION: Installation instructions for indielinks
-#+AUTHOR: Michael Herstine
-#+EMAIL: sp1ff@pobox.com
-#+DATE: <2026-03-05 Thu 13:12>
+#+DATE: <2026-03-14 Sat 19:39>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
