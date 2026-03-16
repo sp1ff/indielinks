@@ -96,7 +96,7 @@ Make a note of the API key that's printed on stdout. If the key is "abc", do:
 
 #+BEGIN_SRC bash
   cd indielinks-fe && \
-  INDIELINKS_FE_API="http://localhost:20694" trunk serve --port=18080 index.html
+  INDIELINKS_FE_API="http://localhost:20679" trunk serve --port=18080 index.html
 #+END_SRC
 
 Point your favorite browser to http://localhost:18080. You should be able to sign-in, add posts & view them. The Feeds page is in progress.
