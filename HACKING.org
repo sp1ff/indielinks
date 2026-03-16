@@ -46,6 +46,12 @@ You may find it useful to generate rustdocs (especially the aforementioned docum
 
 The indielinks test suite is a weak spot, but the project _does_ contain both unit & integration tests.
 
+To run integration tests, you will need to add this to your hosts file:
+
+```
+127.0.0.1   indiemark.local
+```
+
 #+BEGIN_SRC bash
   cargo test
 #+END_SRC
