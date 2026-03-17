@@ -38,7 +38,7 @@
 //    independently testable unit of code that models state & logic without presentation
 //    <https://martinfowler.com/articles/headless-component.html>
 
-use std::{collections::VecDeque, hash::Hash, result::Result as StdResult};
+use std::{cmp::PartialEq, collections::VecDeque, hash::Hash, result::Result as StdResult};
 
 use gloo_net::http::Request;
 use leptos::{
@@ -56,6 +56,9 @@ use indielinks_shared::api::{
 };
 
 use crate::{
+    components::dropdown::{
+        Dropdown, DropdownMenuItem, DropdownMenuItems, DropdownTrigger, use_dropdown,
+    },
     http::send_with_retry,
     types::{Api, Token},
 };
@@ -167,16 +170,30 @@ where
     KF: Fn(&FeedPost) -> K + Send + Clone + 'static,
     K: Eq + Hash + SerializableKey + 'static,
 {
+    let open_menu = use_dropdown::<MenuId>();
+
     view! {
         <For each=each key=key
             children=move |post: FeedPost| {
-                view!{<ViewPost post=post.clone()/>}}>
+                view!{<ViewPost post=post.clone() open_menu/>}}>
         </For>
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum DropdownSort {
+    Share,
+    Miscellaneous,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuId {
+    url: Url,
+    sort: DropdownSort,
+}
+
 #[component]
-fn ViewPost(post: FeedPost) -> impl IntoView {
+fn ViewPost(post: FeedPost, open_menu: RwSignal<Option<MenuId>>) -> impl IntoView {
     let api = expect_context::<Api>().0;
     let token = expect_context::<Token>();
 
@@ -219,10 +236,44 @@ fn ViewPost(post: FeedPost) -> impl IntoView {
         }
     });
 
+    let share_menu_id = MenuId {
+        url: post.id.clone(),
+        sort: DropdownSort::Share,
+    };
+    let misc_menu_id = MenuId {
+        url: post.id.clone(),
+        sort: DropdownSort::Miscellaneous,
+    };
+
     view! {
         <div class="feed-item" style="display:flex; flex-direction: column; gap: 0.5rem;">
             <div class="feed-item-content" style="text-align: center;" inner_html=post.content></div>
-            <div class="feed-item-actions"><button on:click=move |_| {send_like.dispatch((post.id.clone(), post.actor.clone()));}>"like"</button></div>
+            <div class="feed-item-actions">
+                <button on:click=move |_| {send_like.dispatch((post.id.clone(), post.actor.clone()));}>"like"</button>
+                " "
+                <Dropdown open_menu>
+                    <DropdownTrigger text="share".to_string() menu_id=share_menu_id.clone() />
+                    <DropdownMenuItems menu_id=share_menu_id.clone()>
+                        <DropdownMenuItem
+                            text="share".to_string()
+                            handler=Callback::new(|()| debug!("Share selected"))/>
+                        <DropdownMenuItem
+                            text="quote".to_string()
+                            handler=Callback::new(|()| debug!("Quote selected"))/>
+                    </DropdownMenuItems>
+                </Dropdown>
+                " "
+                <button on:click=move |_| debug!("Reply clicked")>"reply"</button>
+                " "
+                <Dropdown open_menu>
+                    <DropdownTrigger text="more".to_string() menu_id=misc_menu_id.clone() />
+                    <DropdownMenuItems menu_id=misc_menu_id.clone()>
+                        <DropdownMenuItem
+                            text="copy lnk".to_string()
+                            handler=Callback::new(|()| debug!("Copy link selected"))/>
+                    </DropdownMenuItems>
+                </Dropdown>
+            </div>
         </div>
     }
 }

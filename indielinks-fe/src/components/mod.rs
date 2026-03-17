@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -15,12 +15,4 @@
 
 #![cfg(target_arch = "wasm32")]
 
-#[path = "add-link.rs"]
-pub mod add_link;
-pub mod components;
-pub mod feeds;
-pub mod home;
-pub mod http;
-pub mod instance;
-pub mod signin;
-pub mod types;
+pub mod dropdown;
