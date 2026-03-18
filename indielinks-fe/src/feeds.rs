@@ -197,6 +197,8 @@ fn ViewPost(post: FeedPost, open_menu: RwSignal<Option<MenuId>>) -> impl IntoVie
     let api = expect_context::<Api>().0;
     let token = expect_context::<Token>();
 
+    let (replying, set_replying) = signal::<bool>(false);
+
     let send_like = Action::new_local(move |(id, actor): &(Url, Url)| {
         let api = api.clone();
         let token = token.clone();
@@ -245,35 +247,65 @@ fn ViewPost(post: FeedPost, open_menu: RwSignal<Option<MenuId>>) -> impl IntoVie
         sort: DropdownSort::Miscellaneous,
     };
 
+    let post_id = post.id.clone();
+    let post_actor = post.actor.clone();
     view! {
         <div class="feed-item" style="display:flex; flex-direction: column; gap: 0.5rem;">
             <div class="feed-item-content" style="text-align: center;" inner_html=post.content></div>
-            <div class="feed-item-actions">
-                <button on:click=move |_| {send_like.dispatch((post.id.clone(), post.actor.clone()));}>"like"</button>
-                " "
-                <Dropdown open_menu>
-                    <DropdownTrigger text="share".to_string() menu_id=share_menu_id.clone() />
-                    <DropdownMenuItems menu_id=share_menu_id.clone()>
-                        <DropdownMenuItem
-                            text="share".to_string()
-                            handler=Callback::new(|()| debug!("Share selected"))/>
-                        <DropdownMenuItem
-                            text="quote".to_string()
-                            handler=Callback::new(|()| debug!("Quote selected"))/>
-                    </DropdownMenuItems>
-                </Dropdown>
-                " "
-                <button on:click=move |_| debug!("Reply clicked")>"reply"</button>
-                " "
-                <Dropdown open_menu>
-                    <DropdownTrigger text="more".to_string() menu_id=misc_menu_id.clone() />
-                    <DropdownMenuItems menu_id=misc_menu_id.clone()>
-                        <DropdownMenuItem
-                            text="copy lnk".to_string()
-                            handler=Callback::new(|()| debug!("Copy link selected"))/>
-                    </DropdownMenuItems>
-                </Dropdown>
-            </div>
+            {
+                // let post_id = post_id.clone();
+                // let post_actor = post_actor.clone();
+                move || {
+                    let post_id = post_id.clone();
+                    let post_actor = post_actor.clone();
+                    let share_menu_id = share_menu_id.clone();
+                    let misc_menu_id = misc_menu_id.clone();
+                    if replying.get() {
+                        Either::Left(view!{
+                            <div class="feed-item-reply">
+                                <div style="flex: 1 1 0; min-height 0; display: flex; flex-direction: column;">
+                                    <textarea style="flex: 1 1 0; resize: none; width: 100%;"></textarea>
+                                </div>
+                                <div class="feed-item-reply-actions">
+                                    <button on:click=move |_| set_replying.set(false)>"send"</button>
+                                    <button on:click=move |_| set_replying.set(false)>"cancel"</button>
+                                </div>
+                            </div>
+                        })
+                    } else {
+                        Either::Right(
+                            view! {
+                                <div class="feed-item-actions">
+                                    <button on:click=move |_| {send_like.dispatch((post_id.clone(), post_actor.clone()));}>"like"</button>
+                                    " "
+                                    <Dropdown open_menu>
+                                        <DropdownTrigger text="share".to_string() menu_id=share_menu_id.clone() />
+                                        <DropdownMenuItems menu_id=share_menu_id.clone()>
+                                            <DropdownMenuItem
+                                                text="share".to_string()
+                                                handler=Callback::new(|()| debug!("Share selected"))/>
+                                            <DropdownMenuItem
+                                                text="quote".to_string()
+                                                handler=Callback::new(|()| debug!("Quote selected"))/>
+                                        </DropdownMenuItems>
+                                    </Dropdown>
+                                    " "
+                                    <button on:click=move |_| set_replying.set(true)>"reply"</button>
+                                    " "
+                                    <Dropdown open_menu>
+                                        <DropdownTrigger text="more".to_string() menu_id=misc_menu_id.clone() />
+                                        <DropdownMenuItems menu_id=misc_menu_id.clone()>
+                                            <DropdownMenuItem
+                                                text="copy lnk".to_string()
+                                                handler=Callback::new(|()| debug!("Copy link selected"))/>
+                                        </DropdownMenuItems>
+                                    </Dropdown>
+                                </div>
+                            }
+                        )
+                    }
+                }
+            }
         </div>
     }
 }

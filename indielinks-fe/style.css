@@ -135,6 +135,13 @@
     font-size: 0.85rem;
 }
 
+.feed-item-reply {
+    font-size: 0.85rem;
+    design: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
 .feed-nav {
     margin: 4px;
     border: 1px solid #bbbbbb;

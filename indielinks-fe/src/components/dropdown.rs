@@ -315,10 +315,7 @@ where
         // `<Show>` renders its children only while `when` is true, removing
         // them from the DOM otherwise.  This avoids items accumulating
         // hidden event listeners.
-        <Show when=move || {
-            debug!("Show checking `open_menu` for {:?}.", menu_id.clone());
-            open_menu.get() == Some(menu_id.clone())
-            }>
+        <Show when=move || open_menu.get() == Some(menu_id.clone())>
             // Stop propagation on the panel so that bare clicks on its
             // background (padding, borders, whitespace) don't bubble to the
             // global document listener and prematurely close the menu.

@@ -1,0 +1,11 @@
+name: debian-packaging
+
+services:
+
+  host:
+    # Use this to leave the container running, presumably so one can get a shell within
+    # command: tail -f /dev/null
+    command: /build-and-exercise-package
+    volumes:
+      - ./sysv-driver:/build-and-exercise-package:ro
+    

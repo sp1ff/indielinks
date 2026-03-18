@@ -1,0 +1,10 @@
+name: local-install-archaic
+
+services:
+
+  host:
+    # Use this to leave the container running, presumably so one can get a shell within
+    # command: tail -f /dev/null
+    command: /local-install-archaic
+    volumes:
+      - ./local-install-archaic-driver:/local-install-archaic:ro

@@ -5,6 +5,10 @@ creds=
 help=
 ddb_host=
 grpc_port="20678"
+indielinks_config='/etc/indielinks.toml '
+indielinks_group=indielinks
+indielinks_state='/var/run/indielinks'
+indielinks_user=indielinks
 local_port="20677"
 port="20676"
 nargs=0
@@ -33,6 +37,12 @@ do
 
     # Options are handled here:
     case $option in
+        -C | --config)
+	        nargs=$(($nargs+1));
+            prev_option=indielinks_config;;
+        -C=* | --config=*)
+	        nargs=$(($nargs+1));
+            indielinks_config=$optarg;;
         -c | --creds | --credentials)
 	        nargs=$(($nargs+1));
             prev_option=creds;;
@@ -45,6 +55,12 @@ do
         -d=* | --ddb=* | --ddb-host=*)
 	        nargs=$(($nargs+1));
             ddb_host=$optarg;;
+        -G | --group | --indielinks-group)
+	        nargs=$(($nargs+1));
+            prev_option=indielinks_group;;
+        -G=* | --group=* | --indielinks-group=*)
+	        nargs=$(($nargs+1));
+            indielinks_group=$optarg;;
         -g | --grpc-port | --indielinks-grpc-port)
 	        nargs=$(($nargs+1));
             prev_option=grpc_port;;
@@ -72,6 +88,12 @@ do
         -r=* | --region=*)
 	        nargs=$(($nargs+1));
             region=$optarg;;
+        -S | --state | --indielinks-state)
+	        nargs=$(($nargs+1));
+            prev_option=indielinks_state;;
+        -S=* | --state=* | --indielinks-state=*)
+	        nargs=$(($nargs+1));
+            indielinks_state=$optarg;;
         -s | --scylla | --scylla-host)
 	        nargs=$(($nargs+1));
             prev_option=scylla_host;;
@@ -81,6 +103,12 @@ do
         -N | --no-systemd)
 	        nargs=$(($nargs+1));
             no_systemd="yes";;
+        -u | --user | --indielinks-user)
+	        nargs=$(($nargs+1));
+            prev_option=indielinks_user;;
+        -u=* | --user=* | --indielinks-user=*)
+	        nargs=$(($nargs+1));
+            indielinks_user=$optarg;;
         -v | --verb | --verbose)
 	        nargs=$(($nargs+1));
             verbose=yes;;
@@ -137,6 +165,13 @@ Options:
     -N, --no-systemd  Specify this flag if you're running
                     indielinks as a standalone, SysV daemon,
                     and not under systemd (the default)
+    -u=UNAME, --user=UNAME Specify the name of the user under
+                    which to run indielinks (default 'indielinks')
+    -G=GNAME, --group=GNAME Specify the name of the group under
+                    which to run indielinks (default 'indielinks')
+    -S=DIR, --state=DIR  Directory that indielinks should use
+                    as its local state directory (default
+                    /var/run/indielinks)
 
 Notes
 
@@ -210,7 +245,7 @@ echo "done."
 # 3. start indielinks
 echo -n "Starting indielinks..."
 if test -n "${no_systemd}"; then
-    indielinks-ctl start
+    indielinks-ctl -v -u $indielinks_user -g $indielinks_group -L $indielinks_state -c $indielinks_config start
 else
     sudo systemctl start indielinks
 fi

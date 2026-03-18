@@ -10,7 +10,6 @@
 #                                     main                                #
 ###########################################################################
 
-example_with_value=
 help=
 nargs=0
 prev_option=
@@ -35,12 +34,6 @@ do
 
     # Options are handled here:
     case $option in
-        -e | --ex | --example-with-value)
-	        nargs=$(($nargs+1));
-            prev_option=example_with_value;;
-        -e=* | --ex=* | --example-with-value=*)
-	        nargs=$(($nargs+1));
-            example_with_value=$optarg;;
         -h | --he | --hel | --help)
 	        nargs=$(($nargs+1));
             help=yes;;
@@ -108,10 +101,11 @@ cd indielinks-fe
 INDIELINKS_FE_API="http://localhost:20676" INDIELINKS_BASE="/fe" INDIELINKS_PAGE_SIZE="20" trunk build --release
 cd ..
 
-install -C target/release/indielinksd        /home/$USER/bin
-install -C target/release/indic              /home/$USER/bin
-install -C target/release/indielinks-schemas /home/$USER/bin
-install -C scripts/indielinks-post-install   /home/$USER/bin
+install -C -D -t /home/$USER/bin target/release/indielinksd
+install -C -D -t /home/$USER/bin target/release/indic
+install -C -D -t /home/$USER/bin target/release/indielinks-schemas
+install -C -D -t /home/$USER/bin scripts/indielinks-post-install
+install -C -D -t /home/$USER/bin scripts/indielinks-ctl
 
 cd indielinks-fe/dist
 wasm=$(ls -1 indielinks-fe*.wasm)
@@ -124,50 +118,16 @@ sed -i -e s@$wasm@fe/indielinks-fe.wasm@g index.html
 sed -i -e s@$js@fe/indielinks-fe.js@g index.html
 sed -i -e s@$css@fe/style.css@g index.html
 
-install -D -C index.html      /home/$USER/share/indielinks/assets/index.html
-install -C indielinks-fe.js   /home/$USER/share/indielinks/assets/indielinks-fe.js
-install -C style.css          /home/$USER/share/indielinks/assets/style.css
-install -C indielinks-fe.wasm /home/$USER/share/indielinks/assets/indielinks-fe.wasm
+install -C -D index.html         /home/$USER/share/indielinks/assets/index.html
+install -C -D indielinks-fe.js   /home/$USER/share/indielinks/assets/indielinks-fe.js
+install -C -D style.css          /home/$USER/share/indielinks/assets/style.css
+install -C -D indielinks-fe.wasm /home/$USER/share/indielinks/assets/indielinks-fe.wasm
 cd ../..
 
-/home/$USER/bin/indielinks-schemas -D -p scylla 127.0.0.1:9042
-
-install indielinks/local-indielinks.toml /home/$USER/etc/indielinks.toml
+install -D indielinks/local-indielinks.toml /home/$USER/etc/indielinks.toml
 sed -i -e s@/home/USER/@/home/$USER/@ /home/$USER/etc/indielinks.toml
 
-if test -r /home/$USER/var/run/indielinks.pid; then
-    pid=$(cat /home/$USER/var/run/indielinks.pid)
-    set +e # Failure here is not fatal
-    kill ${pid}
-    set -e
-    sleep 0.5
-    rm /home/$USER/var/run/indielinks.pid
-fi
+mkdir -p $HOME/var/{log,run}
 
-RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info /home/$USER/bin/indielinksd \
-    -c /home/$USER/etc/indielinks.toml \
-    -L /home/$USER/var \
-    --debug \
-    --plain
-
-echo "Waiting for your indielinks server to healthcheck..."
-sleep=0.5
-# curl can fail if the server isn't up, yet
-set +e
-status=$(curl -s http://localhost:20676/healthcheck)
-ntries=1
-while [ "${status}" != "GOOD" ]; do
-    sleep 0.5
-    status=$(curl -s http://localhost:20676/healthcheck)
-    ntries=$(($ntries+1))
-    # Give it five seconds
-    if [ ${ntries} -gt 10 ]; then
-        echo "indielinks failed to come up!" >&2
-        exit 1
-    fi
-done
-echo "Waiting for your indielinks server to healthcheck...done."
-
-echo "Initializing the indielinks instance as a single-node Raft cluster..."
-curl -v -H 'Content-Type: application/json' http://localhost:20677/ops/cache/init-cluster --data '{"0":{"addr":"127.0.0.1:20678"}}'
-echo "Initializing the indielinks instance as a single-node Raft cluster...done."
+echo "indielinks has been installed under your home directory."
+echo "Now run indielinks-post-install to configure ScyllaDB & start the service."

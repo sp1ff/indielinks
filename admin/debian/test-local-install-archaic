@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+# This script will mount the project directory into a Debian container and
+# attempt to install it using the `local-install` script.
+
+set -ex
+
+here=$(dirname $(realpath $0))
+project=${here}/..
+cd ${here}
+docker build -t indielinks-debian:latest \
+       -f Dockerfile \
+       --label "indielinks-debian" \
+       --build-arg UID="$(id -u)" \
+       --build-arg GID="$(id -g)" \
+       .
+
+name=local-install-archaic
+docker compose -f compose.yaml -f local-install-archaic.yaml --project-name $name up -d
+echo "Waiting on 'host'..."
+docker compose -f compose.yaml -f local-install-archaic.yaml --project-name $name wait host
+status=$?
+echo "Waiting on 'host'...done($status)."
+docker logs local-install-archaic-host-1
+docker compose -f compose.yaml -f local-install-archaic.yaml --project-name $name down
+
+exit $status
+

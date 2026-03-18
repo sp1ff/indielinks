@@ -1,6 +1,7 @@
 # Docker compose file enabling indielinks testing as part of Debian packaging
-
-name: debian-packaging
+# This YAML file is meant to be used as the "base" when specifying multiple compose
+# files to `docker compose`. It will setup the ScyllaDB cluster, and the basics
+# of the host under test.
 
 services:
 
@@ -25,11 +26,7 @@ services:
 
   host:
     image: indielinks-debian:latest
-    # Use this to leave the container running, presumably so one can get a shell within
-    # command: tail -f /dev/null
-    command: /build-and-exercise-package
     depends_on:
       - scylla-node-1
     volumes:
-      - ./sysv-driver:/build-and-exercise-package:ro
       - ../..:/indielinks

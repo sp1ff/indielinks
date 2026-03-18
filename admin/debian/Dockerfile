@@ -46,6 +46,8 @@ ENV LANG="en_US.UTF-8"
 
 USER packager
 
+ENV USER=packager
+
 # I prefer to build the debian package in a proper Debian environment,
 # where I can install `dpkg`, `dpkg-dev` & `liblzma-dev` which are
 # optional dependencies that can add some capabilities (as I
@@ -54,4 +56,6 @@ RUN set -ex && \
     curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -o /tmp/rustup.sh && \
     chmod a+x /tmp/rustup.sh && /tmp/rustup.sh -y && \
     . /home/packager/.cargo/env && \
-    cargo install cargo-deb
+    rustup target add wasm32-unknown-unknown && \
+    cargo install cargo-deb && \
+    cargo install --locked trunk

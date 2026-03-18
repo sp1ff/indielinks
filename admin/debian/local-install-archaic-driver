@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+
+# This script is presumably mounted in a Debian container. It will use `cargo
+# deb` to build the Debian package, install it (as a free-standing SysV daemon)
+# & minimally test it. For testing the Debian package with systemd, please see
+# `test-debian-package-systemd`.
+set -ex
+source $HOME/.cargo/env
+cd /indielinks
+
+admin/local-install
+
+export PATH=$HOME/bin:$PATH
+
+indielinksd --version
+indielinks-schemas --version
+indielinks-ctl --version
+indic --help
+
+# simulate the operator hand-editing the indielinks config file
+scylla=$(dig +short scylla-node-1)
+sed -i -e "s@^hosts = \\[\".*@hosts = [\"${scylla}:9042\"]@" $HOME/etc/indielinks.toml
+indielinks-post-install --verbose             \
+                        -s ${scylla}:9042     \
+                        --no-systemd          \
+                        --user=packager       \
+                        --group=packager      \
+                        --state=$HOME/var/run \
+                        --config=$HOME/etc/indielinks.toml
+# indielinks now up & running
+indic -A http://127.0.0.1:20676 add-user -u john.doe -p 'f00-b@r-sp1at' -m 'john.doe@gmail.com'
+indielinks-ctl -v -u packager                     \
+               -g packager                        \
+               -L=$HOME/var/run                   \
+               --config=$HOME/etc/indielinks.toml \
+               restart

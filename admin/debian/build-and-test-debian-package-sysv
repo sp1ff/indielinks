@@ -13,7 +13,6 @@ set -ex
 
 here=$(dirname $(realpath $0))
 project=${here}/..
-script=${here}/build-and-test-debian-package-in-container
 cd ${here}
 docker build -t indielinks-debian:latest \
        -f Dockerfile \
@@ -22,13 +21,14 @@ docker build -t indielinks-debian:latest \
        --build-arg GID="$(id -g)" \
        .
 
-docker compose -f compose.yaml up -d
+name=debian-packaging
+docker compose -f compose.yaml -f debian-packaging.yaml --project-name $name up -d
 echo "Waiting on 'host'..."
-docker compose -f compose.yaml wait host
+docker compose -f compose.yaml -f debian-packaging.yaml --project-name $name wait host
 status=$?
 echo "Waiting on 'host'...done($status)."
 docker logs debian-packaging-host-1
-docker compose -f compose.yaml down
+docker compose -f compose.yaml -f debian-packaging.yaml --project-name $name down
 
 exit $status
 
