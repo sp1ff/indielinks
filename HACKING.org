@@ -46,6 +46,12 @@ You may find it useful to generate rustdocs (especially the aforementioned docum
 
 The indielinks test suite is a weak spot, but the project _does_ contain both unit & integration tests.
 
+To run integration tests, you will need to add this to your hosts file:
+
+```
+127.0.0.1   indiemark.local
+```
+
 #+BEGIN_SRC bash
   cargo test
 #+END_SRC
@@ -96,7 +102,7 @@ Make a note of the API key that's printed on stdout. If the key is "abc", do:
 
 #+BEGIN_SRC bash
   cd indielinks-fe && \
-  INDIELINKS_FE_API="http://localhost:20694" trunk serve --port=18080 index.html
+  INDIELINKS_FE_API="http://localhost:20679" trunk serve --port=18080 index.html
 #+END_SRC
 
 Point your favorite browser to http://localhost:18080. You should be able to sign-in, add posts & view them. The Feeds page is in progress.
