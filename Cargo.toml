@@ -3,6 +3,9 @@ members = ["indielinks-shared", "indielinks-cache", "indielinks-cache-test", "in
 default-members = ["indielinks-shared", "indielinks-cache", "indielinks-cache-test", "indielinks", "indielinks-test", "indielinks-client"]
 resolver = "2"
 
+[workspace.dependencies]
+aws-lc-sys = ">=0.39.0" # RUSTSEC-2026-0048
+
 [patch.crates-io]
 # governor = { version = "=0.10.4", git = "https://github.com/sp1ff/governor.git" }
 # openraft = { version = "=0.9.20", path = "../openraft/openraft" }

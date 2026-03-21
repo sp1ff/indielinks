@@ -1,6 +1,6 @@
 #+TITLE: INSTALL
 #+DESCRIPTION: Installation instructions for indielinks
-#+DATE: <2026-03-17 Tue 17:55>
+#+DATE: <2026-03-18 Wed 10:50>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -8,6 +8,12 @@
 * Overview
 
 Ultimately, I hope to see indielinks instances publicly available on the web. For now, however, it must be run locally. I've uploaded a pacman =PKGBUILD= to the [[https://aur.archlinux.org/][AUR]] (Arch User Repository) [[https://aur.archlinux.org/packages/indielinks-git][here]], and I'm hosting Debian binary packages at my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]].
+
+Nb the AUR package, due to [[https://github.com/aws/aws-lc-rs/issues/899#issuecomment-3403549404][this]] has to be built with the environment variable =AWS_LC_SYS_NO_JITTER_ENTROPY=1=. So, if you're using =yay= for instance, you'd do:
+
+#+BEGIN_SRC bash
+  AWS_LC_SYS_NO_JITTER_ENTROPY=1 yay -S indielinks-git
+#+END_SRC
 
 In either of these cases, the package only puts the files in their place. After the installation, you'll need to hand-edit =/etc/indielinks.toml= to say where to reach ScyllaDB or DynamoDB, along with any required credentials, then run =indielinks-post-install=, which will create and/or update the data schema & start the server.
 

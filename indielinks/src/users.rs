@@ -109,17 +109,17 @@ use url::Url;
 
 use indielinks_shared::{
     api::{
-        FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, SignupReq, SignupRsp,
-        TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp,
-        TimelineReq, TimelineSincePage, TimelineSinceRsp, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
-        REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
+        FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, ReplyRequest,
+        SignupReq, SignupRsp, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage,
+        TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp, REFRESH_COOKIE,
+        REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::{UserId, Username},
     origin::Origin,
 };
 
 use crate::{
-    activity_pub::{SendFollow, SendLike},
+    activity_pub::{SendFollow, SendLike, SendReply},
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     background_tasks::{self, BackgroundTasks, Sender},
     define_metric,
@@ -255,6 +255,12 @@ pub enum Error {
     },
     #[snafu(display("Couldn't create background task for {username} liking {id}: {source}"))]
     SendLike {
+        username: Username,
+        id: Url,
+        source: background_tasks::Error,
+    },
+    #[snafu(display("Couldn't create background task for {username} replying to {id}: {source}"))]
+    SendReply {
         username: Username,
         id: Url,
         source: background_tasks::Error,
@@ -443,6 +449,17 @@ impl Error {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!(
                     "Couldn't schedule a like request for {id} on behalf of {username}: {source}"
+                ),
+            ),
+            Error::SendReply {
+                username,
+                id,
+                source,
+                ..
+            } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Couldn't schedule a reply to {id} on behalf of {username}: {source}"
                 ),
             ),
             Error::SerInternalTimelineReq { source, .. } => (
@@ -1159,6 +1176,69 @@ async fn like(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         `/users/reply`                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.replies.successful", user_replies_successful, Sort::IntegralCounter }
+define_metric! { "user.replies.failures", user_replies_failures, Sort::IntegralCounter }
+
+/// Send an ActivityPub Reply
+async fn reply(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(request): Json<ReplyRequest>,
+) -> axum::response::Response {
+    // Validate the reply text (parse to HTML, check for XSS), then dispatch as a background task
+    async fn reply1(
+        origin: &Origin,
+        user: &User,
+        request: ReplyRequest,
+        sender: &Arc<BackgroundTasks>,
+    ) -> Result<()> {
+        // I had thought to at least sanitize the HTML here, but I ultimately decided to write the
+        // raw reply text to the database, so that step had to occur downstream.
+        sender
+            .send(SendReply::new(
+                origin.clone(),
+                user.clone(),
+                request.id.clone(),
+                Default::default(),
+                request.actor,
+                request.text,
+            ))
+            .await
+            .context(SendReplySnafu {
+                username: user.username().clone(),
+                id: request.id,
+            })?;
+        Ok(())
+    }
+
+    match &user {
+        Ok(user) => match reply1(&state.origin, user, request, &state.task_sender).await {
+            Ok(_) => {
+                user_replies_successful.add(1, &[]);
+                StatusCode::ACCEPTED.into_response()
+            }
+            Err(err) => {
+                user_replies_failures.add(1, &[]);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ErrorResponseBody {
+                        error: format!("{}", err),
+                    },
+                )
+                    .into_response()
+            }
+        },
+        Err(_) => {
+            user_replies_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       `/users/mint-key`                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1636,6 +1716,15 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
                     http::Method::POST,
                     allow_origin.clone(),
                 )),
+        )
+        .route(
+            "/users/reply",
+            post(reply).layer(mk_cors(
+                true,
+                allow_headers.clone(),
+                http::Method::POST,
+                allow_origin.clone(),
+            )),
         )
         .route(
             "/users/mint-key",

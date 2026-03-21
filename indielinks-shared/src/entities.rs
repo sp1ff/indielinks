@@ -702,6 +702,21 @@ impl SerializeValue for Tagname {
     }
 }
 
+impl TryFrom<&str> for Tagname {
+    type Error = Error;
+
+    fn try_from(name: &str) -> std::result::Result<Self, Self::Error> {
+        if check_tagname(name) {
+            Ok(Tagname(name.to_owned()))
+        } else {
+            TagnameSnafu {
+                text: name.to_owned(),
+            }
+            .fail()
+        }
+    }
+}
+
 impl TryFrom<String> for Tagname {
     type Error = Error;
 

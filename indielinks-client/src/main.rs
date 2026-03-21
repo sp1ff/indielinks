@@ -769,7 +769,7 @@ to be escaped; the implementation will handle that.")
             .context(AddUserSnafu)?;
 
             use secrecy::ExposeSecret;
-            println!("Welcome, {username}, to indielinks. Your API key is\n{}.\nPlease make a note of it now.", api_key.expose_secret());
+            println!("Welcome, {username}, to indielinks. Your API key is\n{}:{}.\nPlease make a note of it now.", username, api_key.expose_secret());
 
             Ok(())
         }

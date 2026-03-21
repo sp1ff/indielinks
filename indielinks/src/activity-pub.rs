@@ -33,7 +33,10 @@ use std::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use either::Either::{self, Left};
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{
+    stream::{self, iter},
+    StreamExt, TryStreamExt,
+};
 use http::Method;
 use itertools::Itertools;
 use lazy_static::lazy_static;
@@ -41,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
 use tokio::time::Instant;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 use url::Url;
 use uuid::Uuid;
 
@@ -52,11 +55,13 @@ use indielinks_shared::{
 
 use crate::{
     ap_entities::{
-        ap_request, ap_request_no_response, make_follow_id, make_like_id, make_user_id, Actor,
-        ActorField, Create, Follow, Like, Note, Recipient, ToJld, Type,
+        ap_request, ap_request_no_response, make_follow_id, make_like_id, make_user_followers,
+        make_user_id, make_user_reply_id, Actor, ActorField, Create, CreateObject, Follow, Like,
+        Note, Recipient, ToJld, Type,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
-    entities::{FollowId, LikeId, User, Visibility},
+    entities::{FollowId, LikeId, OutgoingLike, OutgoingReply, ReplyId, User, Visibility},
+    sanitized_html::{parse, ParseResult},
     storage::Backend as StorageBackend,
 };
 
@@ -172,6 +177,11 @@ pub enum Error {
     RspJson {
         source: serde_json::Error,
         backtrace: Backtrace,
+    },
+    #[snafu(display("While sanitizing the HTML {text}, {source}"))]
+    Sanitize {
+        text: String,
+        source: std::fmt::Error,
     },
     #[snafu(display("Failed to sign a request for {keyid}: {source}"))]
     Signature {
@@ -791,6 +801,13 @@ impl Task<Context> for SendLike {
         );
 
         async fn exec1(this: Box<SendLike>, context: Context) -> Result<()> {
+            let outgoing = OutgoingLike::new(&this.user, &this.apid, Visibility::Public);
+            context
+                .storage
+                .add_outgoing_like(&outgoing)
+                .await
+                .context(StorageSnafu)?;
+
             let mut client = context.ap_client.clone();
 
             let inbox = context
@@ -841,5 +858,262 @@ inventory::submit! {
     BackgroundTask {
         id: SEND_LIKE,
         de: |buf| { Ok(Box::new(rmp_serde::from_slice::<SendLike>(buf).unwrap())) }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           SendReply                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A UUID identifying the background task [SendReply]
+// 0cef8325-c061-4e33-87df-68d82abc80da
+const SEND_REPLY: Uuid = Uuid::from_fields(
+    0x0cef8325,
+    0xc061,
+    0x4e33,
+    &[0x87, 0xdf, 0x68, 0xd8, 0x2a, 0xbc, 0x80, 0xda],
+);
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SendReply {
+    origin: Origin,
+    user: User,
+    /// ActivityPub ID of the post to which we are replying
+    apid: Url,
+    id: ReplyId,
+    actor: Url,
+    reply: String,
+}
+
+impl SendReply {
+    pub fn new(
+        origin: Origin,
+        user: User,
+        apid: Url,
+        id: ReplyId,
+        actor: Url,
+        reply: String,
+    ) -> Self {
+        Self {
+            origin,
+            user,
+            apid,
+            id,
+            actor,
+            reply,
+        }
+    }
+}
+
+#[async_trait]
+impl Task<Context> for SendReply {
+    async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
+        debug!(
+            "Sending a reply to {} on behalf of {}",
+            self.apid,
+            self.user.username()
+        );
+
+        async fn exec1(this: Box<SendReply>, context: Context) -> Result<()> {
+            // Let's start by writing the reply to the database.
+            context
+                .storage
+                .add_outgoing_reply(&OutgoingReply::new(
+                    *this.user.id(),
+                    &this.apid,
+                    Visibility::Public,
+                    this.reply.clone(),
+                ))
+                .await
+                .context(StorageSnafu)?;
+
+            debug!("Wrote the outgoing reply to ScyllaDB. Sanitizing the reply HTML");
+
+            let ParseResult {
+                html,
+                mentions,
+                tags: _,
+            } = parse(&this.reply).context(SanitizeSnafu {
+                text: this.reply.clone(),
+            })?;
+
+            // Now, here's the story: we have the author of the post to which we are replying: he or
+            // she is a recipient. We have zero or more mentions, in the form of "handles" (e.g.
+            // @foo@bar.social). They need to be resolved to `Actor`s, and they are also recipients.
+            // There may be duplicates (most obviously, the author may be mentioned, but it's always
+            // possible someone was mentioned twice, too). Once de-duplicated, the ActivityPub IDs
+            // of these actors, together with the followers URL for `this.user` will be listed in
+            // the "cc:" field of both the `Create` and the `Note` that it will contain.
+            let mut recipients: HashSet<Url> = HashSet::from_iter(
+                iter(mentions.iter())
+                    .then(|account| async {
+                        context
+                            .ap_resolver
+                            .lock()
+                            .await
+                            .handle_to_actor(Left(&this.user), account)
+                            .await
+                            .map(|actor| actor.id().clone())
+                    })
+                    .collect::<Vec<StdResult<Url, _>>>()
+                    .await
+                    .into_iter()
+                    .collect::<StdResult<Vec<Url>, _>>()
+                    .context(ApResolverSnafu)?,
+            );
+
+            // We add the original author as a recipient:
+            recipients.insert(this.actor.clone());
+
+            // For all the recipients *including* the followers of `this.user`, we need to resolve
+            // them to their shared inbox, de-duplicate again (there will, in general, be multiple
+            // recipients on the same instance) and send the `Create` (with signatures, retries,
+            // respecting our configured rate-limits &c) to all those inboxes.
+            let mut shared_inboxes: HashSet<Url> = HashSet::from_iter(
+                iter(recipients.iter())
+                    .then(|url| async {
+                        context
+                            .ap_resolver
+                            .lock()
+                            .await
+                            .actor_id_to_shared_inbox(Left(&this.user), url)
+                            .await
+                    })
+                    .collect::<Vec<StdResult<Option<Url>, _>>>()
+                    .await
+                    .into_iter()
+                    .collect::<StdResult<Vec<Option<Url>>, _>>()
+                    .context(ApResolverSnafu)?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<Url>>(),
+            );
+
+            let followers_url =
+                make_user_followers(this.user.username(), &this.origin).context(ApSnafu)?;
+            recipients.insert(followers_url);
+
+            shared_inboxes.extend(
+                context
+                    .storage
+                    .get_followers(&this.user)
+                    .await
+                    .context(StorageSnafu)?
+                    // Now: `get_followers()`, on success, resturns a stream of
+                    // `Result<Follower, storage::Error>`. Let's map the Err variant to
+                    // this module's `Error` type,
+                    .map_err(|err| StorageSnafu.into_error(err))
+                    // and then map each `Follower` to a shared inbox,
+                    .and_then(|follower| {
+                        let user = this.user.clone();
+                        let ap_resolver = context.ap_resolver.clone();
+                        async move {
+                            ap_resolver
+                                .lock()
+                                .await
+                                .actor_id_to_shared_inbox(Left(&user), follower.actor_id().as_ref())
+                                .await
+                                .context(ApResolverSnafu)
+                        }
+                    })
+                    // resulting in a stream of `Result<Option<Url>>`. Collect that,
+                    .collect::<Vec<Result<Option<Url>>>>()
+                    .await
+                    // and transform it into a `Result<Vec<Option<Url>>>`.
+                    .into_iter()
+                    .collect::<Result<Vec<Option<Url>>>>()?
+                    // and finally, transform *that* into a `Vec<Url>`. It's probably not great that
+                    // I'm modeling the shared inbox as an `Option<Url>` (instead of just an `Url`),
+                    // but there's not much to be done about that, here.
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<Url>>(),
+            );
+
+            let user_id = make_user_id(this.user.username(), &this.origin).context(ApSnafu)?;
+            let reply_id = make_user_reply_id(this.user.username(), &this.id, &this.origin)
+                .context(ApSnafu)?;
+
+            // Our next move is to create a Create activity referencing inline a Note.
+            let note = Note::new_from_parts(
+                reply_id.clone(),
+                Some(this.apid),
+                None,
+                user_id.clone(),
+                std::iter::once(PUBLIC.clone()),
+                recipients.iter().cloned(),
+                html,
+            )
+            .context(ApSnafu)?;
+
+            let create = Create::from_parts(
+                reply_id,
+                user_id,
+                std::iter::once(PUBLIC.clone()),
+                recipients.iter().cloned(),
+                CreateObject::Note(note),
+            )
+            .context(ApSnafu)?;
+
+            // Alright-- with that, we send `create` to everyone in `shared_inboxes` (with
+            // signatures, respecting rate limits, retrying &c)
+            let failures = iter(shared_inboxes)
+                .then(|url| {
+                    let mut client = context.ap_client.clone();
+                    let origin = this.origin.clone();
+                    let user = this.user.clone();
+                    let create = create.clone();
+                    async move {
+                        debug!("CP2");
+                        ap_request_no_response(
+                            &mut client,
+                            &origin,
+                            Left(&user),
+                            &url,
+                            Method::POST,
+                            None,
+                            &create,
+                        )
+                        .await
+                    }
+                })
+                .collect::<Vec<StdResult<(), _>>>()
+                .await
+                .into_iter()
+                .filter_map(|result| result.err())
+                .collect::<Vec<crate::ap_entities::Error>>();
+
+            // Not a lot we can do here; we've retried & still failed. I suppose we could add a
+            // field to the database table, like, `sent` to set ourselves up for retry?
+            failures
+                .iter()
+                .for_each(|err| error!("Failed to send a reply: {err:#?}"));
+
+            match failures.into_iter().next() {
+                Some(err) => Err(ApSnafu.into_error(err)),
+                None => Ok(()),
+            }
+        }
+
+        exec1(self, context)
+            .await
+            .map_err(background_tasks::Error::new)
+    }
+    fn timeout(&self) -> Option<Duration> {
+        Some(Duration::from_secs(300))
+    }
+}
+
+impl TaggedTask<Context> for SendReply {
+    type Tag = Uuid;
+    fn get_tag() -> Self::Tag {
+        SEND_REPLY
+    }
+}
+
+inventory::submit! {
+    BackgroundTask {
+        id: SEND_REPLY,
+        de: |buf| { Ok(Box::new(rmp_serde::from_slice::<SendReply>(buf).unwrap())) }
     }
 }

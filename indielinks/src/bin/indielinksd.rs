@@ -90,6 +90,7 @@ use indielinks_cache::{
 };
 
 use indielinks::{
+    acct::Account,
     actor::make_router as make_actor_router,
     ap_entities::{Actor, Note},
     ap_resolution::ApResolver,
@@ -100,7 +101,10 @@ use indielinks::{
     define_metric,
     delicious::make_router as make_delicious_router,
     dynamodb::Location as DynamoLocation,
-    grpc::{make_router as make_cache_router, GrpcService, ACTOR_ID_TO_ACTOR, NOTE_ID_TO_NOTE},
+    grpc::{
+        make_router as make_cache_router, GrpcService, ACCOUNT_TO_ACTOR, ACTOR_ID_TO_ACTOR,
+        NOTE_ID_TO_NOTE,
+    },
     http::HostKey,
     indielinks::{HomeTimelines, Indielinks},
     metrics::check_metric_names,
@@ -1042,11 +1046,16 @@ async fn serve(
             NOTE_ID_TO_NOTE,
             cache_node.clone(),
         ));
+        let handles = Arc::new(Cache::<GrpcClientFactory, Account, Actor>::new(
+            ACCOUNT_TO_ACTOR,
+            cache_node.clone(),
+        ));
         let ap_resolver = Arc::new(TokioMutex::new(ApResolver::new(
             cfg.public_origin.clone(),
             ap_client.clone(),
             actors.clone(),
             notes.clone(),
+            handles.clone(),
         )));
 
         // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`

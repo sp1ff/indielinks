@@ -554,7 +554,7 @@ async fn accept_create(
     }
 
     // I'm going to log aggressively here, as I explore the corners of the ActivityPub protocol:
-    debug!("In receipt of a Create: {:?}", create);
+    warn!("In receipt of a Create: {:?}", create);
 
     // At this time, we're expecting the `Create` entity's `object` attribute to be a `Note`-- the `Note`
     // corresponding to a Post made by some user.
@@ -647,7 +647,7 @@ async fn accept_share(
     }
 
     // I'm going to log aggressively here, as I explore the corners of the ActivityPub protocol:
-    debug!("In receipt of an Announce: {:?}", announce);
+    warn!("In receipt of an Announce: {:?}", announce);
 
     let object = announce.object();
 
@@ -812,6 +812,9 @@ async fn actor(
                 .build(),
             )?;
         let actor = Actor::new(&user, origin).context(ActorSnafu)?;
+
+        warn!("Serving Actor: {actor:#?}");
+
         Ok((actor, accept))
     }
 
@@ -962,6 +965,8 @@ async fn accept_follow(
         .fail();
     }
 
+    warn!("In receipt of a follow: {follow:#?}");
+
     // We need to send an `Accept` in response-- do it in a background task:
     task_sender
         .as_ref()
@@ -1007,6 +1012,8 @@ async fn accept_like(
         .fail();
     }
 
+    warn!("In receipt of a like: {like:#?}");
+
     storage
         .add_post_like(&PostLike::new(postid, like.id().clone()))
         .await
@@ -1017,7 +1024,7 @@ async fn accept_like(
 
 // This is a stub.
 async fn accept_undo(undo: &Undo) -> Result<()> {
-    info!("Received an Undo: {:?}", undo);
+    warn!("In receipt of an Undo: {:?}", undo);
     Ok(())
 }
 
@@ -1043,6 +1050,9 @@ async fn accept_accept(
         }
         .fail();
     }
+
+    warn!("In receipt of an Accept: {accept:#?}");
+
     if !storage
         .confirm_following(user, &actor.id().into())
         .await

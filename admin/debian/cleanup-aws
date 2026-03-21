@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -ex
+
+region="us-west-2"
+operator_ip=$(curl -s http://ipv4.icanhazip.com)
+keypair="ec2-aws-generated"
+
+here=$(dirname $(realpath $0))
+cd "$here"
+
+apply_args="-auto-approve"
+apply_args="${apply_args} -var aws_region=${region}"
+apply_args="${apply_args} -var operator_cidr=${operator_ip}/32"
+apply_args="${apply_args} -var ec2_key_name=${keypair}"
+tofu destroy ${apply_args}

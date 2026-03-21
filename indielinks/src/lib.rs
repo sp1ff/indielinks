@@ -53,6 +53,8 @@ pub mod ops;
 pub mod peppers;
 #[path = "protobuf-interop.rs"]
 pub mod protobuf_interop;
+#[path = "sanitized-html.rs"]
+pub mod sanitized_html;
 pub mod scylla;
 #[path = "signing-keys.rs"]
 pub mod signing_keys;

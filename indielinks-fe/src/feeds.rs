@@ -43,16 +43,17 @@ use std::{cmp::PartialEq, collections::VecDeque, hash::Hash, result::Result as S
 use gloo_net::http::Request;
 use leptos::{
     either::{Either, EitherOf3},
+    html,
     prelude::*,
     tachys::view::keyed::SerializableKey,
 };
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
-use tracing::debug;
+use tracing::{debug, error};
 use url::Url;
 
 use indielinks_shared::api::{
-    FeedPost, LikeRequest, TimelineInitialPage, TimelineInitialRsp, TimelineReq, TimelineSincePage,
-    TimelineSinceRsp, TimelineToken,
+    FeedPost, LikeRequest, ReplyRequest, TimelineInitialPage, TimelineInitialRsp, TimelineReq,
+    TimelineSincePage, TimelineSinceRsp, TimelineToken,
 };
 
 use crate::{
@@ -199,8 +200,14 @@ fn ViewPost(post: FeedPost, open_menu: RwSignal<Option<MenuId>>) -> impl IntoVie
 
     let (replying, set_replying) = signal::<bool>(false);
 
+    // I need to factor this out.
+    fn string_for_node_ref(node: &NodeRef<html::Input>) -> String {
+        node.get().expect("NodeRef not mounted?").value()
+    }
+
+    let api2 = api.clone();
     let send_like = Action::new_local(move |(id, actor): &(Url, Url)| {
-        let api = api.clone();
+        let api = api2.clone();
         let token = token.clone();
         let id2 = id.clone();
         let id = id.clone();
@@ -238,6 +245,48 @@ fn ViewPost(post: FeedPost, open_menu: RwSignal<Option<MenuId>>) -> impl IntoVie
         }
     });
 
+    let reply_element: NodeRef<html::Input> = NodeRef::new();
+    let send_reply = Action::new_local(move |(id, actor): &(Url, Url)| {
+        let api = api.clone();
+        let token = token.clone();
+        let id2 = id.clone();
+        let id = id.clone();
+        let actor = actor.clone();
+        let send_reply = move || {
+            let api = api.clone();
+            let token = token.clone();
+            let id = id.clone();
+            let actor = actor.clone();
+            let text = string_for_node_ref(&reply_element);
+            async move {
+                // Regrettably, at this time, this lambda has to return a `gloo_net::Error`.
+                let token = token.get().ok_or(gloo_net::Error::GlooError(
+                    "Missing token; this is a bug.".to_owned(),
+                ))?;
+                Request::post(&format!("{api}/api/v1/users/reply"))
+                    .header("Authorization", &format!("Bearer {token}"))
+                    .json(&ReplyRequest {
+                        id: id.clone(),
+                        actor: actor.clone(),
+                        text,
+                    })
+                    .map_err(|err| gloo_net::Error::GlooError(format!("{err}")))?
+                    .send()
+                    .await
+            }
+        };
+        async move {
+            match send_with_retry(send_reply)
+                .await
+                .context(RequestSnafu)
+                .and_then(error_for_status)
+            {
+                Ok(_) => debug!("Replied to post {id2}"),
+                Err(err) => error!("While replying to post {id2}, {err}."),
+            }
+        }
+    });
+
     let share_menu_id = MenuId {
         url: post.id.clone(),
         sort: DropdownSort::Share,
@@ -264,10 +313,13 @@ fn ViewPost(post: FeedPost, open_menu: RwSignal<Option<MenuId>>) -> impl IntoVie
                         Either::Left(view!{
                             <div class="feed-item-reply">
                                 <div style="flex: 1 1 0; min-height 0; display: flex; flex-direction: column;">
-                                    <textarea style="flex: 1 1 0; resize: none; width: 100%;"></textarea>
+                                    <input type="textarea" node_ref=reply_element style="flex: 1 1 0; resize: none; width: 100%;"/>
                                 </div>
                                 <div class="feed-item-reply-actions">
-                                    <button on:click=move |_| set_replying.set(false)>"send"</button>
+                                    <button on:click=move |_| {
+                                        set_replying.set(false);
+                                        send_reply.dispatch((post_id.clone(), post_actor.clone()));
+                                    }>"send"</button>
                                     <button on:click=move |_| set_replying.set(false)>"cancel"</button>
                                 </div>
                             </div>

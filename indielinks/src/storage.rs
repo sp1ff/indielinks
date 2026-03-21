@@ -18,7 +18,10 @@
 //! Abstractions for the indielinks storage layer.
 
 use crate::{
-    entities::{ApiKeys, FollowId, Follower, Following, PostLike, PostReply, PostShare, User},
+    entities::{
+        ApiKeys, FollowId, Follower, Following, OutgoingLike, OutgoingReply, PostLike, PostReply,
+        PostShare, User,
+    },
     util::UpToThree,
 };
 
@@ -91,6 +94,10 @@ pub trait Backend {
         following: &StorUrl,
         id: &FollowId,
     ) -> Result<(), Error>;
+    /// Add a like that originated on this intance
+    async fn add_outgoing_like(&self, like: &OutgoingLike) -> Result<(), Error>;
+    /// Add a reply that originated on this intance
+    async fn add_outgoing_reply(&self, reply: &OutgoingReply) -> Result<(), Error>;
     /// Add a [PostLike]
     async fn add_post_like(&self, reply: &PostLike) -> Result<(), Error>;
     /// Add a Post for `user`; return true if a new post was actually created, false if the post

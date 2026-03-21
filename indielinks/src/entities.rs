@@ -19,7 +19,7 @@
 //!
 //! I hate these sort of "catch-all" modules named "models" or "entities", but these types are truly
 //! foundational (to [indielinks](crate); there's an even more foundational set of entites in
-//! the [indielinks-shared](indielinks_shared) module of the same name).
+//! the [indielinks-shared](indielinks_shared) module of the same name.
 
 use std::{fmt::Display, str::FromStr};
 
@@ -42,6 +42,7 @@ use sha2::{Digest, Sha512_224};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::pipe::Pipe;
 use tracing::debug;
+use url::Url;
 use uuid::Uuid;
 use zxcvbn::{feedback::Feedback, zxcvbn, Score};
 
@@ -863,5 +864,54 @@ impl SerializeValue for ActivityPubPostFlavor {
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
         SerializeValue::serialize(&(*self as i8), typ, writer)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                 outgoing ActivityPub entities                                  //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug, Deserialize, DeserializeRow, Serialize, SerializeRow)]
+pub struct OutgoingLike {
+    user_id: UserId,
+    created: DateTime<Utc>,
+    // The thing being liked; replicating the typo in `1.cql`
+    api_id: StorUrl,
+    // replicating the typo in `1.cql`
+    visbility: Visibility,
+}
+
+impl OutgoingLike {
+    pub fn new(user: &User, id: &Url, visibility: Visibility) -> Self {
+        Self {
+            user_id: *user.id(),
+            created: Utc::now(),
+            api_id: id.into(),
+            visbility: visibility,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, DeserializeRow, Serialize, SerializeRow)]
+pub struct OutgoingReply {
+    user_id: UserId,
+    created: DateTime<Utc>,
+    // Arrghhh... I have to mirror the typo in `1.cql`
+    api_id: StorUrl,
+    // Arrghhh... I have to mirror the typo in `1.cql`
+    visbility: Visibility,
+    // We store the raw content; possibly dangereous, but I like the faithfulness
+    content: String,
+}
+
+impl OutgoingReply {
+    pub fn new(user_id: UserId, id: &Url, visibility: Visibility, content: String) -> Self {
+        Self {
+            user_id,
+            created: Utc::now(),
+            api_id: id.into(),
+            visbility: visibility,
+            content,
+        }
     }
 }

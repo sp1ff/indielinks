@@ -65,7 +65,7 @@ use uuid::Uuid;
 
 use indielinks_shared::entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
-use crate::entities::ApiKeys;
+use crate::entities::{ApiKeys, OutgoingLike, OutgoingReply};
 use crate::storage::SchemaSnafu;
 use crate::util::Credentials;
 use crate::{
@@ -915,6 +915,8 @@ enum PreparedStatements {
     GetRaftLogEntries8,
     GetRaftLogEntries9,
     UpdateApiKeys,
+    AddOutgoingLike,
+    AddOutgoingReply,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -1065,6 +1067,8 @@ impl Session {
             "select * from raft_log where node_id = ? and log_id < ?",
             "select * from raft_log where node_id = ?",
             "update users set api_keys=? where id=?",
+            "insert into likes (user_id, created, api_id, visbility) values (?, ?, ?, ?) if not exists", // AddOutoingLike
+            "insert into replies (user_id, created, api_id, visbility, content) values (?, ?, ?, ?, ?) if not exists", // AddOutoingReply
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -1081,7 +1085,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 91] = prepared_statements
+        let prepared_statements: [PreparedStatement; 93] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -1211,6 +1215,32 @@ impl storage::Backend for Session {
         )
         .await
         .map_err(StorError::new)
+    }
+
+    async fn add_outgoing_like(&self, like: &OutgoingLike) -> StdResult<(), StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::AddOutgoingLike],
+                like,
+            )
+            .await?;
+        // Unfortunately, this implementation gives us no way of knowing whether the statement had
+        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
+        // that.
+        Ok(())
+    }
+
+    async fn add_outgoing_reply(&self, reply: &OutgoingReply) -> StdResult<(), StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::AddOutgoingReply],
+                reply,
+            )
+            .await?;
+        // Unfortunately, this implementation gives us no way of knowing whether the statement had
+        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
+        // that.
+        Ok(())
     }
 
     async fn add_post_like(&self, like: &PostLike) -> StdResult<(), StorError> {

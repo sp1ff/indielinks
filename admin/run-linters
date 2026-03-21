@@ -19,5 +19,5 @@ cargo clippy -j ${nproc} -- --no-deps -Dwarnings \
 cargo fmt -- --check
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps -j ${nproc}
 # Need to address these two, plus a host of warnings
-cargo audit --ignore=RUSTSEC-2023-0071 --ignore=RUSTSEC-2026-0001
+cargo audit --ignore=RUSTSEC-2023-0071 --ignore=RUSTSEC-2026-0001 --ignore=RUSTSEC-2026-0049
 

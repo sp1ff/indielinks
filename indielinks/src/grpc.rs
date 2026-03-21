@@ -105,6 +105,7 @@ fn to_tonic<E: Debug>(err: E) -> tonic::Status {
 pub const FOLLOWER_TO_PUBLIC_INBOX: u64 = 1000; // Unused, but will be needed, so keep around.
 pub const ACTOR_ID_TO_ACTOR: u64 = 1001;
 pub const NOTE_ID_TO_NOTE: u64 = 1002;
+pub const ACCOUNT_TO_ACTOR: u64 = 1003;
 
 #[tonic::async_trait]
 impl protobuf::grpc_service_server::GrpcService for GrpcService {

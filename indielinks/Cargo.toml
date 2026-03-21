@@ -6,6 +6,7 @@ license-file = "../COPYING"
 description = "Social bookmarking in the Fediverse"
 
 [dependencies]
+ammonia = "4.1.2"
 argon2 = { version = "0.5.3", features = ["password-hash", "std"] }
 askama = { version = "0.15", features = ["code-in-doc"] }
 async-stream = "0.3.6"
@@ -21,6 +22,7 @@ bytes = ">=1.11.1" # RUSTSEC-2026-0007
 chacha20poly1305 = { version = "0.10.1", features = ["std"] }
 chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.23", features = ["cargo", "env"] }
+comrak = "0.51.0"
 crypto-common = "0.1.6"
 dashmap = "6.1.0"
 either = { version = "1.13.0", features = ["serde"] }
