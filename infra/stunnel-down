@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
 
 # Start `stunnel` to terminate TLS in front of `indielinks`. Requires the
-# invoker to have sudo privileges since we're binding a privilged port (443).
+# invoker to have sudo privileges
 set -ex
 here=$(dirname $(realpath $0))
 cd $here
 
-sudo stunnel stunnel.conf
-
-ntries=1
 status=$(sudo netstat -lpent|grep '0.0.0.0:443'|grep stunnel|grep -v grep)
-while [ -z "$status" ]; do
+IFS='/' read -r name pid <<< "$status"
+if [ -n "$pid" ]; then
+    sudo kill $pid
+fi
+
+status=$(sudo netstat -lpent|grep '0.0.0.0:443'|grep stunnel|grep -v grep)
+IFS='/' read -r name pid <<< "$status"
+while [ -n "$pid" ]; do
     ntries=$(($ntries+1))
     # Give it ten seconds
     if [ ${ntries} -gt 25 ]; then
-        echo "stunnel failed to come up" >&2
+        echo "stunnel failed to shut down" >&2
         exit 1
     fi
     sleep 0.5
     status=$(sudo netstat -lpent|grep '0.0.0.0:443'|grep stunnel|grep -v grep)
+    IFS='/' read -r name pid <<< "$status"
 done
+

@@ -39,6 +39,7 @@ use indielinks_shared::origin::Origin;
 use indielinks_cache::{cache::Cache, raft::CacheNode, types::InMemoryLogStore};
 
 use indielinks::{
+    acct::Account,
     ap_entities::{Actor, Note},
     ap_resolution::ApResolver,
     background_tasks::{
@@ -191,13 +192,15 @@ pub async fn first_background(
         .await
         .unwrap();
     let actor_cache: Cache<GrpcClientFactory, Url, Actor> = Cache::new(0, cache_node.clone());
-    let note_cache: Cache<GrpcClientFactory, Url, Note> = Cache::new(1, cache_node);
+    let note_cache: Cache<GrpcClientFactory, Url, Note> = Cache::new(1, cache_node.clone());
+    let handle_cache: Cache<GrpcClientFactory, Account, Actor> = Cache::new(2, cache_node);
 
     let ap_resolver = Arc::new(Mutex::new(ApResolver::new(
         origin.clone(),
         ap_client.clone(),
         Arc::new(actor_cache),
         Arc::new(note_cache),
+        Arc::new(handle_cache),
     )));
 
     // `processor` is now the thing which we can control; we don't need `tasks` any more, so just

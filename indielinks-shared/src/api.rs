@@ -338,9 +338,19 @@ pub struct TimelineBeforePage {
 /// Response payload for a timeline request for posts older than a given point
 pub type TimelineBeforeRsp = Option<TimelineBeforePage>;
 
+/// `/users/like` request payload
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LikeRequest {
     pub id: Url,
     pub actor: Url,
+}
+
+/// `/users/reply` request payload
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplyRequest {
+    pub id: Url,
+    pub actor: Url,
+    pub text: String,
 }

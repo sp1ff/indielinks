@@ -123,6 +123,7 @@
 
 use std::{collections::HashMap, fmt::Display};
 
+use axum::Json;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use either::Either;
@@ -144,8 +145,10 @@ use indielinks_shared::{
 };
 
 use crate::{
+    acct::Account,
     client_types::ClientType,
-    entities::{FollowId, LikeId, User},
+    entities::{FollowId, LikeId, ReplyId, User},
+    sanitized_html::{parse, ParseResult, SanitizedHtml},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -183,6 +186,13 @@ pub enum Error {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
+    // Including the URL in this variant makes using it complicated (due to borrowing);
+    // where we use it we're doing:
+    //     url.path_segments_mut().map_err(|_:()| IdNotABaseSnafu... )?
+    // `path_segments_mut()` returns a thing that holds a mutable reference to `url`, making
+    // it difficult to do anything with it in the error handler.
+    #[snafu(display("The given URL cannot be a base"))]
+    IdIsNotABase { backtrace: Backtrace },
     #[snafu(display(
         "We parsed a PostId out of an indielinks Post ID, but it was invalid: {source}"
     ))]
@@ -224,6 +234,11 @@ pub enum Error {
     OpaqueOrigin {
         url: Box<Url>,
         source: indielinks_shared::origin::Error,
+    },
+    #[snafu(display("While parsing a Post, {source}"))]
+    Parse {
+        source: std::fmt::Error,
+        backtrace: Backtrace,
     },
     #[snafu(display("Failed to obtain public key in PEM format; {source}"))]
     Pem {
@@ -275,6 +290,12 @@ pub enum Error {
     UrlParse {
         source: url::ParseError,
         backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to create an AP user ID from the account {name}: {source}"))]
+    UserId {
+        name: String,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
 }
 
@@ -332,6 +353,11 @@ pub fn make_user_outbox(username: &Username, origin: &Origin) -> Result<Url> {
 /// Return an URL naming an indielinks user's post activity
 pub fn make_user_post_id(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
     Url::parse(&format!("{}/users/{}/posts/{}", origin, username, postid)).context(UrlParseSnafu)
+}
+
+/// Return an URL naming an indielinks user's reply activity
+pub fn make_user_reply_id(username: &Username, replyid: &ReplyId, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/posts/{}", origin, username, replyid)).context(UrlParseSnafu)
 }
 
 lazy_static! {
@@ -1036,10 +1062,41 @@ pub struct Note {
     // - shares (Collection)
 }
 
+// Not sure where this belongs, but since this module is the only place it's called at the moment,
+// I'm going to leave it here.
+fn parse_post(origin: &Origin, post: &Post) -> Result<Html> {
+    let untagged = match post.notes() {
+        // Lame-- just include `s` verbatim
+        Some(s) => format!("<a href=\"{}\">{}</a>: {}", post.url(), post.title(), s),
+        None => format!("<a href=\"{}\">{}</a>", post.url(), post.title()),
+    };
+
+    let tagline = post
+        .tags()
+        .map(|t| {
+            format!(
+                "<a href=\"{}/tags/{}\" class=\"hashtag\">#{}</a>",
+                origin,
+                t.as_ref(),
+                t.as_ref()
+            )
+        })
+        .collect::<Vec<String>>()
+        .join(" ");
+
+    let html = if tagline.is_empty() {
+        untagged
+    } else {
+        format!("{} {}", untagged, tagline)
+    };
+
+    let ParseResult { html, .. } = parse(&html).context(ParseSnafu)?;
+    Ok(html.into())
+}
+
 impl Note {
     pub fn new(post: &Post, username: &Username, origin: &Origin) -> Result<Note> {
-        let post_html =
-            twitter_text::parse_post(origin, post.url(), post.title(), post.notes(), post.tags());
+        let post_html = parse_post(origin, post)?;
         Ok(Note {
             id: make_user_post_id(username, &post.id(), origin)?,
             // Not sure what I want to do with this; Mastodon sets it to null.
@@ -1061,23 +1118,23 @@ impl Note {
     pub fn new_from_parts<T, U>(
         id: Url,
         in_reply_to: Option<Url>,
-        url: Url,
+        url: Option<Url>,
         attributed_to: Url,
         to: T,
         cc: U,
-        content: String,
+        content: SanitizedHtml,
     ) -> Result<Note>
     where
         T: Iterator<Item = Url>,
         U: Iterator<Item = Url>,
     {
-        let content = Html(content);
+        let content: Html = content.into();
         Ok(Note {
             id,
             summary: None,
             in_reply_to,
             published: Utc::now(),
-            url: Some(url),
+            url,
             attributed_to,
             to: to.collect::<Vec<Url>>(),
             cc: cc.collect::<Vec<Url>>(),
@@ -1146,6 +1203,30 @@ pub struct Create {
 }
 
 impl Create {
+    pub fn from_parts<T, U>(
+        mut id: Url,
+        actor: Url,
+        to: T,
+        cc: U,
+        object: CreateObject,
+    ) -> Result<Self>
+    where
+        T: Iterator<Item = Url>,
+        U: Iterator<Item = Url>,
+    {
+        id.path_segments_mut()
+            .map_err(|_| IdIsNotABaseSnafu.build())?
+            .push("activity");
+        Ok(Self {
+            id,
+            actor,
+            published: Utc::now(),
+            to: to.collect::<Vec<Url>>(),
+            cc: cc.collect::<Vec<Url>>(),
+            object,
+        })
+    }
+
     pub fn actor(&self) -> &Url {
         &self.actor
     }
@@ -1172,8 +1253,12 @@ impl TryFrom<Note> for Create {
     type Error = Error;
 
     fn try_from(note: Note) -> std::result::Result<Self, Self::Error> {
+        let mut id = note.id.clone();
+        id.path_segments_mut()
+            .map_err(|_| IdIsNotABaseSnafu.build())?
+            .push("activity");
         Ok(Create {
-            id: note.id.join("/activity").context(UrlParseSnafu)?,
+            id,
             actor: note.attributed_to.clone(),
             published: note.published,
             to: note.to.clone(),
@@ -1912,7 +1997,8 @@ mod test {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+/// Refined type representing not just any text, but HTML
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Html(String);
 
 impl Display for Html {
@@ -1921,47 +2007,17 @@ impl Display for Html {
     }
 }
 
-// It turns out there's a dark art to parsing URIs, mentions, hashtags &c out of "posts".
-// Conversely, we'll need to pull them out of the `Notes` that we'll be receiving from federated
-// servers. For right now, I'm going to code up the simplest implementation I can and make a "todo"
-// to revisit this. This module is named in homage to the Ruby Gem that appears to be the rosetta
-// stone for this process: `twitter-text`.
-mod twitter_text {
+// We can always go from sanitized HTML to just HTML,
+impl From<SanitizedHtml> for Html {
+    fn from(value: SanitizedHtml) -> Self {
+        Html(value.into())
+    }
+}
 
-    use super::Html;
-
-    use indielinks_shared::{entities::StorUrl, origin::Origin};
-
-    pub fn parse_post<I: Iterator<Item: AsRef<str>>>(
-        origin: &Origin,
-        url: &StorUrl,
-        title: &str,
-        notes: Option<&str>,
-        tags: I,
-    ) -> Html {
-        let untagged = match notes {
-            // Lame-- just include `s` verbatim
-            Some(s) => format!("<a href=\"{}\">{}</a>: {}", url, title, s),
-            None => format!("<a href=\"{}\">{}</a>", url, title),
-        };
-
-        let tagline = tags
-            .map(|t| {
-                format!(
-                    "<a href=\"{}/tags/{}\" class=\"hashtag\">#{}</a>",
-                    origin,
-                    t.as_ref(),
-                    t.as_ref()
-                )
-            })
-            .collect::<Vec<String>>()
-            .join(" ");
-
-        Html(if tagline.is_empty() {
-            untagged
-        } else {
-            format!("{} {}", untagged, tagline)
-        })
+// but to go in the other direction, we need to actually sanitize the HTML.
+impl From<Html> for SanitizedHtml {
+    fn from(value: Html) -> Self {
+        value.0.into()
     }
 }
 
@@ -2222,4 +2278,152 @@ mod prototype {
         "url":"https://cdn.masto.host/indiewebsocial/accounts/headers/107/934/171/185/300/184/original/8c2ab41be165ea81.jpeg"
     }
 }"#;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           Webfinger                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Link Relation Type
+///
+/// This is a trivial subset of the [registered] link relation types sufficient for indielinks. I'll
+/// build it out, later. Later, we'll want:
+///
+/// - `http://webfinger.net/rel/profile-page`
+/// - `http://webfinger.net/rel/avatar`
+///
+/// [registered]: https://www.iana.org/assignments/link-relations/link-relations.xhtml
+#[derive(Debug, Deserialize, Serialize)]
+pub enum LinkRelation {
+    #[serde(rename = "self")]
+    Myself,
+    #[serde(untagged)] // must appear last in the enum
+    Url(Url),
+}
+
+/// Media Type
+///
+/// This is a trivial subset of the [registered] media types sufficient for indielinks. I'll build
+/// it out, later. Later we'll also want `text/html` and `image/jpeg`.
+///
+/// [registered]: https://www.iana.org/assignments/media-types/media-types.xhtml
+#[derive(Debug, Deserialize, Serialize)]
+pub enum MediaType {
+    #[serde(rename = "application/activity+json")]
+    ActivityPub,
+    #[serde(rename = "text/html")]
+    Html,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Link {
+    rel: LinkRelation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    r#type: Option<MediaType>,
+    href: Url,
+}
+
+impl Link {
+    /// Create a "self" [Link] from a [User]
+    fn from_user(user: &User, origin: &Origin) -> Result<Self> {
+        Ok(Link {
+            rel: LinkRelation::Myself,
+            r#type: Some(MediaType::ActivityPub),
+            href: make_user_id(user.username(), origin).context(UserIdSnafu {
+                name: user.username().to_string(),
+            })?,
+        })
+    }
+    /// Create a "self" [Link] for the instance actor
+    fn from_instance_actor(origin: &Origin) -> Result<Self> {
+        Ok(Link {
+            rel: LinkRelation::Myself,
+            r#type: Some(MediaType::ActivityPub),
+            href: Url::parse(&format!("{}/actor", origin)).context(UrlParseSnafu)?,
+        })
+    }
+    pub fn href(&self) -> &Url {
+        &self.href
+    }
+    pub fn is_rel(&self) -> bool {
+        matches!(self.rel, LinkRelation::Myself)
+    }
+    pub fn is_activity_pub(&self) -> bool {
+        matches!(self.r#type, Some(MediaType::ActivityPub))
+    }
+}
+
+/// Webfinger response body
+///
+/// According to the Webfinger [RFC], the response shall be in the form of a [JRD]-- a JSON Resource
+/// Descriptor. A JRD is "a JSON object that comprises the following name/value pairs:
+///
+/// - subject
+/// - aliases
+/// - properties
+/// - links"
+///
+/// [RFC]: https://www.rfc-editor.org/rfc/rfc7033
+/// [JRD]: https://www.rfc-editor.org/rfc/rfc7033#page-11
+///
+/// A [WebfingerResponse] is a struct that, when serialized to JSON, may be used as the response
+/// body to a Webfinger request.
+///
+/// For now, the implementation is quite simple; it will return a response of the following form:
+///
+/// ```text
+/// {
+///   "subject": "<username>@<domain>",
+///   "aliases": [
+///     "https://<domain>/@<username>",
+///     "https://<domain>/users/<username>",
+///   ],
+///   "links": [
+///      {
+///        "rel": "self",
+///        "type": "application/activity+json",
+///        "href": "https://<domain>/users/<username>"
+///      }
+///    ]
+/// }
+/// ```
+///
+/// We can expect a follow-up request to "https://domain/~username" to retrieve the user's
+/// ActivityPub profile.
+#[derive(Deserialize, Serialize)]
+pub struct WebfingerResponse {
+    subject: Account,
+    aliases: Vec<Url>,
+    links: Vec<Link>,
+}
+
+impl WebfingerResponse {
+    pub fn new(user: &User, acct: &Account, origin: &Origin) -> Result<WebfingerResponse> {
+        Ok(WebfingerResponse {
+            links: vec![Link::from_user(user, origin)?],
+            aliases: vec![
+                Url::parse(&format!("{}/@{}", origin, user.username())).context(UrlParseSnafu)?,
+                make_user_id(user.username(), origin).context(UserIdSnafu {
+                    name: user.username().to_string(),
+                })?,
+            ],
+            subject: acct.clone(),
+        })
+    }
+    pub fn instance_actor(acct: &Account, origin: &Origin) -> Result<WebfingerResponse> {
+        Ok(WebfingerResponse {
+            links: vec![Link::from_instance_actor(origin)?],
+            aliases: vec![],
+            subject: acct.clone(),
+        })
+    }
+    pub fn links(&self) -> impl Iterator<Item = &Link> {
+        self.links.iter()
+    }
+}
+
+impl axum::response::IntoResponse for WebfingerResponse {
+    fn into_response(self) -> axum::response::Response {
+        Json(self).into_response()
+    }
 }

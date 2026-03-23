@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use either::Either;
 use http::method::Method;
-use snafu::{Backtrace, ResultExt, Snafu};
+use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use url::Url;
 
@@ -40,7 +40,8 @@ use indielinks_shared::{entities::UserPrivateKey, origin::Origin};
 use indielinks_cache::cache::Cache;
 
 use crate::{
-    ap_entities::{ap_request, Actor, Note},
+    acct::Account,
+    ap_entities::{ap_request, Actor, Note, WebfingerResponse},
     cache::{GrpcClient, GrpcClientFactory},
     client_types::ClientType,
     entities::User,
@@ -60,6 +61,13 @@ pub enum Error {
     #[snafu(display("While making a Grpc call, {source}"))]
     Grpc {
         source: indielinks_cache::cache::Error<GrpcClient>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("No 'self' Link from a webfinger"))]
+    NoSelf { backtrace: Backtrace },
+    #[snafu(display("While forming an URL, {source}"))]
+    Url {
+        source: url::ParseError,
         backtrace: Backtrace,
     },
 }
@@ -84,6 +92,7 @@ pub struct ApResolver {
     // substantially
     actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
     notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
+    handles: Arc<Cache<GrpcClientFactory, Account, Actor>>,
 }
 
 // A note on the API: I would of course prefer to return references to these various attributes;
@@ -102,12 +111,14 @@ impl ApResolver {
         client: ClientType,
         actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
         notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
+        handles: Arc<Cache<GrpcClientFactory, Account, Actor>>,
     ) -> ApResolver {
         ApResolver {
             origin,
             client,
             actors,
             notes,
+            handles,
         }
     }
     async fn get_actor(
@@ -200,6 +211,52 @@ impl ApResolver {
             .await
             .context(GrpcSnafu)
     }
+    /// Given a handle in the form of @username@instance, retrieve the corresponding Actor
+    pub async fn handle_to_actor(
+        &mut self,
+        principal: Either<&User, &UserPrivateKey>,
+        handle: &Account,
+    ) -> Result<Actor> {
+        if let Some(actor) = self.handles.get(handle).await.context(GrpcSnafu)? {
+            actor
+        } else {
+            // Cache miss-- webfinger this handle
+            let url = Url::parse(&format!(
+                "https://{}/.well-known/webfinger?resource={}",
+                handle.host(),
+                handle
+            ))
+            .context(UrlSnafu)?;
+            let response: WebfingerResponse = ap_request(
+                &mut self.client,
+                &self.origin,
+                principal,
+                &url,
+                Method::GET,
+                None,
+                &(),
+            )
+            .await
+            .context(ApSnafu)?;
+
+            // Now, we expect a "self" link
+            let url = response
+                .links()
+                .find(|link| link.is_rel() && link.is_activity_pub())
+                .context(NoSelfSnafu)?
+                .href();
+
+            let actor = self.get_actor(principal, url).await?;
+
+            self.handles
+                .insert(handle.clone(), actor.clone())
+                .await
+                .context(GrpcSnafu)?;
+
+            actor
+        }
+        .pipe(Ok)
+    }
 }
 
 #[cfg(test)]
@@ -246,7 +303,8 @@ mod test {
             .await
             .unwrap();
         let actor_cache: Cache<GrpcClientFactory, Url, Actor> = Cache::new(0, cache_node.clone());
-        let note_cache: Cache<GrpcClientFactory, Url, Note> = Cache::new(1, cache_node);
+        let note_cache: Cache<GrpcClientFactory, Url, Note> = Cache::new(1, cache_node.clone());
+        let handle_cache: Cache<GrpcClientFactory, Account, Actor> = Cache::new(2, cache_node);
 
         let mut resolver: ApResolver = ApResolver::new(
             (
@@ -266,6 +324,7 @@ mod test {
             .unwrap(),
             Arc::new(actor_cache),
             Arc::new(note_cache),
+            Arc::new(handle_cache),
         );
 
         let (_, private_key) = generate_rsa_keypair().unwrap();

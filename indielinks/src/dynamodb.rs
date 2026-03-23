@@ -24,7 +24,10 @@ use crate::{
     cache::{
         to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
     },
-    entities::{ApiKeys, FollowId, Follower, Following, PostLike, PostReply, PostShare, User},
+    entities::{
+        ApiKeys, FollowId, Follower, Following, OutgoingLike, OutgoingReply, PostLike, PostReply,
+        PostShare, User,
+    },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::{Credentials, UpToThree},
 };
@@ -1133,6 +1136,26 @@ impl storage::Backend for Client {
         add_following(&self.client, user, &HashSet::from([(follow.clone(), *id)]))
             .await
             .map_err(StorError::new)
+    }
+
+    async fn add_outgoing_like(&self, like: &OutgoingLike) -> StdResult<(), StorError> {
+        self.client
+            .put_item()
+            .table_name("likes")
+            .set_item(Some(serde_dynamo::to_item(like)?))
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    async fn add_outgoing_reply(&self, reply: &OutgoingReply) -> StdResult<(), StorError> {
+        self.client
+            .put_item()
+            .table_name("replies")
+            .set_item(Some(serde_dynamo::to_item(reply)?))
+            .send()
+            .await?;
+        Ok(())
     }
 
     async fn add_post_like(&self, like: &PostLike) -> StdResult<(), StorError> {

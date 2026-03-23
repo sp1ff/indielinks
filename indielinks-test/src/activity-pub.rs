@@ -398,7 +398,7 @@ pub async fn as_follower(
     let reply = Note::new_from_parts(
         id.clone(),
         Some(create.object_id()?),
-        id,
+        Some(id),
         Url::parse(&format!("{}/users/{}", mock_origin, mock_user.name()))?,
         vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")?].into_iter(),
         vec![Url::parse(&format!(
@@ -407,7 +407,7 @@ pub async fn as_follower(
             mock_user.name()
         ))?]
         .into_iter(),
-        "<p>Greate site!</p>".to_owned(),
+        "<p>Greate site!</p>".into(),
     )?;
 
     let reply: Create = reply.try_into()?;

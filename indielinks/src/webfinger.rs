@@ -52,17 +52,17 @@ use std::sync::Arc;
 use indielinks_shared::origin::Origin;
 
 use crate::{
-    ap_entities::make_user_id,
-    entities::User,
+    acct::Account,
+    ap_entities::WebfingerResponse,
+    define_metric,
+    http::ErrorResponseBody,
     indielinks::Indielinks,
-    storage::Backend as StorageBackend,
-    {acct::Account, http::ErrorResponseBody},
-    {define_metric, storage},
+    storage::{self, Backend as StorageBackend},
 };
 
 use axum::extract::{Query, State};
 use axum::{http::StatusCode, response::IntoResponse, Json};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use snafu::{Backtrace, ResultExt, Snafu};
 use tracing::{error, info};
 use url::Url;
@@ -84,10 +84,20 @@ pub enum Error {
         domain: String,
         source: url::ParseError,
     },
+    #[snafu(display("While forming the response for the instance actor, {source}"))]
+    InstanceActor {
+        source: crate::ap_entities::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Mismatched hostname for webfinger"))]
     Hostname { backtrace: Backtrace },
     #[snafu(display("Unknown user for webfinger"))]
     NoSuchUser { backtrace: Backtrace },
+    #[snafu(display("While forming the response, {source}"))]
+    Response {
+        source: crate::ap_entities::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Storage failure: {source}"))]
     Storage { source: storage::Error },
     #[snafu(display("Failed to form an URL: {source}"))]
@@ -104,133 +114,6 @@ pub enum Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
-
-/// Link Relation Type
-///
-/// This is a trivial subset of the [registered] link relation types sufficient for indielinks. I'll
-/// build it out, later. Later, we'll want:
-///
-/// - `http://webfinger.net/rel/profile-page`
-/// - `http://webfinger.net/rel/avatar`
-///
-/// [registered]: https://www.iana.org/assignments/link-relations/link-relations.xhtml
-#[derive(Debug, Serialize)]
-pub enum LinkRelation {
-    #[serde(rename = "self")]
-    Myself,
-}
-
-/// Media Type
-///
-/// This is a trivial subset of the [registered] media types sufficient for indielinks. I'll build
-/// it out, later. Later we'll also want `text/html` and `image/jpeg`.
-///
-/// [registered]: https://www.iana.org/assignments/media-types/media-types.xhtml
-#[derive(Debug, Serialize)]
-pub enum MediaType {
-    #[serde(rename = "application/activity+json")]
-    ActivityPub,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Link {
-    rel: LinkRelation,
-    r#type: MediaType,
-    href: Url,
-}
-
-impl Link {
-    /// Create a "self" [Link] from a [User]
-    fn from_user(user: &User, origin: &Origin) -> Result<Self> {
-        Ok(Link {
-            rel: LinkRelation::Myself,
-            r#type: MediaType::ActivityPub,
-            href: make_user_id(user.username(), origin).context(UserIdSnafu {
-                name: user.username().to_string(),
-            })?,
-        })
-    }
-    /// Create a "self" [Link] for the instance actor
-    fn from_instance_actor(origin: &Origin) -> Result<Self> {
-        Ok(Link {
-            rel: LinkRelation::Myself,
-            r#type: MediaType::ActivityPub,
-            href: Url::parse(&format!("{}/actor", origin)).context(UrlParseSnafu)?,
-        })
-    }
-}
-
-/// Webfinger response body
-///
-/// According to the Webfinger [RFC], the response shall be in the form of a [JRD]-- a JSON Resource
-/// Descriptor. A JRD is "a JSON object that comprises the following name/value pairs:
-///
-/// - subject
-/// - aliases
-/// - properties
-/// - links"
-///
-/// [RFC]: https://www.rfc-editor.org/rfc/rfc7033
-/// [JRD]: https://www.rfc-editor.org/rfc/rfc7033#page-11
-///
-/// A [ResponseBody] is a struct that, when serialized to JSON, may be used as the response
-/// body to a Webfinger request.
-///
-/// For now, the implementation is quite simple; it will return a response of the following form:
-///
-/// ```text
-/// {
-///   "subject": "<username>@<domain>",
-///   "aliases": [
-///     "https://<domain>/@<username>",
-///     "https://<domain>/users/<username>",
-///   ],
-///   "links": [
-///      {
-///        "rel": "self",
-///        "type": "application/activity+json",
-///        "href": "https://<domain>/users/<username>"
-///      }
-///    ]
-/// }
-/// ```
-///
-/// We can expect a follow-up request to "https://domain/~username" to retrieve the user's
-/// ActivityPub profile.
-#[derive(Serialize)]
-pub struct ResponseBody {
-    subject: Account,
-    aliases: Vec<Url>,
-    links: Vec<Link>,
-}
-
-impl ResponseBody {
-    pub fn new(user: &User, acct: &Account, origin: &Origin) -> Result<ResponseBody> {
-        Ok(ResponseBody {
-            links: vec![Link::from_user(user, origin)?],
-            aliases: vec![
-                Url::parse(&format!("{}/@{}", origin, user.username())).context(UrlParseSnafu)?,
-                make_user_id(user.username(), origin).context(UserIdSnafu {
-                    name: user.username().to_string(),
-                })?,
-            ],
-            subject: acct.clone(),
-        })
-    }
-    pub fn instance_actor(acct: &Account, origin: &Origin) -> Result<ResponseBody> {
-        Ok(ResponseBody {
-            links: vec![Link::from_instance_actor(origin)?],
-            aliases: vec![],
-            subject: acct.clone(),
-        })
-    }
-}
-
-impl axum::response::IntoResponse for ResponseBody {
-    fn into_response(self) -> axum::response::Response {
-        Json(self).into_response()
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       webfinger handler                                        //
@@ -260,14 +143,14 @@ pub async fn webfinger(
         account: &Account,
         origin: &Origin,
         storage: &(dyn StorageBackend + Send + Sync),
-    ) -> Result<ResponseBody> {
+    ) -> Result<WebfingerResponse> {
         if *account.host() != *origin.host() {
             return HostnameSnafu.fail();
         }
 
         // Special case the instance actor
         if format!("{}", account.user()) == format!("{}", origin.host()) {
-            return ResponseBody::instance_actor(account, origin);
+            return WebfingerResponse::instance_actor(account, origin).context(InstanceActorSnafu);
         }
 
         match storage
@@ -275,7 +158,9 @@ pub async fn webfinger(
             .await
             .context(StorageSnafu)?
         {
-            Some(user) => Ok(ResponseBody::new(&user, account, origin)?),
+            Some(user) => {
+                Ok(WebfingerResponse::new(&user, account, origin).context(ResponseSnafu)?)
+            }
             None => NoSuchUserSnafu.fail(),
         }
     }
