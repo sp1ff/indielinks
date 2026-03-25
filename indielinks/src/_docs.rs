@@ -368,7 +368,7 @@
 //! 2) indielinks, activity-pub, dynamodb, scylla, client
 //!    - implementations of lower-level abstractions
 //! 3) home-timeline
-//! 4) ap-resolution
+//! 4) ap-resolution, metrics-task
 //! 5) ap-entities, background_tasks
 //!    - internal subsystems
 //! 6) client-types (authn, http)

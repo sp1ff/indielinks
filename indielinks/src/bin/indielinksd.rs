@@ -108,6 +108,7 @@ use indielinks::{
     http::HostKey,
     indielinks::{HomeTimelines, Indielinks},
     metrics::check_metric_names,
+    metrics_task::produce_metrics,
     ops::make_router as make_timelines_router,
     peppers::Peppers,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
@@ -1145,6 +1146,14 @@ async fn serve(
             background_tasks::new(nosql_tasks, context, Some(cfg.background_tasks().clone()))
                 .context(BackgroundTasksSnafu)?;
 
+        let metrics_nfy = Arc::new(Notify::new());
+        let metrics_handle = tokio::task::spawn(produce_metrics(
+            metrics_nfy.clone(),
+            actors.clone(),
+            notes.clone(),
+            handles.clone(),
+        ));
+
         let state = Arc::new(Indielinks {
             origin: cfg.public_origin.clone(),
             instance_id: opts.instance_id,
@@ -1219,12 +1228,15 @@ async fn serve(
             _ = sighup.recv() => { // Future<Output = Option<()>>
                 info!("Received SIGHUP; closing log file & DB connections to re-read configuration.");
                 // Signal our axum servers to shut-down...
+                metrics_nfy.notify_one();
                 world_nfy.notify_one();
                 local_nfy.notify_one();
                 grpc_nfy.notify_one();
                 // & wait for them to complete.
+                log_on_err(metrics_handle.await);
                 log_on_err(world_server.await);
                 log_on_err(local_server.await);
+                log_on_err(grpc_server.await);
                 // There's not much to be done on failure, nor do we expect a result, but if there
                 // _was_ an error of some kind, I'd like to know about it.
 
@@ -1248,12 +1260,15 @@ async fn serve(
             _ = sigkill.recv() => { // Future<Output = Option<()>>
                 info!("Received SIGKILL; terminating.");
                 // That's it-- we're outta here. Signal our axum servers to shut-down...
+                metrics_nfy.notify_one();
                 world_nfy.notify_one();
                 local_nfy.notify_one();
                 grpc_nfy.notify_one();
                 // wait for our axum servers to complete...
+                log_on_err(metrics_handle.await);
                 log_on_err(world_server.await);
                 log_on_err(local_server.await);
+                log_on_err(grpc_server.await);
                 // and shut-down our background processor:
                 processor_shutdown.notify_one();
                 // There's not much to be done on failure here, but if there is a problem, I'd like
@@ -1270,11 +1285,14 @@ async fn serve(
                 // This shouldn't happen!
                 error!("The background task processor exited early with {:?}; shutting-down.", res);
                 // 🤷 OK, well, not much to be done, here, except to signal our axum serverse to shutdown...
+                metrics_nfy.notify_one();
                 world_nfy.notify_one();
                 local_nfy.notify_one();
                 // wait for them...
+                log_on_err(metrics_handle.await);
                 log_on_err(world_server.await);
                 log_on_err(local_server.await);
+                log_on_err(grpc_server.await);
                 // and bail.
                 break;
             },
@@ -1341,7 +1359,7 @@ fn init_telemetry(
                 ))
                 .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
                 .with_attribute(KeyValue::new(
-                    "deployment.environment",
+                    "deployment.environment.name",
                     format!("{deploy_env}"),
                 ))
                 .build(),
@@ -1349,6 +1367,7 @@ fn init_telemetry(
         .with_reader(old_school_exporter.clone());
 
     if let Some(config) = collector_config {
+        info!("Configuring OTLP export to {config:?}");
         let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()
             .with_endpoint(config.endpoint.as_str())

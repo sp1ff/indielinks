@@ -95,6 +95,13 @@ pub struct ApResolver {
     handles: Arc<Cache<GrpcClientFactory, Account, Actor>>,
 }
 
+#[derive(Clone, Debug)]
+pub struct Metrics {
+    pub actor_count: u64,
+    pub note_count: u64,
+    pub handle_count: u64,
+}
+
 // A note on the API: I would of course prefer to return references to these various attributes;
 // e.g. have something like:
 //
@@ -256,6 +263,14 @@ impl ApResolver {
             actor
         }
         .pipe(Ok)
+    }
+    /// Retrieve some metrics about this resolver
+    pub fn get_metrics(&self) -> Metrics {
+        Metrics {
+            actor_count: self.actors.count() as u64,
+            note_count: self.notes.count() as u64,
+            handle_count: self.handles.count() as u64,
+        }
     }
 }
 

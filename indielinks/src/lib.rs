@@ -49,6 +49,8 @@ pub mod home_timeline;
 pub mod http;
 pub mod indielinks;
 pub mod metrics;
+#[path = "metrics-task.rs"]
+pub mod metrics_task;
 pub mod ops;
 pub mod peppers;
 #[path = "protobuf-interop.rs"]

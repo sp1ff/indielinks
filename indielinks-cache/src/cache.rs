@@ -189,6 +189,9 @@ where
             Ok(())
         }
     }
+    pub fn count(&self) -> usize {
+        self.map.lock().expect("Mutex poisoned").len()
+    }
 }
 
 #[cfg(test)]
