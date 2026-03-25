@@ -248,6 +248,68 @@ static DEFAULT_LOCALSTATEDIR: &str = ".";
 
 static SCHEMA_VERSION: u32 = 0;
 
+/// The execution environment into which this instance has been deployed
+#[derive(Clone, Debug, Default)]
+enum DeploymentEnvironment {
+    #[default]
+    Development,
+    /// Local installation
+    Local,
+    Staging,
+    Production,
+}
+
+impl Display for DeploymentEnvironment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                DeploymentEnvironment::Development => "development",
+                DeploymentEnvironment::Local => "local",
+                DeploymentEnvironment::Staging => "staging",
+                DeploymentEnvironment::Production => "production",
+            }
+        )
+    }
+}
+
+impl clap::builder::ValueParserFactory for DeploymentEnvironment {
+    type Parser = DeploymentEnvironmentParser;
+
+    fn value_parser() -> Self::Parser {
+        DeploymentEnvironmentParser
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DeploymentEnvironmentParser;
+
+impl clap::builder::TypedValueParser for DeploymentEnvironmentParser {
+    type Value = DeploymentEnvironment;
+
+    fn parse_ref(
+        &self,
+        _cmd: &crate::Command,
+        _arg: Option<&crate::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> std::result::Result<Self::Value, clap::Error> {
+        use clap::error::ErrorKind;
+        match value
+            .to_str()
+            .ok_or(clap::Error::new(ErrorKind::InvalidValue))?
+            .to_lowercase()
+            .as_str()
+        {
+            "dev" | "development" => Ok(DeploymentEnvironment::Development),
+            "local" | "desktop" => Ok(DeploymentEnvironment::Local),
+            "stg" | "staging" => Ok(DeploymentEnvironment::Staging),
+            "prod" | "production" => Ok(DeploymentEnvironment::Production),
+            _ => Err(clap::Error::new(ErrorKind::InvalidValue)),
+        }
+    }
+}
+
 /// Logging-related options read from the command line or the environment
 struct LogOpts {
     pub daemon: bool,
@@ -281,6 +343,7 @@ struct CliOpts {
     pub cfg: Option<PathBuf>,
     pub local_statedir: PathBuf,
     pub no_chdir: bool,
+    pub deploy_env: DeploymentEnvironment,
 }
 
 impl CliOpts {
@@ -301,6 +364,10 @@ impl CliOpts {
                 .unwrap_or(&PathBuf::from_str(DEFAULT_LOCALSTATEDIR).unwrap())
                 .clone(),
             no_chdir: matches.get_flag("no-chdir"),
+            deploy_env: matches
+                .get_one::<DeploymentEnvironment>("deploy-env")
+                .cloned()
+                .unwrap_or(Default::default()),
         })
     }
 }
@@ -953,7 +1020,7 @@ async fn serve(
     let mut sighup = signal(SignalKind::hangup()).unwrap();
     let mut sigkill = signal(SignalKind::terminate()).unwrap();
 
-    let exporter = init_telemetry(cfg.otlp_export.as_ref())?;
+    let exporter = init_telemetry(cfg.otlp_export.as_ref(), opts.instance_id, opts.deploy_env)?;
 
     // Loop forever, handling SIGHUPs, until asked to terminate:
     loop {
@@ -1256,7 +1323,11 @@ async fn serve(
 /// which attributes get reported, modify aggregation, or even drop entire metrics.
 ///
 /// A "metric reader" is "the interface used between the SDK and an exporter." Huh.
-fn init_telemetry(collector_config: Option<&OtelExportConfig>) -> Result<PrometheusExporter> {
+fn init_telemetry(
+    collector_config: Option<&OtelExportConfig>,
+    instance_id: Uuid,
+    deploy_env: DeploymentEnvironment,
+) -> Result<PrometheusExporter> {
     check_metric_names();
     let old_school_exporter = PrometheusExporter::new();
 
@@ -1264,6 +1335,15 @@ fn init_telemetry(collector_config: Option<&OtelExportConfig>) -> Result<Prometh
         .with_resource(
             opentelemetry_sdk::Resource::builder_empty()
                 .with_attribute(KeyValue::new("service.name", "indielinks"))
+                .with_attribute(KeyValue::new(
+                    "service.instance.id",
+                    format!("{instance_id}"),
+                ))
+                .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
+                .with_attribute(KeyValue::new(
+                    "deployment.environment",
+                    format!("{deploy_env}"),
+                ))
                 .build(),
         )
         .with_reader(old_school_exporter.clone());
@@ -1598,7 +1678,7 @@ fn main() -> Result<()> {
                     .env("INDIELINKS_LOCALSTATEDIR")
                     .help(
                         "path (absolute or relative to the process' current directory) to the \
-                           directory in which local state shall be stored (\"/var/run/indielinksd\", e.g.)",
+                         directory in which local state shall be stored (\"/var/run/indielinksd\", e.g.)",
                     ),
             )
             .arg(
@@ -1609,6 +1689,16 @@ fn main() -> Result<()> {
                     .action(ArgAction::SetTrue)
                     .env("INDIELINKS_DEBUG")
                     .help("produce debug output"),
+            )
+            .arg(
+                Arg::new("deploy-env")
+                    .short('d')
+                    .long("deploy-env")
+                    .num_args(1)
+                    .value_parser(value_parser!(DeploymentEnvironment))
+                    .env("INDIELINKS_DEPLOYMENT_ENVIRONMENT")
+                    .help("The deployment environment in which this instance is running: \
+                          development, local, staging or production")
             )
             .arg(
                 // I'm not sure if I want to allow this to be set in config. For now, just CLI and env.
