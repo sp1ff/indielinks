@@ -732,36 +732,67 @@ fn configure_logging(
     Ok((formatter, filter, tx))
 }
 
-async fn otel_middleware(
+define_metric! { "http_requests_total", http_requests_total, Sort::IntegralCounter }
+define_metric! { "http_public_requests_total", http_public_requests_total, Sort::IntegralCounter }
+define_metric! { "http_public_responses_1xx", http_public_responses_1xx, Sort::IntegralCounter }
+define_metric! { "http_public_responses_2xx", http_public_responses_2xx, Sort::IntegralCounter }
+define_metric! { "http_public_responses_3xx", http_public_responses_3xx, Sort::IntegralCounter }
+define_metric! { "http_public_responses_4xx", http_public_responses_4xx, Sort::IntegralCounter }
+define_metric! { "http_public_responses_5xx", http_public_responses_5xx, Sort::IntegralCounter }
+define_metric! { "http_public_responses_unknown", http_public_responses_unknown, Sort::IntegralCounter }
+
+/// Middleware for OpenTelemetry metrics (public endpoint)
+async fn otel_middleware_public(
+    _: State<Arc<Indielinks>>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    // Going to assume that request.path() is a legit, RFC 3986-compliant path, though it could be
-    // empty. OTel names must be ASCII and belong to the alphanumeric characters, '_', '.', '-' and
-    // '/'. Here, I remove any illegal characters & replace '/' with '.'.
-    let stem: String = request
-        .uri()
-        .path()
-        .as_bytes()
-        .iter()
-        .filter_map(|x| {
-            if 47 == *x {
-                Some('.')
-            } else if (44 < *x && *x < 58) || (64 < *x && *x < 91) || (96 < *x && *x < 123) {
-                Some(char::from_u32(*x as u32).unwrap(/* known good */))
-            } else {
-                None
-            }
-        })
-        .collect();
+    http_requests_total.add(1, &[]);
+    http_public_requests_total.add(1, &[]);
 
-    let name = format!("http.{}{}", request.method().as_str().to_lowercase(), stem);
-    let counter = opentelemetry::global::meter("indielinks")
-        .u64_counter(name)
-        .build();
-    // Nb. can add attributes like so: &[KeyValue::new("user", user.clone())]
-    counter.add(1, &[]);
-    next.run(request).await
+    let response = next.run(request).await;
+
+    match response.status().as_u16() {
+        100..=199 => http_public_responses_1xx.add(1, &[]),
+        200..=299 => http_public_responses_2xx.add(1, &[]),
+        300..=399 => http_public_responses_3xx.add(1, &[]),
+        400..=499 => http_public_responses_4xx.add(1, &[]),
+        500..=599 => http_public_responses_5xx.add(1, &[]),
+        _ => http_public_responses_unknown.add(1, &[]),
+    }
+
+    response
+}
+
+define_metric! { "http_local_requests_total", http_local_requests_total, Sort::IntegralCounter }
+define_metric! { "http_local_responses_1xx", http_local_responses_1xx, Sort::IntegralCounter }
+define_metric! { "http_local_responses_2xx", http_local_responses_2xx, Sort::IntegralCounter }
+define_metric! { "http_local_responses_3xx", http_local_responses_3xx, Sort::IntegralCounter }
+define_metric! { "http_local_responses_4xx", http_local_responses_4xx, Sort::IntegralCounter }
+define_metric! { "http_local_responses_5xx", http_local_responses_5xx, Sort::IntegralCounter }
+define_metric! { "http_local_responses_unknown", http_local_responses_unknown, Sort::IntegralCounter }
+
+/// Middleware for OpenTelemetry metrics (localhost endpoint)
+async fn otel_middleware_local(
+    _: State<Arc<Indielinks>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    http_requests_total.add(1, &[]);
+    http_local_requests_total.add(1, &[]);
+
+    let response = next.run(request).await;
+
+    match response.status().as_u16() {
+        100..=199 => http_local_responses_1xx.add(1, &[]),
+        200..=299 => http_local_responses_2xx.add(1, &[]),
+        300..=399 => http_local_responses_3xx.add(1, &[]),
+        400..=499 => http_local_responses_4xx.add(1, &[]),
+        500..=599 => http_local_responses_5xx.add(1, &[]),
+        _ => http_local_responses_unknown.add(1, &[]),
+    }
+
+    response
 }
 
 async fn healthcheck() -> &'static str {
@@ -902,7 +933,6 @@ impl MakeRequestId for RequestIdGenerator {
 fn make_world_router(state: Arc<Indielinks>) -> Router {
     Router::new()
         .route("/healthcheck", get(healthcheck))
-        .route("/metrics", get(metrics))
         // It's *really* irritating that I need to specify three separate routes to handle each of
         // these cases, but here we are. At least I only need to implement one handler.
         .route("/fe", get(frontend))
@@ -949,7 +979,7 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            otel_middleware,
+            otel_middleware_public,
         ))
         .layer(SetRequestIdLayer::new(
             HeaderName::from_static("x-request-id"),
@@ -961,13 +991,14 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
 /// Make the [Router] that will only be locally accessible
 fn make_local_router(state: Arc<Indielinks>) -> Router {
     Router::new()
+        .route("/metrics", get(metrics))
         .nest("/ops/cache", make_cache_router(state.clone()))
         .nest("/ops/timelines", make_timelines_router(state.clone()))
         .route("/ops/timeline", get(timeline_internal))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            otel_middleware,
+            otel_middleware_local,
         ))
         .with_state(state.clone())
 }
