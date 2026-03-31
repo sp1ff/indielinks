@@ -113,7 +113,6 @@ impl Accept {
             .transpose()
             .context(HeaderValueSnafu)?
             .map(|s| {
-                debug!("s is ``{}''", s);
                 if s.contains("application/ld+json") || s.contains("application/activity+json") {
                     Ok(Accept::ActivityPub)
                 } else if s == "text/html" || s == "*/*" {
@@ -229,7 +228,7 @@ where
                     };
                     instrument.add(1, &[KeyValue::new("host", this.host.clone())]);
                     debug!(
-                        "Response {rsp:?} from {} returned with status {}",
+                        "{rsp:?} from {} returned with status {}",
                         this.host,
                         rsp.status()
                     );

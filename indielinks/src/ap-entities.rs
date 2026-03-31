@@ -136,6 +136,7 @@ use serde_json::Value;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use tower::{Service, ServiceExt};
+use tracing::error;
 use url::Url;
 
 use indielinks_shared::{
@@ -2071,8 +2072,14 @@ pub async fn ap_request<B: ToJld, R: serde::de::DeserializeOwned>(
     body: &B,
 ) -> Result<R> {
     let response = ap_request_core(client, origin, principal, url, method, context, body).await?;
+
     if !response.status().is_success() {
-        return FailedApSnafu { rsp: response }.fail();
+        let (parts, body) = response.into_parts();
+        error!("{}", String::from_utf8_lossy(&body));
+        return FailedApSnafu {
+            rsp: http::Response::from_parts(parts, body),
+        }
+        .fail();
     }
 
     serde_json::from_slice::<R>(response.into_body().as_ref()).context(RspJsonSnafu)
@@ -2098,18 +2105,6 @@ pub async fn ap_request_no_response<B: ToJld>(
     }
 
     Ok(())
-}
-
-/// Resolve a key ID to a PublicKey
-// We can't know a priori if the peer implements authorized fetch, so we pretty-much *have* to sign
-// every `GET` request with the instance actor's private key.
-pub async fn resolve_key_id(
-    key_id: &Url,
-    client: &mut ClientType,
-    principal: Either<&User, &UserPrivateKey>,
-    origin: &Origin,
-) -> Result<Actor> {
-    ap_request(client, origin, principal, key_id, Method::GET, None, &()).await
 }
 
 #[cfg(test)]
