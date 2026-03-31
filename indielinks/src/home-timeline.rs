@@ -709,6 +709,8 @@ impl Timeline {
     /// vector, and the second the last element in the vector. These can be passed as parameters to
     /// [`before()`](Timeline::before) and [`since()`](Timeline::since).
     pub async fn begin(&mut self, page_size: Option<NonZero<usize>>) -> Result<Option<FirstPage>> {
+        debug!("Timeline::begin: {} items currently.", self.items.len());
+
         let page_size = page_size.unwrap_or(nonzero!(16usize));
 
         // We're beginning a pagination of this timeline, with a page size of `page_size`. If we
@@ -809,6 +811,7 @@ impl Timeline {
     /// This comes, however, at the cost of growing `self.items` much more rapidly than is needed.
     /// If this becomes a problem, I'll have to revisit this algorithm.
     async fn grow(&mut self, num_elems: NonZero<usize>) -> Result<()> {
+        debug!("Growing this timeline by {} items...", num_elems);
         iter(self.streams.iter_mut())
             .then(|stm| async move {
                 stm.take(num_elems.get())
@@ -824,6 +827,11 @@ impl Timeline {
             .for_each(|item| {
                 self.items.insert(PostKey::new(&item), item);
             });
+        debug!(
+            "Growing this timeline by {} items...done({} items total now)",
+            num_elems,
+            self.items.len()
+        );
         Ok(())
     }
 }

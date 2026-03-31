@@ -128,7 +128,7 @@ impl ApResolver {
             handles,
         }
     }
-    async fn get_actor(
+    pub async fn get_actor(
         &mut self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,

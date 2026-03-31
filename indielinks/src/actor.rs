@@ -31,7 +31,7 @@ use axum::{
 use chrono::Utc;
 use either::Either::{self, Left, Right};
 use futures::{stream::iter, StreamExt};
-use http::Method;
+use http::{HeaderName, Method};
 use itertools::Itertools;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
 use serde::{Deserialize, Serialize};
@@ -57,7 +57,6 @@ use crate::{
     ap_resolution::ApResolver,
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
-    client_types::ClientType,
     define_metric,
     entities::{Follower, Following, PostLike, PostReply, PostShare, User},
     http::ErrorResponseBody,
@@ -205,7 +204,7 @@ pub enum Error {
     #[snafu(display("Failed to buld an http request: {source}"))]
     Request { source: crate::ap_entities::Error },
     #[snafu(display("Failed to resolve a key ID to an Actor: {source}"))]
-    ResolveKeyId { source: crate::ap_entities::Error },
+    ResolveKeyId { source: crate::ap_resolution::Error },
     #[snafu(display("Couldn't parse the signature string: {source}"))]
     SignatureParse {
         source: picky::http::http_signature::HttpSignatureError,
@@ -324,10 +323,9 @@ async fn verify_signature(
     async fn verify_signature1(
         headers: axum::http::HeaderMap,  // := http::header::headerMap
         request: axum::extract::Request, // := http::request::Request
-        mut client: ClientType,
         storage: &(dyn StorageBackend + Send + Sync),
         principal: Either<Username, &UserPrivateKey>,
-        origin: &Origin,
+        ap_resolver: Arc<Mutex<ApResolver>>,
     ) -> Result<(axum::extract::Request, ap_entities::Actor)> {
         // Huh. Per <https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12>, the
         // signature should be transmitted in an Authorizatoin header, with a scheme of "Signature":
@@ -371,14 +369,15 @@ async fn verify_signature(
             Either::Right(private_key) => Either::Right(private_key.clone()),
         };
 
-        let actor = ap_entities::resolve_key_id(
-            &Url::parse(key_id).context(BadKeyIdSnafu)?,
-            &mut client,
-            principal.as_ref(),
-            origin,
-        )
-        .await
-        .context(ResolveKeyIdSnafu)?;
+        let actor = ap_resolver
+            .lock()
+            .await
+            .get_actor(
+                principal.as_ref(),
+                &Url::parse(key_id).context(BadKeyIdSnafu)?,
+            )
+            .await
+            .context(ResolveKeyIdSnafu)?;
 
         let public_key = actor.public_key().context(PublicKeySnafu)?;
 
@@ -453,13 +452,12 @@ async fn verify_signature(
     match verify_signature1(
         headers,
         request,
-        state.ap_client.clone(),
         state.storage.as_ref(),
         match username {
             Some(username) => Either::Left(username.0),
             None => Either::Right(&state.instance_state.private_key),
         },
-        &state.origin,
+        state.ap_resolver.clone(),
     )
     .await
     {
@@ -516,6 +514,34 @@ define_metric! { "shared_inbox.successes", shared_inbox_successes, Sort::Integra
 define_metric! { "shared_inbox.announcements", shared_inbox_announcements, Sort::IntegralCounter }
 define_metric! { "shared_inbox.creates", shared_inbox_creates, Sort::IntegralCounter }
 define_metric! { "shared_inbox.errors", shared_inbox_errors, Sort::IntegralCounter }
+
+// For now, I'm logging the full request body for everything that shows-up at the shared inbox
+async fn log_request(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let (parts, body) = request.into_parts();
+    // This seems dodgy... what if the request body is large. Let's impose a completely
+    // arbitrary limit of 4kb. If the request is larger than that, just fail it.
+    match axum::body::to_bytes(body, 4096usize).await {
+        Ok(bytes) => {
+            info!(
+                "{:?}",
+                parts.headers.get(HeaderName::from_static("signature"))
+            );
+            info!("Request body: {}", String::from_utf8_lossy(&bytes));
+            next.run(http::Request::from_parts(
+                parts,
+                axum::body::Body::from(bytes),
+            ))
+            .await
+        }
+        Err(err) => {
+            error!("While logging the request body, {err:?}");
+            (StatusCode::UNPROCESSABLE_ENTITY, format!("{err:#?}")).into_response()
+        }
+    }
+}
 
 /// Handle `Note` creation
 ///
@@ -618,9 +644,13 @@ async fn accept_create(
     Ok(())
 }
 
-/// Accept a share of an indielinks user's [Post]
-// Any `Announce` AP entity sent to the shared inbox will end here. At the time of this writing, I
-// only anticipate that happening for one reason: a a `Post` on this instance has been shared.
+/// Accept a share
+///
+/// Any `Announce` AP entity sent to the shared inbox will end here. This could be a share of an
+/// indielinks user's [Post], in which case it will be written-down in the `post_shares` table, or
+/// it could simply be a share of a generic ActivityPub post where the sharer is followed by a user
+/// on this instance. In either event, the [Note] will be cached and added to the timelines of all
+/// followers of the actor who originated the `Announce`.
 async fn accept_share(
     actor: &ap_entities::Actor,
     announce: &Announce,
@@ -653,9 +683,19 @@ async fn accept_share(
 
     debug!("This Announce relates to the object {}", object);
 
-    let (_, postid) = username_and_postid_from_url(origin, object).context(BadObjectSnafu {
-        url: announce.object().clone(),
-    })?;
+    // Should I change the signature of `username_and_postid_from_url()` to make a non-match not an
+    // error condition? It's called from a number of locations, so I want to see if this issue crops
+    // up anywhere else, first.
+    let postid = match username_and_postid_from_url(origin, object) {
+        Ok((_, postid)) => Some(postid),
+        Err(crate::ap_entities::Error::MismatchedOrigin { .. }) => None,
+        Err(err) => {
+            return Err(BadObjectSnafu {
+                url: announce.object().clone(),
+            }
+            .into_error(err))
+        }
+    };
 
     let (visibility, local_recipients) =
         derive_visibility(announce.to(), announce.cc(), origin).context(VisibilitySnafu)?;
@@ -666,10 +706,12 @@ async fn accept_share(
         local_recipients
     );
 
-    storage
-        .add_post_share(&PostShare::new(postid, announce.id().clone(), visibility))
-        .await
-        .context(StorageSnafu)?;
+    if let Some(postid) = postid {
+        storage
+            .add_post_share(&PostShare::new(postid, announce.id().clone(), visibility))
+            .await
+            .context(StorageSnafu)?;
+    }
 
     // Alright-- at this point, we've stored the share, but there may be other recipients to whom
     // this message was addressed, including recpients in the form of "https://so-and-so/followers"
@@ -1496,10 +1538,12 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
     Router::new()
         .route(
             "/inbox",
-            post(shared_inbox).route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                verify_signature,
-            )),
+            post(shared_inbox)
+                .route_layer(axum::middleware::from_fn(log_request))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    verify_signature,
+                )),
         )
         .route("/users/{username}", get(actor))
         .route(
