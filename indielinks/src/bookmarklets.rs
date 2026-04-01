@@ -152,6 +152,8 @@ pub enum Error {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("While lookingup this post, {source}"))]
+    PostLookup { source: crate::storage::Error },
     #[snafu(display("While rendering the Askana template, {source}"))]
     Render {
         source: askama::Error,
@@ -316,9 +318,9 @@ struct SaveRequest {
 ///             <input type="text" id="tags" name="tags" value="{{ tags }}">
 ///         </div>
 ///         <div>
-///             <input type="checkbox" id="private" name="private" value="{{ private }}">
+///             <input type="checkbox" id="private" name="private" value="{{ private }}" {% if private %}checked{% endif %}>
 ///             <label for="private">Private</label>
-///             <input type="checkbox" id="toread" name="toread" value="{{ to_read }}">
+///             <input type="checkbox" id="toread" name="toread" value="{{ to_read }}" {% if to_read %}checked{% endif %}>
 ///             <label for="toread">Read Later</label>
 ///
 ///         </div>
@@ -370,6 +372,7 @@ async fn save(
 ) -> axum::response::Response {
     async fn save1(
         state: Arc<Indielinks>,
+        username: &Username,
         mut headers: HeaderMap,
         request: SaveRequest,
     ) -> Result<(HeaderMap, String)> {
@@ -387,14 +390,46 @@ async fn save(
                 .context(CookieAsHeaderSnafu)?,
         );
 
+        let user = state
+            .storage
+            .as_ref()
+            .user_for_name(username.as_ref())
+            .await
+            .context(UserLookupSnafu)?
+            .context(NoSuchUserSnafu)?;
+
+        let post = state
+            .storage
+            .get_post(user.id(), &request.url.clone().into())
+            .await
+            .context(PostLookupSnafu)?;
+
+        // The URL & title given in the request always win, and we'll overwrite the description, if
+        // it's given.
+        let (description, tags, private, to_read) = if let Some(post) = post {
+            let description = if !request.description.is_empty() {
+                request.description
+            } else {
+                post.notes().map(str::to_owned).unwrap_or(String::new())
+            };
+            (
+                description,
+                post.tags().join(" "),
+                !post.public(),
+                post.unread(),
+            )
+        } else {
+            (request.description, Default::default(), true, false)
+        };
+
         let html = SaveForm {
             csrf_token,
             url: request.url,
             title: request.title,
-            description: request.description,
-            tags: Default::default(),
-            private: true,
-            to_read: false,
+            description,
+            tags,
+            private,
+            to_read,
         }
         .render()
         .context(RenderSnafu)?;
@@ -402,7 +437,7 @@ async fn save(
         Ok((headers, html))
     }
 
-    match save1(state, headers, request).await {
+    match save1(state, &username.0, headers, request).await {
         Ok((headers, html)) => {
             debug!("Sending back a save form for {}", username.to_string());
             bookmarklets_save_successes.add(1, &[KeyValue::new("username", username.to_string())]);
@@ -605,6 +640,8 @@ async fn add(
 
         Ok(())
     }
+
+    debug!("incoming form: {request:#?}");
 
     match add1(state, jar, &username.0, request).await {
         Ok(_) => {

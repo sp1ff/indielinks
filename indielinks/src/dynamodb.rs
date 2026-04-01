@@ -1481,6 +1481,24 @@ impl storage::Backend for Client {
             .pipe(Ok)
     }
 
+    async fn get_post(&self, userid: &UserId, uri: &StorUrl) -> StdResult<Option<Post>, StorError> {
+        self.client
+            .query()
+            .table_name("posts")
+            .key_condition_expression("user_id=:id AND url=:url")
+            .expression_attribute_values(":id", AttributeValue::S(userid.to_string()))
+            .expression_attribute_values(":url", AttributeValue::S(uri.to_string()))
+            .send()
+            .await?
+            .items()
+            .to_vec()
+            .pipe(from_items::<Post>)?
+            .into_iter()
+            .at_most_one()
+            .map_err(StorError::new)?
+            .pipe(Ok)
+    }
+
     async fn get_post_by_id(&self, id: &PostId) -> StdResult<Option<Post>, StorError> {
         self.client
             .query()
