@@ -145,6 +145,7 @@ pub trait Backend {
         &'a self,
         user: &User,
     ) -> Result<BoxStream<'a, Result<Following, Error>>, Error>;
+    async fn get_post(&self, userid: &UserId, uri: &StorUrl) -> Result<Option<Post>, Error>;
     async fn get_post_by_id(&self, id: &PostId) -> Result<Option<Post>, Error>;
     /// Retrieve full posts with various filtering options
     async fn get_posts(

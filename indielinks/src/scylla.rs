@@ -1551,6 +1551,21 @@ impl storage::Backend for Session {
         .pipe(Ok)
     }
 
+    async fn get_post(&self, userid: &UserId, uri: &StorUrl) -> StdResult<Option<Post>, StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::GetPosts1],
+                (userid, uri),
+            )
+            .await?
+            .into_rows_result()?
+            .rows::<Post>()?
+            .at_most_one()
+            .map_err(|_| StorError::new(AtMostOneRowSnafu.build()))?
+            .transpose()?
+            .pipe(Ok)
+    }
+
     async fn get_post_by_id(&self, id: &PostId) -> StdResult<Option<Post>, StorError> {
         self.session
             .execute_unpaged(
