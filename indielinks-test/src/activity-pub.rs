@@ -32,7 +32,7 @@ use indielinks_shared::{api::FollowReq, entities::Username, origin::Origin};
 
 use indielinks::{
     actor::CollectionPage,
-    ap_entities::{Accept, ActorField, Create, Jld, Like, Note, ObjectField},
+    ap_entities::{Accept, ActorField, Create, Jld, Like, Note, ObjectField, Replies},
     entities::FollowId,
     peppers::{Pepper, Version as PepperVersion},
 };
@@ -398,7 +398,7 @@ pub async fn as_follower(
     let reply = Note::new_from_parts(
         id.clone(),
         Some(create.object_id()?),
-        Some(id),
+        Some(id.clone()),
         Url::parse(&format!("{}/users/{}", mock_origin, mock_user.name()))?,
         vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")?].into_iter(),
         vec![Url::parse(&format!(
@@ -408,6 +408,11 @@ pub async fn as_follower(
         ))?]
         .into_iter(),
         "<p>Greate site!</p>".into(),
+        Replies::new(
+            Url::parse(&format!("{}/replies", id))?,
+            Url::parse(&format!("{}/replies?page=true", id))?,
+            None,
+        ),
     )?;
 
     let reply: Create = reply.try_into()?;

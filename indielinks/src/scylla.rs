@@ -1068,7 +1068,7 @@ impl Session {
             "select * from raft_log where node_id = ?",
             "update users set api_keys=? where id=?",
             "insert into likes (user_id, created, api_id, visbility) values (?, ?, ?, ?) if not exists", // AddOutoingLike
-            "insert into replies (user_id, created, api_id, visbility, content) values (?, ?, ?, ?, ?) if not exists", // AddOutoingReply
+            "insert into replies (user_id, created, api_id, visbility, content) values (?, ?, ?, ?, ?) if not exists", // AddOutgoingReply
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...

@@ -15,11 +15,12 @@
    You should have received a copy of the GNU General Public License
    along with indielinks. If not, see <http://www.gnu.org/licenses/>.
 
-
-   This CQL (Cassandra Query Language) file will initialize a ScyllaDB
-   database with the indielinks schema, version zero.
-
    */
+
+/* This CQL (Cassandra Query Language) file will initialize a ScyllaDB
+   database with the indielinks schema, version one.
+
+  */
 
 use indielinks;
 
@@ -83,7 +84,7 @@ drop table if exists replies;
 create table if not exists replies (
   user_id uuid,
   created timestamp,
-  api_id ascii, /* The thing being liked */
+  api_id ascii, /* The thing to which we are replying */
   visbility tinyint,
   content text,
   PRIMARY KEY (user_id, created)
@@ -96,7 +97,7 @@ drop table if exists shares;
 create table if not exists shares (
   user_id uuid,
   created timestamp,
-  api_id ascii, /* The thing being liked */
+  api_id ascii, /* The thing which we are sharing */
   visbility tinyint,
   quote text,
   PRIMARY KEY (user_id, created)

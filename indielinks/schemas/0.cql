@@ -15,11 +15,11 @@ General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with indielinks. If not, see <http://www.gnu.org/licenses/>.
 
-
-This CQL (Cassandra Query Language) file will initialize a ScyllaDB
-database with the indielinks schema, version zero.
-
 */
+
+/* This CQL (Cassandra Query Language) file will initialize a ScyllaDB
+   database with the indielinks schema, version zero.
+ */
 
 create keyspace if not exists indielinks
   with replication = {
@@ -162,7 +162,7 @@ create index if not exists tags_idx on posts (tags);
 
 create materialized view if not exists posts_by_posted as
   select * from posts where url is not null and posted is not null
-  primary key (user_id, posted, url) -- user_id is the partition key
+  primary key (user_id, posted, url) -- user_id is the partition key, (posted, url) the sort key
   with clustering order by (posted desc);
 
 create materialized view if not exists posts_by_day as

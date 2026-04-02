@@ -895,22 +895,28 @@ impl OutgoingLike {
 #[derive(Debug, Deserialize, DeserializeRow, Serialize, SerializeRow)]
 pub struct OutgoingReply {
     user_id: UserId,
+    id: ReplyId,
     created: DateTime<Utc>,
-    // Arrghhh... I have to mirror the typo in `1.cql`
-    api_id: StorUrl,
-    // Arrghhh... I have to mirror the typo in `1.cql`
-    visbility: Visibility,
+    ap_id: StorUrl,
+    visibility: Visibility,
     // We store the raw content; possibly dangereous, but I like the faithfulness
     content: String,
 }
 
 impl OutgoingReply {
-    pub fn new(user_id: UserId, id: &Url, visibility: Visibility, content: String) -> Self {
+    pub fn new(
+        user_id: UserId,
+        id: ReplyId,
+        ap_id: &Url,
+        visibility: Visibility,
+        content: String,
+    ) -> Self {
         Self {
             user_id,
+            id,
             created: Utc::now(),
-            api_id: id.into(),
-            visbility: visibility,
+            ap_id: ap_id.into(),
+            visibility: visibility,
             content,
         }
     }
