@@ -17,7 +17,7 @@ use std::{collections::HashMap, num::NonZero};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use nonempty_collections::NEVec;
-use secrecy::{CloneableSecret, SecretBox, SerializableSecret, zeroize::Zeroize};
+use secrecy::{zeroize::Zeroize, CloneableSecret, SecretBox, SerializableSecret};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -353,4 +353,21 @@ pub struct ReplyRequest {
     pub id: Url,
     pub actor: Url,
     pub text: String,
+}
+
+/// A thread context request body
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadContextRequest {
+    pub ap_id: Url,
+}
+
+/// A thread context response body
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadContextResponse {
+    pub post: FeedPost,
+    pub parent: Option<FeedPost>,
+    // In the case of no children, the `Vec` will just be empty
+    pub children: Vec<FeedPost>,
 }

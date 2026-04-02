@@ -20,14 +20,14 @@ use picky::key::{PrivateKey, PublicKey};
 use regex::Regex;
 #[cfg(feature = "backend")]
 use scylla::{
-    DeserializeRow,
     cluster::metadata::ColumnType,
-    deserialize::{FrameSlice, value::DeserializeValue},
+    deserialize::{value::DeserializeValue, FrameSlice},
     errors::{DeserializationError, SerializationError, TypeCheckError},
     serialize::{
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
     },
+    DeserializeRow,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
@@ -336,6 +336,12 @@ impl From<Username> for String {
     }
 }
 
+impl From<&Username> for String {
+    fn from(value: &Username) -> Self {
+        value.0.clone()
+    }
+}
+
 // Implement `Deserialize` by hand to fail if the serialized value isn't a legit `Username`
 impl<'de> Deserialize<'de> for Username {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
@@ -400,6 +406,24 @@ impl TryFrom<String> for Username {
 impl From<&Username> for Username {
     fn from(value: &Username) -> Self {
         value.clone()
+    }
+}
+
+// This requires taking a dependency on the `opentelemetry` crate, but is super-handy at the API
+// implementation layer.
+impl From<Username> for opentelemetry::Value {
+    fn from(value: Username) -> Self {
+        use opentelemetry::{StringValue, Value};
+        let s: String = value.into();
+        Value::String(StringValue::from(s))
+    }
+}
+
+impl From<&Username> for opentelemetry::Value {
+    fn from(value: &Username) -> Self {
+        use opentelemetry::{StringValue, Value};
+        let s: String = value.into();
+        Value::String(StringValue::from(s))
     }
 }
 

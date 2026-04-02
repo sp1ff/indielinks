@@ -79,8 +79,9 @@
 //! Finally, note that this is designed to defend against CSRF. If an attacker has a successful
 //! XSS exploit, they can refresh the token as long as they'd like!
 
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
+use async_stream::try_stream;
 use axum::{
     extract::{rejection::ExtensionRejection, State},
     http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
@@ -90,7 +91,9 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Duration, Utc};
-use http::{header::SET_COOKIE, HeaderMap, Uri};
+use either::Either::{self, Left};
+use futures::{StreamExt, TryStreamExt};
+use http::{HeaderMap, Method, Uri, header::SET_COOKIE};
 use indielinks_cache::types::NodeId;
 use itertools::Itertools;
 use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
@@ -99,6 +102,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
+use tokio::sync::Mutex;
 use tower::{Service, ServiceExt};
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
@@ -109,28 +113,14 @@ use url::Url;
 
 use indielinks_shared::{
     api::{
-        FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, ReplyRequest,
-        SignupReq, SignupRsp, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage,
-        TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp, REFRESH_COOKIE,
-        REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
+        FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC, ReplyRequest, SignupReq, SignupRsp, ThreadContextRequest, ThreadContextResponse, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp
     },
     entities::{UserId, Username},
     origin::Origin,
 };
 
 use crate::{
-    activity_pub::{SendFollow, SendLike, SendReply},
-    authn::{self, check_api_key, check_password, check_token, AuthnScheme},
-    background_tasks::{self, BackgroundTasks, Sender},
-    define_metric,
-    entities::{self, FollowId, LikeId, User},
-    home_timeline::{FirstPage, PostKey, Timeline},
-    http::{ErrorResponseBody, SameSite},
-    indielinks::Indielinks,
-    peppers::{self, Peppers},
-    signing_keys::{self, SigningKeys},
-    storage::{self, Backend as StorageBackend},
-    token::{self, mint_refresh_and_csrf_tokens, mint_token, refresh_token},
+    activity_pub::{SendFollow, SendLike, SendReply}, ap_entities::{FirstField, Item, Note, NoteField, RepliesPage, ap_request}, ap_resolution::ApResolver, authn::{self, AuthnScheme, check_api_key, check_password, check_token}, background_tasks::{self, BackgroundTasks, Sender}, client_types::ClientType, define_metric, entities::{self, FollowId, LikeId, User}, home_timeline::{FirstPage, PostKey, Timeline}, http::{ErrorResponseBody, SameSite}, indielinks::Indielinks, peppers::{self, Peppers}, signing_keys::{self, SigningKeys}, storage::{self, Backend as StorageBackend}, token::{self, mint_refresh_and_csrf_tokens, mint_token, refresh_token}
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -872,7 +862,7 @@ async fn login(
 
             user_logins_successful.add(
                 1,
-                &[KeyValue::new("username", login_req.username.to_string())],
+                &[KeyValue::new("username", login_req.username)],
             );
 
             let mut refresh_cookie = format!(
@@ -905,7 +895,7 @@ async fn login(
             error!("Bad password for user {}", username);
             user_logins_failures.add(
                 1,
-                &[KeyValue::new("username", login_req.username.to_string())],
+                &[KeyValue::new("username", login_req.username)],
             );
             (
                 StatusCode::UNAUTHORIZED,
@@ -919,7 +909,7 @@ async fn login(
             error!("{:#?}", err);
             user_logins_failures.add(
                 1,
-                &[KeyValue::new("username", login_req.username.to_string())],
+                &[KeyValue::new("username", login_req.username)],
             );
             let (status, msg) = err.as_status_and_msg();
             (status, Json(ErrorResponseBody { error: msg })).into_response()
@@ -993,7 +983,7 @@ async fn refresh(
     ) {
         Ok((rsp, username)) => {
             info!("Successfully refreshed an access token for {username}.");
-            user_refreshes_successful.add(1, &[KeyValue::new("username", username.to_string())]);
+            user_refreshes_successful.add(1, &[KeyValue::new("username", username)]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(err) => {
@@ -1516,7 +1506,7 @@ async fn handle_timeline_or_redirect(
         None => handle_timeline(state, user, request).await,
         Some(responsible_node) => {
             user_timeline_redirects
-                .add(1, &[KeyValue::new("username", user.username().to_string())]);
+                .add(1, &[KeyValue::new("username", user.username())]);
             redirect_timeline(state.clone(), user, request, responsible_node).await
         }
     }
@@ -1538,7 +1528,7 @@ async fn timeline(
             match handle_timeline_or_redirect(state.clone(), &user, request).await {
                 Ok(rsp) => {
                     user_timeline_successful
-                        .add(1, &[KeyValue::new("username", user.username().to_string())]);
+                        .add(1, &[KeyValue::new("username", user.username())]);
                     match rsp {
                         TimelineRsp::Initial(rsp) => (StatusCode::OK, Json(rsp)).into_response(),
                         TimelineRsp::Since(rsp) => (StatusCode::OK, Json(rsp)).into_response(),
@@ -1547,7 +1537,7 @@ async fn timeline(
                 }
                 Err(err) => {
                     user_timeline_failures
-                        .add(1, &[KeyValue::new("username", user.username().to_string())]);
+                        .add(1, &[KeyValue::new("username", user.username())]);
                     error!("{err:?}");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1603,6 +1593,195 @@ pub async fn timeline_internal(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                     conversations/threads                                      //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.context.successful", user_context_successful, Sort::IntegralCounter }
+define_metric! { "user.context.failures", user_context_failures, Sort::IntegralCounter }
+
+// TODO(sp1ff): This will need to be refactored
+fn reply_stream(origin: &Origin,
+                user: &User,
+                mut client: ClientType,
+                note: &Note) -> impl futures::Stream<Item = Result<NoteField>> {
+    let mut replies: VecDeque<NoteField> = VecDeque::new();
+
+    // I decided to have this `Stream` yield `Result<NoteField>` (and do the resolution) later, to
+    // simplify this logic, right here: I didn't want to have to do the resolution in two places
+    // (i.e. here, at init time, and below, at page time).
+    let mut next_page = match note.replies().first() {
+        FirstField::Inline(page) => {
+            replies.extend(page.items.iter().cloned());
+            page.next.clone()
+        },
+        FirstField::Iri(url) => Some(url.clone()),
+    };
+
+    let origin = origin.clone();
+    let user = user.clone();
+    try_stream! {
+        loop {
+            match (replies.pop_front(), &next_page) {
+                (Some(reply), _) => yield reply,
+                (None, Some(page)) => {
+                    // We've exhausted the current page-- grab the next one.
+                    let page: RepliesPage = ap_request(
+                        &mut client,
+                        &origin,
+                        Left(&user),
+                        page,
+                        Method::GET,
+                        None,
+                        &()
+                    )
+                        .await
+                        .unwrap(/* TODO(sp1ff): error */);
+                    if ! page.items.is_empty() {
+                        replies = page.items.into();
+                        next_page = page.next;
+                        yield replies.pop_front().unwrap(/* known good */);
+                    } else {
+                        next_page = None;
+                    }
+                },
+                (None, None) => return
+            }
+        }
+    }
+}
+
+/// Retrieve the parent (if any) of a post along with its children (if any)
+async fn context(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(request): Json<ThreadContextRequest>
+) -> axum::response::Response {
+
+    async fn context1(origin: &Origin,
+                      user: &User,
+                      client: ClientType,
+                      ap_id: Url,
+                      ap_resolver: Arc<Mutex<ApResolver>>) -> Result<ThreadContextResponse> {
+        // We (presumably) have, or can get, the `Note` identified in the request, but we just
+        // serialize the *location* of the replies in the `Note`, not the replies themselves. Here
+        // is where we "dereference" that location. Which seems a pity, because it's an expensive
+        // operation; I'd rather we do this once & cache the result somewhere. For now, however, I'm
+        // not going to, until I have a better sense of how this data moves through the program.
+
+        // So, first: lookup the `Note` named by `ap_id`:
+        let note = ap_resolver.lock()
+            .await
+            .note_id_to_note(Either::Left(&user), &ap_id)
+            .await
+            .unwrap(/* TODO(sp1ff): error */);
+
+        // TODO(sp1ff): EXPERIMENT: This will all need to be refactored:
+
+        async fn resolve_note_field(field: NoteField,
+                                    user: &User,
+                                    ap_resolver: Arc<Mutex<ApResolver>>) -> Result<Note> {
+            match field {
+                NoteField::Inline(note) => {
+                    ap_resolver.lock()
+                        .await
+                        .enter_note(note.id(), &note)
+                        .await
+                        .unwrap(/* TODO(sp1ff): error */);
+                    Ok(note)
+                },
+                NoteField::Iri(url) => ap_resolver.lock()
+                    .await
+                    .note_id_to_note(Left(user), &url)
+                    .await
+                    .unwrap(/* TODO(sp1ff): error */)
+                    .pipe(Ok),
+            }
+        }
+
+        let replies = reply_stream(origin, user, client, &note)
+            // We've got a `Stream` yielding `Result<NoteField>`s. For each, we need to make sure
+            // the `Note` is cached, if it's inlined, or resolve it through the cache if it's not.
+            .and_then(|field| {
+                let ap_resolver = ap_resolver.clone();
+                async move {
+                    resolve_note_field(field, user, ap_resolver).await
+                }
+            })
+            // We now have a `Stream` yielding `Result<Note>`, with all notes having been cached. The
+            // question now is: how to handle errors? I think
+            // for now I'm just going to log them & return what I can; i.e. don't fail the operation
+            // altogether if we failed anywhere therein. This goes against my preference for "fail fast",
+            // but in this *particular* case, it seems reasonable to expect that we'll sometimes fail
+            // to pull an individual reply from some server & still want to display what we can.
+            .collect::<Vec<Result<Note>>>()
+            .await
+            .into_iter()
+            .filter(|result| {
+                match result {
+                    Ok(_) => true,
+                    Err(err) => {
+                        error!("While pulling replies: {err:?}");
+                        false
+                    }
+                }
+            })
+            .collect::<Result<Vec<Note>>>()
+            .unwrap(/* known good */);
+
+        let in_reply_to = match note.in_reply_to() {
+            Some(url) => {
+                Some(ap_resolver.lock()
+                     .await
+                     .note_id_to_note(Left(&user), url)
+                     .await
+                     .unwrap(/* TODO(sp1ff): error */))
+            },
+            None => None,
+        };
+
+        // OK-- I have the constituents of a response: the parent (possibly), the post itself, and
+        // the replies. Thing is, they're all `Note`s. This is kind of lame: I'm moving the `Note`s
+        // into `Item`s, then coercing them into `FeedPost`s. Leave it for now, but AFAIK, replies
+        // will always be `Notes`, so I could make this more efficient.
+        Ok(ThreadContextResponse {
+            post: Item::Note(Box::new(note)).into(),
+            parent: in_reply_to.map(|note| Item::Note(Box::new(note)).into()),
+            children: replies.into_iter().map(|note| Item::Note(Box::new(note)).into()).collect(),
+        })
+    }
+
+    match user {
+        Ok(Extension(user)) => match context1(&state.origin,
+                                              &user,
+                                              state.ap_client.clone(),
+                                              request.ap_id,
+                                              state.ap_resolver.clone()).await {
+            Ok(response) => {
+                user_context_successful
+                    .add(1, &[KeyValue::new("username", user.username())]);
+                (StatusCode::OK, Json(response)).into_response()
+            },
+            Err(err) => {
+                error!("{err:?}");
+                user_context_failures
+                    .add(1, &[KeyValue::new("username", user.username())]);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponseBody {
+                        error: format!("{err}"),
+                    }),
+                )
+                .into_response()
+            }
+        },
+        Err(_) => {
+            user_context_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        },
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1627,7 +1806,7 @@ where
 
 /// Return a router for the User API
 ///
-/// The returned [Router] will presumably be merged with other routres.
+/// The returned [Router] will presumably be merged with other routers.
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
     let allow_headers = [
         CONTENT_TYPE,
@@ -1648,8 +1827,6 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/users/signup",
             post(signup)
-                // It might be nice to allow people to sign-up programmatically, but I think for now
-                // I'm giong to restrict this to the front end
                 .layer(mk_cors(
                     false,
                     allow_headers.clone(),
@@ -1698,43 +1875,40 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/users/follow",
             post(follow)
-                // Likewise, for now I think I'll limit this to the front end
                 .layer(mk_cors(
-                    true,
+                    false,
                     allow_headers.clone(),
                     http::Method::POST,
-                    allow_origin.clone(),
+                    AllowOrigin::any(),
                 )),
         )
         .route(
             "/users/like",
             post(like)
-                // Likewise, for now I think I'll limit this to the front end
                 .layer(mk_cors(
-                    true,
+                    false,
                     allow_headers.clone(),
                     http::Method::POST,
-                    allow_origin.clone(),
+                    AllowOrigin::any(),
                 )),
         )
         .route(
             "/users/reply",
             post(reply).layer(mk_cors(
-                true,
+                false,
                 allow_headers.clone(),
                 http::Method::POST,
-                allow_origin.clone(),
+                AllowOrigin::any(),
             )),
         )
         .route(
             "/users/mint-key",
             get(mint_key)
-                // Likewise, for now I think I'll limit this to the front end
                 .layer(mk_cors(
-                    true,
+                    false,
                     allow_headers.clone(),
                     http::Method::GET,
-                    allow_origin.clone(),
+                    AllowOrigin::any(),
                 )),
         )
         .route(
@@ -1743,12 +1917,19 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
                 .merge(post(timeline))
                 // Likewise, for now I think I'll limit this to the front end
                 .layer(mk_cors(
-                    true,
+                    false,
                     allow_headers.clone(),
                     [http::Method::GET, http::Method::POST],
-                    allow_origin.clone(),
+                    AllowOrigin::any(),
                 )),
         )
+        .route("/users/context",
+               get(context)
+               .merge(post(context))
+               .layer(mk_cors(false,
+                              allow_headers.clone(),
+                              [http::Method::GET, http::Method::POST],
+                              AllowOrigin::any(),)))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             authenticate,
@@ -1759,6 +1940,5 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             CONTENT_TYPE,
             HeaderValue::from_static("text/json; charset=utf-8"),
         ))
-        // .layer(CorsLayer::permissive())
         .with_state(state)
 }

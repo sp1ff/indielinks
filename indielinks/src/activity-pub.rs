@@ -57,7 +57,7 @@ use crate::{
     ap_entities::{
         ap_request, ap_request_no_response, make_follow_id, make_like_id, make_user_followers,
         make_user_id, make_user_reply_id, Actor, ActorField, Create, CreateObject, Follow, Like,
-        Note, Recipient, ToJld, Type,
+        Note, Recipient, Replies, ToJld, Type,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
     entities::{FollowId, LikeId, OutgoingLike, OutgoingReply, ReplyId, User, Visibility},
@@ -920,6 +920,7 @@ impl Task<Context> for SendReply {
                 .storage
                 .add_outgoing_reply(&OutgoingReply::new(
                     *this.user.id(),
+                    this.id,
                     &this.apid,
                     Visibility::Public,
                     this.reply.clone(),
@@ -1043,6 +1044,8 @@ impl Task<Context> for SendReply {
                 std::iter::once(PUBLIC.clone()),
                 recipients.iter().cloned(),
                 html,
+                Replies::empty_for_reply(&context.origin, this.user.username(), &this.id)
+                    .context(ApSnafu)?,
             )
             .context(ApSnafu)?;
 
@@ -1064,7 +1067,6 @@ impl Task<Context> for SendReply {
                     let user = this.user.clone();
                     let create = create.clone();
                     async move {
-                        debug!("CP2");
                         ap_request_no_response(
                             &mut client,
                             &origin,

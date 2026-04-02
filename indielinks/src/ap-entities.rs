@@ -361,6 +361,41 @@ pub fn make_user_reply_id(username: &Username, replyid: &ReplyId, origin: &Origi
     Url::parse(&format!("{}/users/{}/posts/{}", origin, username, replyid)).context(UrlParseSnafu)
 }
 
+pub fn make_post_reply_id(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!(
+        "{}/users/{}/posts/{}/replies",
+        origin, username, postid
+    ))
+    .context(UrlParseSnafu)
+}
+
+pub fn make_post_reply_first(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!(
+        "{}/users/{}/posts/{}/replies?page=true",
+        origin, username, postid
+    ))
+    .context(UrlParseSnafu)
+}
+
+pub fn make_reply_reply_id(username: &Username, postid: &ReplyId, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!(
+        "{}/users/{}/posts/{}/replies",
+        origin, username, postid
+    ))
+    .context(UrlParseSnafu)
+}
+
+pub fn make_reply_reply_first(
+    username: &Username,
+    postid: &ReplyId,
+    origin: &Origin,
+) -> Result<Url> {
+    Url::parse(&format!(
+        "{}/users/{}/posts/{}/replies?page=true",
+        origin, username, postid
+    ))
+    .context(UrlParseSnafu)
+}
 lazy_static! {
     static ref USER_PATH: Regex =
         Regex::new("^/users/([a-zA-Z][-_.a-zA-Z0-9]+)$").unwrap(/* known good */);
@@ -1041,6 +1076,64 @@ pub struct Undo {
 //                                              Note                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum NoteField {
+    Inline(Note),
+    Iri(Url),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepliesPage {
+    pub next: Option<Url>,
+    pub part_of: Url,
+    pub items: Vec<NoteField>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum FirstField {
+    Inline(RepliesPage),
+    Iri(Url),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Replies {
+    id: Url,
+    // Sometimes the first page is included inline, sometimes we just get the URL
+    first: FirstField,
+    total_items: Option<usize>,
+}
+
+impl Replies {
+    pub fn empty(origin: &Origin, username: &Username, postid: &PostId) -> Result<Self> {
+        Ok(Replies {
+            id: make_post_reply_id(username, postid, origin)?,
+            first: FirstField::Iri(make_post_reply_first(username, postid, origin)?),
+            total_items: Some(0),
+        })
+    }
+    pub fn empty_for_reply(origin: &Origin, username: &Username, postid: &ReplyId) -> Result<Self> {
+        Ok(Replies {
+            id: make_reply_reply_id(username, postid, origin)?,
+            first: FirstField::Iri(make_reply_reply_first(username, postid, origin)?),
+            total_items: Some(0),
+        })
+    }
+    pub fn new(id: Url, first: Url, total_items: Option<usize>) -> Self {
+        Self {
+            id,
+            first: FirstField::Iri(first),
+            total_items,
+        }
+    }
+    pub fn first(&self) -> &FirstField {
+        &self.first
+    }
+}
+
 /// "Represents a short written work typically less than a single paragraph in length." ([Activity Volcabulary])
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1056,9 +1149,9 @@ pub struct Note {
     content: Html,
     // Should be using crate `isolang`: <https://docs.rs/isolang/latest/isolang/>
     content_map: Option<HashMap<String, Html>>,
+    replies: Replies,
     // Yet to be implemented:
     // - tag
-    // - replies (Collection)
     // - likes (Collection)
     // - shares (Collection)
 }
@@ -1114,6 +1207,7 @@ impl Note {
             cc: vec![make_user_followers(username, origin)?],
             content: post_html.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), post_html)])),
+            replies: Replies::empty(&origin, &username, &post.id())?,
         })
     }
     pub fn new_from_parts<T, U>(
@@ -1124,6 +1218,7 @@ impl Note {
         to: T,
         cc: U,
         content: SanitizedHtml,
+        replies: Replies,
     ) -> Result<Note>
     where
         T: Iterator<Item = Url>,
@@ -1141,6 +1236,7 @@ impl Note {
             cc: cc.collect::<Vec<Url>>(),
             content: content.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), content)])),
+            replies,
         })
     }
     // Ack! Placeholder!
@@ -1173,6 +1269,9 @@ impl Note {
     }
     pub fn published(&self) -> &DateTime<Utc> {
         &self.published
+    }
+    pub fn replies(&self) -> &Replies {
+        &self.replies
     }
 }
 
