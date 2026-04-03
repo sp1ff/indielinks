@@ -121,15 +121,117 @@ pub type Result<T> = std::result::Result<T, Error>;
 //                                        schema utilities                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-macro_rules! table_attr {
-    ($col_name:expr, $ty:ident) => {
-        AttributeDefinition::builder()
-            .attribute_name($col_name)
-            .attribute_type(ScalarAttributeType::$ty)
-            .build()
-            .context(GenericBuildFailureSnafu {
-                name: $col_name.to_string(),
-            })?
+// Table creation for DynamoDB/ScyllaDB (Alternator) involves _lot_ of boilerplate. Let's see if we
+// can't wrap that up in a declarative macro. This is still kinda lame in that it doesn't capture
+// all the required relationships among its arguments (e.g. if a column is used as a partition- or a
+// sort-key in the table or in a global or local secondary index, it must have an `attr_defn`).
+// Still. The API doesn't capture that, either, and this macro removes a *lot* of boilerplate.
+macro_rules! create_table {
+    (client = $client:expr,
+     table_name = $table_name:expr,
+     $(attr_defn = ($col_name:expr, $col_ty:ident)),+,
+     pk = $pk_name:expr
+     $(, sk = $sk_name:expr)?
+     $(, gsi : (name = $gsi_name:expr, pk = $gsi_pk:expr $(, sk = $gsi_sk:expr)?))*
+     $(, lsi : (name = $lsi_name:expr, pk = $lsi_pk:expr $(, sk = $lsi_sk:expr)?))*
+    ) => {
+        $client
+            .create_table()
+            .table_name($table_name)
+            .billing_mode(BillingMode::PayPerRequest)
+            .set_attribute_definitions(Some(vec![
+                $(
+                    AttributeDefinition::builder()
+                        .attribute_name($col_name)
+                        .attribute_type(ScalarAttributeType::$col_ty)
+                        .build()
+                        .context(GenericBuildFailureSnafu {
+                            name: $col_name.to_owned(),
+                        })?
+                ),+
+            ]))
+            .set_key_schema(Some(vec![
+                KeySchemaElement::builder()
+                    .attribute_name($pk_name)
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .context(GenericBuildFailureSnafu {
+                        name: $pk_name.to_owned(),
+                    })?
+                $(,
+                KeySchemaElement::builder()
+                    .attribute_name($sk_name)
+                    .key_type(KeyType::Range)
+                    .build()
+                    .context(GenericBuildFailureSnafu {
+                        name: $sk_name.to_owned(),
+                    })?
+                )?
+            ]))
+            $(
+                .global_secondary_indexes(
+                    GlobalSecondaryIndex::builder()
+                        .index_name($gsi_name)
+                        .set_key_schema(Some(vec![
+                            KeySchemaElement::builder()
+                                .attribute_name($gsi_pk)
+                                .key_type(KeyType::Hash)
+                                .build()
+                                .unwrap()
+                                $(,
+                                  KeySchemaElement::builder()
+                                  .attribute_name($gsi_sk)
+                                  .key_type(KeyType::Range)
+                                  .build()
+                                  .context(GenericBuildFailureSnafu {
+                                      name: $gsi_sk.to_owned(),
+                                  })?
+                                )?
+                        ]))
+                        .projection(
+                            Projection::builder()
+                                .projection_type(ProjectionType::All)
+                                .build(),
+                        )
+                        .build()
+                        .context(GenericBuildFailureSnafu { name: $gsi_name })?,
+                )
+            )*
+            $(
+                .local_secondary_indexes(
+                    LocalSecondaryIndex::builder()
+                        .index_name($lsi_name)
+                        .set_key_schema(Some(vec![
+                            KeySchemaElement::builder()
+                                .attribute_name($lsi_pk)
+                                .key_type(KeyType::Hash)
+                                .build()
+                                .unwrap()
+                                $(,
+                                  KeySchemaElement::builder()
+                                  .attribute_name($lsi_sk)
+                                  .key_type(KeyType::Range)
+                                  .build()
+                                  .context(GenericBuildFailureSnafu {
+                                      name: $lsi_sk.to_owned(),
+                                  })?
+                                )?
+                        ]))
+                        .projection(
+                            Projection::builder()
+                                .projection_type(ProjectionType::All)
+                                .build(),
+                        )
+                        .build()
+                        .context(GenericBuildFailureSnafu {
+                            name: $lsi_name.to_owned(),
+                        })?,
+                )
+
+            )*
+            .send()
+            .await
+            .context(CreateTableSnafu { name: $table_name })
     };
 }
 
@@ -186,557 +288,150 @@ async fn update_schema_migrations(client: &Client, schema_version: i64) -> Resul
         .map(|_| ())
 }
 
+macro_rules! delete_table {
+    ($client:expr, $table_name:expr, $timeout:expr) => {
+        $client
+            .delete_table()
+            .table_name($table_name)
+            .send()
+            .await
+            .context(DeleteTableSnafu {
+                table_name: $table_name,
+            })?;
+        $client
+            .wait_until_table_not_exists()
+            .table_name($table_name)
+            .wait(Duration::from_secs(60))
+            .await
+            .context(TableNotExistsSnafu {
+                table_name: $table_name,
+            })?;
+    };
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         initial schema                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 async fn create_users(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("users")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![table_attr!("id", S), table_attr!("username", S)]))
-        .set_key_schema(Some(vec![KeySchemaElement::builder()
-            .attribute_name("id")
-            .key_type(KeyType::Hash)
-            .build()
-            .context(GenericBuildFailureSnafu {
-                name: "id".to_string(),
-            })?]))
-        .global_secondary_indexes(
-            GlobalSecondaryIndex::builder()
-                .index_name("users_by_username")
-                .key_schema(
-                    KeySchemaElement::builder()
-                        .attribute_name("username")
-                        .key_type(KeyType::Hash)
-                        .build()
-                        .unwrap(),
-                )
-                .projection(
-                    Projection::builder()
-                        .projection_type(ProjectionType::All)
-                        .build(),
-                )
-                .build()
-                .context(GenericBuildFailureSnafu { name: "username" })?,
-        )
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "users" })?;
-
-    client
-        .create_table()
-        .table_name("unique_usernames")
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![table_attr!("username", S)]))
-        .set_key_schema(Some(vec![KeySchemaElement::builder()
-            .attribute_name("username")
-            .key_type(KeyType::Hash)
-            .build()
-            .context(GenericBuildFailureSnafu {
-                name: "username".to_string(),
-            })?]))
-        .send()
-        .await
-        .context(CreateTableSnafu {
-            name: "unique_usernames",
-        })
-        .map(|_| ())
-}
-
-async fn create_following(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("following")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id", S),  // partition key
-            table_attr!("actor_id", S), // sort key
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("actor_id")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "actor_id".to_string(),
-                })?,
-        ]))
-        .global_secondary_indexes(
-            GlobalSecondaryIndex::builder()
-                .index_name("following_by_actor_id")
-                .set_key_schema(Some(vec![KeySchemaElement::builder()
-                    .attribute_name("actor_id")
-                    .key_type(KeyType::Hash)
-                    .build()
-                    .unwrap()]))
-                .projection(
-                    Projection::builder()
-                        .projection_type(ProjectionType::All)
-                        .build(),
-                )
-                .build()
-                .unwrap(),
-        )
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "following" })
-        .map(|_| ())
-}
-
-async fn create_followers(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("followers")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id", S),  // partition key
-            table_attr!("actor_id", S), // sort key
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("actor_id")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "actor_id".to_string(),
-                })?,
-        ]))
-        // I forgot this in the original version. I _should_ introduce this as part of a schema
-        // migration, but it's so small, and this app has so few users at this point, I'm just going
-        // to sneak it in. If anyone complains, here's the command to "patch" your install:
-        //
-        // aws dynamodb update-table \
-        //   --table-name followers
-        //   --attribute-definitions \
-        //     AttributeName=user_id,AttributeType=S \
-        //     AttributeName=actor_id,AttributeType=S \
-        //   --global-secondary-index-updates \
-        //     "[{\"Create\":{\"IndexName\":\"follows_by_actor_id\",\"KeySchema\":[{\"AttributeName\":\"actor_id\",\"KeyType\":\"HASH\"}],\"Projection\":{\"ProjectionType\":\"ALL\"}}}]"
-        .global_secondary_indexes(
-            GlobalSecondaryIndex::builder()
-                .index_name("follows_by_actor_id")
-                .set_key_schema(Some(vec![KeySchemaElement::builder()
-                    .attribute_name("actor_id")
-                    .key_type(KeyType::Hash)
-                    .build()
-                    .unwrap()]))
-                .projection(
-                    Projection::builder()
-                        .projection_type(ProjectionType::All)
-                        .build(),
-                )
-                .build()
-                .unwrap(),
-        )
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "followers" })
-        .map(|_| ())
+    create_table!(
+        client = client,
+        table_name = "users",
+        attr_defn = ("id", S),
+        attr_defn = ("username", S),
+        pk = "id",
+        gsi: (name = "users_by_username", pk = "username")
+    )?;
+    create_table!(
+        client = client,
+        table_name = "unique_usernames",
+        attr_defn = ("username", S),
+        pk = "username"
+    )
+    .map(|_| ())
 }
 
 async fn create_posts(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("posts")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id", S), // partition key
-            table_attr!("url", S),     // sort key
-            table_attr!("posted", S),  // sort key for first LSI
-            table_attr!("day", S),     // sort key for second LSI
-            table_attr!("id", S),      // partition key for the GSI
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("url")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "url".to_string(),
-                })?,
-        ]))
-        .local_secondary_indexes(
-            LocalSecondaryIndex::builder()
-                .index_name("posts_by_posted")
-                .set_key_schema(Some(vec![
-                    KeySchemaElement::builder()
-                        .attribute_name("user_id")
-                        .key_type(KeyType::Hash)
-                        .build()
-                        .unwrap(),
-                    KeySchemaElement::builder()
-                        .attribute_name("posted")
-                        .key_type(KeyType::Range)
-                        .build()
-                        .context(GenericBuildFailureSnafu {
-                            name: "posted".to_string(),
-                        })?,
-                ]))
-                .projection(
-                    Projection::builder()
-                        .projection_type(ProjectionType::All)
-                        .build(),
-                )
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "posts_by_posted".to_string(),
-                })?,
-        )
-        .local_secondary_indexes(
-            LocalSecondaryIndex::builder()
-                .index_name("posts_by_day")
-                .set_key_schema(Some(vec![
-                    KeySchemaElement::builder()
-                        .attribute_name("user_id")
-                        .key_type(KeyType::Hash)
-                        .build()
-                        .unwrap(),
-                    KeySchemaElement::builder()
-                        .attribute_name("day")
-                        .key_type(KeyType::Range)
-                        .build()
-                        .unwrap(),
-                ]))
-                .projection(
-                    Projection::builder()
-                        .projection_type(ProjectionType::All)
-                        .build(),
-                )
-                .build()
-                .unwrap(),
-        )
-        .global_secondary_indexes(
-            GlobalSecondaryIndex::builder()
-                .index_name("posts_by_id")
-                .set_key_schema(Some(vec![KeySchemaElement::builder()
-                    .attribute_name("id")
-                    .key_type(KeyType::Hash)
-                    .build()
-                    .unwrap()]))
-                .projection(
-                    Projection::builder()
-                        .projection_type(ProjectionType::All)
-                        .build(),
-                )
-                .build()
-                .unwrap(),
-        )
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "posts" })
-        .map(|_| ())
-}
-
-async fn create_likes(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("likes")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id_and_url", S), // partition key
-            table_attr!("like_id", S),         // sort key
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id_and_url")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id_and_url".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("like_id")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "like_id".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "likes" })
-        .map(|_| ())
-}
-
-async fn create_replies(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("replies")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id_and_url", S), // partition key
-            table_attr!("reply_id", S),        // sort key
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id_and_url")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id_and_url".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("reply_id")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "like_id".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "replies" })
-        .map(|_| ())
-}
-
-async fn create_shares(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("shares")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id_and_url", S), // partition key
-            table_attr!("share_id", S),        // sort key
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id_and_url")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id_and_url".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("share_id")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "share_id".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "shares" })
-        .map(|_| ())
-}
-
-async fn create_activity_pub_posts(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("activity_pub_posts")
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id", S),
-            table_attr!("post_id", S),
-            table_attr!("posted", S), // Sort key for the LSI
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("post_id")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "post_id".to_string(),
-                })?,
-        ]))
-        .local_secondary_indexes(
-            LocalSecondaryIndex::builder()
-                .index_name("activity_pub_posts_by_posted")
-                .set_key_schema(Some(vec![
-                    KeySchemaElement::builder()
-                        .attribute_name("user_id")
-                        .key_type(KeyType::Hash)
-                        .build()
-                        .unwrap(),
-                    KeySchemaElement::builder()
-                        .attribute_name("posted")
-                        .key_type(KeyType::Range)
-                        .build()
-                        .context(GenericBuildFailureSnafu {
-                            name: "posted".to_string(),
-                        })?,
-                ]))
-                .projection(
-                    Projection::builder()
-                        .projection_type(ProjectionType::All)
-                        .build(),
-                )
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "activity_pub_posts_by_posted".to_string(),
-                })?,
-        )
-        .send()
-        .await
-        .context(CreateTableSnafu {
-            name: "activity_pub_posts",
-        })
-        .map(|_| ())
-}
-
-async fn create_tasks(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("tasks")
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("id", S), // partition key
-        ]))
-        .set_key_schema(Some(vec![KeySchemaElement::builder()
-            .attribute_name("id")
-            .key_type(KeyType::Hash)
-            .build()
-            .context(GenericBuildFailureSnafu {
-                name: "id".to_string(),
-            })?]))
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "tasks" })
-        .map(|_| ())
-}
-
-async fn create_raft_log(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("raft_log")
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("node_id", N),
-            table_attr!("log_id", N),
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("node_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "node_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("log_id")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "log_id".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "raft_log" })
-        .map(|_| ())
-}
-
-async fn create_raft_metadata(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("raft_metadata")
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("node_id", N),
-            table_attr!("flavor", S),
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("node_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "node_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("flavor")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "flavor".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu {
-            name: "raft_metadata",
-        })
-        .map(|_| ())
-}
-
-async fn create_schema_migrations(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("schema_migrations")
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![table_attr!("version", N)]))
-        .set_key_schema(Some(vec![KeySchemaElement::builder()
-            .attribute_name("version")
-            .key_type(KeyType::Hash)
-            .build()
-            .context(GenericBuildFailureSnafu {
-                name: "version".to_string(),
-            })?]))
-        .send()
-        .await
-        .context(CreateTableSnafu {
-            name: "schema_migrations",
-        })
-        .map(|_| ())
+    create_table!(
+        client = client,
+        table_name = "posts",
+        attr_defn = ("user_id", S), // partition key
+        attr_defn = ("url", S),     // sort key
+        attr_defn = ("posted", S),  // sort key for first LSI
+        attr_defn = ("day", S),     // sort key for second LSI
+        attr_defn = ("id", S),      // partition key for the GSI
+        pk = "user_id",
+        sk = "url",
+        gsi: (name = "posts_by_id", pk = "id"),
+        lsi: (name = "posts_by_posted", pk = "user_id", sk = "posted"),
+        lsi: (name = "posts_by_day", pk = "user_id", sk = "day")
+    )
+    .map(|_| ())
 }
 
 async fn create_tables(client: &Client) -> Result<()> {
     create_users(client).await?;
-    create_following(client).await?;
-    create_followers(client).await?;
+    create_table!(
+        client = client,
+        table_name = "following",
+        attr_defn = ("user_id", S),
+        attr_defn = ("actor_id", S),
+        pk = "user_id",
+        sk = "actor_id",
+        gsi: (name = "following_by_actor_id", pk = "actor_id")
+    )?;
+    create_table!(
+        client = client,
+        table_name = "followers",
+        attr_defn = ("user_id", S),  // partition key
+        attr_defn = ("actor_id", S), // sort key
+        pk = "user_id",
+        sk = "actor_id",
+        gsi: (name = "follows_by_actor_id", pk = "actor_id")
+    )?;
     create_posts(client).await?;
-    create_likes(client).await?;
-    create_replies(client).await?;
-    create_shares(client).await?;
-    create_activity_pub_posts(client).await?;
-    create_tasks(client).await?;
-    create_raft_log(client).await?;
-    create_raft_metadata(client).await?;
-    create_schema_migrations(client).await?;
+    create_table!(
+        client = client,
+        table_name = "likes",
+        attr_defn = ("user_id_and_url", S), // partition key
+        attr_defn = ("like_id", S),         // sort key
+        pk = "user_id_and_url",
+        sk = "like_id"
+    )?;
+    create_table!(
+        client = client,
+        table_name = "replies",
+        attr_defn = ("user_id_and_url", S), // partition key
+        attr_defn = ("reply_id", S),        // sort key
+        pk = "user_id_and_url",
+        sk = "reply_id"
+    )?;
+    create_table!(
+        client = client,
+        table_name = "shares",
+        attr_defn = ("user_id_and_url", S), // partition key
+        attr_defn = ("share_id", S),        // sort key
+        pk = "user_id_and_url",
+        sk = "share_id"
+    )?;
+    create_table!(
+        client = client,
+        table_name = "activity_pub_posts",
+        attr_defn = ("user_id", S),
+        attr_defn = ("post_id", S),
+        attr_defn = ("posted", S), // Sort key for the LSI
+        pk = "user_id",
+        sk = "post_id",
+        lsi : (name = "activity_pub_posts_by_posted", pk = "user_id", sk = "posted")
+    )?;
+    create_table!(
+        client = client,
+        table_name = "tasks",
+        attr_defn = ("id", S),
+        pk = "id"
+    )?;
+    create_table!(
+        client = client,
+        table_name = "raft_log",
+        attr_defn = ("node_id", N),
+        attr_defn = ("log_id", N),
+        pk = "node_id",
+        sk = "log_id"
+    )?;
+    create_table!(
+        client = client,
+        table_name = "raft_metadata",
+        attr_defn = ("node_id", N),
+        attr_defn = ("flavor", S),
+        pk = "node_id",
+        sk = "flavor"
+    )?;
+    create_table!(
+        client = client,
+        table_name = "schema_migrations",
+        attr_defn = ("version", N),
+        pk = "version"
+    )?;
     Ok(())
 }
 
@@ -758,259 +453,95 @@ pub async fn create_schema(client: Client) -> Result<()> {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 async fn create_new_tables_ver_1(client: &Client) -> Result<()> {
-    client
-        .create_table()
-        .table_name("post_likes")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("post_id", S),
-            table_attr!("like_url", S),
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("post_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "post_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("like_url")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "like_url".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "post_likes" })?;
-
-    client
-        .create_table()
-        .table_name("post_replies")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("post_id", S),
-            table_attr!("reply_url", S),
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("post_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "post_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("reply_url")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "reply_url".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu {
-            name: "post_replies",
-        })?;
-
-    client
-        .create_table()
-        .table_name("post_shares")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("post_id", S),
-            table_attr!("share_url", S),
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("post_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "post_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("share_url")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "share_url".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu {
-            name: "post_shares",
-        })?;
-
-    Ok(())
+    create_table!(
+        client = client,
+        table_name = "post_likes",
+        attr_defn = ("post_id", S),
+        attr_defn = ("like_url", S),
+        pk = "post_id",
+        sk = "like_url"
+    )?;
+    create_table!(
+        client = client,
+        table_name = "post_replies",
+        attr_defn = ("post_id", S),
+        attr_defn = ("reply_url", S),
+        pk = "post_id",
+        sk = "reply_url"
+    )?;
+    create_table!(
+        client = client,
+        table_name = "post_shares",
+        attr_defn = ("post_id", S),
+        attr_defn = ("share_url", S),
+        pk = "post_id",
+        sk = "share_url"
+    )
+    .map(|_| ())
 }
 
 async fn recreate_tables_ver_1(client: &Client) -> Result<()> {
-    client
-        .delete_table()
-        .table_name("likes")
-        .send()
-        .await
-        .context(DeleteTableSnafu {
-            table_name: "likes",
-        })?;
-    client
-        .wait_until_table_not_exists()
-        .table_name("likes")
-        .wait(Duration::from_secs(60))
-        .await
-        .context(TableNotExistsSnafu {
-            table_name: "likes",
-        })?;
-    client
-        .create_table()
-        .table_name("likes")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id", S),
-            table_attr!("created", S),
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("created")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "created".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "likes" })?;
+    delete_table!(client, "likes", 60);
+    create_table!(
+        client = client,
+        table_name = "likes",
+        attr_defn = ("user_id", S),
+        attr_defn = ("created", S),
+        pk = "user_id",
+        sk = "created"
+    )?;
 
-    client
-        .delete_table()
-        .table_name("replies")
-        .send()
-        .await
-        .context(DeleteTableSnafu {
-            table_name: "replies",
-        })?;
-    client
-        .wait_until_table_not_exists()
-        .table_name("replies")
-        .wait(Duration::from_secs(60))
-        .await
-        .context(TableNotExistsSnafu {
-            table_name: "replies",
-        })?;
-    client
-        .create_table()
-        .table_name("replies")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id", S),
-            table_attr!("created", S),
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("created")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "created".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "replies" })?;
-
-    client
-        .delete_table()
-        .table_name("shares")
-        .send()
-        .await
-        .context(DeleteTableSnafu {
-            table_name: "shares",
-        })?;
-    client
-        .wait_until_table_not_exists()
-        .table_name("shares")
-        .wait(Duration::from_secs(60))
-        .await
-        .context(TableNotExistsSnafu {
-            table_name: "shares",
-        })?;
-    client
-        .create_table()
-        .table_name("shares")
-        // This is what the ScyllaDB/Alternator example uses-- not sure this is suitable for
-        // DynamoDB
-        .billing_mode(BillingMode::PayPerRequest)
-        .set_attribute_definitions(Some(vec![
-            table_attr!("user_id", S),
-            table_attr!("created", S),
-        ]))
-        .set_key_schema(Some(vec![
-            KeySchemaElement::builder()
-                .attribute_name("user_id")
-                .key_type(KeyType::Hash)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "user_id".to_string(),
-                })?,
-            KeySchemaElement::builder()
-                .attribute_name("created")
-                .key_type(KeyType::Range)
-                .build()
-                .context(GenericBuildFailureSnafu {
-                    name: "created".to_string(),
-                })?,
-        ]))
-        .send()
-        .await
-        .context(CreateTableSnafu { name: "shares" })?;
-
-    Ok(())
-}
-async fn drop_activity_pub_posts(client: &Client) -> Result<()> {
-    let _ = client
-        .delete_table()
-        .table_name("activity_pub_posts")
-        .send()
-        .await
-        .context(DeleteTableSnafu {
-            table_name: "activity_pub_posts",
-        })?;
-    Ok(())
+    delete_table!(client, "replies", 60);
+    create_table!(
+        client = client,
+        table_name = "replies",
+        attr_defn = ("user_id", S),
+        attr_defn = ("created", S),
+        pk = "user_id",
+        sk = "created"
+    )?;
+    delete_table!(client, "shares", 60);
+    create_table!(
+        client = client,
+        table_name = "shares",
+        attr_defn = ("user_id", S),
+        attr_defn = ("created", S),
+        pk = "user_id",
+        sk = "created"
+    )
+    .map(|_| ())
 }
 
 pub async fn schema_migration_1(client: Client) -> Result<()> {
     create_new_tables_ver_1(&client).await?;
     recreate_tables_ver_1(&client).await?;
-    drop_activity_pub_posts(&client).await?;
+    delete_table!(client, "activity_pub_posts", 60);
     update_schema_migrations(&client, 1).await
+}
+
+pub async fn schema_migration_2(client: Client) -> Result<()> {
+    delete_table!(client, "post_likes", 60);
+    delete_table!(client, "post_replies", 60);
+    delete_table!(client, "post_shares", 60);
+    delete_table!(client, "likes", 60);
+    delete_table!(client, "replies", 60);
+    delete_table!(client, "shares", 60);
+
+    create_table!(
+        client = client,
+        table_name = "likes_replies_shares",
+        attr_defn = ("user_id", S),
+        attr_defn = ("posted_and_id", S),
+        pk = "user_id",
+        sk = "posted_and_id"
+    )?;
+    create_table!(
+        client = client,
+        table_name = "incoming_likes_replies_shares",
+        attr_defn = ("user_id", S),
+        attr_defn = ("received_and_id", S),
+        pk = "user_id",
+        sk = "received_and_id"
+    )
+    .map(|_| ())
 }

@@ -77,6 +77,7 @@ use indielinks::{
     },
     dynamodb_schemas::{
         create_schema as create_dynamodb_schema, schema_migration_1 as ddb_schema_migration_ver_1,
+        schema_migration_2 as ddb_schema_migration_ver_2,
     },
     scylla::{
         create_client as create_scylla_client, create_schema as create_scylladb_schema,
@@ -211,6 +212,13 @@ const CQL_SCHEMAS: &[ScyllaDbSchemaUpdate] = &[
                 .context(CreateSchemaSnafu)
         })
     },
+    // |session| {
+    //     Box::pin(async move {
+    //         create_scylladb_schema(session, include_str!("../../schemas/2.cql"), 2)
+    //             .await
+    //             .context(CreateSchemaSnafu)
+    //     })
+    // },
 ];
 
 // Each function is expected to update `schema_versions` on successful completion
@@ -235,6 +243,13 @@ const DDB_FNS: &[DynamoDbSchemaUpdate] = &[
                 .context(DdbSchemaUpdateSnafu)
         })
     },
+    // |client| {
+    //     Box::pin(async move {
+    //         ddb_schema_migration_ver_2(client)
+    //             .await
+    //             .context(DdbSchemaUpdateSnafu)
+    //     })
+    // },
 ];
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
