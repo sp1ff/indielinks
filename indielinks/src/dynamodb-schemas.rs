@@ -235,6 +235,27 @@ macro_rules! create_table {
     };
 }
 
+macro_rules! delete_table {
+    ($client:expr, $table_name:expr, $timeout:expr) => {
+        $client
+            .delete_table()
+            .table_name($table_name)
+            .send()
+            .await
+            .context(DeleteTableSnafu {
+                table_name: $table_name,
+            })?;
+        $client
+            .wait_until_table_not_exists()
+            .table_name($table_name)
+            .wait(Duration::from_secs(60))
+            .await
+            .context(TableNotExistsSnafu {
+                table_name: $table_name,
+            })?;
+    };
+}
+
 async fn update_schema_migrations(client: &Client, schema_version: i64) -> Result<()> {
     let instance_state = if schema_version == 0 {
         InstanceStateV0::new().context(InstanceStateSnafu)?
@@ -286,27 +307,6 @@ async fn update_schema_migrations(client: &Client, schema_version: i64) -> Resul
         .await
         .context(SchemaVersionSnafu)
         .map(|_| ())
-}
-
-macro_rules! delete_table {
-    ($client:expr, $table_name:expr, $timeout:expr) => {
-        $client
-            .delete_table()
-            .table_name($table_name)
-            .send()
-            .await
-            .context(DeleteTableSnafu {
-                table_name: $table_name,
-            })?;
-        $client
-            .wait_until_table_not_exists()
-            .table_name($table_name)
-            .wait(Duration::from_secs(60))
-            .await
-            .context(TableNotExistsSnafu {
-                table_name: $table_name,
-            })?;
-    };
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
