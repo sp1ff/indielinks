@@ -1,0 +1,91 @@
+{{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    {{
+      "ostatus": "http://ostatus.org#",
+      "atomUri": "ostatus:atomUri",
+      "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+      "conversation": "ostatus:conversation",
+      "sensitive": "as:sensitive",
+      "toot": "http://joinmastodon.org/ns#",
+      "votersCount": "toot:votersCount",
+      "quote": "https://w3id.org/fep/044f#quote",
+      "quoteUri": "http://fedibird.com/ns#quoteUri",
+      "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote",
+      "quoteAuthorization": {{
+        "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+        "@type": "@id"
+      }},
+      "gts": "https://gotosocial.org/ns#",
+      "interactionPolicy": {{
+        "@id": "gts:interactionPolicy",
+        "@type": "@id"
+      }},
+      "canQuote": {{
+        "@id": "gts:canQuote",
+        "@type": "@id"
+      }},
+      "automaticApproval": {{
+        "@id": "gts:automaticApproval",
+        "@type": "@id"
+      }},
+      "manualApproval": {{
+        "@id": "gts:manualApproval",
+        "@type": "@id"
+      }}
+    }}
+  ],
+  "id": "{0}/ap/users/116370086208557206/statuses/116370106879969740",
+  "type": "Note",
+  "summary": null,
+  "inReplyTo": null,
+  "published": "2026-04-08T16:48:34Z",
+  "url": "{0}/@admin/116370106879969740",
+  "attributedTo": "{0}/ap/users/116370086208557206",
+  "to": [
+    "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "cc": [
+    "{0}/ap/users/116370086208557206/followers"
+  ],
+  "sensitive": false,
+  "atomUri": "{0}/ap/users/116370086208557206/statuses/116370106879969740",
+  "inReplyToAtomUri": null,
+  "conversation": "{0}/contexts/116370086208557206-116370106879969740",
+  "context": "{0}/contexts/116370086208557206-116370106879969740",
+  "content": "<p>My first post.</p>",
+  "contentMap": {{
+    "en": "<p>My first post.</p>"
+  }},
+  "interactionPolicy": {{
+    "canQuote": {{
+      "automaticApproval": [
+        "https://www.w3.org/ns/activitystreams#Public"
+      ]
+    }}
+  }},
+  "attachment": [],
+  "tag": [],
+  "replies": {{
+    "id": "{0}/ap/users/116370086208557206/statuses/116370106879969740/replies",
+    "type": "Collection",
+    "first": {{
+      "type": "CollectionPage",
+      "next": "{0}/ap/users/116370086208557206/statuses/116370106879969740/replies?min_id=116370111361539722&page=true",
+      "partOf": "{0}/ap/users/116370086208557206/statuses/116370106879969740/replies",
+      "items": [
+        "{0}/ap/users/116370086208557206/statuses/116370111361539722"
+      ]
+    }}
+  }},
+  "likes": {{
+    "id": "{0}/ap/users/116370086208557206/statuses/116370106879969740/likes",
+    "type": "Collection",
+    "totalItems": 0
+  }},
+  "shares": {{
+    "id": "{0}/ap/users/116370086208557206/statuses/116370106879969740/shares",
+    "type": "Collection",
+    "totalItems": 0
+  }}
+}}

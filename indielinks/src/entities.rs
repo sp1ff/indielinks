@@ -21,23 +21,26 @@
 //! foundational (to [indielinks](crate); there's an even more foundational set of entites in
 //! the [indielinks-shared](indielinks_shared) module of the same name.
 
-use std::{fmt::Display, str::FromStr};
+use std::fmt::Display;
 
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use password_hash::{rand_core::OsRng, PasswordHashString, SaltString};
 use scylla::{
-    deserialize::{value::DeserializeValue, DeserializationError, FrameSlice, TypeCheckError},
-    frame::response::result::ColumnType,
+    deserialize::{
+        row::ColumnIterator, value::DeserializeValue, DeserializationError, FrameSlice,
+        TypeCheckError,
+    },
+    frame::response::result::{ColumnSpec, ColumnType},
     serialize::{
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
         SerializationError,
     },
-    DeserializeRow, SerializeRow,
+    DeserializeRow,
 };
 use secrecy::{ExposeSecret, SecretBox, SecretSlice, SecretString};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{de::Unexpected, ser::SerializeStruct, Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha512_224};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::pipe::Pipe;
@@ -69,6 +72,8 @@ pub enum Error {
     BadApiKey { backtrace: Backtrace },
     #[snafu(display("Incorrect password"))]
     BadPassword { backtrace: Backtrace },
+    #[snafu(display("While deserializing an InReply, only one of the two fields was found"))]
+    BrokenInReply { backtrace: Backtrace },
     CheckPassword {
         username: Username,
         source: password_hash::errors::Error,
@@ -96,10 +101,18 @@ pub enum Error {
         source: argon2::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Attempted to deserialize an invalid value for InReplySort: {i}"))]
+    InReplySortDe { i: i8, backtrace: Backtrace },
+    #[snafu(display("Invalid tag value {tag}"))]
+    InvalidTag { tag: i8 },
     #[snafu(display("While generating the user's keypair, {source}"))]
     Keypair {
         source: indielinks_shared::entities::Error,
     },
+    #[snafu(display("Attempted to deserialize an invalid value for LsrFlavor: {i}"))]
+    LsrFlavorDe { i: i8, backtrace: Backtrace },
+    #[snafu(display("Missing field {field}"))]
+    MissingField { field: &'static str },
     #[snafu(display("Can't deserialize a {typ} from a null frame slice"))]
     NoFrameSlice { typ: String, backtrace: Backtrace },
     #[snafu(display("No pepper found for user {username}: {source}"))]
@@ -120,8 +133,8 @@ pub enum Error {
         source: url::ParseError,
         backtrace: Backtrace,
     },
-    #[snafu(display("Attempted to deserialize an invalid value for Visibility: {n}"))]
-    VisibilityDe { n: i8, backtrace: Backtrace },
+    #[snafu(display("Attempted to deserialize an invalid value for Visibility: {i}"))]
+    VisibilityDe { i: i8, backtrace: Backtrace },
     #[snafu(display("{key_material:?} doesn't match"))]
     WrongKey {
         key_material: SecretSlice<u8>,
@@ -703,17 +716,62 @@ impl Following {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           Visibility                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Visibility levels for assorted messages
 // I pulled this ontology from <https://seb.jambor.dev/posts/understanding-activitypub/>; I'm not
 // sure if this is a general ActivityPub thing, or Mastodon-specific.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+// Chosen to match the Rust type corresponding to ScyllaDB's `tinyint`
 #[repr(i8)]
 pub enum Visibility {
+    // Per
+    // [r-items.enum.discriminant.implicit](https://doc.rust-lang.org/reference/items/enumerations.html#r-items.enum.discriminant.implicit),
+    // these values are well-defined. But still. since we're this directly to the database, I'd like
+    // to be explicit.
     Public = 0,
     Unlisted = 1,
     Followers = 2,
     DirectMessage = 3,
+}
+
+// If we derive `Serialize`, values of type `Visibility` will be written as strings (i.e. "Public",
+// "Unlisted", and so forth). I'd prefer to write them as `i8`.
+impl Serialize for Visibility {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_i8(*self as i8)
+    }
+}
+
+impl<'de> Deserialize<'de> for Visibility {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match <i8 as Deserialize>::deserialize(deserializer)? {
+            0 => Ok(Visibility::Public),
+            1 => Ok(Visibility::Unlisted),
+            2 => Ok(Visibility::Followers),
+            3 => Ok(Visibility::DirectMessage),
+            i => Err(serde::de::Error::custom(format!(
+                "Invalid Visibility encoding {i}"
+            ))),
+        }
+    }
+}
+
+impl SerializeValue for Visibility {
+    fn serialize<'b>(
+        &self,
+        typ: &ColumnType<'_>,
+        writer: CellWriter<'b>,
+    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
+        SerializeValue::serialize(&(*self as i8), typ, writer)
+    }
 }
 
 impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Visibility {
@@ -729,12 +787,53 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Visibility {
             1 => Ok(Visibility::Unlisted),
             2 => Ok(Visibility::Followers),
             3 => Ok(Visibility::DirectMessage),
-            n => Err(DeserializationError::new(VisibilityDeSnafu { n }.build())),
+            i => Err(DeserializationError::new(VisibilityDeSnafu { i }.build())),
         }
     }
 }
 
-impl SerializeValue for Visibility {
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           LsrFlavor                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// We're now storing likes, shares & replies together in the same tables (one for incoming, one
+// for outgoing). This requires a discriminator. Like `Visibility`, above, we'll serialize it
+// as a true `i8`.
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd)]
+#[repr(i8)]
+pub enum LsrFlavor {
+    Like = 0,
+    Share = 1,
+    Reply = 2,
+}
+
+impl Serialize for LsrFlavor {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_i8(*self as i8)
+    }
+}
+
+impl<'de> Deserialize<'de> for LsrFlavor {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match <i8 as Deserialize>::deserialize(deserializer)? {
+            0 => Ok(LsrFlavor::Like),
+            1 => Ok(LsrFlavor::Share),
+            2 => Ok(LsrFlavor::Reply),
+            i => Err(serde::de::Error::custom(format!(
+                "Invalid LsrFlavor encoding {i}"
+            ))),
+        }
+    }
+}
+
+impl SerializeValue for LsrFlavor {
     fn serialize<'b>(
         &self,
         typ: &ColumnType<'_>,
@@ -744,103 +843,7 @@ impl SerializeValue for Visibility {
     }
 }
 
-/// An incoming "like" to a [Post] on this indielinks instance.
-///
-/// [Post]: indielinks_shared::entities::Post
-#[derive(
-    Clone, Debug, Deserialize, DeserializeRow, Eq, Hash, PartialEq, Serialize, SerializeRow,
-)]
-pub struct PostLike {
-    post_id: PostId,
-    like_url: StorUrl,
-    created: DateTime<Utc>,
-}
-
-impl PostLike {
-    pub fn new(post_id: impl Into<PostId>, like_url: impl Into<StorUrl>) -> PostLike {
-        PostLike {
-            post_id: post_id.into(),
-            like_url: like_url.into(),
-            created: Utc::now(),
-        }
-    }
-    pub fn post_id(&self) -> &PostId {
-        &self.post_id
-    }
-    pub fn like_url(&self) -> &StorUrl {
-        &self.like_url
-    }
-    pub fn created(&self) -> &DateTime<Utc> {
-        &self.created
-    }
-}
-
-#[derive(
-    Clone, Debug, Deserialize, DeserializeRow, Eq, Hash, PartialEq, Serialize, SerializeRow,
-)]
-pub struct PostReply {
-    post_id: PostId,
-    reply_url: StorUrl,
-    created: DateTime<Utc>,
-    visibility: Visibility,
-}
-
-impl PostReply {
-    pub fn new(
-        post_id: impl Into<PostId>,
-        reply_url: impl Into<StorUrl>,
-        visibility: Visibility,
-    ) -> PostReply {
-        PostReply {
-            post_id: post_id.into(),
-            reply_url: reply_url.into(),
-            created: Utc::now(),
-            visibility,
-        }
-    }
-}
-
-// Yes, yes... this is identical, at the time of this writing, to `Reply`. Perhaps I'll merge
-// them, but I want to see how this develops.
-#[derive(
-    Clone, Debug, Deserialize, DeserializeRow, Eq, Hash, PartialEq, Serialize, SerializeRow,
-)]
-pub struct PostShare {
-    post_id: PostId,
-    share_url: StorUrl,
-    created: DateTime<Utc>,
-    visibility: Visibility,
-}
-
-impl PostShare {
-    pub fn new(
-        post_id: impl Into<PostId>,
-        share_url: impl Into<StorUrl>,
-        visibility: Visibility,
-    ) -> PostShare {
-        PostShare {
-            post_id: post_id.into(),
-            share_url: share_url.into(),
-            created: Utc::now(),
-            visibility,
-        }
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                        ActivityPubPost                                         //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Serialize)]
-#[repr(i8)]
-pub enum ActivityPubPostFlavor {
-    Share,
-    Reply,
-    Mention,
-    Post,
-}
-
-impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for ActivityPubPostFlavor {
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for LsrFlavor {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
         i8::type_check(typ)
     }
@@ -849,15 +852,453 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for ActivityPubPostF
         v: Option<FrameSlice<'frame>>,
     ) -> StdResult<Self, DeserializationError> {
         match <i8 as DeserializeValue>::deserialize(typ, v)? {
-            0 => Ok(ActivityPubPostFlavor::Share),
-            n => Err(DeserializationError::new(
-                ActivityPubPostFlavorDeSnafu { n }.build(),
+            0 => Ok(LsrFlavor::Like),
+            1 => Ok(LsrFlavor::Share),
+            2 => Ok(LsrFlavor::Reply),
+            i => Err(DeserializationError::new(LsrFlavorDeSnafu { i }.build())),
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                outgoing likes, shares & replies                                //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// The [indielinks] internal representation of a "like" generated on this instance
+///
+/// [indielinks]: ../indielinks/index.html
+// `OutgoingLike` is not directly serializable-- it needs to be serialized as a variant of
+// `OutgoingLikeReplyShare`
+#[derive(Clone, Debug)]
+pub struct OutgoingLike {
+    user_id: UserId,
+    posted: DateTime<Utc>,
+    likeid: LikeId,
+    // The thing being liked
+    in_reply_to: StorUrl,
+}
+
+impl OutgoingLike {
+    pub fn new(user: &User, ap_id: &Url) -> Self {
+        Self {
+            user_id: *user.id(),
+            posted: Utc::now(),
+            likeid: Default::default(),
+            in_reply_to: ap_id.into(),
+        }
+    }
+}
+
+/// The [indielinks] internal representation of a "reply" generated on this instance
+///
+/// [indielinks]: ../indielinks/index.html
+// `OutgoingReply` is not directly serializable-- it needs to be serialized as a variant of
+// `OutgoingLikeReplyShare`
+#[derive(Clone, Debug)]
+pub struct OutgoingReply {
+    user_id: UserId,
+    posted: DateTime<Utc>,
+    replyid: ReplyId,
+    // The thing to which we are replying
+    in_reply_to: StorUrl,
+    visibility: Visibility,
+    // We store the raw content; possibly dangereous, but I like the faithfulness
+    content: String,
+}
+
+impl OutgoingReply {
+    pub fn new(
+        user_id: UserId,
+        replyid: ReplyId,
+        ap_id: Url,
+        visibility: Visibility,
+        content: String,
+    ) -> Self {
+        Self {
+            user_id,
+            posted: Utc::now(),
+            replyid,
+            in_reply_to: ap_id.into(),
+            visibility,
+            content,
+        }
+    }
+    pub fn content(&self) -> &str {
+        self.content.as_ref()
+    }
+    pub fn id(&self) -> ReplyId {
+        self.replyid
+    }
+    pub fn posted(&self) -> DateTime<Utc> {
+        self.posted
+    }
+    pub fn user_id(&self) -> UserId {
+        self.user_id
+    }
+}
+
+/// The [indielinks] internal representation of a "share" generated on this instance
+///
+/// [indielinks]: ../indielinks/index.html
+// `OutgoingShare` is not directly serializable-- it needs to be serialized as a variant of
+// `OutgoingLikeReplyShare`
+#[derive(Clone, Debug)]
+pub struct OutgoingShare {
+    user_id: UserId,
+    posted: DateTime<Utc>,
+    shareid: ShareId,
+    // The thing we are sharing
+    in_reply_to: StorUrl,
+    visibility: Visibility,
+    // We store the raw content; possibly dangereous, but I like the faithfulness
+    content: String,
+}
+
+impl OutgoingShare {
+    pub fn new(user: &User, ap_id: &Url, visibility: Visibility, content: String) -> Self {
+        Self {
+            user_id: *user.id(),
+            posted: Utc::now(),
+            shareid: Default::default(),
+            in_reply_to: ap_id.into(),
+            visibility,
+            content,
+        }
+    }
+    pub fn content(&self) -> &str {
+        self.content.as_ref()
+    }
+    pub fn id(&self) -> ShareId {
+        self.shareid
+    }
+    pub fn posted(&self) -> DateTime<Utc> {
+        self.posted
+    }
+    pub fn user_id(&self) -> UserId {
+        self.user_id
+    }
+}
+
+// The idea here is that we can instantiate a `LikeReplyShare` and write it to the
+// `likes_replies_shares` table, either via the ScyllaDB client, or as `serde_dynamo::to_item`.
+// Take a reference to avoid consuming the value when serializing.
+#[derive(Clone, Debug)]
+pub enum LikeReplyShareRef<'a> {
+    Like(&'a OutgoingLike),
+    Reply(&'a OutgoingReply),
+    Share(&'a OutgoingShare),
+}
+
+// But on *read*, we need to deserialize to something "owned"
+#[derive(Clone, Debug)]
+pub enum LikeReplyShare {
+    Like(OutgoingLike),
+    Reply(OutgoingReply),
+    Share(OutgoingShare),
+}
+
+// This is what serde calls <https://serde.rs/enum-representations.html> an "internally tagged"
+// representation of the `LikeReplyShare` enum, with a few wrinkles:
+//
+// - the "tag" (AKA discriminator), instead of being serialized as text, is an `i8`
+// - we add an additional field `posted_and_id` (derived from `posted` and `id` on write, ignored on
+//   read), because we use a compond sort key when writing this to DynamoDB
+
+impl Serialize for LikeReplyShareRef<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            LikeReplyShareRef::Like(like) => {
+                let sk = format!(
+                    "{}-{}",
+                    like.posted.to_rfc3339_opts(SecondsFormat::Nanos, true),
+                    like.likeid
+                );
+                let mut state = serializer.serialize_struct("LikeReplyShare", 8)?;
+                state.serialize_field("kind", &LsrFlavor::Like)?;
+                state.serialize_field("user_id", &like.user_id)?;
+                state.serialize_field("posted_and_id", &sk)?;
+                state.serialize_field("posted", &like.posted)?;
+                state.serialize_field("likeid", &like.likeid)?;
+                state.serialize_field("in_reply_to", &like.in_reply_to)?;
+                state.serialize_field("visibility", &Option::<Visibility>::None)?;
+                state.serialize_field("content", &Option::<String>::None)?;
+                state.end()
+            }
+            LikeReplyShareRef::Reply(reply) => {
+                let sk = format!(
+                    "{}-{}",
+                    reply.posted.to_rfc3339_opts(SecondsFormat::Nanos, true),
+                    reply.replyid
+                );
+                let mut state = serializer.serialize_struct("LikeReplyShare", 8)?;
+                state.serialize_field("kind", &LsrFlavor::Reply)?;
+                state.serialize_field("user_id", &reply.user_id)?;
+                state.serialize_field("posted_and_id", &sk)?;
+                state.serialize_field("posted", &reply.posted)?;
+                state.serialize_field("replyid", &reply.replyid)?;
+                state.serialize_field("in_reply_to", &reply.in_reply_to)?;
+                state.serialize_field("visibility", &Some(reply.visibility))?;
+                state.serialize_field("content", &Some(&reply.content))?;
+                state.end()
+            }
+            LikeReplyShareRef::Share(share) => {
+                let sk = format!(
+                    "{}-{}",
+                    share.posted.to_rfc3339_opts(SecondsFormat::Nanos, true),
+                    share.shareid
+                );
+                let mut state = serializer.serialize_struct("LikeReplyShare", 8)?;
+                state.serialize_field("kind", &LsrFlavor::Share)?;
+                state.serialize_field("user_id", &share.user_id)?;
+                state.serialize_field("posted_and_id", &sk)?;
+                state.serialize_field("posted", &share.posted)?;
+                state.serialize_field("shareid", &share.shareid)?;
+                state.serialize_field("in_reply_to", &share.in_reply_to)?;
+                state.serialize_field("visibility", &Some(share.visibility))?;
+                state.serialize_field("content", &Some(&share.content))?;
+                state.end()
+            }
+        }
+    }
+}
+
+struct LikeReplyShareVisitor;
+
+impl<'de> serde::de::Visitor<'de> for LikeReplyShareVisitor {
+    type Value = LikeReplyShare;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "An outgoing like, share or reply")
+    }
+    fn visit_map<A>(self, mut map: A) -> StdResult<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        use serde::de::Error as DeError;
+
+        let mut kind: Option<i8> = None;
+        let mut user_id: Option<UserId> = None;
+        let mut posted: Option<DateTime<Utc>> = None;
+        let mut like_id: Option<LikeId> = None;
+        let mut reply_id: Option<ReplyId> = None;
+        let mut share_id: Option<ShareId> = None;
+        let mut in_reply_to: Option<StorUrl> = None;
+        let mut visibility: Option<Visibility> = None;
+        let mut content: Option<String> = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "kind" => kind = Some(map.next_value()?),
+                "user_id" => user_id = Some(map.next_value()?),
+                "posted" => posted = Some(map.next_value()?),
+                "like_id" => like_id = Some(map.next_value()?),
+                "reply_id" => reply_id = Some(map.next_value()?),
+                "share_id" => share_id = Some(map.next_value()?),
+                "in_reply_to" => in_reply_to = Some(map.next_value()?),
+                "visibility" => visibility = map.next_value()?,
+                "content" => content = map.next_value()?,
+                _ => {
+                    let _: String = map.next_value()?;
+                }
+            }
+        }
+
+        let kind = kind.ok_or(DeError::missing_field("kind"))?;
+
+        match kind {
+            0 => Ok(LikeReplyShare::Like(OutgoingLike {
+                user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
+                posted: posted.ok_or(DeError::missing_field("posted"))?,
+                likeid: like_id.ok_or(DeError::missing_field("id"))?,
+                in_reply_to: in_reply_to.ok_or(DeError::missing_field("in_reply_to"))?,
+            })),
+            1 => Ok(LikeReplyShare::Reply(OutgoingReply {
+                user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
+                posted: posted.ok_or(DeError::missing_field("posted"))?,
+                replyid: reply_id.ok_or(DeError::missing_field("id"))?,
+                in_reply_to: in_reply_to.ok_or(DeError::missing_field("in_reply_to"))?,
+                visibility: visibility.ok_or(DeError::missing_field("visibility"))?,
+                content: content.ok_or(DeError::missing_field("content"))?,
+            })),
+            2 => Ok(LikeReplyShare::Share(OutgoingShare {
+                user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
+                posted: posted.ok_or(DeError::missing_field("posted"))?,
+                shareid: share_id.ok_or(DeError::missing_field("id"))?,
+                in_reply_to: in_reply_to.ok_or(DeError::missing_field("in_reply_to"))?,
+                visibility: visibility.ok_or(DeError::missing_field("visibility"))?,
+                content: content.ok_or(DeError::missing_field("content"))?,
+            })),
+            i => Err(DeError::invalid_value(
+                Unexpected::Signed(i as i64),
+                &"An i8 between 0 & 2, inclusive",
             )),
         }
     }
 }
 
-impl SerializeValue for ActivityPubPostFlavor {
+impl<'de> Deserialize<'de> for LikeReplyShare {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(LikeReplyShareVisitor)
+    }
+}
+
+impl scylla::serialize::row::SerializeRow for LikeReplyShareRef<'_> {
+    fn serialize(
+        &self,
+        ctx: &scylla::serialize::row::RowSerializationContext<'_>,
+        writer: &mut scylla::serialize::writers::RowWriter,
+    ) -> std::result::Result<(), SerializationError> {
+        let tuple = match self {
+            LikeReplyShareRef::Like(like) => (
+                0i8,
+                &like.user_id,
+                &like.posted,
+                &like.likeid.as_ref(),
+                &like.in_reply_to,
+                &Option::<Visibility>::None,
+                &Option::<&String>::None,
+            ),
+            LikeReplyShareRef::Reply(reply) => (
+                1i8,
+                &reply.user_id,
+                &reply.posted,
+                &reply.replyid.as_ref(),
+                &reply.in_reply_to,
+                &Some(reply.visibility),
+                &Some(&reply.content),
+            ),
+            LikeReplyShareRef::Share(share) => (
+                2i8,
+                &share.user_id,
+                &share.posted,
+                &share.shareid.as_ref(),
+                &share.in_reply_to,
+                &Some(share.visibility),
+                &Some(&share.content),
+            ),
+        };
+        scylla::serialize::row::SerializeRow::serialize(&tuple, ctx, writer)
+    }
+
+    fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metadata>
+    for LikeReplyShare
+{
+    fn type_check(specs: &[ColumnSpec]) -> StdResult<(), TypeCheckError> {
+        use scylla::deserialize::row::DeserializeRow;
+        <(
+            i8,
+            UserId,
+            DateTime<Utc>,
+            Uuid,
+            StorUrl,
+            Option<Visibility>,
+            Option<String>,
+        ) as DeserializeRow>::type_check(specs)
+    }
+
+    fn deserialize(
+        row: ColumnIterator<'frame, 'metadata>,
+    ) -> StdResult<Self, DeserializationError> {
+        use scylla::deserialize::row::DeserializeRow;
+        let (sort, user_id, posted, id, in_reply_to, visibility, content) =
+            <(
+                i8,
+                UserId,
+                DateTime<Utc>,
+                Uuid,
+                StorUrl,
+                Option<Visibility>,
+                Option<String>,
+            ) as DeserializeRow>::deserialize(row)?;
+        match sort {
+            0 => Ok(LikeReplyShare::Like(OutgoingLike {
+                user_id,
+                posted,
+                likeid: LikeId::from_uuid(id),
+                in_reply_to,
+            })),
+            1 => Ok(LikeReplyShare::Reply(OutgoingReply {
+                user_id,
+                posted,
+                replyid: ReplyId::from_uuid(id),
+                in_reply_to,
+                visibility: visibility.ok_or(mk_de_err(
+                    MissingFieldSnafu {
+                        field: "visibility",
+                    }
+                    .build(),
+                ))?,
+                content: content
+                    .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
+            })),
+            2 => Ok(LikeReplyShare::Share(OutgoingShare {
+                user_id,
+                posted,
+                shareid: ShareId::from_uuid(id),
+                in_reply_to,
+                visibility: visibility.ok_or(mk_de_err(
+                    MissingFieldSnafu {
+                        field: "visibility",
+                    }
+                    .build(),
+                ))?,
+                content: content
+                    .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
+            })),
+            tag => Err(mk_de_err(InvalidTagSnafu { tag }.build())),
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                incoming likes, shares & replies                                //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Copy, Debug)]
+#[repr(i8)]
+pub enum InReplySort {
+    Post = 0,
+    Reply = 1,
+    Share = 2,
+}
+
+impl Serialize for InReplySort {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_i8(*self as i8)
+    }
+}
+
+impl<'de> Deserialize<'de> for InReplySort {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match <i8 as Deserialize>::deserialize(deserializer)? {
+            0 => Ok(InReplySort::Post),
+            1 => Ok(InReplySort::Reply),
+            2 => Ok(InReplySort::Share),
+            i => Err(serde::de::Error::custom(format!(
+                "Invalid InReplySort encoding {i}"
+            ))),
+        }
+    }
+}
+
+impl SerializeValue for InReplySort {
     fn serialize<'b>(
         &self,
         typ: &ColumnType<'_>,
@@ -867,57 +1308,533 @@ impl SerializeValue for ActivityPubPostFlavor {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                 outgoing ActivityPub entities                                  //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug, Deserialize, DeserializeRow, Serialize, SerializeRow)]
-pub struct OutgoingLike {
-    user_id: UserId,
-    created: DateTime<Utc>,
-    // The thing being liked; replicating the typo in `1.cql`
-    api_id: StorUrl,
-    // replicating the typo in `1.cql`
-    visbility: Visibility,
-}
-
-impl OutgoingLike {
-    pub fn new(user: &User, id: &Url, visibility: Visibility) -> Self {
-        Self {
-            user_id: *user.id(),
-            created: Utc::now(),
-            api_id: id.into(),
-            visbility: visibility,
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for InReplySort {
+    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
+        i8::type_check(typ)
+    }
+    fn deserialize(
+        typ: &'metadata ColumnType<'metadata>,
+        v: Option<FrameSlice<'frame>>,
+    ) -> StdResult<Self, DeserializationError> {
+        match <i8 as DeserializeValue>::deserialize(typ, v)? {
+            0 => Ok(InReplySort::Post),
+            1 => Ok(InReplySort::Reply),
+            2 => Ok(InReplySort::Share),
+            i => Err(DeserializationError::new(InReplySortDeSnafu { i }.build())),
         }
     }
 }
 
-#[derive(Debug, Deserialize, DeserializeRow, Serialize, SerializeRow)]
-pub struct OutgoingReply {
+#[derive(Clone, Debug)]
+pub enum InReply {
+    Post(PostId),
+    Reply(ReplyId),
+    Share(ShareId),
+}
+
+impl From<PostId> for InReply {
+    fn from(value: PostId) -> Self {
+        InReply::Post(value)
+    }
+}
+
+impl Serialize for InReply {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            InReply::Post(postid) => {
+                let mut state = serializer.serialize_struct("InReply", 2)?;
+                state.serialize_field("kind", &InReplySort::Post)?;
+                state.serialize_field("postid", &postid)?;
+                state.end()
+            }
+            InReply::Reply(replyid) => {
+                let mut state = serializer.serialize_struct("InReply", 2)?;
+                state.serialize_field("kind", &InReplySort::Reply)?;
+                state.serialize_field("replyid", &replyid)?;
+                state.end()
+            }
+            InReply::Share(shareid) => {
+                let mut state = serializer.serialize_struct("InReply", 2)?;
+                state.serialize_field("kind", &InReplySort::Share)?;
+                state.serialize_field("shareid", &shareid)?;
+                state.end()
+            }
+        }
+    }
+}
+
+struct InReplyVisitor;
+
+impl<'de> serde::de::Visitor<'de> for InReplyVisitor {
+    type Value = InReply;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "An InReply")
+    }
+    fn visit_map<A>(self, mut map: A) -> StdResult<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        use serde::de::Error as DeError;
+
+        let mut kind: Option<i8> = None;
+        let mut postid: Option<PostId> = None;
+        let mut replyid: Option<ReplyId> = None;
+        let mut shareid: Option<ShareId> = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "kind" => kind = Some(map.next_value()?),
+                "postid" => postid = Some(map.next_value()?),
+                "replyid" => replyid = Some(map.next_value()?),
+                "shareid" => shareid = Some(map.next_value()?),
+                _ => {
+                    let _: String = map.next_value()?;
+                }
+            }
+        }
+
+        let kind = kind.ok_or(DeError::missing_field("kind"))?;
+
+        match kind {
+            0 => Ok(InReply::Post(
+                postid.ok_or(DeError::missing_field("postid"))?,
+            )),
+            1 => Ok(InReply::Reply(
+                replyid.ok_or(DeError::missing_field("replyid"))?,
+            )),
+            2 => Ok(InReply::Share(
+                shareid.ok_or(DeError::missing_field("shareid"))?,
+            )),
+            i => Err(DeError::invalid_value(
+                Unexpected::Signed(i as i64),
+                &"An i8 between 0 & 2, inclusive",
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for InReply {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(InReplyVisitor)
+    }
+}
+
+/// The [indielinks] internal representation of a "like" coming to this instance from outside
+///
+/// [indielinks]: ../indielinks/index.html
+// Same game; `IncomingLike` is not directly serializable-- it needs to be serialized as a variant
+// of `IncomingLikeReplyShare`
+#[derive(Clone, Debug)]
+pub struct IncomingLike {
     user_id: UserId,
-    id: ReplyId,
-    created: DateTime<Utc>,
-    ap_id: StorUrl,
+    received: DateTime<Utc>,
+    ap_like_id: StorUrl,
+    // The ID of the thing being liked; Post, Reply or Share
+    in_reply_to: InReply,
+}
+
+impl IncomingLike {
+    pub fn new(user_id: UserId, ap_like_id: Url, in_reply_to: InReply) -> Self {
+        Self {
+            user_id,
+            received: Utc::now(),
+            ap_like_id: ap_like_id.into(),
+            in_reply_to,
+        }
+    }
+}
+
+/// The [indielinks] internal representation of a "reply" coming to this instance from outside
+///
+/// [indielinks]: ../indielinks/index.html
+#[derive(Clone, Debug)]
+pub struct IncomingReply {
+    user_id: UserId,
+    received: DateTime<Utc>,
+    ap_reply_id: StorUrl,
+    // The ID of the thing being liked; Post, Reply or Share, if it's on this instance
+    in_reply_to: Option<InReply>,
     visibility: Visibility,
-    // We store the raw content; possibly dangereous, but I like the faithfulness
     content: String,
 }
 
-impl OutgoingReply {
+impl IncomingReply {
     pub fn new(
         user_id: UserId,
-        id: ReplyId,
-        ap_id: &Url,
+        ap_id: Url,
+        in_reply_to: Option<InReply>,
         visibility: Visibility,
         content: String,
     ) -> Self {
         Self {
             user_id,
-            id,
-            created: Utc::now(),
-            ap_id: ap_id.into(),
-            visibility: visibility,
+            received: Utc::now(),
+            ap_reply_id: ap_id.into(),
+            in_reply_to,
+            visibility,
             content,
+        }
+    }
+}
+
+/// The [indielinks] internal representation of a "share" coming to this instance from outside
+///
+/// [indielinks]: ../indielinks/index.html
+#[derive(Clone, Debug)]
+pub struct IncomingShare {
+    user_id: UserId,
+    received: DateTime<Utc>,
+    ap_share_id: StorUrl,
+    // The ID of the thing being liked; Post, Reply or Share, if it's on this instance
+    in_reply_to: Option<InReply>,
+    visibility: Visibility,
+    content: String,
+}
+
+// The idea here is that we can instantiate a `LikeReplyShareRef` and write it to the
+// `likes_replies_shares` table, either via the ScyllaDB client, or as `serde_dynamo::to_item`
+// We hold a reference to avoid consuming the entity when serializing.
+#[derive(Clone, Debug)]
+pub enum IncomingLikeReplyShareRef<'a> {
+    Like(&'a IncomingLike),
+    Reply(&'a IncomingReply),
+    Share(&'a IncomingShare),
+}
+
+// However, on the deserialization side, we need to deserialize to something owned.
+#[derive(Clone, Debug)]
+pub enum IncomingLikeReplyShare {
+    Like(IncomingLike),
+    Reply(IncomingReply),
+    Share(IncomingShare),
+}
+
+impl Serialize for IncomingLikeReplyShareRef<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            IncomingLikeReplyShareRef::Like(like) => {
+                let sk = format!(
+                    "{}-{}",
+                    like.received.to_rfc3339_opts(SecondsFormat::Nanos, true),
+                    like.ap_like_id
+                );
+                let (sort, id): (i8, Uuid) = match like.in_reply_to {
+                    InReply::Post(postid) => (0i8, postid.into()),
+                    InReply::Reply(replyid) => (1i8, replyid.into()),
+                    InReply::Share(shareid) => (2i8, shareid.into()),
+                };
+                let mut state = serializer.serialize_struct("IncomingLikeReplyShare", 8)?;
+                state.serialize_field("kind", &LsrFlavor::Like)?;
+                state.serialize_field("user_id", &like.user_id)?;
+                state.serialize_field("received_and_ap_id", &sk)?;
+                state.serialize_field("received", &like.received)?;
+                state.serialize_field("ap_like_id", &like.ap_like_id)?;
+                state.serialize_field("in_reply_to_sort", &Some(sort))?;
+                state.serialize_field("in_reply_to", &Some(id))?;
+                state.serialize_field("visibility", &Option::<Visibility>::None)?;
+                state.serialize_field("content", &Option::<String>::None)?;
+                state.end()
+            }
+            IncomingLikeReplyShareRef::Reply(reply) => {
+                let sk = format!(
+                    "{}-{}",
+                    reply.received.to_rfc3339_opts(SecondsFormat::Nanos, true),
+                    reply.ap_reply_id
+                );
+                let (sort, id): (Option<i8>, Option<Uuid>) = match reply.in_reply_to {
+                    Some(InReply::Post(postid)) => (Some(0i8), Some(postid.into())),
+                    Some(InReply::Reply(replyid)) => (Some(1i8), Some(replyid.into())),
+                    Some(InReply::Share(shareid)) => (Some(2i8), Some(shareid.into())),
+                    None => (None, None),
+                };
+                let mut state = serializer.serialize_struct("IncomingReplyReplyShare", 8)?;
+                state.serialize_field("kind", &LsrFlavor::Reply)?;
+                state.serialize_field("user_id", &reply.user_id)?;
+                state.serialize_field("received_and_ap_id", &sk)?;
+                state.serialize_field("received", &reply.received)?;
+                state.serialize_field("ap_reply_id", &reply.ap_reply_id)?;
+                state.serialize_field("in_reply_to_sort", &sort)?;
+                state.serialize_field("in_reply_to", &id)?;
+                state.serialize_field("visibility", &Some(reply.visibility))?;
+                state.serialize_field("content", &Some(&reply.content))?;
+                state.end()
+            }
+            IncomingLikeReplyShareRef::Share(share) => {
+                let sk = format!(
+                    "{}-{}",
+                    share.received.to_rfc3339_opts(SecondsFormat::Nanos, true),
+                    share.ap_share_id
+                );
+                let (sort, id): (Option<i8>, Option<Uuid>) = match share.in_reply_to {
+                    Some(InReply::Post(postid)) => (Some(0i8), Some(postid.into())),
+                    Some(InReply::Reply(replyid)) => (Some(1i8), Some(replyid.into())),
+                    Some(InReply::Share(shareid)) => (Some(2i8), Some(shareid.into())),
+                    None => (None, None),
+                };
+                let mut state = serializer.serialize_struct("IncomingShareShareShare", 8)?;
+                state.serialize_field("kind", &LsrFlavor::Share)?;
+                state.serialize_field("user_id", &share.user_id)?;
+                state.serialize_field("received_and_ap_id", &sk)?;
+                state.serialize_field("received", &share.received)?;
+                state.serialize_field("ap_share_id", &share.ap_share_id)?;
+                state.serialize_field("in_share_to_sort", &sort)?;
+                state.serialize_field("in_share_to", &id)?;
+                state.serialize_field("visibility", &Some(share.visibility))?;
+                state.serialize_field("content", &Some(&share.content))?;
+                state.end()
+            }
+        }
+    }
+}
+
+struct IncomingLikeReplyShareVisitor;
+
+impl<'de> serde::de::Visitor<'de> for IncomingLikeReplyShareVisitor {
+    type Value = IncomingLikeReplyShare;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "An ingoing like, share or reply")
+    }
+    fn visit_map<A>(self, mut map: A) -> StdResult<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        use serde::de::Error as DeError;
+
+        let mut kind: Option<i8> = None;
+        let mut user_id: Option<UserId> = None;
+        let mut received: Option<DateTime<Utc>> = None;
+        let mut ap_like_id: Option<StorUrl> = None;
+        let mut ap_reply_id: Option<StorUrl> = None;
+        let mut ap_share_id: Option<StorUrl> = None;
+        let mut in_reply_to: Option<InReply> = None;
+        let mut visibility: Option<Visibility> = None;
+        let mut content: Option<String> = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "kind" => kind = Some(map.next_value()?),
+                "user_id" => user_id = Some(map.next_value()?),
+                "received" => received = Some(map.next_value()?),
+                "ap_like_id" => ap_like_id = Some(map.next_value()?),
+                "ap_reply_id" => ap_reply_id = Some(map.next_value()?),
+                "ap_share_id" => ap_share_id = Some(map.next_value()?),
+                "in_reply_to" => in_reply_to = Some(map.next_value()?),
+                "visibility" => visibility = map.next_value()?,
+                "content" => content = map.next_value()?,
+                _ => {
+                    let _: String = map.next_value()?;
+                }
+            }
+        }
+
+        let kind = kind.ok_or(DeError::missing_field("kind"))?;
+
+        match kind {
+            0 => Ok(IncomingLikeReplyShare::Like(IncomingLike {
+                user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
+                received: received.ok_or(DeError::missing_field("received"))?,
+                ap_like_id: ap_like_id.ok_or(DeError::missing_field("ap_like_id"))?,
+                in_reply_to: in_reply_to.ok_or(DeError::missing_field("in_reply_to"))?,
+            })),
+            1 => Ok(IncomingLikeReplyShare::Reply(IncomingReply {
+                user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
+                received: received.ok_or(DeError::missing_field("received"))?,
+                ap_reply_id: ap_reply_id.ok_or(DeError::missing_field("ap_reply_id"))?,
+                in_reply_to,
+                visibility: visibility.ok_or(DeError::missing_field("visibility"))?,
+                content: content.ok_or(DeError::missing_field("content"))?,
+            })),
+            2 => Ok(IncomingLikeReplyShare::Share(IncomingShare {
+                user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
+                received: received.ok_or(DeError::missing_field("received"))?,
+                ap_share_id: ap_share_id.ok_or(DeError::missing_field("ap_share_id"))?,
+                in_reply_to,
+                visibility: visibility.ok_or(DeError::missing_field("visibility"))?,
+                content: content.ok_or(DeError::missing_field("content"))?,
+            })),
+            i => Err(DeError::invalid_value(
+                Unexpected::Signed(i as i64),
+                &"An i8 between 0 & 2, inclusive",
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for IncomingLikeReplyShare {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(IncomingLikeReplyShareVisitor)
+    }
+}
+
+impl scylla::serialize::row::SerializeRow for IncomingLikeReplyShareRef<'_> {
+    fn serialize(
+        &self,
+        ctx: &scylla::serialize::row::RowSerializationContext<'_>,
+        writer: &mut scylla::serialize::writers::RowWriter,
+    ) -> std::result::Result<(), SerializationError> {
+        let tuple = match self {
+            IncomingLikeReplyShareRef::Like(like) => {
+                let (sort, id): (i8, Uuid) = match like.in_reply_to {
+                    InReply::Post(postid) => (0i8, postid.into()),
+                    InReply::Reply(replyid) => (1i8, replyid.into()),
+                    InReply::Share(shareid) => (2i8, shareid.into()),
+                };
+                (
+                    0i8,
+                    &like.user_id,
+                    &like.received,
+                    &like.ap_like_id,
+                    Some(sort),
+                    Some(id),
+                    &Option::<Visibility>::None,
+                    &Option::<&String>::None,
+                )
+            }
+            IncomingLikeReplyShareRef::Reply(reply) => {
+                let (sort, id): (Option<i8>, Option<Uuid>) = match reply.in_reply_to {
+                    Some(InReply::Post(postid)) => (Some(0i8), Some(postid.into())),
+                    Some(InReply::Reply(replyid)) => (Some(1i8), Some(replyid.into())),
+                    Some(InReply::Share(shareid)) => (Some(2i8), Some(shareid.into())),
+                    _ => (None, None),
+                };
+                (
+                    1i8,
+                    &reply.user_id,
+                    &reply.received,
+                    &reply.ap_reply_id,
+                    sort,
+                    id,
+                    &Some(reply.visibility),
+                    &Some(&reply.content),
+                )
+            }
+            IncomingLikeReplyShareRef::Share(share) => {
+                let (sort, id): (Option<i8>, Option<Uuid>) = match share.in_reply_to {
+                    Some(InReply::Post(postid)) => (Some(0), Some(postid.into())),
+                    Some(InReply::Reply(replyid)) => (Some(1), Some(replyid.into())),
+                    Some(InReply::Share(shareid)) => (Some(2), Some(shareid.into())),
+                    _ => (None, None),
+                };
+                (
+                    2i8,
+                    &share.user_id,
+                    &share.received,
+                    &share.ap_share_id,
+                    sort,
+                    id,
+                    &Some(share.visibility),
+                    &Some(&share.content),
+                )
+            }
+        };
+        scylla::serialize::row::SerializeRow::serialize(&tuple, ctx, writer)
+    }
+
+    fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metadata>
+    for IncomingLikeReplyShare
+{
+    fn type_check(specs: &[ColumnSpec]) -> StdResult<(), TypeCheckError> {
+        use scylla::deserialize::row::DeserializeRow;
+        <(
+            i8,
+            UserId,
+            DateTime<Utc>,
+            Uuid,
+            StorUrl,
+            Option<Visibility>,
+            Option<String>,
+        ) as DeserializeRow>::type_check(specs)
+    }
+
+    fn deserialize(
+        row: ColumnIterator<'frame, 'metadata>,
+    ) -> StdResult<Self, DeserializationError> {
+        use scylla::deserialize::row::DeserializeRow;
+        let (sort, user_id, received, ap_id, in_reply_to_sort, in_reply_to, visibility, content) =
+            <(
+                i8,
+                UserId,
+                DateTime<Utc>,
+                StorUrl,
+                Option<i8>,
+                Option<Uuid>,
+                Option<Visibility>,
+                Option<String>,
+            ) as DeserializeRow>::deserialize(row)?;
+        let in_reply_to = match (in_reply_to_sort, in_reply_to) {
+            (None, None) => None,
+            (Some(sort), Some(id)) => match sort {
+                0 => Some(InReply::Post(PostId::from_uuid(id))),
+                1 => Some(InReply::Reply(ReplyId::from_uuid(id))),
+                2 => Some(InReply::Share(ShareId::from_uuid(id))),
+                tag => {
+                    return Err(mk_de_err(InvalidTagSnafu { tag }.build()));
+                }
+            },
+            (_, _) => {
+                return Err(mk_de_err(BrokenInReplySnafu.build()));
+            }
+        };
+        match sort {
+            0 => Ok(IncomingLikeReplyShare::Like(IncomingLike {
+                user_id,
+                received,
+                ap_like_id: ap_id,
+                in_reply_to: in_reply_to.ok_or(mk_de_err(
+                    MissingFieldSnafu {
+                        field: "in_reply_to",
+                    }
+                    .build(),
+                ))?,
+            })),
+            1 => Ok(IncomingLikeReplyShare::Reply(IncomingReply {
+                user_id,
+                received,
+                ap_reply_id: ap_id,
+                in_reply_to,
+                visibility: visibility.ok_or(mk_de_err(
+                    MissingFieldSnafu {
+                        field: "visibility",
+                    }
+                    .build(),
+                ))?,
+                content: content
+                    .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
+            })),
+            2 => Ok(IncomingLikeReplyShare::Share(IncomingShare {
+                user_id,
+                received,
+                ap_share_id: ap_id,
+                in_reply_to,
+                visibility: visibility.ok_or(mk_de_err(
+                    MissingFieldSnafu {
+                        field: "visibility",
+                    }
+                    .build(),
+                ))?,
+                content: content
+                    .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
+            })),
+            tag => Err(mk_de_err(InvalidTagSnafu { tag }.build())),
         }
     }
 }

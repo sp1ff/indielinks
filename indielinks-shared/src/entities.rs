@@ -20,14 +20,14 @@ use picky::key::{PrivateKey, PublicKey};
 use regex::Regex;
 #[cfg(feature = "backend")]
 use scylla::{
+    DeserializeRow,
     cluster::metadata::ColumnType,
-    deserialize::{value::DeserializeValue, FrameSlice},
+    deserialize::{FrameSlice, value::DeserializeValue},
     errors::{DeserializationError, SerializationError, TypeCheckError},
     serialize::{
         value::SerializeValue,
         writers::{CellWriter, WrittenCellProof},
     },
-    DeserializeRow,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
@@ -185,6 +185,16 @@ macro_rules! __define_id {
                 SerializeValue::serialize(&self.0, typ, writer)
             }
         }
+        // I plan to revisit this; while we would of course allow callers to get a UUID from an
+        // "Id", it seems unsound to allow them to go in the other direction. The use case is tables
+        // such as `likes_replies_shares` where entities of different sorts are stored together,
+        // with their identifiers stored as a simple Uuid (along with a separate "sort" field). When
+        // deserializing, we examine the "sort" and conver the UUID to the proper "Id" type.
+        impl From<&Uuid> for $type_name {
+            fn from(value: &Uuid) -> $type_name {
+                $type_name(value.clone())
+            }
+        }
     };
 }
 
@@ -228,6 +238,9 @@ macro_rules! define_id {
             pub fn new(s: &str) -> StdResult<$type_name, uuid::Error> {
                 Ok($type_name(Uuid::parse_str(s)?))
             }
+            pub fn from_uuid(uuid: Uuid) -> $type_name {
+                $type_name(uuid)
+            }
             // This seems like a landmine; I should probably just store strings in the same way I
             // display them?
             pub fn to_raw_string(&self) -> String {
@@ -245,13 +258,6 @@ macro_rules! define_id {
                 // purposes. Thing is, this is the format used by `serde-dynamo`, so I want to be
                 // consistent with that.
                 write!(f, "{}", self.0.as_hyphenated())
-            }
-        }
-        impl FromStr for $type_name {
-            type Err = uuid::Error;
-
-            fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-                $type_name::new(s)
             }
         }
         impl AsRef<Uuid> for $type_name {

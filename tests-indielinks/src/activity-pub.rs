@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -10,25 +10,32 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielnks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
 //! # Integration tests related to indielinks and the ActivityPub protocol
 //!
-//! This will probably wind-up being re-factored, but I'm starting here.
+//! This code grew like a weed, and is in the process of being refactored.
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
+use lazy_static::lazy_static;
 use libtest_mimic::Failed;
-use reqwest::{Client, Url};
-use tracing::info;
+use reqwest::{header::ACCEPT, header::CONTENT_TYPE, Client, Url};
+use secrecy::SecretString;
+use tap::Pipe;
+use tracing::{debug, instrument};
 use uuid::Uuid;
 use wiremock::{
-    matchers::{method, path},
+    matchers::{method, path, query_param},
     Mock, MockServer, ResponseTemplate,
 };
 
-use indielinks_shared::{api::FollowReq, entities::Username, origin::Origin};
+use indielinks_shared::{
+    api::{FollowReq, ThreadContextRequest, ThreadContextResponse},
+    entities::Username,
+    origin::Origin,
+};
 
 use indielinks::{
     actor::CollectionPage,
@@ -39,20 +46,58 @@ use indielinks::{
 
 use crate::{helper::Helper, make_signed_request, peer_actor, PeerUser};
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           utilities                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+lazy_static! {
+    // 16 bytes from `/dev/urandom` to ensure the password has enough entropy (else it will
+    // be rejected 😛)
+    static ref TEST_PASSWORD: SecretString = "0534e7529239fed032a49953ee6ba4d9".to_owned().into();
+}
+
+/// Setup basic infrastructure for a test case in this module:
+///
+/// - make sure `username` doesn't already exist in the indielinks instance under test
+/// - spin-up a [wiremock] HTTP server to act as a federated ActivityPub server
+/// - create a mock ActivityPub actor on that peer instance
+/// - create an async [reqwest] HTTP client for general use
+///
+/// Note that we don't create a test indielinks user; that's to allow the caller some flexibility in
+/// declaring followers & follows, should they wish to do so.
+pub async fn setup_test(
+    username: &Username,
+    helper: Arc<dyn Helper + Send + Sync>,
+) -> Result<(MockServer, PeerUser, Client), Failed> {
+    helper.remove_user(username).await?;
+
+    // Alright: let's create a mock AP server with which indielinks can federate...
+    let mock_server = MockServer::start().await;
+    // along with a mock user on that peer:
+    let mock_user = PeerUser::new()?;
+
+    let mock_origin: Origin = mock_server.uri().try_into()?;
+    peer_actor(&mock_user, &mock_origin)
+        .await?
+        .mount(&mock_server)
+        .await;
+
+    let client = Client::builder()
+        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
+        .build()?;
+
+    Ok((mock_server, mock_user, client))
+}
+
 pub async fn posting_creates_note(
     url: Url,
     pepper_version: PepperVersion,
     pepper_key: Pepper,
     helper: Arc<dyn Helper + Send + Sync>,
 ) -> Result<(), Failed> {
-    // Clean-up this test user, just in case it's laying around from a prior, failed test.
     let username = Username::new("posting_creates_note_user").unwrap(/* known good */);
-    helper.remove_user(&username).await?;
 
-    // Alright: let's create a mock AP server with which indielinks can federate...
-    let mock_server = MockServer::start().await;
-    // along with a mock user on that peer:
-    let mock_user = PeerUser::new()?;
+    let (mock_server, mock_user, client) = setup_test(&username, helper.clone()).await?;
 
     // For this test, we expect indielinks to post a `Create` activity to the shared inboxes of it's
     // peers that contain followers of the user as whom we'll post:
@@ -65,10 +110,6 @@ pub async fn posting_creates_note(
     // Indielinks will also hit each follower's server to discover their shared inbox (I know-- very
     // inefficient), so let's handle that, as well.
     let mock_origin: Origin = mock_server.uri().try_into()?;
-    peer_actor(&mock_user, &mock_origin)
-        .await?
-        .mount(&mock_server)
-        .await;
 
     // OK-- now let's give ourselves a test indielinks user that follows `peer_user`:
     let api_key = helper
@@ -76,23 +117,16 @@ pub async fn posting_creates_note(
             &pepper_version,
             &pepper_key,
             &username,
-            // 16 bytes from `/dev/urandom` to ensure the password has enough entropy (else it will
-            // be rejected 😛)
-            &"0534e7529239fed032a49953ee6ba4d9".to_owned().into(),
+            &TEST_PASSWORD,
             &HashSet::from([mock_user.id(&mock_origin)?.into()]),
             &HashSet::new(),
         )
         .await?;
 
-    info!(
+    debug!(
         "Created test user posting_creates_note_user with api_key: {}",
         api_key
     );
-
-    // Alright! Let's create a post!
-    let client = Client::builder()
-        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
-        .build()?;
 
     client.get(format!("{}api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy&shared=true&replace=true", url))
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {}:{}",  username, api_key))
@@ -135,7 +169,7 @@ pub async fn posting_creates_note(
 
     // Now let's send a `Like` for this note
     let create = create.unwrap();
-    info!("Received a {:#?}", create);
+    debug!("Received a {:#?}", create);
     let mut id = mock_user.id(&mock_origin)?;
     id.path_segments_mut()
             .unwrap(/* known good */)
@@ -145,7 +179,7 @@ pub async fn posting_creates_note(
         id,
         ActorField::Iri(mock_user.id(&mock_origin)?),
     );
-    info!("Sending a {:#?}", like);
+    debug!("Sending a {:#?}", like);
 
     let request = make_signed_request(
         axum::http::Method::POST,
@@ -169,16 +203,11 @@ pub async fn send_follow(
     pepper_key: Pepper,
     helper: Arc<dyn Helper + Send + Sync>,
 ) -> Result<(), Failed> {
-    // Clean-up this test user, just in case it's laying around from a prior, failed test.
     let username = Username::new("send_follow_user").unwrap(/* known good */);
-    helper.remove_user(&username).await?;
+
+    let (mock_server, mock_user, client) = setup_test(&username, helper.clone()).await?;
 
     let id = Url::parse(&format!("{}/users/{}", url, username)).unwrap(/* known good */);
-
-    // Alright: let's create a mock AP server with which indielinks can federate...
-    let mock_server = MockServer::start().await;
-    // along with a mock user on that peer:
-    let mock_user = PeerUser::new()?;
 
     let mock_origin: Origin = mock_server.uri().try_into()?;
 
@@ -190,30 +219,18 @@ pub async fn send_follow(
         .mount(&mock_server)
         .await;
 
-    // We also expect indielinks to retrieve the Actor (so as to resolve the inbox)
-    peer_actor(&mock_user, &mock_origin)
-        .await?
-        .mount(&mock_server)
-        .await;
-
     let api_key = helper
         .create_user(
             &pepper_version,
             &pepper_key,
             &username,
-            // 16 bytes from `/dev/urandom` to ensure the password has enough entropy (else it will
-            // be rejected 😛)
-            &"0534e7529239fed032a49953ee6ba4d9".to_owned().into(),
+            &TEST_PASSWORD,
             &HashSet::from([mock_user.id(&mock_origin)?.into()]),
             &HashSet::new(),
         )
         .await?;
 
     // Let's ask to send a follow:
-    let client = Client::builder()
-        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
-        .build()?;
-
     client
         .post(format!("{}api/v1/users/follow", url))
         .header(
@@ -310,12 +327,8 @@ pub async fn as_follower(
     helper: Arc<dyn Helper + Send + Sync>,
 ) -> Result<(), Failed> {
     let username = Username::new("as_follower_user").unwrap(/* known good */);
-    helper.remove_user(&username).await?;
 
-    // Alright: let's create a mock AP server with which indielinks can federate...
-    let mock_server = MockServer::start().await;
-    // along with a mock user on that peer:
-    let mock_user = PeerUser::new()?;
+    let (mock_server, mock_user, client) = setup_test(&username, helper.clone()).await?;
 
     let mock_origin: Origin = mock_server.uri().try_into()?;
 
@@ -325,11 +338,6 @@ pub async fn as_follower(
         .and(path("/inbox"))
         .respond_with(ResponseTemplate::new(202))
         .expect(1)
-        .mount(&mock_server)
-        .await;
-
-    peer_actor(&mock_user, &mock_origin)
-        .await?
         .mount(&mock_server)
         .await;
 
@@ -345,11 +353,6 @@ pub async fn as_follower(
             &HashSet::from([(mock_user.id(&mock_origin)?.into(), FollowId::default())]),
         )
         .await?;
-
-    // Alright! Let's create a post!
-    let client = Client::builder()
-        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
-        .build()?;
 
     client.get(format!("{}api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy&shared=true&replace=true", indielinks))
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {}:{}",  username, api_key))
@@ -416,7 +419,7 @@ pub async fn as_follower(
     )?;
 
     let reply: Create = reply.try_into()?;
-    info!("Sending a {:#?}", reply);
+    debug!("Sending a {:#?}", reply);
 
     let request = make_signed_request(
         axum::http::Method::POST,
@@ -429,7 +432,7 @@ pub async fn as_follower(
     .await?;
 
     let rsp = client.execute(request).await?;
-    info!("reply :=> {rsp:?}");
+    debug!("reply :=> {rsp:?}");
     assert_eq!(rsp.status(), reqwest::StatusCode::ACCEPTED);
 
     // Still to test:
@@ -438,6 +441,119 @@ pub async fn as_follower(
     // - boost
     // - mention @sp1ff
     // - make a completely new post
+
+    Ok(())
+}
+
+/// Integration test the `/context` endpoint.
+///
+/// This is a simple test, encoding what I learned while federating locally with a Mastodon instance.
+#[instrument(level = "debug", skip(helper, pepper_key))]
+pub async fn context_with_mastodon(
+    indielinks: Url,
+    pepper_version: PepperVersion,
+    pepper_key: Pepper,
+    helper: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
+    // Stan-up the usual test scaffolding:
+    let test_username = Username::new("context_with_mastodon").unwrap(/* known good */);
+    let (peer_server, _peer_user, client) = setup_test(&test_username, helper.clone()).await?;
+    let api_key = helper
+        .create_user(
+            &pepper_version,
+            &pepper_key,
+            &test_username,
+            &TEST_PASSWORD,
+            &HashSet::new(), // no followers
+            &HashSet::new(), // no following
+        )
+        .await?;
+
+    // OK-- we have a (mock) peer ActivityPub server up & running...
+    let peer_origin: Origin = peer_server.uri().try_into()?;
+    debug!("ActivityPub peer server at {peer_origin}");
+
+    // let's provision it with a note...
+    let note_id = Url::parse(&format!("{peer_origin}/@admin/116370106879969740"))?;
+    let note_jld = format!(include_str!("../templates/mastodon-note.in"), peer_origin);
+    Mock::given(method("GET"))
+        .and(path("/@admin/116370106879969740"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(note_jld)
+                .insert_header("Content-Type", "application/activity+json"),
+        )
+        .expect(1)
+        .mount(&peer_server)
+        .await;
+
+    // along with that note's replies. Irritatingly, we have to begin with the second page, because
+    // the URL matcher is more specific than that for the first.
+    let replies_page_1_jld = format!(
+        include_str!("../templates/mastodon-reply-page-1.in"),
+        peer_origin
+    );
+    Mock::given(method("GET"))
+        .and(path(
+            "/ap/users/116370086208557206/statuses/116370106879969740/replies",
+        ))
+        .and(query_param("only_other_accounts", "true"))
+        .and(query_param("page", "true"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(replies_page_1_jld)
+                .insert_header("Content-Type", "application/activity+json"),
+        )
+        .expect(1)
+        .mount(&peer_server)
+        .await;
+
+    // Now for the first page-- this is getting tedious enough that I wonder if there's a macro or
+    // utility function to be found, here?
+    let replies_page_0_jld = format!(
+        include_str!("../templates/mastodon-reply-page-0.in"),
+        peer_origin
+    );
+    Mock::given(method("GET"))
+        .and(path(
+            "/ap/users/116370086208557206/statuses/116370106879969740/replies",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(replies_page_0_jld)
+                .insert_header("Content-Type", "application/activity+json"),
+        )
+        .expect(1)
+        .mount(&peer_server)
+        .await;
+
+    // Alright-- with all that setup, we should be able to issue a "context" request:
+    let response = client
+        .get(format!("{}api/v1/users/context", indielinks))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}:{}", test_username, api_key),
+        )
+        .body(serde_json::to_string(&ThreadContextRequest {
+            ap_id: note_id,
+        })?)
+        .header(ACCEPT, "application/activity+json")
+        .header(CONTENT_TYPE, "application/activity+json")
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?
+        .pipe(|text| serde_json::from_str::<ThreadContextResponse>(&text))?;
+
+    assert_eq!(
+        response.post.id,
+        Url::parse(&format!(
+            "{peer_origin}/ap/users/116370086208557206/statuses/116370106879969740"
+        ))?
+    );
+    assert!(response.parent.is_none());
+    assert!(response.children.len() == 1);
 
     Ok(())
 }

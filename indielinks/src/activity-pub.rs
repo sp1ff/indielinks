@@ -801,7 +801,7 @@ impl Task<Context> for SendLike {
         );
 
         async fn exec1(this: Box<SendLike>, context: Context) -> Result<()> {
-            let outgoing = OutgoingLike::new(&this.user, &this.apid, Visibility::Public);
+            let outgoing = OutgoingLike::new(&this.user, &this.apid);
             context
                 .storage
                 .add_outgoing_like(&outgoing)
@@ -921,7 +921,7 @@ impl Task<Context> for SendReply {
                 .add_outgoing_reply(&OutgoingReply::new(
                     *this.user.id(),
                     this.id,
-                    &this.apid,
+                    this.apid.clone(),
                     Visibility::Public,
                     this.reply.clone(),
                 ))

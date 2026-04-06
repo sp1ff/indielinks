@@ -25,8 +25,9 @@ use crate::{
         to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
     },
     entities::{
-        ApiKeys, FollowId, Follower, Following, OutgoingLike, OutgoingReply, PostLike, PostReply,
-        PostShare, User,
+        ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShareRef,
+        IncomingReply, IncomingShare, LikeReplyShare, LikeReplyShareRef, OutgoingLike,
+        OutgoingReply, User,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::{Credentials, UpToThree},
@@ -1141,8 +1142,8 @@ impl storage::Backend for Client {
     async fn add_outgoing_like(&self, like: &OutgoingLike) -> StdResult<(), StorError> {
         self.client
             .put_item()
-            .table_name("likes")
-            .set_item(Some(serde_dynamo::to_item(like)?))
+            .table_name("likes_replies_shares")
+            .set_item(Some(serde_dynamo::to_item(LikeReplyShareRef::Like(like))?))
             .send()
             .await?;
         Ok(())
@@ -1151,18 +1152,22 @@ impl storage::Backend for Client {
     async fn add_outgoing_reply(&self, reply: &OutgoingReply) -> StdResult<(), StorError> {
         self.client
             .put_item()
-            .table_name("replies")
-            .set_item(Some(serde_dynamo::to_item(reply)?))
+            .table_name("likes_replies_shares")
+            .set_item(Some(serde_dynamo::to_item(LikeReplyShareRef::Reply(
+                reply,
+            ))?))
             .send()
             .await?;
         Ok(())
     }
 
-    async fn add_post_like(&self, like: &PostLike) -> StdResult<(), StorError> {
+    async fn add_post_like(&self, like: &IncomingLike) -> StdResult<(), StorError> {
         self.client
             .put_item()
-            .table_name("post_likes")
-            .set_item(Some(serde_dynamo::to_item(like)?))
+            .table_name("incoming_likes_replies_shares")
+            .set_item(Some(serde_dynamo::to_item(
+                IncomingLikeReplyShareRef::Like(like),
+            )?))
             .send()
             .await?;
         Ok(())
@@ -1229,21 +1234,21 @@ impl storage::Backend for Client {
         }
     }
 
-    async fn add_post_reply(&self, reply: &PostReply) -> StdResult<(), StorError> {
+    async fn add_post_reply(&self, reply: &IncomingReply) -> StdResult<(), StorError> {
         self.client
             .put_item()
-            .table_name("post_replies")
-            .set_item(Some(to_item(reply)?))
+            .table_name("incoming_likes_replies_shares")
+            .set_item(Some(to_item(IncomingLikeReplyShareRef::Reply(reply))?))
             .send()
             .await?;
         Ok(())
     }
 
-    async fn add_post_share(&self, share: &PostShare) -> StdResult<(), StorError> {
+    async fn add_post_share(&self, share: &IncomingShare) -> StdResult<(), StorError> {
         self.client
             .put_item()
             .table_name("post_shares")
-            .set_item(Some(to_item(share)?))
+            .set_item(Some(to_item(IncomingLikeReplyShareRef::Share(share))?))
             .send()
             .await?;
         Ok(())
@@ -1478,6 +1483,28 @@ impl storage::Backend for Client {
             .items()
             .to_vec()
             .pipe(from_items::<Post>)?
+            .pipe(Ok)
+    }
+
+    async fn get_like_reply_share(
+        &self,
+        id: &Uuid,
+    ) -> StdResult<Option<LikeReplyShare>, StorError> {
+        self.client
+            .query()
+            .table_name("likes_replies_shares")
+            .index_name("likes_replies_shares_by_id")
+            .select(aws_sdk_dynamodb::types::Select::AllAttributes)
+            .key_condition_expression("id=:id")
+            .expression_attribute_values(":id", AttributeValue::S(id.to_string()))
+            .send()
+            .await?
+            .items()
+            .to_vec()
+            .pipe(from_items::<LikeReplyShare>)?
+            .into_iter()
+            .at_most_one()
+            .map_err(StorError::new)?
             .pipe(Ok)
     }
 

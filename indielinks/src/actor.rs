@@ -33,6 +33,7 @@ use either::Either::{self, Left, Right};
 use futures::{stream::iter, StreamExt};
 use http::{HeaderName, Method};
 use itertools::Itertools;
+use opentelemetry::KeyValue;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
@@ -43,7 +44,7 @@ use url::Url;
 use uuid::Uuid;
 
 use indielinks_shared::{
-    entities::{PostId, StorUrl, UserPrivateKey, Username},
+    entities::{PostId, StorUrl, UserId, UserPrivateKey, Username},
     origin::Origin,
 };
 
@@ -58,7 +59,7 @@ use crate::{
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     define_metric,
-    entities::{Follower, Following, PostLike, PostReply, PostShare, User},
+    entities::{Follower, Following, InReply, IncomingLike, IncomingReply, LikeReplyShare, User},
     http::ErrorResponseBody,
     indielinks::{HomeTimelines, Indielinks},
     storage::{self, Backend as StorageBackend},
@@ -134,6 +135,12 @@ pub enum Error {
     FollowersStream { source: storage::Error },
     #[snafu(display("Failed to create the instance actor: {source}"))]
     InstanceActor { source: crate::ap_entities::Error },
+    #[snafu(display("{id} is a Like"))]
+    IsALike {
+        username: Username,
+        id: Uuid,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to append a query parameter to an URL: {source}"))]
     Join {
         source: url::ParseError,
@@ -155,10 +162,10 @@ pub enum Error {
     MissingContentDigest,
     #[snafu(display("An in-reply-to field was expected, but not found"))]
     NoInReplyTo { backtrace: Backtrace },
-    #[snafu(display("User {username} has no post with ID {postid}"))]
+    #[snafu(display("User {username} has no post, reply or share with ID {id}"))]
     NoPost {
         username: Username,
-        postid: PostId,
+        id: Uuid,
         backtrace: Backtrace,
     },
     #[snafu(display("No user named {username}"))]
@@ -176,9 +183,9 @@ pub enum Error {
         source: ap_entities::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to convert Post {postid} to a Note: {source}"))]
+    #[snafu(display("Failed to convert entity {id} to a Note: {source}"))]
     Note {
-        postid: PostId,
+        id: Uuid,
         source: crate::ap_entities::Error,
     },
     #[snafu(display("Exactly one Signature header expected"))]
@@ -606,6 +613,7 @@ async fn accept_create(
 
     debug!("Recipients: {recipients:#?}");
 
+    // I think this is wrong-- we need to handle the case of a reply to an outgoing reply or share.
     let _reply = match note
         .in_reply_to()
         .and_then(|reply| username_and_postid_from_url(origin, reply).ok())
@@ -615,12 +623,22 @@ async fn accept_create(
                 "The Note is (allegedly) in response to post {} by user {}.",
                 postid, username
             );
-
+            let user = storage
+                .user_for_name(username.as_ref())
+                .await
+                .context(StorageSnafu)?
+                .context(NoUserSnafu { username })?;
             storage
-                .add_post_reply(&PostReply::new(postid, note.id(), visibility))
+                .add_post_reply(&IncomingReply::new(
+                    *user.id(),
+                    note.in_reply_to().unwrap(/* known good */).clone(),
+                    Some(InReply::Post(postid)),
+                    visibility,
+                    // Irritating, s this has already been sanitized:
+                    note.content().as_ref().to_owned(),
+                ))
                 .await
                 .context(StorageSnafu)?;
-
             true
         }
         None => false,
@@ -686,7 +704,7 @@ async fn accept_share(
     // Should I change the signature of `username_and_postid_from_url()` to make a non-match not an
     // error condition? It's called from a number of locations, so I want to see if this issue crops
     // up anywhere else, first.
-    let postid = match username_and_postid_from_url(origin, object) {
+    let _postid = match username_and_postid_from_url(origin, object) {
         Ok((_, postid)) => Some(postid),
         Err(crate::ap_entities::Error::MismatchedOrigin { .. }) => None,
         Err(err) => {
@@ -705,13 +723,6 @@ async fn accept_share(
         "This Announce is addressed to the following local users: {:?}",
         local_recipients
     );
-
-    if let Some(postid) = postid {
-        storage
-            .add_post_share(&PostShare::new(postid, announce.id().clone(), visibility))
-            .await
-            .context(StorageSnafu)?;
-    }
 
     // Alright-- at this point, we've stored the share, but there may be other recipients to whom
     // this message was addressed, including recpients in the form of "https://so-and-so/followers"
@@ -1057,7 +1068,11 @@ async fn accept_like(
     warn!("In receipt of a like: {like:#?}");
 
     storage
-        .add_post_like(&PostLike::new(postid, like.id().clone()))
+        .add_post_like(&IncomingLike::new(
+            *user.id(),
+            like.id().clone(),
+            postid.into(),
+        ))
         .await
         .context(StorageSnafu)?;
 
@@ -1415,20 +1430,25 @@ async fn following(
 define_metric! { "posts.served", posts_served, Sort::IntegralCounter }
 define_metric! { "posts.errors", posts_errors, Sort::IntegralCounter }
 
+/// Handler for `/users/{username}/posts/{postid}`, where `postid` could refer to an indielinks
+/// [Post], or an outgoing [Reply] or [Share] by an [Actor] on this instance.
 async fn get_post(
     State(state): State<Arc<Indielinks>>,
-    axum::extract::Path((username, postid)): axum::extract::Path<(Username, PostId)>,
+    axum::extract::Path((username, entityid)): axum::extract::Path<(Username, Uuid)>,
     headers: HeaderMap,
 ) -> axum::response::Response {
     async fn get_post1(
         origin: &Origin,
         storage: &(dyn StorageBackend + Send + Sync),
         username: &Username,
-        postid: &PostId,
+        entityid: &Uuid,
         headers: &HeaderMap,
     ) -> Result<(Note, crate::http::Accept)> {
+        // Looking up the header is fallible, so do it here.
         let accept =
             crate::http::Accept::lookup_from_header_map(headers).context(AcceptLookupSnafu)?;
+
+        // We're going to check the post owner against `username`, so lookup the user.
         let user = storage
             .user_for_name(username.as_ref())
             .await
@@ -1439,27 +1459,61 @@ async fn get_post(
                 }
                 .build(),
             )?;
-        let post = storage
-            .get_post_by_id(postid)
+
+        fn check_userid(user: &User, userid: &UserId, id: &Uuid) -> Result<()> {
+            if user.id() != userid {
+                return NoPostSnafu {
+                    username: user.username(),
+                    id: *id,
+                }
+                .fail();
+            }
+            Ok(())
+        }
+
+        // Regrettably, there are two tables we need to search: `entityid` could name an
+        // indielinks post, or it could name a reply/share.
+        let note: Note = match storage
+            .get_post_by_id(&entityid.into())
             .await
             .context(StorageSnafu)?
-            .ok_or(
-                NoPostSnafu {
-                    username: username.clone(),
-                    postid: *postid,
-                }
-                .build(),
-            )?;
-        // Check-- username as expected?
-        if user.username() != username {
-            return PostUserMismatchSnafu {
-                postid: *postid,
-                requested_username: username.clone(),
-                actual_username: user.username().clone(),
+        {
+            Some(post) => {
+                check_userid(&user, &post.user_id(), entityid)?;
+                Note::new(&post, username, origin).context(NoteSnafu { id: *entityid })?
             }
-            .fail();
-        }
-        let note = Note::new(&post, username, origin).context(NoteSnafu { postid: *postid })?;
+            None => match storage
+                .get_like_reply_share(entityid)
+                .await
+                .context(StorageSnafu)?
+            {
+                Some(LikeReplyShare::Like(_)) => {
+                    return IsALikeSnafu {
+                        username: username.clone(),
+                        id: *entityid,
+                    }
+                    .fail();
+                }
+                Some(LikeReplyShare::Reply(reply)) => {
+                    check_userid(&user, &reply.user_id(), entityid)?;
+                    Note::from_reply(&reply, username, origin)
+                        .context(NoteSnafu { id: *entityid })?
+                }
+                Some(LikeReplyShare::Share(share)) => {
+                    check_userid(&user, &share.user_id(), entityid)?;
+                    Note::from_share(&share, username, origin)
+                        .context(NoteSnafu { id: *entityid })?
+                }
+                None => {
+                    return NoPostSnafu {
+                        username: username.clone(),
+                        id: *entityid,
+                    }
+                    .fail();
+                }
+            },
+        };
+
         Ok((note, accept))
     }
 
@@ -1467,28 +1521,28 @@ async fn get_post(
         &state.origin,
         state.storage.as_ref(),
         &username,
-        &postid,
+        &entityid,
         &headers,
     )
     .await
     {
         Ok((note, crate::http::Accept::ActivityPub)) => match note.as_jld(None) {
             Ok(jld) => {
-                posts_served.add(1, &[]);
+                posts_served.add(1, &[KeyValue::new("username", username)]);
                 patch_content_type((StatusCode::OK, jld.to_string()).into_response())
             }
             Err(err) => handle_err(err, posts_errors.deref()),
         },
         Ok((note, crate::http::Accept::Html)) => match note.as_html() {
             Ok(html) => {
-                posts_served.add(1, &[]);
+                posts_served.add(1, &[KeyValue::new("username", username)]);
                 (StatusCode::OK, html.to_string()).into_response()
             }
             Err(err) => handle_err(err, posts_errors.deref()),
         },
         Err(err @ Error::NoPost { .. }) => {
             error!("{}", err);
-            posts_served.add(1, &[]);
+            posts_errors.add(1, &[KeyValue::new("username", username)]);
             StatusCode::NOT_FOUND.into_response()
         }
         Err(err) => handle_err(err, posts_errors.deref()),

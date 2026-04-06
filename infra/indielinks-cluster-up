@@ -67,7 +67,7 @@ if [ "${nodes}" == "5" ]; then
 fi
 
 # If I don't place my `haproxy` invocation into a sub-shell, `Command::output()` hangs.
-(haproxy -f ${here}/../indielinks-test/haproxy-${nodes}-nodes.conf) > /tmp/haproxy.log 2>&1 < /dev/null &
+(haproxy -f ${here}/../tests-indielnks/conf/haproxy-${nodes}-nodes.conf) > /tmp/haproxy.log 2>&1 < /dev/null &
 sleep 0.5
 
 echo "indielinksd up & fronted by haproxy."

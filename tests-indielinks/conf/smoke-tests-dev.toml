@@ -1,22 +1,18 @@
-# New syntax
+# `smoke-tests` configuration suitable for development.
+# Assumes you've run `../../infra/scylla-up` and are
+# somehow running a development build of indielinks (with
+# the public endpoint at localhost:20679).
+
 runner.log-level = "DEBUG"
 runner.logging = true
-runner.no-setup = false
-runner.no-teardown = false
+runner.no-setup = true
+runner.no-teardown = true
 runner.enforce-single-threaded=true
 
 # The URL at which indielinks can be reached from *within* a test'
 domain.indielinks = "http://indiemark.local:20679"
-# ops = "http://127.0.0.1:20680"
 domain.username = "sp1ff"
 domain.api-key = "v1:5eb56ceebb7425aafe36eabca8b923054b4907d9375acd0b9950c51b57b201fb73e437428050f451b57632f99a3bbd5bed1c0f51cc0df752147090ed26e975f4"
-
-# [raft-nodes]
-# "0" = { addr = "127.0.0.1:20681" }
-# "1" = { addr = "127.0.0.1:20684" }
-# "2" = { addr = "127.0.0.1:20687" }
-# "3" = { addr = "127.0.0.1:20690" }
-# "4" = { addr = "127.0.0.1:20693" }
 
 # Regrettably, this must match exactly the indielinks configuration item of the same name
 [domain.pepper.peppers]

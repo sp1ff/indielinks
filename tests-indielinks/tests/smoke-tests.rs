@@ -75,7 +75,7 @@ use url::Url;
 use indielinks::{peppers::Peppers, scylla::execute_cql};
 
 use tests_indielinks::{
-    activity_pub::{as_follower, posting_creates_note, send_follow},
+    activity_pub::{as_follower, context_with_mastodon, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     helper::{DynamoConfig, DynamoDBHelper, Helper, ScyllaConfig, ScyllaHelper},
@@ -615,6 +615,20 @@ inventory::submit!(Test {
 inventory::submit!(Test {
     name: "080user_test_mint_key",
     test_fn: |cfg: Configuration, helper| { Box::pin(test_mint_key(cfg.indielinks, helper)) },
+    fixtures: None,
+});
+
+inventory::submit!(Test {
+    name: "090context_with_mastodon",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(context_with_mastodon(
+            cfg.indielinks,
+            version,
+            pepper,
+            helper,
+        ))
+    },
     fixtures: None,
 });
 

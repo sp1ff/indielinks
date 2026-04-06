@@ -532,16 +532,20 @@ pub async fn schema_migration_2(client: Client) -> Result<()> {
         table_name = "likes_replies_shares",
         attr_defn = ("user_id", S),
         attr_defn = ("posted_and_id", S),
+        attr_defn = ("id", S),
         pk = "user_id",
-        sk = "posted_and_id"
+        sk = "posted_and_id",
+        gsi: (name = "likes_replies_shares_by_id", pk = "id")
     )?;
     create_table!(
         client = client,
         table_name = "incoming_likes_replies_shares",
         attr_defn = ("user_id", S),
-        attr_defn = ("received_and_id", S),
+        attr_defn = ("received_and_ap_id", S),
+        attr_defn = ("in_reply_to", S),
         pk = "user_id",
-        sk = "received_and_id"
+        sk = "received_and_ap_id",
+        gsi: (name = "incoming_likes_replies_shares_by_ap_id", pk = "in_reply_to")
     )
     .map(|_| ())
 }

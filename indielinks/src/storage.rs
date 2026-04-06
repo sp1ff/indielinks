@@ -19,8 +19,8 @@
 
 use crate::{
     entities::{
-        ApiKeys, FollowId, Follower, Following, OutgoingLike, OutgoingReply, PostLike, PostReply,
-        PostShare, User,
+        ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingReply, IncomingShare,
+        LikeReplyShare, OutgoingLike, OutgoingReply, User,
     },
     util::UpToThree,
 };
@@ -36,6 +36,7 @@ use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use snafu::{prelude::*, Backtrace};
 use url::Url;
+use uuid::Uuid;
 
 use std::collections::{HashMap, HashSet};
 
@@ -98,8 +99,8 @@ pub trait Backend {
     async fn add_outgoing_like(&self, like: &OutgoingLike) -> Result<(), Error>;
     /// Add a reply that originated on this intance
     async fn add_outgoing_reply(&self, reply: &OutgoingReply) -> Result<(), Error>;
-    /// Add a [PostLike]
-    async fn add_post_like(&self, reply: &PostLike) -> Result<(), Error>;
+    /// Add a like for a post that originated on this instance
+    async fn add_post_like(&self, reply: &IncomingLike) -> Result<(), Error>;
     /// Add a Post for `user`; return true if a new post was actually created, false if the post
     /// already existed and `replace` was set to false.
     #[allow(clippy::too_many_arguments)]
@@ -117,9 +118,10 @@ pub trait Backend {
         tags: &HashSet<Tagname>,
     ) -> Result<bool, Error>;
     /// Add a Reply for an existing post
-    async fn add_post_reply(&self, reply: &PostReply) -> Result<(), Error>;
+    // Rename this method?
+    async fn add_post_reply(&self, reply: &IncomingReply) -> Result<(), Error>;
     /// Add a Share for an existing post
-    async fn add_post_share(&self, share: &PostShare) -> Result<(), Error>;
+    async fn add_post_share(&self, share: &IncomingShare) -> Result<(), Error>;
     /// Add a new user
     async fn add_user(&self, user: &User) -> Result<(), Error>;
     /// Confirm a follow for a user
@@ -145,6 +147,7 @@ pub trait Backend {
         &'a self,
         user: &User,
     ) -> Result<BoxStream<'a, Result<Following, Error>>, Error>;
+    async fn get_like_reply_share(&self, id: &Uuid) -> Result<Option<LikeReplyShare>, Error>;
     async fn get_post(&self, userid: &UserId, uri: &StorUrl) -> Result<Option<Post>, Error>;
     async fn get_post_by_id(&self, id: &PostId) -> Result<Option<Post>, Error>;
     /// Retrieve full posts with various filtering options

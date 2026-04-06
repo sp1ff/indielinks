@@ -30,11 +30,11 @@ drop table if exists replies;
 drop table if exists shares;
 
 create table if not exists likes_replies_shares (
+  /* Is this a like, a reply, or a share? */
+  sort tinyint,
   user_id uuid,
   posted timestamp,
   id uuid,
-  /* Is this a like, a reply, or a share? */
-  sort tinyint,
   /* The URL of the thing that we are liking, sharing or replying to. */
   in_reply_to ascii,
   visibility tinyint,
@@ -43,15 +43,22 @@ create table if not exists likes_replies_shares (
   PRIMARY KEY (user_id, posted, id)
 ) WITH CLUSTERING ORDER BY (posted desc);
 
+create index if not exists likes_replies_shares_by_id on likes_replies_shares (id);
+
 create table if not exists incoming_likes_replies_shares (
-  user_id uuid,
-  received timesetamp,
-  ap_id ascii,
   /* Is this a like, a reply, or a share? */
   sort tinyint,
-  /* The URL of the indielinks post that is being liked, shared, or replied to. */
-  in_reply_to ascii,
+  user_id uuid,
+  received timestamp,
+  ap_id ascii,
+  /* The sort of thing being liked, replied to, or shared, if it's on this instance */
+  in_reply_to_sort tinyint,
+  /* The UUID of the thing being liked, replied to, or shared, if it's on this instance */
+  in_reply_to uuid,
   visibility tinyint,
   content text,
   PRIMARY KEY (user_id, received, ap_id)
 ) WITH CLUSTERING ORDER BY (received desc);
+
+create index if not exists incoming_likes_replies_shares_in_reply_to on incoming_likes_replies_shares (in_reply_to);
+

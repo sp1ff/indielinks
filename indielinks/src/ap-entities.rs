@@ -148,7 +148,7 @@ use indielinks_shared::{
 use crate::{
     acct::Account,
     client_types::ClientType,
-    entities::{FollowId, LikeId, ReplyId, User},
+    entities::{FollowId, LikeId, OutgoingReply, OutgoingShare, ReplyId, ShareId, User},
     sanitized_html::{parse, ParseResult, SanitizedHtml},
 };
 
@@ -369,6 +369,11 @@ pub fn make_post_reply_id(username: &Username, postid: &PostId, origin: &Origin)
     .context(UrlParseSnafu)
 }
 
+/// Return an URL naming an indielinks user's share activity
+pub fn make_user_share_id(username: &Username, shareid: &ShareId, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!("{}/users/{}/posts/{}", origin, username, shareid)).context(UrlParseSnafu)
+}
+
 pub fn make_post_reply_first(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
     Url::parse(&format!(
         "{}/users/{}/posts/{}/replies?page=true",
@@ -378,6 +383,14 @@ pub fn make_post_reply_first(username: &Username, postid: &PostId, origin: &Orig
 }
 
 pub fn make_reply_reply_id(username: &Username, postid: &ReplyId, origin: &Origin) -> Result<Url> {
+    Url::parse(&format!(
+        "{}/users/{}/posts/{}/replies",
+        origin, username, postid
+    ))
+    .context(UrlParseSnafu)
+}
+
+pub fn make_share_reply_id(username: &Username, postid: &ShareId, origin: &Origin) -> Result<Url> {
     Url::parse(&format!(
         "{}/users/{}/posts/{}/replies",
         origin, username, postid
@@ -396,6 +409,19 @@ pub fn make_reply_reply_first(
     ))
     .context(UrlParseSnafu)
 }
+
+pub fn make_share_reply_first(
+    username: &Username,
+    postid: &ShareId,
+    origin: &Origin,
+) -> Result<Url> {
+    Url::parse(&format!(
+        "{}/users/{}/posts/{}/replies?page=true",
+        origin, username, postid
+    ))
+    .context(UrlParseSnafu)
+}
+
 lazy_static! {
     static ref USER_PATH: Regex =
         Regex::new("^/users/([a-zA-Z][-_.a-zA-Z0-9]+)$").unwrap(/* known good */);
@@ -1079,7 +1105,8 @@ pub struct Undo {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum NoteField {
-    Inline(Note),
+    // Cf. https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#large_enum_variant
+    Inline(Box<Note>),
     Iri(Url),
 }
 
@@ -1122,6 +1149,13 @@ impl Replies {
             total_items: Some(0),
         })
     }
+    pub fn empty_for_share(origin: &Origin, username: &Username, postid: &ShareId) -> Result<Self> {
+        Ok(Replies {
+            id: make_share_reply_id(username, postid, origin)?,
+            first: FirstField::Iri(make_share_reply_first(username, postid, origin)?),
+            total_items: Some(0),
+        })
+    }
     pub fn new(id: Url, first: Url, total_items: Option<usize>) -> Self {
         Self {
             id,
@@ -1131,6 +1165,9 @@ impl Replies {
     }
     pub fn first(&self) -> &FirstField {
         &self.first
+    }
+    pub fn id(&self) -> &Url {
+        &self.id
     }
 }
 
@@ -1207,9 +1244,10 @@ impl Note {
             cc: vec![make_user_followers(username, origin)?],
             content: post_html.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), post_html)])),
-            replies: Replies::empty(&origin, &username, &post.id())?,
+            replies: Replies::empty(origin, username, &post.id())?,
         })
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn new_from_parts<T, U>(
         id: Url,
         in_reply_to: Option<Url>,
@@ -1237,6 +1275,46 @@ impl Note {
             content: content.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), content)])),
             replies,
+        })
+    }
+    pub fn from_reply(reply: &OutgoingReply, username: &Username, origin: &Origin) -> Result<Note> {
+        let ParseResult { html, .. } = parse(reply.content()).context(ParseSnafu)?;
+        Ok(Note {
+            id: make_user_reply_id(username, &reply.id(), origin)?,
+            summary: None,
+            in_reply_to: None,
+            published: reply.posted(),
+            // Setting this to the same value as `id` for now, but Mastodon sets them to different
+            // values: `http://indieweb.social/users/sp1ff/statuses/...` versus
+            // `http://indieweb.social/@sp1ff/...`
+            url: Some(make_user_reply_id(username, &reply.id(), origin)?),
+            attributed_to: make_user_id(username, origin)?,
+            to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
+                .context(UrlParseSnafu)?],
+            cc: vec![make_user_followers(username, origin)?],
+            content: html.clone().into(),
+            content_map: Some(HashMap::from([("en".to_owned(), html.into())])),
+            replies: Replies::empty_for_reply(origin, username, &reply.id())?,
+        })
+    }
+    pub fn from_share(share: &OutgoingShare, username: &Username, origin: &Origin) -> Result<Note> {
+        let ParseResult { html, .. } = parse(share.content()).context(ParseSnafu)?;
+        Ok(Note {
+            id: make_user_share_id(username, &share.id(), origin)?,
+            summary: None,
+            in_reply_to: None,
+            published: share.posted(),
+            // Setting this to the same value as `id` for now, but Mastodon sets them to different
+            // values: `http://indieweb.social/users/sp1ff/statuses/...` versus
+            // `http://indieweb.social/@sp1ff/...`
+            url: Some(make_user_share_id(username, &share.id(), origin)?),
+            attributed_to: make_user_id(username, origin)?,
+            to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
+                .context(UrlParseSnafu)?],
+            cc: vec![make_user_followers(username, origin)?],
+            content: html.clone().into(),
+            content_map: Some(HashMap::from([("en".to_owned(), html.into())])),
+            replies: Replies::empty_for_share(origin, username, &share.id())?,
         })
     }
     // Ack! Placeholder!
@@ -2104,6 +2182,12 @@ pub struct Html(String);
 impl Display for Html {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for Html {
+    fn as_ref(&self) -> &str {
+        &self.0
     }
 }
 

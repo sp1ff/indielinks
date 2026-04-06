@@ -378,9 +378,10 @@
 //!    - internal subsystems
 //! 6) client-types (authn, http)
 //! 7) authn
-//! 8) storage, token, entities, acct
-//! 9) peppers, signing-keys, http
-//! 10) util, metrics, cache
+//! 8) storage
+//! 9) token, entities, acct
+//! 10) peppers, signing-keys, http
+//! 11) util, metrics, cache
 //!    - depend on nothing
 //!
 //! ## Continuous Integration
