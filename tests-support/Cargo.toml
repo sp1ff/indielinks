@@ -1,6 +1,21 @@
 [package]
 name = "tests-support"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 
 [dependencies]
+async-trait = "0.1.89"
+inventory = "0.3.24"
+itertools = "0.14.0"
+libtest-mimic = "0.8.2"
+serde = { version = "1.0.228", features = ["derive"] }
+snafu = "0.9.0"
+tap = "1.0.1"
+tokio = { version = "1.51.1", features = ["rt-multi-thread"] }
+toml = "0.8.19"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[[test]]
+name = "trivial"
+harness = false

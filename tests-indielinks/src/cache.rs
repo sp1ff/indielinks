@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -10,10 +10,14 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! Integration tests for indielinks-cache.
+//! Integration tests for [indielinks] as a distributed cache.
+//!
+//! This module implements a (very small, at the moment) set of tests for [indielinks] as a
+//! distributed cache. Each public function herein is meant to be invoked by one or more
+//! [IntegrationTest] implementations.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -27,6 +31,10 @@ use indielinks_cache::{
 };
 
 use indielinks::cache::{Backend, LogStore};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                           Scaffolding for the `openraft` test suite                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Dropper {
     // backend: Arc<RwLock<dyn Backend + Send + Sync>>,
@@ -71,6 +79,10 @@ impl indielinks_cache::raft::test::StoreBuilder<LogStore, Dropper> for Builder {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       integration tests                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// Execute the [openraft] test suite against the [indielinks](crate) log store implementation.
 ///
 /// [openraft]: https://docs.rs/openraft/latest/openraft/index.html
@@ -83,13 +95,13 @@ pub fn openraft_test_suite(backend: Arc<dyn Backend + Send + Sync>) -> Result<()
     Ok(())
 }
 
-// Cache smoke test; stubbed for now, but will be the integration test for managing the Raft
-// cluster; initializing, driving, adding learners & so on.
+/// Cache smoke test; stubbed for now, but will be the integration test for managing the Raft
+/// cluster; initializing, driving, adding learners & so on.
 pub fn raft_ops(
-    ops: Url,
+    ops_endpoint: Url,
     nodes: impl IntoIterator<Item = (NodeId, ClusterNode)>,
 ) -> Result<(), Failed> {
-    debug!("Executing test raft_ops (ops is {ops})");
+    debug!("Executing test raft_ops (ops is {ops_endpoint})");
 
     let client = Client::builder()
         .user_agent("indielinks-test/raft-ops 0.0.1 (+sp1ff@pobox.com)")
@@ -106,7 +118,7 @@ pub fn raft_ops(
     // Let's start by initializing a three-node cluster:
     assert_eq!(
         client
-            .post(ops.join("ops/cache/init-cluster")?)
+            .post(ops_endpoint.join("ops/cache/init-cluster")?)
             .json(&first_three)
             .send()
             .expect("Failed to send first init-cluster request")
@@ -119,7 +131,7 @@ pub fn raft_ops(
     // Should be able to call it again with no error
     assert_eq!(
         client
-            .post(ops.join("ops/cache/init-cluster")?)
+            .post(ops_endpoint.join("ops/cache/init-cluster")?)
             .json(&first_three)
             .send()?
             .error_for_status()?

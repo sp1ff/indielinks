@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -10,133 +10,56 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-// This integration test is a little different: I want to handle multiple fixtures in a single
-// executable. I now have three different test suites (app smoke tests, background task processing
-// and this one) with two different fixtures: ScyllaDB versus DynamoDB. That gives six different
-// test binaries-- not terrible. However, I want introduce another facet to the abstraction of
-// fixture: indielinks deployed in a cluster as opposed to a single node. That would make for
-// *twelve* test binaries, along with a lot of code duplication among them.
-//
-// With `cache-tests`, I want to "move up" a level of complexity: instead of driving the binary off
-// a list of tests, I want to drive it off a list of *fixtures*, each of which will run a given
-// suite of tests.
+//! # [indielinks] as cache integration tests
+//!
+//! This (admittedly sparse) integration test exercises [indielinks] configured to run in a cluster
+//! as a distribute cache baed on [openraft].
 
-use std::{collections::HashSet, io, process::ExitCode, sync::Arc};
+use std::{process::ExitCode, result::Result as StdResult, str::FromStr, sync::Arc};
 
-use futures::future::{BoxFuture, FutureExt};
-use itertools::Itertools;
-use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
+use async_trait::async_trait;
+use libtest_mimic::Failed;
+use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
-use tokio::runtime::Runtime;
 use tracing::debug;
-use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
 use indielinks::cache::Backend as CacheBackend;
 
 use tests_indielinks::cache::{openraft_test_suite, raft_ops};
 
-use common::{run, Configuration, Fixture};
+use tests_support::{sync_integration_test, Fixture, IntegrationTest, SyncIntegrationTest};
+
+use common::{run, Configuration};
 
 mod common;
 
 #[derive(Debug, Snafu)]
-enum Error {
+pub enum Error {
     #[snafu(display("Failed to create a DynamoDB session: {source}"))]
     Client { source: indielinks::dynamodb::Error },
     #[snafu(display("Failed to run {cmd}: {source}"))]
     Command { cmd: String, source: common::Error },
     #[snafu(display("Error obtaining test configuration: {source}"))]
     Configuration { source: common::Error },
-    #[snafu(display("Failed to parse RUST_LOG: {source}"))]
-    Filter {
-        source: tracing_subscriber::filter::FromEnvError,
-    },
-    #[snafu(display("Failed to set the global tracing subscriber: {source}"))]
-    SetGlobalDefault {
-        source: tracing::subscriber::SetGlobalDefaultError,
+    #[snafu(display("Couldn't parse {text} as a FixtureId"))]
+    FixtureId { text: String },
+    #[snafu(display(""))]
+    IntegrationTest {
+        #[snafu(source(from(tests_support::Error<CacheFixture>, Box::new)))]
+        source: Box<tests_support::Error<CacheFixture>>,
     },
 }
 
 type Result<T> = std::result::Result<T, Error>;
 
-type StdResult<T, E> = std::result::Result<T, E>;
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       fixture utilities                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// I can't quite generalize the notions of "test" or "fixture" across all three sorts of test
-// (indielinks, background & cache). For now, I'm putting 'em here. They should probably be in their
-// own module, but before that refactor, think-through the Error strategy.
-
-struct CacheTest {
-    pub name: &'static str,
-    pub test_fn:
-        fn(Configuration, Arc<dyn CacheBackend + Send + Sync>) -> std::result::Result<(), Failed>,
-    // None => run this test in all fixtures; Some<vec![a, b]> => only run in fixtures a & b
-    pub fixtures: Option<&'static [Fixture]>,
-}
-
-inventory::collect!(CacheTest);
-
-struct TestFixture {
-    pub fixture: Fixture,
-    pub setup: fn(&Configuration) -> Result<()>,
-    pub teardown: fn(&Configuration) -> Result<()>,
-    pub mk_backend:
-        fn(Configuration) -> BoxFuture<'static, Result<Arc<dyn CacheBackend + Send + Sync>>>,
-}
-
-inventory::collect!(TestFixture);
-
-fn run_fixture(
-    fix: &TestFixture,
-    args: &Arguments,
-    config: Configuration,
-    rt: Arc<Runtime>,
-) -> Result<libtest_mimic::Conclusion> {
-    if !config.no_setup {
-        (fix.setup)(&config)?;
-    }
-
-    debug!("Fixture setup complete; creating the backend");
-
-    let backend = rt.block_on((fix.mk_backend)(config.clone()))?;
-
-    debug!("Backend created; executing tests.");
-
-    let conclusion = libtest_mimic::run(
-        args,
-        inventory::iter::<CacheTest>
-            .into_iter()
-            .sorted_by_key(|t| t.name)
-            .filter_map(|test| {
-                if test
-                    .fixtures
-                    .map(|f| f.contains(&fix.fixture))
-                    .unwrap_or(true)
-                {
-                    Some(Trial::test(test.name, {
-                        let cfg = config.clone();
-                        let backend = backend.clone();
-                        move || (test.test_fn)(cfg, backend)
-                    }))
-                } else {
-                    None
-                }
-            })
-            .collect(),
-    );
-
-    debug!("Tearing-down this fixture");
-
-    if !config.no_teardown {
-        (fix.teardown)(&config)?;
-    }
-
-    debug!("Fixture complete; returning {conclusion:?}");
-
-    Ok(conclusion)
-}
+// A collection of little functions for standing-up & tearing-down associated services.
 
 fn setup_indielinks_cluster_alternator() -> Result<()> {
     teardown_indielinks_cluster()?;
@@ -168,101 +91,173 @@ fn teardown_scylla() -> Result<()> {
     })
 }
 
-inventory::submit!(TestFixture {
-    fixture: Fixture::DynamoDBCluster,
-    setup: |_| {
-        debug!("DynamoDBCluster setup...");
-        setup_scylla()?;
-        setup_indielinks_cluster_alternator()?;
-        debug!("DynamoDBCluster setup...done.");
-        Ok(())
-    },
-    teardown: |_| {
-        debug!("DynamoDBCluster teardown...");
-        teardown_indielinks_cluster()?;
-        teardown_scylla()?;
-        debug!("DynamoDBCluster teardown...done");
-        Ok(())
-    },
-    mk_backend: |cfg| -> BoxFuture<'static, Result<Arc<dyn CacheBackend + Send + Sync>>> {
-        async move {
-            indielinks::dynamodb::Client::new(&cfg.dynamo.location, &cfg.dynamo.credentials, 0)
-                .await
-                .context(ClientSnafu)
-                .map(|x| Arc::new(x) as Arc<dyn CacheBackend + Send + Sync>) // Unsize coercion
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          test fixture                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// The "PreConfigured" variants are handy because the test need not be aware (at all) of whether
+// indielinks is running as a single- or multi-node cluster: it can just write requests to a single
+// address.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialOrd, PartialEq)]
+pub enum FixtureId {
+    ScyllaSingleNode,
+    SycllaCluster,
+    SycllaClusterPreConfigured,
+    DynamoDBSingleNode,
+    DynamoDBCluster,
+    DynamoDBClusterPreConfigured,
+}
+
+impl FromStr for FixtureId {
+    type Err = Error;
+
+    fn from_str(s: &str) -> StdResult<Self, Self::Err> {
+        match s {
+            "scylla-single-node" => Ok(FixtureId::ScyllaSingleNode),
+            "scylla-cluster" => Ok(FixtureId::SycllaCluster),
+            "scylla-cluster-pre-configured" => Ok(FixtureId::SycllaClusterPreConfigured),
+            "dynamodb-single-node" => Ok(FixtureId::DynamoDBSingleNode),
+            "dynamodb-cluster" => Ok(FixtureId::DynamoDBCluster),
+            "dynamodb-cluster-pre-configured" => Ok(FixtureId::DynamoDBClusterPreConfigured),
+            _ => Err(FixtureIdSnafu { text: s.to_owned() }.build()),
         }
-        .boxed()
     }
+}
+
+#[derive(Debug)]
+pub struct CacheFixture {
+    id: FixtureId, // pub setup: fn(&Configuration) -> Result<()>,
+                   // pub teardown: fn(&Configuration) -> Result<()>,
+                   // pub mk_backend:
+                   //     fn(Configuration) -> BoxFuture<'static, Result<Arc<dyn CacheBackend + Send + Sync>>>,
+}
+
+#[async_trait]
+impl Fixture for CacheFixture {
+    type Error = Error;
+    // Both the DDB & Scylla clients implement `CacheBackend`, so for now we just use a type-erased
+    // reference to one or the other, as appropriate for the particular fixture instance.
+    type Backend = Arc<dyn CacheBackend + Send + Sync>;
+    type Configuration = Configuration;
+    type Id = FixtureId;
+
+    #[doc = " Identify this [Fixture]; if two instances return the same [Id], they should compare [Eq]"]
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+
+    async fn new_backend(
+        &self,
+        cfg: &Self::Configuration,
+    ) -> StdResult<Self::Backend, Self::Error> {
+        indielinks::dynamodb::Client::new(&cfg.dynamo.location, &cfg.dynamo.credentials, 0)
+            .await
+            .context(ClientSnafu)
+            .map(|x| Arc::new(x) as Arc<dyn CacheBackend + Send + Sync>) // Unsize coercion
+    }
+
+    async fn setup(&self, _: &Self::Configuration) -> StdResult<(), Self::Error> {
+        match self.id {
+            FixtureId::DynamoDBCluster => {
+                debug!("DynamoDBCluster setup...");
+                setup_scylla()?;
+                setup_indielinks_cluster_alternator()?;
+                debug!("DynamoDBCluster setup...done.");
+            }
+            _ => unimplemented!(),
+        }
+        Ok(())
+    }
+
+    async fn teardown(&self, _: &Self::Configuration) -> StdResult<(), Self::Error> {
+        match self.id() {
+            FixtureId::DynamoDBCluster => {
+                debug!("DynamoDBCluster teardown...");
+                teardown_indielinks_cluster()?;
+                teardown_scylla()?;
+                debug!("DynamoDBCluster teardown...done");
+            }
+            _ => unimplemented!(),
+        }
+        Ok(())
+    }
+}
+
+inventory::collect!(CacheFixture);
+
+// This is kinda lame-- I've only built-out one fixture, so far.
+inventory::submit!(CacheFixture {
+    id: FixtureId::DynamoDBCluster,
 });
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             tests                                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+struct CacheTest {
+    pub name: &'static str,
+    pub test_fn:
+        fn(Configuration, Arc<dyn CacheBackend + Send + Sync>) -> std::result::Result<(), Failed>,
+    // None => run this test in all fixtures; Some<vec![a, b]> => only run in fixtures a & b
+    pub fixtures: Option<&'static [FixtureId]>,
+}
+
+impl IntegrationTest for CacheTest {
+    type F = CacheFixture;
+
+    fn germane(&self, fix: <Self::F as Fixture>::Id) -> bool {
+        self.fixtures.map(|f| f.contains(&fix)).unwrap_or(true)
+    }
+    fn name(&self) -> String {
+        self.name.to_owned()
+    }
+}
+
+#[async_trait]
+impl SyncIntegrationTest for CacheTest {
+    fn run(
+        &self,
+        config: <Self::F as Fixture>::Configuration,
+        backend: <Self::F as Fixture>::Backend,
+    ) -> StdResult<(), Failed> {
+        (self.test_fn)(config, backend)
+    }
+}
+
+inventory::collect!(CacheTest);
 
 inventory::submit!(CacheTest {
     name: "001openraft_test_suite",
     test_fn: |_, backend| openraft_test_suite(backend),
     // Makes no sense to run this more than once
-    fixtures: Some(&[Fixture::DynamoDBCluster])
+    fixtures: Some(&[FixtureId::DynamoDBCluster])
 });
 
 inventory::submit!(CacheTest {
     name: "002raft_ops",
     test_fn: |cfg, _| raft_ops(cfg.ops, cfg.raft_nodes),
-    fixtures: Some(&[Fixture::SycllaCluster, Fixture::DynamoDBCluster])
+    fixtures: Some(&[FixtureId::SycllaCluster, FixtureId::DynamoDBCluster])
 });
 
-// This will exit with status zero on test success, 101 on test failure & 1 on error-- I don't think
-// this is stricly compliant with the cargo convention, but I like the distinction between test
-// failure & program error (nb that if a test returns `Failed`, that will show-up as a test failure).
 fn main() -> Result<ExitCode> {
-    // Both the
-    let rt = Arc::new(Runtime::new().expect("Failed to build a tokio multi-threaded runtime"));
-
     // We have no way to augment the set of command-line arguments this program will accept, so
     // we'll examine an environment variable to determine where to get our configuration:
+    // TODO(sp1ff): sort-out (and document) the configuration situation!
     let config = Configuration::new().context(ConfigurationSnafu)?;
 
-    // Armed with our configuration, we can configure logging: if logging is requested, we'll log at
-    // the configured default level to `stdout`. The filter can be overridden via the (conventional)
-    // `RUST_LOG` environment variable.
-    if config.logging {
-        let filter = EnvFilter::builder()
-            .with_default_directive(config.log_level.into())
-            .from_env()
-            .context(FilterSnafu)?;
-        tracing::subscriber::set_global_default(
-            Registry::default()
-                .with(fmt::Layer::default().compact().with_writer(io::stdout))
-                .with(filter),
-        )
-        .context(SetGlobalDefaultSnafu)?;
-    }
-
-    debug!("Logging configured.");
-
-    let mut args = Arguments::from_args();
-
-    // This, together with prefixing my function names with numbers, is a hopefully temporary
-    // workaround to the fact that my tests can't be run out-of-order or simultaneously.
-    if !matches!(args.test_threads, Some(1)) {
-        eprintln!("Temporarily overriding --test-threads to 1.");
-        args.test_threads = Some(1);
-    }
-
-    let active = HashSet::<&Fixture>::from_iter(config.fixtures.as_ref().iter());
-
-    if inventory::iter::<TestFixture>
-        .into_iter()
-        .filter_map(|fix| {
-            debug!("Executing fixture {}", fix.fixture);
-            active.get(&fix.fixture).map(|_| {
-                let config = config.clone();
-                run_fixture(fix, &args, config, rt.clone())
-            })
-        })
-        .collect::<StdResult<Vec<Conclusion>, _>>()?
-        .into_iter()
-        .any(|c| c.has_failed())
-    {
-        Ok(ExitCode::from(101))
-    } else {
-        Ok(ExitCode::SUCCESS)
-    }
+    sync_integration_test::<_, _, CacheFixture, CacheTest>(
+        tests_support::TestConfiguration {
+            runner: Some(tests_support::TestRunnerConfiguration {
+                log_level: config.log_level,
+                logging: config.logging,
+                no_setup: config.no_setup,
+                no_teardown: config.no_teardown,
+                enforce_single_threaded: true,
+            }),
+            domain: config,
+        },
+        inventory::iter::<CacheFixture>.into_iter(),
+        inventory::iter::<CacheTest>,
+    )
+    .context(IntegrationTestSnafu)
 }

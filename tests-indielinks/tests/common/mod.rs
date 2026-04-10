@@ -143,6 +143,7 @@ impl Default for DynamoConfig {
     }
 }
 
+// TODO(sp1ff): can I remove this?
 // The "PreConfigured" variants are handy because the test need not be aware (at all) of whether
 // indielinks is running as a single- or multi-node cluster: it can just write requests to a single
 // address.
