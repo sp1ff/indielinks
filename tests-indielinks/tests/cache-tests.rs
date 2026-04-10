@@ -36,7 +36,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
 use indielinks::cache::Backend as CacheBackend;
 
-use indielinks_test::cache::{openraft_test_suite, raft_ops};
+use tests_indielinks::cache::{openraft_test_suite, raft_ops};
 
 use common::{run, Configuration, Fixture};
 

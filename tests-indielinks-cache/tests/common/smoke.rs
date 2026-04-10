@@ -15,13 +15,13 @@
 
 use std::{thread::sleep, time::Duration};
 
-use http::{StatusCode, header::CONTENT_TYPE};
+use http::{header::CONTENT_TYPE, StatusCode};
 use indielinks_cache::raft::Metrics;
 use libtest_mimic::Failed;
 use reqwest::blocking::{Client, ClientBuilder};
 use tracing::debug;
 
-use indielinks_cache_test::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
+use tests_indielinks_cache::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
 
 fn get_metrics(client: &Client, port: u16) -> Result<Metrics, Failed> {
     Ok(client
@@ -41,7 +41,7 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
         .build()?;
     let metrics = get_metrics(&client, base_port)?;
     assert_eq!(metrics.raft.id, 0); // sanity check
-    // Raft cluster not initialized => no leader.
+                                    // Raft cluster not initialized => no leader.
     assert_eq!(metrics.raft.current_leader, None);
 
     debug!("Initializing a three-node cluster");
@@ -170,7 +170,7 @@ pub fn single_node(port: u16) -> Result<(), Failed> {
         .build()?;
     let metrics = get_metrics(&client, port)?;
     assert_eq!(metrics.raft.id, 0); // sanity check
-    // Raft cluster not initialized => no leader.
+                                    // Raft cluster not initialized => no leader.
     assert_eq!(metrics.raft.current_leader, None);
 
     debug!("Initializing a single-node cluster");

@@ -15,13 +15,13 @@
 
 use std::{fmt::Display, io, sync::Arc};
 
-/// # Background task processing integration tests for ScyllaDB
+/// # Background task processing integration tests for DynamoDB/Alternator
 use common::{run, BackgroundTest, Configuration};
 
-use indielinks_test::background::first_background;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Trial};
 use snafu::prelude::*;
+use tests_indielinks::background::first_background;
 use tokio::runtime::Runtime;
 use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
@@ -29,6 +29,8 @@ mod common;
 
 #[derive(Snafu)]
 enum Error {
+    #[snafu(display("Failed to create a DynamoDB session: {source}"))]
+    Client { source: indielinks::dynamodb::Error },
     #[snafu(display("Failed to run {cmd}: {source}"))]
     Command { cmd: String, source: common::Error },
     #[snafu(display("Error obtaining test configuration: {source}"))]
@@ -37,8 +39,6 @@ enum Error {
     Filter {
         source: tracing_subscriber::filter::FromEnvError,
     },
-    #[snafu(display("Failed to create ScyllaDB session: {source}"))]
-    Session { source: indielinks::scylla::Error },
     #[snafu(display("Failed to set the global tracing subscriber: {source}"))]
     SetGlobalDefault {
         source: tracing::subscriber::SetGlobalDefaultError,
@@ -74,20 +74,16 @@ fn teardown() -> Result<()> {
 }
 
 struct State {
-    session: Arc<indielinks::scylla::Session>,
+    session: Arc<indielinks::dynamodb::Client>,
 }
 
 impl State {
     pub async fn new(cfg: &Configuration) -> Result<State> {
         Ok(State {
             session: Arc::new(
-                indielinks::scylla::Session::new(
-                    cfg.scylla.hosts.clone(),
-                    &cfg.scylla.credentials,
-                    0,
-                )
-                .await
-                .context(SessionSnafu)?,
+                indielinks::dynamodb::Client::new(&cfg.dynamo.location, &cfg.dynamo.credentials, 0)
+                    .await
+                    .context(ClientSnafu)?,
             ),
         })
     }
@@ -115,7 +111,7 @@ fn main() -> Result<()> {
     // we'll examine an environment variable to determine where to get our configuration:
     let config = Configuration::new().context(ConfigurationSnafu)?;
 
-    // Configure logging:
+    // Configure logging
     if config.logging {
         let filter = EnvFilter::builder()
             .with_default_directive(config.log_level.into())

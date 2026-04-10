@@ -37,7 +37,7 @@ use indielinks::{
     storage::Backend as StorageBackend, util::Credentials,
 };
 
-use indielinks_test::Helper;
+use tests_indielinks::Helper;
 
 #[derive(Debug, Snafu)]
 pub enum Error {

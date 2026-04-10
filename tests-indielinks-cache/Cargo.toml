@@ -1,5 +1,5 @@
 [package]
-name = "indielinks-cache-test"
+name = "tests-indielinks-cache"
 version = "0.0.1"
 edition = "2024"
 

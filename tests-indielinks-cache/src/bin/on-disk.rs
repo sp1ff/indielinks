@@ -13,56 +13,65 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! Trivial implementation of main to exercise [indielinks-cache](crate).
+//! Simple implementation of main to exercise [indielinks-cache](crate).
 //!
 //! # Introduction
 //!
-//! This binary is a trivial implementation of an [indielinks-cache] node for a cluster implementing
-//! distributed key-value store.
+//! This binary is a simple implementation of an [indielinks-cache] node for a cluster implementing
+//! distributed key-value store. It persists the Raft log to disk.
 
 use std::{
-    collections::BTreeMap,
-    io,
+    collections::{BTreeMap, BTreeSet},
+    fmt::Debug,
+    fs::{DirEntry, File},
+    io::{self, ErrorKind},
     net::{SocketAddr, SocketAddrV4},
+    ops::RangeBounds,
+    path::{Path, PathBuf},
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use async_trait::async_trait;
 use axum::{
-    Json, Router,
     extract::State,
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
-use bpaf::{Parser, construct};
+use bpaf::{construct, Parser};
 use http::StatusCode;
-use openraft::error::{NetworkError, RemoteError, Unreachable};
-use serde::{Serialize, de::DeserializeOwned};
+use openraft::{
+    error::{NetworkError, RemoteError, Unreachable},
+    storage::{LogFlushed, RaftLogStorage},
+    AnyError, Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogId,
+    RaftLogReader, StorageError, StorageIOError, Vote,
+};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{from_value, to_value};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Pipe, Tap};
 use tokio::{
     net::TcpListener,
-    signal::unix::{SignalKind, signal},
+    signal::unix::{signal, SignalKind},
     sync::{Notify, RwLock},
 };
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
-use tracing::{Level, debug, error, info, subscriber::set_global_default};
-use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
+use tracing::{debug, error, info, subscriber::set_global_default, Level};
+use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
 
 use indielinks_cache::{
     cache::Cache,
     network::{
-        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotError, InstallSnapshotRequest,
-        InstallSnapshotResponse, RPCError, RPCOption, RaftError, VoteRequest, VoteResponse,
+        self, AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotError,
+        InstallSnapshotRequest, InstallSnapshotResponse, RPCError, RPCOption, RaftError,
+        VoteRequest, VoteResponse,
     },
     raft::{CacheNode, Configuration},
-    types::{CacheId, ClusterNode, InMemoryLogStore, NodeId, TypeConfig},
+    types::{CacheId, ClusterNode, NodeId, TypeConfig},
 };
-
-use indielinks_cache_test::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
+use tests_indielinks_cache::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -122,11 +131,15 @@ type StdResult<T, E> = std::result::Result<T, E>;
 
 use std::error::Error as StdError;
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                     Client implementation                                      //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Clone)]
 struct ClientFactory;
 
 #[async_trait]
-impl indielinks_cache::network::ClientFactory for ClientFactory {
+impl network::ClientFactory for ClientFactory {
     type CacheClient = Client;
     async fn new_client(&mut self, target: NodeId, node: &ClusterNode) -> Self::CacheClient {
         Client::new(target, node.addr)
@@ -164,17 +177,15 @@ impl Client {
             // If the error is a connection error, we return `Unreachable` so that connection isn't
             // retried immediately:
             if e.is_connect() {
-                return indielinks_cache::network::RPCError::Unreachable(Unreachable::new(&e));
+                return network::RPCError::Unreachable(Unreachable::new(&e));
             }
-            indielinks_cache::network::RPCError::Network(NetworkError::new(&e))
+            network::RPCError::Network(NetworkError::new(&e))
         })?;
 
         resp.json::<StdResult<Rsp, Err>>()
             .await
-            .map_err(|e| indielinks_cache::network::RPCError::Network(NetworkError::new(&e)))?
-            .map_err(|e| {
-                indielinks_cache::network::RPCError::RemoteError(RemoteError::new(self.id, e))
-            })
+            .map_err(|e| network::RPCError::Network(NetworkError::new(&e)))?
+            .map_err(|e| network::RPCError::RemoteError(RemoteError::new(self.id, e)))
     }
     pub async fn send_cache_rpc<Req, Rsp>(
         &self,
@@ -206,7 +217,7 @@ impl Client {
 }
 
 #[async_trait]
-impl indielinks_cache::network::Client for Client {
+impl network::Client for Client {
     type ErrorType = Error;
     /// Append Raft log entries to the target node's log store
     async fn append_entries(
@@ -279,24 +290,296 @@ impl indielinks_cache::network::Client for Client {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          Log Storage                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// I'm pretty-sure I need to serialize all these methods; I'm going to try to do so by wrapping our
+// state (the storage directory) in a lock.
+#[derive(Clone)]
+struct LogStore {
+    store: Arc<Mutex<PathBuf>>,
+}
+
+// Weirdly (to me), the openraft examples use the log *index* as a unique identifier when
+// serializing entries. For instance, the in-memory implementation indexes its map using the index,
+// not the entire `LogId`. The RocksDB implementation only persists the index, not the entire ID.
+// This all despite the fact that `LogId` implements `Ord`.
+impl LogStore {
+    pub fn new(p: PathBuf) -> LogStore {
+        LogStore {
+            store: Arc::new(Mutex::new(p)),
+        }
+    }
+    /// Convert an arbitrary error to a [StorageError]
+    ///
+    /// This is handy when invoking fallible operations in the implementation of [RaftLogReader] or
+    /// [RaftLogStorage].
+    fn to_err(
+        subject: ErrorSubject<NodeId>,
+        verb: ErrorVerb,
+        err: impl Into<AnyError>,
+    ) -> StorageError<NodeId> {
+        StorageError::<NodeId>::IO {
+            source: StorageIOError::<NodeId>::new(subject, verb, err),
+        }
+    }
+    /// Produce a sorted collection of log entry file names
+    fn log_entries<P: AsRef<Path>>(p: P) -> StdResult<BTreeSet<PathBuf>, std::io::Error> {
+        fn f(dirent: &DirEntry) -> StdResult<Option<PathBuf>, std::io::Error> {
+            let file_name = dirent.file_name();
+            if dirent.file_type()?.is_file()
+                && file_name
+                    .to_str()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .is_some()
+            {
+                Ok(Some(PathBuf::from(file_name)))
+            } else {
+                Ok(None)
+            }
+        }
+
+        // Nightly-only method on Result-- re-implement here as a free function
+        fn flatten<T, E>(res: StdResult<StdResult<T, E>, E>) -> StdResult<T, E> {
+            match res {
+                Ok(inner) => inner,
+                Err(err) => Err(err),
+            }
+        }
+
+        let entries = std::fs::read_dir(&p)?
+            .filter_map(|dirent_res| flatten(dirent_res.map(|dirent| f(&dirent))).unwrap_or(None))
+            .collect::<Vec<PathBuf>>();
+        Ok(BTreeSet::from_iter(entries))
+    }
+    // `StorageError` is outside my control, and `NodeId` is just a u64, so... 🤷
+    #[allow(clippy::result_large_err)]
+    fn read_entry<P: AsRef<Path>>(path: P) -> StdResult<Entry<TypeConfig>, StorageError<NodeId>> {
+        let file = File::open(path)
+            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?;
+        serde_json::from_reader::<File, Entry<TypeConfig>>(file)
+            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
+    }
+}
+
+impl RaftLogReader<TypeConfig> for LogStore {
+    async fn try_get_log_entries<R>(
+        &mut self,
+        range: R,
+    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>>
+    where
+        R: RangeBounds<u64> + Clone + Debug + OptionalSend,
+    {
+        let store = self.store.lock().expect("Poisoned mutex");
+
+        LogStore::log_entries(&*store)
+            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?
+            .iter()
+            .filter_map(|path| {
+                if range.contains(
+                    &path.to_str().unwrap(/* known good */).parse::<u64>().unwrap(/* known good*/),
+                ) {
+                    Some(LogStore::read_entry(store.join(path)))
+                } else {
+                    None
+                }
+            })
+            .collect::<StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>>>()
+    }
+}
+
+impl RaftLogStorage<TypeConfig> for LogStore {
+    type LogReader = LogStore;
+
+    async fn get_log_state(&mut self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
+        let store = self.store.lock().expect("Poisoned mutex");
+
+        let last_purged_log_id = match std::fs::File::open(store.join("last-purged")) {
+            Ok(file) => serde_json::from_reader::<std::fs::File, LogId<NodeId>>(file)
+                .map(Some)
+                .map_err(|err| {
+                    LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err)
+                }),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(LogStore::to_err(
+                ErrorSubject::<NodeId>::Vote,
+                ErrorVerb::Read,
+                &err,
+            )),
+        }?;
+
+        let last_log_id = LogStore::log_entries(&*store)
+            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?
+            .iter()
+            .next_back()
+            .map(|path| LogStore::read_entry(store.join(path)))
+            .transpose()?
+            .map(|entry| *entry.get_log_id())
+            .or(last_purged_log_id);
+
+        debug!("get_log_state: {:?}, {:?}", last_purged_log_id, last_log_id);
+
+        Ok(LogState {
+            last_purged_log_id,
+            last_log_id,
+        })
+    }
+    async fn get_log_reader(&mut self) -> Self::LogReader {
+        self.clone()
+    }
+    async fn save_vote(&mut self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        let store = self.store.lock().expect("Poisoned mutex");
+        let file = std::fs::File::create(store.join("v")).map_err(|err| {
+            LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
+        })?;
+        serde_json::to_writer(file, vote)
+            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))
+    }
+    async fn read_vote(&mut self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
+        let store = self.store.lock().expect("Poisoned mutex");
+        match std::fs::File::open(store.join("v")) {
+            Ok(file) => serde_json::from_reader::<std::fs::File, Vote<NodeId>>(file)
+                .map(Some)
+                .map_err(|err| {
+                    LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err)
+                }),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(LogStore::to_err(
+                ErrorSubject::<NodeId>::Vote,
+                ErrorVerb::Read,
+                &err,
+            )),
+        }
+    }
+    async fn append<I>(
+        &mut self,
+        entries: I,
+        callback: LogFlushed<TypeConfig>,
+    ) -> StdResult<(), StorageError<NodeId>>
+    where
+        I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
+        I::IntoIter: OptionalSend,
+    {
+        let store = self.store.lock().expect("Poisoned mutex");
+        entries
+            .into_iter()
+            .map(|entry| {
+                // Super-lame, but in order to get the filenames to compare correctly (e.g. we want
+                // "9" to be less than "10"), we need to zero-pad the names.
+                assert!(entry.log_id.index < 100000);
+                std::fs::File::create(store.join(format!("{:05}", entry.log_id.index)))
+                    .map_err(|err| {
+                        LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
+                    })
+                    .and_then(|file| {
+                        serde_json::to_writer(file, &entry).map_err(|err| {
+                            LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
+                        })
+                    })
+            })
+            .collect::<StdResult<Vec<()>, StorageError<NodeId>>>()?;
+        callback.log_io_completed(Ok(()));
+        Ok(())
+    }
+    /// Remove log entry `log_id` and later (inclusive)
+    ///
+    /// The trait [docs] indicate that this operation must "not leave a *hole* in the logs", but I don't
+    /// see how that could occur.
+    ///
+    /// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.truncate
+    async fn truncate(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        info!("truncate: {log_id:?}");
+        let store = self.store.lock().expect("Poisoned mutex");
+        let log_id = PathBuf::from(format!("{:05}", log_id.index));
+        LogStore::log_entries(&*store)
+            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))?
+            .into_iter()
+            .filter(|pth| *pth >= log_id)
+            .map(|pth| {
+                std::fs::remove_file(store.join(pth)).map_err(|err| {
+                    LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
+                })
+            })
+            .collect::<StdResult<Vec<()>, StorageError<NodeId>>>()
+            .map(|_| ())
+    }
+    /// Remove log entries up to `log_id` (inclusive)
+    ///
+    /// The trait [docs] indicate that this operation must "not leave a *hole* in the logs", but I don't
+    /// see how that could occur.
+    ///
+    /// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.purge
+    async fn purge(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        info!("purge: {log_id:?}");
+        let store = self.store.lock().expect("Poisoned mutex");
+
+        let file = std::fs::File::create(store.join("last-purged")).map_err(|err| {
+            LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
+        })?;
+        serde_json::to_writer(file, &log_id).map_err(|err| {
+            LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
+        })?;
+
+        let log_id = PathBuf::from(format!("{:05}", log_id.index));
+        LogStore::log_entries(&*store)
+            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))?
+            .into_iter()
+            .filter(|pth| *pth <= log_id)
+            .map(|pth| {
+                std::fs::remove_file(store.join(&pth)).map_err(|err| {
+                    LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
+                })
+            })
+            .collect::<StdResult<Vec<()>, StorageError<NodeId>>>()
+            .map(|_| ())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use openraft::StorageError;
 
     use super::*;
 
+    struct Dropper {
+        pth: PathBuf,
+    }
+
+    impl Dropper {
+        pub fn new<P: AsRef<Path>>(p: P) -> Dropper {
+            Dropper::cleanup(&p);
+            std::fs::create_dir(&p).expect("Failed to create test directory");
+            Dropper {
+                pth: p.as_ref().to_path_buf(),
+            }
+        }
+        fn cleanup<P: AsRef<Path>>(p: P) {
+            let _ = std::fs::remove_dir_all(p); // Ignore errors
+        }
+    }
+
+    impl std::ops::Drop for Dropper {
+        fn drop(&mut self) {
+            Dropper::cleanup(&self.pth)
+        }
+    }
+
     struct Builder;
 
-    impl indielinks_cache::raft::test::StoreBuilder<InMemoryLogStore> for Builder {
-        async fn build(&self) -> StdResult<((), InMemoryLogStore), StorageError<NodeId>> {
-            Ok(((), InMemoryLogStore::default()))
+    impl indielinks_cache::raft::test::StoreBuilder<LogStore, Dropper> for Builder {
+        async fn build(&self) -> StdResult<(Dropper, LogStore), StorageError<NodeId>> {
+            let pth =
+                PathBuf::from_str("/tmp/indielinks-unit-test-cfd4c84a-dfc0-4837-b56b-4ab782328e18")
+                    .unwrap();
+            Ok((Dropper::new(&pth), LogStore::new(pth)))
         }
     }
 
     #[test_log::test]
     fn test_log_store() {
         let res = indielinks_cache::raft::test::test_storage(Builder);
-        debug!("openraft :=> {res:#?}");
+        info!("test_storage :=> {res:#?}");
         assert!(res.is_ok());
     }
 }
@@ -506,10 +789,7 @@ async fn admin_change_membership(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                             main()                                             //
-////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Giving `bpaf` a try
 #[derive(Debug)]
 struct Options {
     no_color: bool,
@@ -523,7 +803,7 @@ fn options() -> impl Parser<Options> {
         no_color(bpaf::short('c').long("no-color").help("Disable logging in color").switch()),
         verbose(bpaf::short('v').long("verbose").help("Increase the verbosity").switch()),
         id(bpaf::positional::<NodeId>("ID").help("Node ID, expressed as an unsigned integer")),
-        addr(bpaf::positional::<String>("SOCKADDR").parse(|s| SocketAddrV4::from_str(&s))),
+        addr(bpaf::positional::<String>("SOCKADDR").parse(|s| SocketAddrV4::from_str(&s)))
     })
 }
 
@@ -561,14 +841,20 @@ async fn main() {
 
     info!("Logging initialized");
 
-    let config = Configuration::builder("in-memory-test", opts.id)
+    let config = Configuration::builder("on-disk-test", opts.id)
         .heartbeat_interval(Duration::from_millis(500))
         .election_timeout_min(Duration::from_millis(1500))
         .election_timeout_max(Duration::from_millis(3000))
         .build();
-    let this_node = CacheNode::new(&config, ClientFactory, InMemoryLogStore::default())
-        .await
-        .expect("Failed to create this process' indielinks-cache node");
+    let this_node = CacheNode::new(
+        &config,
+        ClientFactory,
+        LogStore::new(
+            PathBuf::from_str(&format!("/tmp/on-disk-node-{}", opts.id)).unwrap(/* known good */),
+        ),
+    )
+    .await
+    .expect("Failed to create this process' indielinks-cache node");
 
     let state = AppState {
         id: opts.id,

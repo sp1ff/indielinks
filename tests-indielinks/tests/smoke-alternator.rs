@@ -23,7 +23,7 @@ use indielinks::{
     peppers::{Pepper, Version as PepperVersion},
 };
 use indielinks_shared::entities::{Post, StorUrl, UserEmail, UserId, Username};
-use indielinks_test::{
+use tests_indielinks::{
     activity_pub::{as_follower, posting_creates_note, send_follow},
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
