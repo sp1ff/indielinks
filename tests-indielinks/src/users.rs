@@ -30,7 +30,7 @@ use indielinks_shared::{
 
 use indielinks::http::ErrorResponseBody;
 
-use crate::Helper;
+use crate::helper::Helper;
 
 /// Test `/user/signup`
 pub async fn test_signup(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Result<(), Failed> {

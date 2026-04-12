@@ -16,7 +16,7 @@
 //! # [indielinks] as cache integration tests
 //!
 //! This (admittedly sparse) integration test exercises [indielinks] configured to run in a cluster
-//! as a distribute cache baed on [openraft].
+//! as a distributed cache baed on [openraft].
 
 use std::{process::ExitCode, result::Result as StdResult, str::FromStr, sync::Arc};
 
@@ -46,7 +46,7 @@ pub enum Error {
     Configuration { source: common::Error },
     #[snafu(display("Couldn't parse {text} as a FixtureId"))]
     FixtureId { text: String },
-    #[snafu(display(""))]
+    #[snafu(display("{source}"))]
     IntegrationTest {
         #[snafu(source(from(tests_support::Error<CacheFixture>, Box::new)))]
         source: Box<tests_support::Error<CacheFixture>>,
@@ -126,10 +126,8 @@ impl FromStr for FixtureId {
 
 #[derive(Debug)]
 pub struct CacheFixture {
-    id: FixtureId, // pub setup: fn(&Configuration) -> Result<()>,
-                   // pub teardown: fn(&Configuration) -> Result<()>,
-                   // pub mk_backend:
-                   //     fn(Configuration) -> BoxFuture<'static, Result<Arc<dyn CacheBackend + Send + Sync>>>,
+    id: FixtureId,
+    name: &'static str,
 }
 
 #[async_trait]
@@ -141,9 +139,12 @@ impl Fixture for CacheFixture {
     type Configuration = Configuration;
     type Id = FixtureId;
 
-    #[doc = " Identify this [Fixture]; if two instances return the same [Id], they should compare [Eq]"]
     fn id(&self) -> Self::Id {
         self.id
+    }
+
+    fn get_name(&self) -> String {
+        self.name.to_owned()
     }
 
     async fn new_backend(
@@ -188,6 +189,7 @@ inventory::collect!(CacheFixture);
 // This is kinda lame-- I've only built-out one fixture, so far.
 inventory::submit!(CacheFixture {
     id: FixtureId::DynamoDBCluster,
+    name: "Alternator (cluster)"
 });
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -242,7 +244,6 @@ inventory::submit!(CacheTest {
 fn main() -> Result<ExitCode> {
     // We have no way to augment the set of command-line arguments this program will accept, so
     // we'll examine an environment variable to determine where to get our configuration:
-    // TODO(sp1ff): sort-out (and document) the configuration situation!
     let config = Configuration::new().context(ConfigurationSnafu)?;
 
     sync_integration_test::<_, _, CacheFixture, CacheTest>(

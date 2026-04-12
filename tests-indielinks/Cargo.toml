@@ -53,14 +53,6 @@ wiremock = "0.6.3"
 tests-support = { path = "../tests-support" }
 
 [[test]]
-name = "smoke-alternator"
-harness = false
-
-[[test]]
-name = "smoke-scylla"
-harness = false
-
-[[test]]
 name = "background-scylla"
 harness = false
 
@@ -70,4 +62,8 @@ harness = false
 
 [[test]]
 name = "cache-tests"
+harness = false
+
+[[test]]
+name = "smoke-tests"
 harness = false

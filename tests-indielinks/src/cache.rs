@@ -18,6 +18,8 @@
 //! This module implements a (very small, at the moment) set of tests for [indielinks] as a
 //! distributed cache. Each public function herein is meant to be invoked by one or more
 //! [IntegrationTest] implementations.
+//!
+//! [IntegrationTest]: ../tests_support/trait.IntegrationTest.html
 
 use std::{collections::BTreeMap, sync::Arc};
 

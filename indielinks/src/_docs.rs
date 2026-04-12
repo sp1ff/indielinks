@@ -269,13 +269,18 @@
 //!
 //! ## Integration Tests
 //!
-//! I've begun building-out integration tests in dedicated crates (e.g. [indielinks-test]). While
+//! I've begun building-out integration tests in dedicated crates (e.g. [tests-indielinks]). While
 //! these tests fit into the standard Rust integration test framework, I've created them with custom
 //! harnesses that will stand-up ScyllaDB, spin-up an indielinks instance & then allow the tests to
 //! interact with indielinks as HTTP clients. I wrote about this in detail [here].
 //!
-//! [indielinks-test]: ../../indielinks_test/index.html
+//! [tests-indielinks]: ../../tests_indielinks/index.html
 //! [here]: https://www.unwoundstack.com/blog/integration-testing-rust-binaries.html
+//!
+//! More recently, I've started building-out a general integration testing framework for indielinks,
+//! in [tests-support]. You can read more about that [here](../../tests_support/index.html).
+//!
+//! [tests-support]: ../../tests_support/index.html
 //!
 //! ## indielinks as Client
 //!

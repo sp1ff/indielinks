@@ -31,26 +31,26 @@ use std::{
 
 use async_trait::async_trait;
 use axum::{
+    Json, Router,
     extract::State,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
-use bpaf::{construct, Parser};
+use bpaf::{Parser, construct};
 use http::StatusCode;
 use openraft::error::{NetworkError, RemoteError, Unreachable};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{from_value, to_value};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Pipe, Tap};
 use tokio::{
     net::TcpListener,
-    signal::unix::{signal, SignalKind},
+    signal::unix::{SignalKind, signal},
     sync::{Notify, RwLock},
 };
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
-use tracing::{debug, error, info, subscriber::set_global_default, Level};
-use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
+use tracing::{Level, debug, error, info, subscriber::set_global_default};
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 use indielinks_cache::{
     cache::Cache,

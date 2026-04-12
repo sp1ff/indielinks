@@ -13,25 +13,61 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! # indielinks Integration Test Support
+//! # [indielinks] Integration Test Support
+//!
+//! [indielinks]: ../indielinks/index.html
 //!
 //! ## Introduction
 //!
-//! The Rust testing framework is oriented toward testing library crates. Even "integration tests"
-//! are intended to test a Rust library crate from the perspective of a consumer of that library
-//! crate (rather than a privileged insider, as with unit tests). These are, of course, common
-//! testing needs, and indielinks eagerly makes use of them. Testing a binary crate, or a crate
-//! that requires additional services at runtime (a database or a cache, for instance), requires the
-//! test author to implement that support on their own.
+//! The Rust unit & integration testing framework is really oriented toward testing *libraries*, not
+//! programs. "Integration tests" are intended to test a library package from the perspective of a
+//! consumer of that library (rather than a privileged insider, as with unit tests). These are, of
+//! course, common testing needs, and indielinks eagerly makes use of them. However, testing a
+//! binary package, or any crate that requires additional services at runtime (a database or a
+//! cache, for instance), requires the test author to implement that support on their own.
 //!
-//! indielinks has a number of cases like this. Initially, I handled each case individually &
-//! separately, writing whatever support code I needed. I wrote about the process [here]. As time
-//! went on, patterns began to appear, enough to think about factoring out common logic.
+//! There's no notion of test fixtures, nor even of simple setup & teardown operations that apply to
+//! multiple tests. indielinks has a number of cases like this. [Nextest] provides a great number of
+//! features above & beyond what `cargo test` offers, but 1) is implemented as a Cargo plugin (i.e.
+//! to use it one needs to say `cargo nextest` rather than `cargo test`) and 2) still provides
+//! nothing in terms of test fixtures.
+//!
+//! [Nextest]: https://nexte.st
+//!
+//! Initially, I just handled each case individually & separately, writing whatever support code I
+//! needed. I wrote about the process [here]. As time went on, patterns began to appear, enough to
+//! think about factoring out common logic.
 //!
 //! [here]: https://www.unwoundstack.com/blog/integration-testing-rust-binaries.html
 //!
-//! This (internal) crate is intended to make writing integration tests in these cases much easier
-//! by reducing boilerplate as well as providing helpful utilities. It is not a general-purpose
+//! T.J. Telan [found] himself in the same boat when building [Fluvio] and lays out an approach that
+//! takes more work, but offers limitless opportunities for customization while still fitting into
+//! the `cargo test` framework: change-out the default *test harness*. In Cargo.toml, one is free to
+//! explicitly define tests, and opt-out of `libtest`, the default testing harness provided by Rust:
+//!
+//! ```toml
+//! [[test]]
+//!     name = "delicious"
+//!     harness = false
+//! ```
+//!
+//! [found]: https://tjtelan.com/blog/rust-custom-test-harness/
+//! [Fluvio]: https://github.com/infinyon/fluvio
+//!
+//! With this configuration, `cargo test` now expects to find a file named `delicious.rs` in the
+//! `tests` subdirectory containing a `main()`. `cargo test` will compile it and execute it, passing
+//! any command-line parameters passed to `cargo test` after the `--`. It is expected to exit with
+//! status zero if all tests passed, and one else. That's it-- that's the contract.
+//!
+//! [Advanced Testing in Rust] notes that a compliant implementation could simply ignore the
+//! command-line parameters, albeit at the cost of surprising one's users, and suggests the use of
+//! [libtest-mimic] to avoid that.
+//!
+//! [Advanced Testing in Rust]: https://rust-exercises.com/advanced-testing/00_intro/00_welcome.html
+//! [libtest-mimic]: https://docs.rs/libtest-mimic/latest/libtest_mimic/index.html
+//!
+//! This (internal) crate is intended to make writing integration tests in this style much easier by
+//! reducing boilerplate as well as providing helpful utilities. It is not a general-purpose
 //! integration testing library; rather it is tailored to the indielinks project.
 //!
 //! ## Ontology
@@ -72,41 +108,42 @@
 //! and async tests are supported. This crate contains a simple example in it's `trivial`
 //! integration test.
 //!
-//! Prescriptively, in order to use [tests-support], integration test authors will:
+//! Prescriptively, in order to use [tests-support](crate), integration test authors will:
 //!
 //! 1. define their fixture type; implement the [Fixture] trait on it
 //! 2. define their test type; implement either [SyncIntegrationTest] or [AsyncIntegrationTest] on it
 //! 3. provide for something that implements `Iterator<Item = &'static F>` where `F` is the fixture
-//! type
+//!    type
 //! 4. provide for something that implements `IntoIterator<Item = &'static T>` where `T` is the test
-//! type. This iterator will need to be re-used, so [tests-support] also requires that
-//! `IntoIterator::IntoIter` be `Clone`
+//!    type. This iterator will need to be re-used, so [tests-support](crate) also requires that
+//!    `IntoIterator::IntoIter` be `Clone`
 //! 5. decide how to obtain general, test runner configuration & domain-specific configuration (on
-//! which more below)
+//!    which more below)
 //! 6. call either [sync_integration_test] or [async_integration_test] from their `main()` with
-//! a [TestConfiguration] instance
+//!    a [TestConfiguration] instance
 //!
 //! ### Finding Configuration
 //!
 //! [libtest-mimic] offers no way to add new command-line switches, so to enable the user to specify
 //! a configuration file, the integration test author will have to fall back on environment
-//! variables. [tests-support] provides a few utilities for dealing with this. As a test author, you
-//! have two options:
+//! variables. [tests-support](crate) provides a few utilities for dealing with this. As a test
+//! author, you have two options:
 //!
 //! 1. if the domain-specific configuration is [Default], then [TestConfiguration] will be, as well.
-//! Call [TestConfiguration::new_or_default()]; it will examine the `INDIELINKS_TEST_CONFIG` and
-//! if it's set, interpret it as a path (relative to the crate root) to a configuration file. If
-//! it's not set, it will return the default configuratoin
+//!    Call [TestConfiguration::new_or_default()]; it will examine the `INDIELINKS_TEST_CONFIG` and
+//!    if it's set, interpret it as a path (relative to the crate root) to a configuration file. If
+//!    it's not set, it will return the default configuratoin
 //!
 //! 2. otherwise, define a "default" location for an expected configuration file, and call
-//! [TestConfiguration::new] with it; the user can still override that via `INDIELINKS_TEST_CONFIG`
+//!    [TestConfiguration::new] with it; the user can still override that via `INDIELINKS_TEST_CONFIG`
 //!
 //! ## Implementation Notes
 //!
 //! A perhaps misguided desire to make this library generic across different sorts of projects has
 //! led me fairly deeply into Rust's trait system (on several methods, the list of trait bounds is
-//! longer than the parameter list). The code also reflects the time I've recently spent working in
-//! functional languages.
+//! longer than the parameter list; it feels like library development in C++: a lot of work under
+//! the hood in order to present a simple API to callers). The code also reflects the time I've
+//! recently spent working in functional languages.
 //!
 //! One particular design decision deserves some discussion. Since we're using [libtest-mimic],
 //! at the end of the day, we need to produce from the caller-supplied tests (whatever form they
@@ -146,18 +183,28 @@
 //! ```
 //!
 //! 1. `project` is a crate with a binary package you'd like to test. It takes a `[dev-dependency]`
-//! on the `tests-project` crate.
+//!    on the `tests-project` crate.
 //! 2. `project` integration tests are as per usual: integration tests for the `project` *library* package
 //! 3. `tests-project` is the crate we're concerned with here: it exists to house one or more
-//! integration tests for the `project` _binary_ pacakge
+//!    integration tests for the `project` _binary_ pacakge
 //! 4. `test-project/src` contains the "guts" of the test code, along with any utilities specific to
-//! this domain. By "guts" I mean test logic un-connected to this crate's types; just test functions
-//! in the natural vocabulary of this domain
+//!    this domain. By "guts" I mean test logic un-connected to this crate's types; just test functions
+//!    in the natural vocabulary of this domain
 //! 5. `test-project/tests` will contain one or more integration tests that have opted-out of
-//! `libtest` and use this crate instead. Here is where [Fixture]s, [SyncIntegrationTest]s and
-//! [AsyncIntegrationTest]s are defined
+//!    `libtest` and use this crate instead. Here is where [Fixture]s, [SyncIntegrationTest]s and
+//!    [AsyncIntegrationTest]s are defined
 //! 6. If there are multiple integration tests, and they need to share code related to this crate,
-//! it can be shared in the usual manner here
+//!    it can be shared in the usual manner here
+//!
+//! ### Instantiating Fixtures
+//!
+//! In hindsight, I probably erred in having the caller supply an iterator yielding `'static F:
+//! Fixture`. This means we can't mutate fixtures after they've been instantiated. This is
+//! inconvenient if, for example, we'd like the "setup" operation to modify fixture state (say, by
+//! caching a copy of the "backend"). It would have perhaps been better to have the entities
+//! provided by our caller be factories that know how to instantiate fixtures. This library could
+//! then instantiate each and invoke methods taking a receiver of `&mut self`. So far, I can get
+//! away with the current arrangement, and I'm not eager to undertake another rewrite just yet.
 
 use std::{
     collections::HashSet,
@@ -174,12 +221,12 @@ use std::{
 use async_trait::async_trait;
 use itertools::Itertools;
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{Deserialize, de::DeserializeOwned};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::runtime::Runtime;
 use tracing::{Level, debug, info};
-use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Error type                                           //
@@ -241,6 +288,11 @@ type Result<T, F> = std::result::Result<T, Error<F>>;
 /// of the type implementing this trait represents a distinct collection of associated services
 /// required to test that domain. All instances must support setup, teardown and the provisioning of
 /// backend instances.
+///
+/// Note that `setup()` is guaranteed to be called before `new_backend()`, in case the "backend" is
+/// dependent on something spun-up during `setup()` (say, a database client). Each of `setup()`,
+/// `new_backend()`, and `teardown()` will called exactly once, in that order, per execution of the
+/// program.
 #[async_trait]
 pub trait Fixture {
     type Error: std::error::Error + 'static;
@@ -252,6 +304,10 @@ pub trait Fixture {
     type Id: Eq + Hash + FromStr;
     /// Identify this [Fixture]; if two instances return the same `Id`, they should compare [Eq]
     fn id(&self) -> Self::Id;
+    /// A human-readable name for this fixture; it's intended for display purposes,
+    /// but will be part of each test's name from the perspective of [libtest-mimic], and
+    /// so will play a part in test filtering
+    fn get_name(&self) -> String;
     /// Create this domain's "backend"
     async fn new_backend(
         &self,
@@ -361,7 +417,7 @@ impl Default for TestRunnerConfiguration {
 // Type checking aside, here is where we iterate over all tests germane to a single, given
 // fixture and execute them.
 fn execute_fixture<IT, R, S, T>(
-    tests: IT, // An iterator over our tests; Item = 'static T
+    tests: IT,      // An iterator over our tests; Item = 'static T
     test_runner: R, // How to go from a &'static T to an FnOnce() -> StdResult<(), Failed> + Send + 'static
     args: &Arguments,
     runner_config: &TestRunnerConfiguration,
@@ -381,10 +437,10 @@ where
     T: IntegrationTest + 'static,
 {
     if !runner_config.no_setup {
-        rt.block_on(fixture.setup(&domain_config))?;
+        rt.block_on(fixture.setup(domain_config))?;
     }
 
-    let backend = rt.block_on(fixture.new_backend(&domain_config))?;
+    let backend = rt.block_on(fixture.new_backend(domain_config))?;
 
     let conclusion = libtest_mimic::run(
         args,
@@ -393,7 +449,7 @@ where
             .filter(|test| test.germane(fixture.id()))
             .map(|test| {
                 Trial::test(
-                    test.name(),
+                    format!("{}/{}", fixture.get_name(), test.name()),
                     test_runner(domain_config.clone(), backend.clone(), rt.clone(), test),
                 )
             })
@@ -401,7 +457,7 @@ where
     );
 
     if !runner_config.no_teardown {
-        rt.block_on(fixture.teardown(&domain_config))?;
+        rt.block_on(fixture.teardown(domain_config))?;
     }
 
     Ok(conclusion)
@@ -554,9 +610,19 @@ where
             .with_default_directive(runner_config.log_level.into())
             .from_env()
             .context(FilterSnafu)?;
+        // This is a personal indulgence-- I often run compilations inside Emacs, and while
+        // libtest-mimic somehow figures-out that it's not running inside a full-on terminal,
+        // tracing-subscriber does not. Recall that `env::var()` will return
+        // `Err(VarError::NotPresent)` if the variable is not set.
+        let with_ansi = env::var("INSIDE_EMACS").is_err();
         tracing::subscriber::set_global_default(
             Registry::default()
-                .with(fmt::Layer::default().compact().with_writer(io::stdout))
+                .with(
+                    fmt::Layer::default()
+                        .compact()
+                        .with_ansi(with_ansi)
+                        .with_writer(io::stdout),
+                )
                 .with(filter),
         )
         .context(SetGlobalDefaultSnafu)?;
@@ -606,7 +672,7 @@ where
                 &runner_config,
                 &domain_config,
                 rt.clone(),
-                &fixture,
+                fixture,
             )
         })
         .collect::<StdResult<Vec<Conclusion>, _>>()

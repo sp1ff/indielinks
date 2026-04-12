@@ -17,7 +17,7 @@
 //!
 //! Backend-agnostic test logic for the del.icio.us API goes here.
 
-use crate::Helper;
+use crate::helper::Helper;
 
 use indielinks_shared::{
     api::{PostsAllRsp, PostsDatesRsp, PostsGetRsp, PostsRecentRsp, TagsGetRsp, UpdateRsp},

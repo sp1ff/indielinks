@@ -32,7 +32,7 @@ base_port="$2"
 
 set -ex
 here=$(dirname $(realpath $0))
-cd $here/../indielinks-cache-test
+cd $here/../tests-indielinks-cache
 
 if [ "${bin}" == "on-disk" ]; then
     # Create the state directories for each node

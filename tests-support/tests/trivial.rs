@@ -16,7 +16,7 @@ use {
     libtest_mimic::Failed,
     std::{convert::Infallible, process::ExitCode, result::Result as StdResult},
     tests_support::{
-        async_integration_test, AsyncIntegrationTest, Error, IntegrationTest, TestConfiguration,
+        AsyncIntegrationTest, Error, IntegrationTest, TestConfiguration, async_integration_test,
     },
 };
 
@@ -26,19 +26,20 @@ use tests_support::Fixture;
 #[derive(Debug)]
 pub struct TrivialFixture {
     id: usize,
+    name: &'static str,
 }
 
 impl TrivialFixture {
-    pub const fn new(id: usize) -> Self {
-        Self { id }
+    pub const fn new(id: usize, name: &'static str) -> Self {
+        Self { id, name }
     }
 }
 
 inventory::collect!(TrivialFixture);
 
-inventory::submit!(TrivialFixture::new(1));
-inventory::submit!(TrivialFixture::new(2));
-inventory::submit!(TrivialFixture::new(3));
+inventory::submit!(TrivialFixture::new(1, "trivial fixture 1"));
+inventory::submit!(TrivialFixture::new(2, "trivial fixture 2"));
+inventory::submit!(TrivialFixture::new(3, "trivial fixture 3"));
 
 #[async_trait]
 impl Fixture for TrivialFixture {
@@ -50,6 +51,9 @@ impl Fixture for TrivialFixture {
 
     fn id(&self) -> Self::Id {
         self.id
+    }
+    fn get_name(&self) -> String {
+        self.name.to_owned()
     }
     /// Create this domain's "backend"
     async fn new_backend(&self, _: &Self::Configuration) -> StdResult<Self::Backend, Self::Error> {

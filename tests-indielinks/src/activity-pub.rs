@@ -37,7 +37,7 @@ use indielinks::{
     peppers::{Pepper, Version as PepperVersion},
 };
 
-use crate::{make_signed_request, peer_actor, Helper, PeerUser};
+use crate::{helper::Helper, make_signed_request, peer_actor, PeerUser};
 
 pub async fn posting_creates_note(
     url: Url,

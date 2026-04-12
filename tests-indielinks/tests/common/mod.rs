@@ -19,7 +19,7 @@
 //!
 //! Code common to the indielinks integration test framework goes here. See [indielinks_test] for a
 //! full description.
-use std::{collections::HashMap, env, fs, net::SocketAddr, process::Command, sync::Arc};
+use std::{collections::HashMap, env, fs, process::Command, sync::Arc};
 
 use libtest_mimic::Failed;
 use reqwest::Url;
@@ -33,11 +33,10 @@ use indielinks_shared::entities::Username;
 use indielinks_cache::types::{ClusterNode, NodeId};
 
 use indielinks::{
-    background_tasks::Backend as TasksBackend, dynamodb::Location, peppers::Peppers,
-    storage::Backend as StorageBackend, util::Credentials,
+    background_tasks::Backend as TasksBackend, peppers::Peppers, storage::Backend as StorageBackend,
 };
 
-use tests_indielinks::Helper;
+use tests_indielinks::helper::{DynamoConfig, Helper, ScyllaConfig};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -92,110 +91,6 @@ pub fn run(cmd: &str, args: &[&str]) -> Result<()> {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct ScyllaConfig {
-    /// ScyllaDB credentials, if authentication is to be used. Nb that I'm not using
-    /// `secrecy::SecretString` here; I assume that if you're running this test suite, it's
-    /// against a local, unsecured instance.
-    pub credentials: Option<Credentials>,
-    /// ScyllaDB hosts; specify as "host:port"
-    pub hosts: Vec<SocketAddr>,
-}
-
-impl Default for ScyllaConfig {
-    fn default() -> Self {
-        ScyllaConfig {
-            credentials: None,
-            hosts: vec!["127.0.0.1:9043".parse::<SocketAddr>().unwrap(/* known good */)],
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct DynamoConfig {
-    /// AWS credentials: key ID & secret key; you'll pretty-much always need to specify these
-    /// when running against DDB, but one could be talking to a local SycllaDB over the
-    /// Alternator interface locally and have the cluster be open. Nb that I'm not using
-    /// `secrecy::SecretString` here; I assume that if you're running this test suite, it's
-    /// against a local, unsecured instance.
-    pub credentials: Option<Credentials>,
-    /// You can find DynamoDB in a few ways. If you're truly talking to DynamoDB in AWS, you can
-    /// give a region. You can also specify an URL (like
-    /// `https://dynamodb.us-west-2.amazonaws.com`). If you're talking to ScyllaDB over the
-    /// Alternator interface, we're going to have to handle load-balancing on the client-side,
-    /// so specify more than one.
-    pub location: Location,
-}
-
-impl Default for DynamoConfig {
-    fn default() -> Self {
-        DynamoConfig {
-            credentials: None,
-            location: vec![
-                Url::parse("http://127.0.0.1:8043").unwrap(),
-                Url::parse("http://127.0.0.1:8044").unwrap(),
-                Url::parse("http://127.0.0.1:8045").unwrap(),
-            ]
-            .into(),
-        }
-    }
-}
-
-// TODO(sp1ff): can I remove this?
-// The "PreConfigured" variants are handy because the test need not be aware (at all) of whether
-// indielinks is running as a single- or multi-node cluster: it can just write requests to a single
-// address.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialOrd, PartialEq)]
-pub enum Fixture {
-    ScyllaSingleNode,
-    SycllaCluster,
-    SycllaClusterPreConfigured,
-    DynamoDBSingleNode,
-    DynamoDBCluster,
-    DynamoDBClusterPreConfigured,
-}
-
-impl std::fmt::Display for Fixture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Fixture::ScyllaSingleNode => "ScyllaDB backend, single-node indielinks",
-                Fixture::SycllaCluster => "ScyllaDB backend, indielinks cluster",
-                Fixture::SycllaClusterPreConfigured =>
-                    "ScyllaDB backend, indielinks cluster, Raft pre-configured",
-                Fixture::DynamoDBSingleNode => "DynamoDB backend, single-node indielinks",
-                Fixture::DynamoDBCluster => "DynamoDB backend, indielinks cluster",
-                Fixture::DynamoDBClusterPreConfigured =>
-                    "DynamoDB backend, indielinks cluster, Raft pre-configured",
-            }
-        )
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct Fixtures(Vec<Fixture>);
-
-impl AsRef<Vec<Fixture>> for Fixtures {
-    fn as_ref(&self) -> &Vec<Fixture> {
-        &self.0
-    }
-}
-
-impl Default for Fixtures {
-    fn default() -> Self {
-        Fixtures(vec![
-            Fixture::ScyllaSingleNode,
-            Fixture::SycllaCluster,
-            Fixture::DynamoDBSingleNode,
-            Fixture::DynamoDBCluster,
-        ])
-    }
-}
-
 /// Common test configuration
 ///
 /// Not sure about having all tests share one configuration format; coding speculatively.
@@ -229,8 +124,6 @@ pub struct Configuration {
     pub logging: bool,
     #[serde(deserialize_with = "de_level::deserialize", rename = "log-level")]
     pub log_level: Level,
-    #[serde(default)]
-    pub fixtures: Fixtures,
 }
 
 mod de_level {
@@ -281,6 +174,7 @@ impl Configuration {
     ///
     /// Check the `INDIELINKS_TEST_CONFIG` environment variable; if defined & non-empty, attempt to
     /// parse a [Configuration] from the file named therein; else return a default instance.
+    #[allow(dead_code)]
     pub fn new() -> Result<Configuration> {
         match env::var("INDIELINKS_TEST_CONFIG") {
             Ok(f) => fs::read_to_string(&f)
@@ -312,7 +206,6 @@ impl Default for Configuration {
             dynamo: DynamoConfig::default(),
             logging: false,
             log_level: Level::INFO,
-            fixtures: Fixtures::default(),
         }
     }
 }
