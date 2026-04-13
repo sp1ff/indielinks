@@ -47,7 +47,7 @@ use leptos::{
     prelude::*,
     tachys::view::keyed::SerializableKey,
 };
-use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
+use snafu::{Backtrace, ResultExt, Snafu};
 use tracing::{debug, error};
 use url::Url;
 
@@ -387,6 +387,7 @@ fn HomeTimelineTitle() -> impl IntoView {
 // My first hook... not sure how reusable this is going to be, but at least it will help me seperate
 // state + logic from presentation.
 
+#[allow(dead_code)]
 struct HomeTimelineHook {
     posts: ReadSignal<VecDeque<FeedPost>>,
     set_posts: WriteSignal<VecDeque<FeedPost>>,
@@ -521,15 +522,15 @@ fn use_home_timeline(_api: String, _token: RwSignal<Option<String>>) -> HomeTime
 }
 
 #[component]
-fn HomeTimeline(set_mode: WriteSignal<Option<Url>>) -> impl IntoView {
+fn HomeTimeline(_set_mode: WriteSignal<Option<Url>>) -> impl IntoView {
     let api = expect_context::<Api>().0;
     let token = expect_context::<Token>();
 
     let HomeTimelineHook {
         posts,
-        set_posts,
+        set_posts: _,
         since,
-        before,
+        before: _,
         load,
         update,
     } = use_home_timeline(api, token);
@@ -589,7 +590,7 @@ fn HomeFeed() -> impl IntoView {
                     if mode.get().is_some() {
                         Either::Left(view!{<HomeThread />})
                     } else {
-                        Either::Right(view!{<HomeTimeline set_mode/>})
+                        Either::Right(view!{<HomeTimeline _set_mode=set_mode/>})
                     }
                 }
             }
