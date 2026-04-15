@@ -7,7 +7,7 @@
 set -ex
 source $HOME/.cargo/env
 cd /indielinks
-ver=$(printf "r%s" "$(git rev-list --count HEAD)")
+ver="r${GIT_COMMIT}"
 rel="0.0.1~git.${ver}"
 # Unhappy, but we need to build everything for Debian here (see the README)
 cargo clean
