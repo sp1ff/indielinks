@@ -77,7 +77,7 @@ create table if not exists likes (
   PRIMARY KEY (user_id, created)
 );
 
-create index if not exists on likes((user_id), ap_id);
+create index if not exists on likes((user_id), api_id);
 
 drop table if exists replies;
 
@@ -90,7 +90,7 @@ create table if not exists replies (
   PRIMARY KEY (user_id, created)
 );
 
-create index if not exists on replies((user_id), ap_id);
+create index if not exists on replies((user_id), api_id);
 
 drop table if exists shares;
 
@@ -103,7 +103,7 @@ create table if not exists shares (
   PRIMARY KEY (user_id, created)
 );
 
-create index if not exists on replies((user_id), ap_id);
+create index if not exists on replies((user_id), api_id);
 
 drop materialized view if exists activity_pub_posts_by_posted;
 

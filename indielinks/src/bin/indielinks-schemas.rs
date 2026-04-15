@@ -394,12 +394,12 @@ Specify as either an AWS region ('us-west-2', e.g.) or as an URL ('http://localh
                     .context(ScyllaSchemaVersionSnafu)?
                     .map(|i| i + 1)
                     .unwrap_or(0) as usize;
-                let _: StdResult<Vec<_>, Error> = iter(CQL_SCHEMAS[to_apply..].iter())
+                let _ = iter(CQL_SCHEMAS[to_apply..].iter())
                     .then(|f| f(client.clone()))
                     .collect::<Vec<StdResult<_, _>>>()
                     .await
                     .into_iter()
-                    .collect::<StdResult<Vec<_>, _>>();
+                    .collect::<StdResult<Vec<_>, _>>()?;
                 info!("ScyllaDB configured.");
                 Ok(())
             }
