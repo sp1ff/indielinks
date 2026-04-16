@@ -38,8 +38,9 @@
 //!
 //! I think I'm finally getting my head around how this all works, and I wanted to write it down to
 //! be sure. The [Leptos] documentation is regrettably focused on examples & "howto"s, and at no
-//! point lays out a simple "theory of operations". Oddly, this sort of information _can_ be found
-//! in a pair of videos made by [Leptos]' creator, Greg Johnston:
+//! point lays out what used to be called a "theory of operations"; an architectural overview of how
+//! the system works. Oddly, this sort of information _can_ be found in a pair of videos made by
+//! [Leptos]' creator, Greg Johnston:
 //!
 //! - [Let's Build a Frontend Web Framework in Rust](https://www.youtube.com/watch?v=cp3tnlTZ9IU)
 //! - [Learning Leptos: Build a fine-grained reactive system in 100 lines of code](https://www.youtube.com/watch?v=GWB3vTWeLd4&t=1659s)
@@ -59,7 +60,7 @@
 //!
 //! The `view!` macro is just syntactic sugar around a typical fluent interface for building-up the
 //! DOM you'd like your app to manage. The "builders" that make-up this fluent interface use
-//! [wasm-bindgen] to call out to the Javascript world, creating the corresponding elements in the
+//! [wasm-bindgen] to call *out* to the Javascript world, creating the corresponding elements in the
 //! "real" (i.e. page) DOM.
 //!
 //! [wasm-bindgen]: https://wasm-bindgen.github.io/wasm-bindgen/
@@ -74,14 +75,13 @@
 use gloo_net::http::Request;
 use leptos::prelude::*;
 use leptos_router::{
-    NavigateOptions,
     components::{ProtectedRoute, Route, Router, Routes},
     hooks::{use_location, use_navigate},
     location::State,
-    path,
+    path, NavigateOptions,
 };
 use thaw::{Layout, LayoutHeader, Link, Tab, TabList};
-use tracing::{Level, debug, error, info};
+use tracing::{debug, error, info, Level};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 use wasm_bindgen::JsValue;
