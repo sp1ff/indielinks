@@ -16,5 +16,4 @@
 #![cfg(target_arch = "wasm32")]
 
 pub mod dropdown;
-#[path = "view-post.rs"]
-pub mod view_post;
+pub mod post;

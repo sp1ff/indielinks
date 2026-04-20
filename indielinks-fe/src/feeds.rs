@@ -58,7 +58,7 @@ use indielinks_shared::api::{
 use crate::{
     components::{
         dropdown::use_dropdown,
-        view_post::{MenuId, ViewPost},
+        post::{MenuId, Post},
     },
     http::send_with_retry,
     types::{Api, Token},
@@ -176,7 +176,7 @@ where
     view! {
         <For each=each key=key
             children=move |post: FeedPost| {
-                view!{<ViewPost post=post.clone() open_menu/>}}>
+                view!{<Post post=post.clone() open_menu/>}}>
         </For>
     }
 }
