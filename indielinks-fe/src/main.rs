@@ -75,14 +75,13 @@
 use gloo_net::http::Request;
 use leptos::prelude::*;
 use leptos_router::{
-    NavigateOptions,
     components::{ProtectedRoute, Route, Router, Routes},
     hooks::{use_location, use_navigate},
     location::State,
-    path,
+    path, NavigateOptions,
 };
 use thaw::{Layout, LayoutHeader, Link, Tab, TabList};
-use tracing::{Level, debug, error, info};
+use tracing::{debug, error, info, Level};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 use wasm_bindgen::JsValue;
@@ -199,7 +198,6 @@ fn App() -> impl IntoView {
             future=fetcher.into_future()
             let:_data>
             <Router base>
-                // Should factor this out into it's own component
                 {
                     let location = use_location(); // -> Location (which is Clone, but that's it)
                     let navigate = use_navigate(); // -> impl Fn(&str, NavigateOptions) + Clone
@@ -222,14 +220,14 @@ fn App() -> impl IntoView {
 
                     view! {
                         // I'm using a `thaw` component here, `Layout` (https://thawui.vercel.app/components/layout)
-                        <LayoutHeader class="banner">
-                            <h1 class="logo">indielinks</h1>
+                        <LayoutHeader class="w-full flex bg-sky-600">
+                            <h1 class="text-sky-100 pt-[4px] pl-[8px]">indielinks</h1>
                             <Show when=move || t0.get().is_some() >
-                                <TabList selected_value class="tab-list">
+                                <TabList selected_value class="pl-16px">
                                     // Should I really be using `Link` here?
-                                    <Tab value="instance" class="tab"><Link href={ i.read_value().clone() }>"Instance"</Link></Tab>
-                                    <Tab value="home" class="tab"><Link href={ h.read_value().clone() }>"Home"</Link></Tab>
-                                    <Tab value="feeds" class="tab"><Link href={ f.read_value().clone() }>"Feeds"</Link></Tab>
+                                    <Tab value="instance" class="text-sky-100 m-6px"><Link href={ i.read_value().clone() }>"Instance"</Link></Tab>
+                                    <Tab value="home" class="text-sky-100 m-6px"><Link href={ h.read_value().clone() }>"Home"</Link></Tab>
+                                    <Tab value="feeds" class="text-sky-100 m-6px"><Link href={ f.read_value().clone() }>"Feeds"</Link></Tab>
                                 </TabList>
                             </Show>
                             <Show when = move || t1.get().is_none() && use_location().pathname.get() != "/s" >
@@ -241,7 +239,7 @@ fn App() -> impl IntoView {
                                 </div>
                             </Show>
                             <Show when = move || token.get().is_some() && use_location().pathname.get() != "/s" >
-                                <div class="auth-actions">
+                                <div class="auth-actions pr-8px ml-auto text-sky-100">
                                     <ul style="list-style-type: none; font-size: smaller;">
                                         // Note the `clone()` in the on:click handler-- this is
                                         // essential! TBH, I'm a bit hazy on why, but it has to do
