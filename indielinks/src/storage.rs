@@ -164,14 +164,14 @@ pub trait Backend {
         tags: &UpToThree<Tagname>,
     ) -> Result<Vec<(PostDay, usize)>, Error>;
     /// Retrieve all of a user's posts, optionally filtering by time & tags. The implementation shall
-    /// return the tags in reverse chronological order.
-    async fn get_all_posts(
-        &self,
+    /// return the [Post]s in reverse chronological order.
+    async fn get_all_posts<'a>(
+        &'a self,
         user: &User,
         tags: &UpToThree<Tagname>,
         dates: &DateRange,
         unread: bool,
-    ) -> Result<Vec<Post>, Error>;
+    ) -> Result<BoxStream<'a, Result<Post, Error>>, Error>;
     /// Retrieve recent posts
     async fn get_recent_posts(
         &self,

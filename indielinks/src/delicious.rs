@@ -46,6 +46,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use chrono::Utc;
+use futures::{stream::BoxStream, StreamExt};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use snafu::prelude::*;
@@ -73,7 +74,7 @@ use crate::{
     indielinks::Indielinks,
     peppers::Peppers,
     signing_keys::SigningKeys,
-    storage::{self, Backend as StorageBackend, DateRange},
+    storage::{self, Backend as StorageBackend, DateRange, Error as StorError},
     util::UpToThree,
 };
 
@@ -906,32 +907,40 @@ async fn posts_dates(
 
 define_metric! { "delicious.posts.all", delicious_posts_all, Sort::IntegralCounter }
 
-fn apply_pagination(posts: Vec<Post>, start: Option<usize>, size: Option<usize>) -> Vec<Post> {
+async fn apply_pagination(
+    posts: BoxStream<'_, StdResult<Post, StorError>>,
+    start: Option<usize>,
+    size: Option<usize>,
+) -> Result<Vec<Post>> {
     match (start, size) {
-        (None, None) => posts,
-        (None, Some(n)) => {
-            if n < posts.len() {
-                posts[..n].to_vec()
-            } else {
-                posts
-            }
-        }
-        (Some(s), None) => {
-            if s < posts.len() {
-                posts[s..].to_vec()
-            } else {
-                Vec::new()
-            }
-        }
-        (Some(s), Some(n)) => {
-            if s >= posts.len() {
-                Vec::new()
-            } else if s + n <= posts.len() {
-                posts[s..s + n].to_vec()
-            } else {
-                posts[s..posts.len()].to_vec()
-            }
-        }
+        (None, None) => posts
+            .collect::<Vec<StdResult<Post, _>>>()
+            .await
+            .into_iter()
+            .collect::<StdResult<Vec<Post>, _>>()
+            .context(AllPostsSnafu),
+        (None, Some(n)) => posts
+            .take(n)
+            .collect::<Vec<StdResult<Post, _>>>()
+            .await
+            .into_iter()
+            .collect::<StdResult<Vec<Post>, _>>()
+            .context(AllPostsSnafu),
+        (Some(start), None) => posts
+            .skip(start)
+            .collect::<Vec<StdResult<Post, _>>>()
+            .await
+            .into_iter()
+            .collect::<StdResult<Vec<Post>, _>>()
+            .context(AllPostsSnafu),
+        (Some(start), Some(n)) => posts
+            .skip(start)
+            .take(n)
+            .collect::<Vec<StdResult<Post, _>>>()
+            .await
+            .into_iter()
+            .collect::<StdResult<Vec<Post>, _>>()
+            .context(AllPostsSnafu),
     }
 }
 
@@ -987,7 +996,8 @@ async fn all_posts(
                     .context(AllPostsSnafu)?,
                 posts_all_req.start,
                 posts_all_req.results,
-            ),
+            )
+            .await?,
         })
     }
 

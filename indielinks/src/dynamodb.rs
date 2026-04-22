@@ -155,6 +155,11 @@ pub enum Error {
         source: serde_dynamo::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Duplicate expression attribute value"))]
+    DuplicateAttributeValue {
+        value: AttributeValue,
+        backtrace: Backtrace,
+    },
     #[snafu(display("{username} is already claimed"))]
     DuplicateUsername {
         username: Username,
@@ -412,6 +417,26 @@ type StdResult<T, E> = std::result::Result<T, E>;
 
 use storage::Error as StorError;
 
+// Given an attribute value, produce an `Error`. This can be handy when manipulating `HashMap`s of
+// expression attribute values: when adding a pair, we wish to ensure we're not overwriting an
+// existing value. `HashMap::<K, V>::insert` returns an `Option<V>` to indicat this. To convert that
+// into a `Result<()>`, we can write:
+//
+//     values.insert(_, _).map_or(Ok(()), duplicate_value);
+fn duplicate_value(value: AttributeValue) -> Result<()> {
+    DuplicateAttributeValueSnafu { value }.fail()
+}
+
+// And here's a macro to make that cleaner:
+macro_rules! add_attr_value {
+    ($table: expr, $name: expr, $value: expr) => {
+        $table
+            .insert($name.to_string(), $value)
+            .map_or(Ok(()), duplicate_value)
+            .map_err(StorError::new)?
+    };
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                   DynamoDB-related utilities                                   //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -627,14 +652,22 @@ impl<'a, T> PagedResultsStream<T>
 where
     T: serde::Deserialize<'a>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         client: &::aws_sdk_dynamodb::Client,
         table_name: &str,
         pk_name: &str,
         pk_value: &str,
         count: usize,
+        mut expression_attribute_values: HashMap<String, AttributeValue>,
         index_name: Option<String>,
+        filter_expression: Option<String>,
+        scan_index_forward: Option<bool>,
+        page_size: Option<i32>,
     ) -> Result<PagedResultsStream<T>> {
+        expression_attribute_values
+            .insert(":pk".to_owned(), AttributeValue::S(pk_value.to_owned()))
+            .map_or(Ok(()), duplicate_value)?;
         Ok(PagedResultsStream {
             stream: Some(
                 client
@@ -642,9 +675,11 @@ where
                     .table_name(table_name)
                     .set_index_name(index_name)
                     .key_condition_expression(format!("{} = :pk", pk_name))
-                    .expression_attribute_values(":pk", AttributeValue::S(pk_value.to_string()))
+                    .set_filter_expression(filter_expression)
+                    .set_expression_attribute_values(Some(expression_attribute_values))
+                    .set_scan_index_forward(scan_index_forward)
                     .into_paginator()
-                    .page_size(512)
+                    .page_size(page_size.unwrap_or(512))
                     .send(),
             ),
             count,
@@ -1368,7 +1403,11 @@ impl storage::Backend for Client {
                 "actor_id",
                 actor_id,
                 count,
+                HashMap::new(),
                 Some("following_by_actor_id".to_owned()),
+                None,
+                None,
+                None,
             )
             .await
             .map_err(StorError::new)?,
@@ -1395,6 +1434,10 @@ impl storage::Backend for Client {
                 "user_id",
                 &user.id().to_string(),
                 count,
+                HashMap::new(),
+                None,
+                None,
+                None,
                 None,
             )
             .await
@@ -1422,6 +1465,10 @@ impl storage::Backend for Client {
                 "user_id",
                 &user.id().to_string(),
                 count,
+                HashMap::new(),
+                None,
+                None,
+                None,
                 None,
             )
             .await
@@ -1595,27 +1642,25 @@ impl storage::Backend for Client {
             .pipe(Ok)
     }
 
-    async fn get_all_posts(
-        &self,
+    async fn get_all_posts<'a>(
+        &'a self,
         user: &User,
         tags: &UpToThree<Tagname>,
         dates: &DateRange,
         unread: bool,
-    ) -> StdResult<Vec<Post>, StorError> {
-        let mut query = self
-            .client
-            .query()
-            .table_name("posts")
-            .index_name("posts_by_posted")
-            .key_condition_expression("user_id=:id")
-            .expression_attribute_values(":id", AttributeValue::S(user.id().to_string()))
-            .scan_index_forward(false);
+    ) -> StdResult<BoxStream<'a, StdResult<Post, StorError>>, StorError> {
+        let count = count_range(
+            &self.client,
+            "posts",
+            "user_id",
+            &user.id().to_string(),
+            Some("posts_by_posted".to_owned()),
+        )
+        .await
+        .map_err(StorError::new)?;
 
         let mut filter_expression = String::new();
-        if unread {
-            filter_expression.push_str("unread=:u");
-            query = query.expression_attribute_values(":u", AttributeValue::Bool(true));
-        }
+        let mut filter_values = HashMap::new();
 
         fn append_clause(mut filter_expression: String, clause: &str) -> String {
             if filter_expression.is_empty() {
@@ -1627,142 +1672,151 @@ impl storage::Backend for Client {
             }
         }
 
+        if unread {
+            filter_expression = append_clause(filter_expression, "unread=:u");
+            add_attr_value!(filter_values, ":u", AttributeValue::Bool(true));
+        }
+
         match (tags, dates) {
             (UpToThree::None, DateRange::None) => {}
             (UpToThree::None, DateRange::Begins(b)) => {
                 filter_expression = append_clause(filter_expression, "posted>=:b");
-                query = query.expression_attribute_values(":b", AttributeValue::S(b.to_string()));
+                add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
             }
             (UpToThree::None, DateRange::Ends(e)) => {
                 filter_expression = append_clause(filter_expression, "posted<:e");
-                query = query.expression_attribute_values(":e", AttributeValue::S(e.to_string()));
+                add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
             }
             (UpToThree::None, DateRange::Both(b, e)) => {
                 filter_expression = append_clause(filter_expression, "posted>:b and posted<:e");
-                query = query
-                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
-                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()));
+                add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
+                add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
             }
             (UpToThree::One(tag), DateRange::None) => {
                 filter_expression = append_clause(filter_expression, "contains(tags,:t0)");
-                query =
-                    query.expression_attribute_values(":t0", AttributeValue::S(tag.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag.to_string()));
             }
             (UpToThree::One(tag), DateRange::Begins(b)) => {
                 filter_expression =
                     append_clause(filter_expression, "posted>=:b and contains(tags,:t0)");
-                query = query
-                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
-                    .expression_attribute_values(":t0", AttributeValue::S(tag.to_string()));
+                add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag.to_string()));
             }
             (UpToThree::One(tag), DateRange::Ends(e)) => {
                 filter_expression =
                     append_clause(filter_expression, "posted<:e and contains(tags,:t0)");
-                query = query
-                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
-                    .expression_attribute_values(":t0", AttributeValue::S(tag.to_string()));
+                add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag.to_string()));
             }
             (UpToThree::One(tag), DateRange::Both(b, e)) => {
                 filter_expression = append_clause(
                     filter_expression,
                     "posted>:b and posted<:e and contains(tags,:t0)",
                 );
-                query = query
-                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
-                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
-                    .expression_attribute_values(":t0", AttributeValue::S(tag.to_string()));
+                add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
+                add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag.to_string()));
             }
             (UpToThree::Two(tag0, tag1), DateRange::None) => {
                 filter_expression = append_clause(
                     filter_expression,
                     "contains(tags,:t0) and contains(tags,:t1)",
                 );
-                query = query
-                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()));
+
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
+                add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
             }
             (UpToThree::Two(tag0, tag1), DateRange::Begins(b)) => {
                 filter_expression
                     .push_str("posted>=:b and contains(tags,:t0) and contains(tags,:t1)");
-                query = query
-                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
-                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()));
+
+                add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
+                add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
             }
             (UpToThree::Two(tag0, tag1), DateRange::Ends(e)) => {
                 filter_expression
                     .push_str("posted<:e and contains(tags,:t0) and contains(tags,:t1)");
-                query = query
-                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
-                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()));
+
+                add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
+                add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
             }
             (UpToThree::Two(tag0, tag1), DateRange::Both(b, e)) => {
                 filter_expression = append_clause(
                     filter_expression,
                     "posted>:b and posted<:e and contains(tags,:t0) and contains(tags,:t1)",
                 );
-                query = query
-                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
-                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
-                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()));
+
+                add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
+                add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
+                add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
             }
             (UpToThree::Three(tag0, tag1, tag2), DateRange::None) => {
                 filter_expression
                     .push_str("contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)");
-                query = query
-                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()))
-                    .expression_attribute_values(":t2", AttributeValue::S(tag2.to_string()));
+
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
+                add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
+                add_attr_value!(filter_values, ":t2", AttributeValue::S(tag2.to_string()));
             }
             (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(b)) => {
                 filter_expression = append_clause(
-                    filter_expression,
-                    "posted>=:b and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
-                );
-                query = query
-                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
-                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()))
-                    .expression_attribute_values(":t2", AttributeValue::S(tag2.to_string()));
+                        filter_expression,
+                        "posted>=:b and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
+                    );
+
+                add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
+                add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
+                add_attr_value!(filter_values, ":t2", AttributeValue::S(tag2.to_string()));
             }
             (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(e)) => {
                 filter_expression = append_clause(
-                    filter_expression,
-                    "posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
-                );
-                query = query
-                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
-                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()))
-                    .expression_attribute_values(":t2", AttributeValue::S(tag2.to_string()));
+                        filter_expression,
+                        "posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
+                    );
+
+                add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
+                add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
+                add_attr_value!(filter_values, ":t2", AttributeValue::S(tag2.to_string()));
             }
             (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e)) => {
                 filter_expression = append_clause(
-                    filter_expression,
-                    "posted>:b and posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
-                );
-                query = query
-                    .expression_attribute_values(":b", AttributeValue::S(b.to_string()))
-                    .expression_attribute_values(":e", AttributeValue::S(e.to_string()))
-                    .expression_attribute_values(":t0", AttributeValue::S(tag0.to_string()))
-                    .expression_attribute_values(":t1", AttributeValue::S(tag1.to_string()))
-                    .expression_attribute_values(":t2", AttributeValue::S(tag2.to_string()));
+                        filter_expression,
+                        "posted>:b and posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
+                    );
+
+                add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
+                add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
+                add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
+                add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
+                add_attr_value!(filter_values, ":t2", AttributeValue::S(tag2.to_string()));
             }
         }
 
-        if !filter_expression.is_empty() {
-            query = query.filter_expression(filter_expression);
-        }
-
-        query
-            .send()
-            .await?
-            .items()
-            .to_vec()
-            .pipe(from_items::<Post>)?
-            .pipe(Ok)
+        Ok(Box::pin(
+            PagedResultsStream::new(
+                &self.client,
+                "posts",
+                "user_id",
+                &user.id().to_string(),
+                count,
+                filter_values,
+                Some("posts_by_posted".to_owned()),
+                if filter_expression.is_empty() {
+                    None
+                } else {
+                    Some(filter_expression)
+                },
+                Some(false),
+                None,
+            )
+            .await
+            .map_err(StorError::new)?,
+        ))
     }
 
     async fn get_recent_posts(
