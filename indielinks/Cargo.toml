@@ -11,11 +11,13 @@ argon2 = { version = "0.5.3", features = ["password-hash", "std"] }
 askama = { version = "0.15", features = ["code-in-doc"] }
 async-stream = "0.3.6"
 async-trait = "0.1.83"
+atom_syndication = { version = "0.12.7", features = ["with-serde"] }
 aws-config = { version = "1.5.12", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1.57.0"
 aws-smithy-async = { version = "1.2.5", features = ["rt-tokio"] }
 aws-smithy-runtime-api = { version = "1.7.3", features = ["client"] }
 axum = { version = "0.8.1", features = ["macros", "tracing"] }
+axum-accept = "0.0.5"
 axum-extra = { version = "0.10.0", features = ["cookie", "query", "typed-header"] }
 base64 = "0.22.1"
 bytes = ">=1.11.1" # RUSTSEC-2026-0007

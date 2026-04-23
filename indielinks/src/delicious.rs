@@ -37,6 +37,7 @@ use std::{
     sync::Arc,
 };
 
+use atom_syndication::{Entry, FeedBuilder, Text, TextType};
 use axum::{
     extract::{Json, State},
     http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
@@ -44,10 +45,12 @@ use axum::{
     routing::{get, post},
     Extension, Router,
 };
+use axum_accept::AcceptExtractor;
 use axum_extra::extract::Query;
 use chrono::Utc;
 use futures::{stream::BoxStream, StreamExt};
 use itertools::Itertools;
+use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
 use snafu::prelude::*;
 use tap::Pipe;
@@ -56,7 +59,7 @@ use tracing::{debug, error};
 
 use indielinks_shared::{
     api::{
-        PostAddReq, PostsAllReq, PostsAllRsp, PostsDate, PostsDatesReq, PostsDatesRsp,
+        FeedRequest, PostAddReq, PostsAllReq, PostsAllRsp, PostsDate, PostsDatesReq, PostsDatesRsp,
         PostsDeleteReq, PostsGetReq, PostsGetRsp, PostsRecentReq, PostsRecentRsp, TagsDeleteReq,
         TagsGetRsp, TagsRenameReq, UpdateRsp,
     },
@@ -135,6 +138,11 @@ pub enum Error {
         tag: Tagname,
         #[snafu(source(from(storage::Error, Box::new)))]
         source: Box<storage::Error>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While forming an Atom feed, {source}"))]
+    Feed {
+        source: atom_syndication::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to get posts from backend: {source}"))]
@@ -330,6 +338,10 @@ impl Error {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to delete {}: {}", tag, source),
             ),
+            Error::Feed { source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to serialize Atom feed: {}", source),
+            ),
             Error::GetPosts { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch posts: {}", source),
@@ -432,7 +444,7 @@ define_metric! { "delicious.auth.failures", delicious_auth_failures, Sort::Integ
 // useful with it so long as the request body was axum::body::Body because it's not Sync. Perhaps I
 // missed something (it's sparsely documented), but I fail to see what it offers above & beyond
 // axum::middleware::from_fn.
-async fn authenticate(
+pub async fn authenticate(
     State(state): State<Arc<Indielinks>>,
     Query(params): Query<HashMap<String, String>>,
     headers: axum::http::HeaderMap,
@@ -907,6 +919,19 @@ async fn posts_dates(
 
 define_metric! { "delicious.posts.all", delicious_posts_all, Sort::IntegralCounter }
 
+// Handle content negotiation for `all_posts`
+#[derive(AcceptExtractor, Clone, Debug, Default)]
+pub enum Accept {
+    #[accept(mediatype = "application/atom+xml")]
+    Atom,
+    #[default]
+    #[accept(mediatype = "application/json")]
+    Json,
+}
+
+// Take a `Stream` yielding `Post` and apply the `all_posts` pagination parameters to it. It's a
+// pity we're not directly using the databases' pagination facilities, but this is still better than
+// loading the entire collection into memory.
 async fn apply_pagination(
     posts: BoxStream<'_, StdResult<Post, StorError>>,
     start: Option<usize>,
@@ -944,6 +969,23 @@ async fn apply_pagination(
     }
 }
 
+fn make_title(tags: UpToThree<Tagname>) -> Text {
+    Text {
+        value: format!(
+            "Recent indielinks posts{}",
+            match tags {
+                UpToThree::None => "".to_owned(),
+                UpToThree::One(t) => format!(" tagged {t}"),
+                UpToThree::Two(t0, t1) => format!(" tagged {t0} and {t1}"),
+                UpToThree::Three(t0, t1, t2) => format!(" tagged {t0}, {t1} & {t2}"),
+            }
+        ),
+        base: None,
+        lang: None,
+        r#type: TextType::Text,
+    }
+}
+
 /// Retrieve all of a user's posts.
 ///
 /// The user may filter in a few ways:
@@ -973,41 +1015,161 @@ async fn all_posts(
     State(state): State<Arc<Indielinks>>,
     Query(posts_all_req): Query<PostsAllReq>,
     Extension(user): Extension<User>,
+    accept: Accept,
 ) -> axum::response::Response {
+    // Try 'n fit as many fallible operations in here as possible.
     async fn all_posts1(
         storage: &(dyn StorageBackend + Send + Sync),
-        user: User,
-        posts_all_req: PostsAllReq,
-    ) -> Result<PostsAllRsp> {
+        user: &User,
+        posts_all_req: &PostsAllReq,
+    ) -> Result<(
+        impl IntoIterator<Item = Post, IntoIter: Clone>,
+        UpToThree<Tagname>,
+    )> {
         let tags = UpToThree::new(parse_tag_parameter(&posts_all_req.tag)?)
             .context(NoMoreThanThreeTagsSnafu)?;
-        Ok(PostsAllRsp {
-            user: user.username().clone(),
-            tag: posts_all_req.tag.unwrap_or("".to_string()),
-            posts: apply_pagination(
-                storage
-                    .get_all_posts(
-                        &user,
-                        &tags,
-                        &DateRange::new(posts_all_req.fromdt, posts_all_req.todt),
-                        posts_all_req.unread.unwrap_or(false),
-                    )
-                    .await
-                    .context(AllPostsSnafu)?,
-                posts_all_req.start,
-                posts_all_req.results,
-            )
-            .await?,
-        })
+        let posts = apply_pagination(
+            storage
+                .get_all_posts(
+                    user,
+                    &tags,
+                    &DateRange::new(posts_all_req.fromdt, posts_all_req.todt),
+                    posts_all_req.unread.unwrap_or(false),
+                )
+                .await
+                .context(AllPostsSnafu)?,
+            posts_all_req.start,
+            posts_all_req.results,
+        )
+        .await?;
+        Ok((posts, tags))
     }
 
-    match all_posts1(state.storage.as_ref(), user, posts_all_req).await {
-        Ok(rsp) => {
-            delicious_posts_all.add(rsp.posts.len() as u64, &[]);
-            (StatusCode::OK, Json(rsp)).into_response()
+    match all_posts1(state.storage.as_ref(), &user, &posts_all_req).await {
+        Ok((posts, tags)) => {
+            // Convert `posts`, whatever it is, into an iterator yielding `Post`:
+            let posts = posts.into_iter();
+            // now, because we've guaranteed that the iterator is `Clone`, we can clone it and
+            // consume the clone to get the count:
+            delicious_posts_all.add(
+                posts.clone().count() as u64,
+                &[KeyValue::new("username", user.username().to_string())],
+            );
+            // Now-- are we returning a del.ico.us-style response, or an Atom feed?
+            match accept {
+                Accept::Atom => {
+                    match FeedBuilder::default()
+                        // Would be nice to build-out the feed
+                        .title(make_title(tags))
+                        // .updated()
+                        // .author()
+                        // .categories()
+                        // .generator()
+                        // .link()
+                        .entries(posts.map(Entry::from).collect::<Vec<Entry>>())
+                        .build()
+                        .write_to(Vec::new())
+                    {
+                        Ok(feed) => {
+                            let mut response = (StatusCode::OK, feed).into_response();
+                            response.headers_mut().insert(
+                                CONTENT_TYPE,
+                                HeaderValue::from_static("application/atom+xml"),
+                            );
+                            response
+                        }
+                        Err(err) => {
+                            error!("{err:#?}");
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(GenericRsp {
+                                    result_code: format!("{err}"),
+                                }),
+                            )
+                                .into_response()
+                        }
+                    }
+                }
+                Accept::Json => (
+                    StatusCode::OK,
+                    Json(PostsAllRsp {
+                        user: user.username().clone(),
+                        tag: posts_all_req.tag.unwrap_or("".to_string()),
+                        posts: posts.collect(),
+                    }),
+                )
+                    .into_response(),
+            }
         }
         Err(err) => {
-            error!("{:#?}", err);
+            error!("{err:#?}");
+            let (status, msg) = err.as_status_and_msg();
+            (status, Json(GenericRsp { result_code: msg })).into_response()
+        }
+    }
+}
+
+define_metric! { "delicious.feed.successes", delicious_feed_successes, Sort::IntegralCounter }
+define_metric! { "delicious.feed.failures", delicious_feed_failures, Sort::IntegralCounter }
+
+pub async fn feed(
+    State(state): State<Arc<Indielinks>>,
+    Query(request): Query<FeedRequest>,
+    Extension(user): Extension<User>,
+) -> axum::response::Response {
+    // As per usual, fit as many fallible operations as possible in here:
+    async fn feed1(
+        request: &FeedRequest,
+        storage: &(dyn StorageBackend + Send + Sync),
+        user: &User,
+    ) -> Result<String> {
+        let tags = UpToThree::new(parse_tag_parameter(&request.tags)?)
+            .context(NoMoreThanThreeTagsSnafu)?;
+        let posts = storage
+            .get_all_posts(
+                user,
+                &tags,
+                &DateRange::None,
+                request.unread.unwrap_or(true),
+            )
+            .await
+            .context(AllPostsSnafu)?
+            .take(request.num.unwrap_or(32))
+            .collect::<Vec<StdResult<_, _>>>()
+            .await
+            .into_iter()
+            .collect::<StdResult<Vec<Post>, _>>()
+            .context(AllPostsSnafu)?;
+
+        let buf = FeedBuilder::default()
+            // Would be nice to build-out the feed
+            .title(make_title(tags))
+            // .updated()
+            // .author()
+            // .categories()
+            // .generator()
+            // .link()
+            .entries(posts.into_iter().map(Entry::from).collect::<Vec<Entry>>())
+            .build()
+            .write_to(Vec::new())
+            .context(FeedSnafu)?;
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+
+    let kv = KeyValue::new("username", user.username().to_string());
+    match feed1(&request, state.storage.as_ref(), &user).await {
+        Ok(body) => {
+            delicious_feed_successes.add(1, &[kv]);
+            let mut response = (StatusCode::OK, body).into_response();
+            response.headers_mut().insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("application/atom+xml"),
+            );
+            response
+        }
+        Err(err) => {
+            error!("{err:#?}");
+            delicious_feed_failures.add(1, &[kv]);
             let (status, msg) = err.as_status_and_msg();
             (status, Json(GenericRsp { result_code: msg })).into_response()
         }

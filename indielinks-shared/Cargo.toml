@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"
+atom_syndication = "0.12.7"
 bytes = ">=1.11.1" # RUSTSEC-2026-0007
 chrono = { version = "0.4.41", features = ["serde"] }
 either = "1.15.0"

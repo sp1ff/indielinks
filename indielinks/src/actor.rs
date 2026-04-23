@@ -23,11 +23,12 @@ use std::{ops::Deref, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use axum::{
     extract::{Path, State},
-    http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
+    http::{header::CONTENT_TYPE, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Extension, Json, Router,
 };
+use axum_accept::AcceptExtractor;
 use chrono::Utc;
 use either::Either::{self, Left, Right};
 use futures::{stream::iter, StreamExt};
@@ -502,6 +503,15 @@ fn handle_err<E: std::error::Error>(
         .into_response()
 }
 
+#[derive(AcceptExtractor, Clone, Debug, Default)]
+pub enum AcceptHeader {
+    #[accept(mediatype = "application/activity+json")]
+    ActivityPub,
+    #[default]
+    #[accept(mediatype = "text/html")]
+    Html,
+}
+
 /// Set the ContentType header to "application/activity+json", overwriting the previous value, if
 /// any
 fn patch_content_type(mut rsp: axum::response::Response) -> axum::response::Response {
@@ -844,16 +854,13 @@ define_metric! { "actor.errors", actor_errors, Sort::IntegralCounter }
 async fn actor(
     State(state): State<Arc<Indielinks>>,
     axum::extract::Path(username): axum::extract::Path<Username>,
-    headers: HeaderMap,
+    accept: AcceptHeader,
 ) -> axum::response::Response {
     async fn actor1(
         origin: &Origin,
         storage: &(dyn StorageBackend + Send + Sync),
         username: &Username,
-        headers: &HeaderMap,
-    ) -> Result<(Actor, crate::http::Accept)> {
-        let accept =
-            crate::http::Accept::lookup_from_header_map(headers).context(AcceptLookupSnafu)?;
+    ) -> Result<Actor> {
         let user = storage
             .user_for_name(username.as_ref())
             .await
@@ -868,23 +875,25 @@ async fn actor(
 
         warn!("Serving Actor: {actor:#?}");
 
-        Ok((actor, accept))
+        Ok(actor)
     }
 
-    match actor1(&state.origin, state.storage.as_ref(), &username, &headers).await {
-        Ok((actor, crate::http::Accept::ActivityPub)) => match actor.as_jld(None) {
-            Ok(jld) => {
-                actor_retrieved.add(1, &[]);
-                patch_content_type((StatusCode::OK, jld.to_string()).into_response())
-            }
-            Err(err) => handle_err(err, actor_errors.deref()),
-        },
-        Ok((actor, crate::http::Accept::Html)) => match actor.as_html() {
-            Ok(html) => {
-                actor_retrieved.add(1, &[]);
-                (StatusCode::OK, html.to_string()).into_response()
-            }
-            Err(err) => handle_err(err, actor_errors.deref()),
+    match actor1(&state.origin, state.storage.as_ref(), &username).await {
+        Ok(actor) => match accept {
+            AcceptHeader::ActivityPub => match actor.as_jld(None) {
+                Ok(jld) => {
+                    actor_retrieved.add(1, &[]);
+                    patch_content_type((StatusCode::OK, jld.to_string()).into_response())
+                }
+                Err(err) => handle_err(err, actor_errors.deref()),
+            },
+            AcceptHeader::Html => match actor.as_html() {
+                Ok(html) => {
+                    actor_retrieved.add(1, &[]);
+                    (StatusCode::OK, html.to_string()).into_response()
+                }
+                Err(err) => handle_err(err, actor_errors.deref()),
+            },
         },
         Err(err @ Error::NoUser { .. }) => {
             error!("{}", err);
@@ -1435,20 +1444,14 @@ define_metric! { "posts.errors", posts_errors, Sort::IntegralCounter }
 async fn get_post(
     State(state): State<Arc<Indielinks>>,
     axum::extract::Path((username, entityid)): axum::extract::Path<(Username, Uuid)>,
-    headers: HeaderMap,
+    accept: AcceptHeader,
 ) -> axum::response::Response {
     async fn get_post1(
         origin: &Origin,
         storage: &(dyn StorageBackend + Send + Sync),
         username: &Username,
         entityid: &Uuid,
-        headers: &HeaderMap,
-    ) -> Result<(Note, crate::http::Accept)> {
-        // Looking up the header is fallible, so do it here.
-        let accept =
-            crate::http::Accept::lookup_from_header_map(headers).context(AcceptLookupSnafu)?;
-
-        // We're going to check the post owner against `username`, so lookup the user.
+    ) -> Result<Note> {
         let user = storage
             .user_for_name(username.as_ref())
             .await
@@ -1514,31 +1517,25 @@ async fn get_post(
             },
         };
 
-        Ok((note, accept))
+        Ok(note)
     }
 
-    match get_post1(
-        &state.origin,
-        state.storage.as_ref(),
-        &username,
-        &entityid,
-        &headers,
-    )
-    .await
-    {
-        Ok((note, crate::http::Accept::ActivityPub)) => match note.as_jld(None) {
-            Ok(jld) => {
-                posts_served.add(1, &[KeyValue::new("username", username)]);
-                patch_content_type((StatusCode::OK, jld.to_string()).into_response())
-            }
-            Err(err) => handle_err(err, posts_errors.deref()),
-        },
-        Ok((note, crate::http::Accept::Html)) => match note.as_html() {
-            Ok(html) => {
-                posts_served.add(1, &[KeyValue::new("username", username)]);
-                (StatusCode::OK, html.to_string()).into_response()
-            }
-            Err(err) => handle_err(err, posts_errors.deref()),
+    match get_post1(&state.origin, state.storage.as_ref(), &username, &entityid).await {
+        Ok(note) => match accept {
+            AcceptHeader::ActivityPub => match note.as_jld(None) {
+                Ok(jld) => {
+                    posts_served.add(1, &[]);
+                    patch_content_type((StatusCode::OK, jld.to_string()).into_response())
+                }
+                Err(err) => handle_err(err, posts_errors.deref()),
+            },
+            AcceptHeader::Html => match note.as_html() {
+                Ok(html) => {
+                    posts_served.add(1, &[]);
+                    (StatusCode::OK, html.to_string()).into_response()
+                }
+                Err(err) => handle_err(err, posts_errors.deref()),
+            },
         },
         Err(err @ Error::NoPost { .. }) => {
             error!("{}", err);

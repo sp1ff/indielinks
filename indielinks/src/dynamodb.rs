@@ -1727,16 +1727,20 @@ impl storage::Backend for Client {
                 add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
             }
             (UpToThree::Two(tag0, tag1), DateRange::Begins(b)) => {
-                filter_expression
-                    .push_str("posted>=:b and contains(tags,:t0) and contains(tags,:t1)");
+                filter_expression = append_clause(
+                    filter_expression,
+                    "posted>=:b and contains(tags,:t0) and contains(tags,:t1)",
+                );
 
                 add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
                 add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
                 add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
             }
             (UpToThree::Two(tag0, tag1), DateRange::Ends(e)) => {
-                filter_expression
-                    .push_str("posted<:e and contains(tags,:t0) and contains(tags,:t1)");
+                filter_expression = append_clause(
+                    filter_expression,
+                    "posted<:e and contains(tags,:t0) and contains(tags,:t1)",
+                );
 
                 add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
                 add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
@@ -1754,8 +1758,10 @@ impl storage::Backend for Client {
                 add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
             }
             (UpToThree::Three(tag0, tag1, tag2), DateRange::None) => {
-                filter_expression
-                    .push_str("contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)");
+                filter_expression = append_clause(
+                    filter_expression,
+                    "contains(tags,:t0) and contains(tags,:t1) and contains(tags,:t2)",
+                );
 
                 add_attr_value!(filter_values, ":t0", AttributeValue::S(tag0.to_string()));
                 add_attr_value!(filter_values, ":t1", AttributeValue::S(tag1.to_string()));
@@ -1764,7 +1770,7 @@ impl storage::Backend for Client {
             (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(b)) => {
                 filter_expression = append_clause(
                         filter_expression,
-                        "posted>=:b and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
+                        "posted>=:b and contains(tags,:t0) and contains(tags,:t1) and contains(tags,:t2)",
                     );
 
                 add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));
@@ -1775,7 +1781,7 @@ impl storage::Backend for Client {
             (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(e)) => {
                 filter_expression = append_clause(
                         filter_expression,
-                        "posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
+                        "posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags,:t2)",
                     );
 
                 add_attr_value!(filter_values, ":e", AttributeValue::S(e.to_string()));
@@ -1786,7 +1792,7 @@ impl storage::Backend for Client {
             (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e)) => {
                 filter_expression = append_clause(
                         filter_expression,
-                        "posted>:b and posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags, :t2)",
+                        "posted>:b and posted<:e and contains(tags,:t0) and contains(tags,:t1) and contains(tags,:t2)",
                     );
 
                 add_attr_value!(filter_values, ":b", AttributeValue::S(b.to_string()));

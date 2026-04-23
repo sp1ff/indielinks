@@ -27,7 +27,7 @@ use itertools::Itertools;
 use opentelemetry::KeyValue;
 use pin_project::pin_project;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, ResultExt, Snafu};
+use snafu::{Backtrace, Snafu};
 use tap::Pipe;
 use tower::{Layer, Service};
 use tower_gcra::keyed::KeyExtractor;
@@ -78,56 +78,6 @@ pub enum Error {
     Unauthorized { path: String, backtrace: Backtrace },
     #[snafu(display("{value} is not supported as an Accept header value"))]
     UnsupportedAccept { value: String, backtrace: Backtrace },
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                modeling "Accept" header values                                 //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Supported values for the request Accept header
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum Accept {
-    ActivityPub,
-    Html,
-}
-
-impl std::fmt::Display for Accept {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Accept::Html => write!(f, "text/html"),
-            Accept::ActivityPub => write!(f, "application/activity+json"),
-        }
-    }
-}
-
-impl Accept {
-    /// Lookup the header value corresponding to the "Accept" header in a [HeaderMap], defaulting to
-    /// [Accept::Html]. If there are more than one "Accept" headers, only the first will be
-    /// examined. If the value specifies a a MIME type not supported by indielinks, fail.
-    ///
-    /// [HeaderMap]: https://docs.rs/http/latest/http/header/struct.HeaderMap.html
-    pub fn lookup_from_header_map(headers: &http::HeaderMap) -> std::result::Result<Accept, Error> {
-        headers
-            .get(http::header::ACCEPT)
-            .map(http::HeaderValue::to_str)
-            .transpose()
-            .context(HeaderValueSnafu)?
-            .map(|s| {
-                if s.contains("application/ld+json") || s.contains("application/activity+json") {
-                    Ok(Accept::ActivityPub)
-                } else if s == "text/html" || s == "*/*" {
-                    Ok(Accept::Html)
-                } else {
-                    UnsupportedAcceptSnafu {
-                        value: s.to_owned(),
-                    }
-                    .fail()
-                }
-            })
-            .transpose()?
-            .unwrap_or(Accept::Html)
-            .pipe(Ok)
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

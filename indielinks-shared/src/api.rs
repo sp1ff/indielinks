@@ -137,6 +137,14 @@ pub struct PostsAllRsp {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeedRequest {
+    pub tags: Option<String>,
+    pub unread: Option<bool>,
+    pub num: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(transparent, deny_unknown_fields)]
 pub struct TagsGetRsp {
     pub map: HashMap<Tagname, usize>,

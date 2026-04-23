@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
+use atom_syndication::{Category, Entry, Text, TextType};
 use chrono::{DateTime, NaiveDate, Utc};
 use email_address::EmailAddress;
 use lazy_static::lazy_static;
@@ -589,6 +590,12 @@ impl AsRef<Url> for StorUrl {
     }
 }
 
+impl From<StorUrl> for String {
+    fn from(value: StorUrl) -> Self {
+        value.0.to_string()
+    }
+}
+
 impl From<StorUrl> for Url {
     fn from(value: StorUrl) -> Self {
         value.0
@@ -999,6 +1006,37 @@ impl Post {
     }
     pub fn user_id(&self) -> UserId {
         self.user_id
+    }
+}
+
+impl From<Post> for Entry {
+    fn from(post: Post) -> Self {
+        Entry {
+            title: Text {
+                value: post.title,
+                base: None,
+                lang: None,
+                r#type: TextType::Text,
+            },
+            id: post.url.into(),
+            updated: post.posted.into(),
+            categories: post
+                .tags
+                .into_iter()
+                .map(|tagname| Category {
+                    term: tagname.to_string(),
+                    scheme: None,
+                    label: None,
+                })
+                .collect(),
+            summary: post.notes.map(|s| Text {
+                value: s.into(),
+                base: None,
+                lang: None,
+                r#type: TextType::Text,
+            }),
+            ..Default::default()
+        }
     }
 }
 
