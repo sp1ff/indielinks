@@ -1,30 +1,13 @@
+@import url("https://fonts.googleapis.com/css2?family=Kanit:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap");
 @import "tailwindcss";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* .banner { */
-/*     width: 100%; */
-/*     background-color: #007Ba7; */
-/*     display: flex; */
-/* } */
-
-/* .logo { */
-/*     justify-content: left; */
-/*     color: #f5f5ff; */
-/*     padding-top: 4px; */
-/*     padding-left: 8px; */
-/* } */
-
-/* .tab { */
-/*     color: #f5f5ff; */
-/*     margin: 6px; */
-/* } */
-
-/* .tab-list { */
-/*     padding-left: 16px; */
-/* } */
+@theme {
+    --font-header: "Kanit", sans-serif;
+}
 
 /* .auth-actions { */
 /*     color: #f5f5ff; */
