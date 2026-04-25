@@ -83,8 +83,9 @@ impl State {
             session: Arc::new(
                 indielinks::scylla::Session::new(
                     cfg.scylla.hosts.clone(),
-                    &cfg.scylla.credentials,
+                    cfg.scylla.credentials.as_ref(),
                     0,
+                    cfg.scylla.translations.as_ref().map(|x| x.clone()),
                 )
                 .await
                 .context(SessionSnafu)?,

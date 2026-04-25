@@ -395,6 +395,8 @@ pub enum StorageConfig {
         credentials: Option<Credentials>,
         /// ScyllaDB hosts; specify as "host:port" (or anything that can be parsed as a [SocketAddr])
         hosts: Vec<SocketAddr>,
+        /// Optional address translation
+        translations: Option<Vec<(SocketAddr, SocketAddr)>>,
     },
     /// Use DyanmoDB or Scylla over the Alternator interface
     Dynamo {
@@ -416,6 +418,7 @@ impl Default for StorageConfig {
         StorageConfig::Scylla {
             credentials: None,
             hosts: vec!["localhost:9042".parse::<SocketAddr>().unwrap(/* known good */)],
+            translations: None,
         }
     }
 }
@@ -1024,11 +1027,20 @@ pub async fn select_storage(
     Arc<dyn CacheBackend + Send + Sync>,
 )> {
     match config {
-        StorageConfig::Scylla { credentials, hosts } => {
+        StorageConfig::Scylla {
+            credentials,
+            hosts,
+            translations,
+        } => {
             let x = Arc::new(
-                indielinks::scylla::Session::new(hosts, credentials, node_id)
-                    .await
-                    .context(SycllaSnafu)?,
+                indielinks::scylla::Session::new(
+                    hosts,
+                    credentials.as_ref(),
+                    node_id,
+                    translations.as_ref().cloned(),
+                )
+                .await
+                .context(SycllaSnafu)?,
             );
             Ok((x.clone(), x.clone(), x.clone()))
         }

@@ -118,13 +118,27 @@ pub struct ScyllaConfig {
     pub credentials: Option<Credentials>,
     /// ScyllaDB hosts; specify as "host:port"
     pub hosts: Vec<SocketAddr>,
+    /// Scylla address translations
+    pub translations: Option<Vec<(SocketAddr, SocketAddr)>>,
 }
 
+// Regrettably, if we want the tests to run without needing a configuration file, we have to ensure
+// that the default implementation of this struct works with the test setup.
 impl Default for ScyllaConfig {
     fn default() -> Self {
         ScyllaConfig {
             credentials: None,
             hosts: vec!["127.0.0.1:9043".parse::<SocketAddr>().unwrap(/* known good */)],
+            translations: Some(vec![
+                (
+                    "172.11.0.3:9043".parse::<SocketAddr>().unwrap(),
+                    "127.0.0.1:9044".parse::<SocketAddr>().unwrap(),
+                ),
+                (
+                    "172.11.0.4:9043".parse::<SocketAddr>().unwrap(),
+                    "127.0.0.1:9045".parse::<SocketAddr>().unwrap(),
+                ),
+            ]),
         }
     }
 }
@@ -341,9 +355,13 @@ pub struct ScyllaHelper {
 
 impl ScyllaHelper {
     pub async fn new(cfg: &ScyllaConfig) -> Result<ScyllaHelper> {
-        let session = create_scylla_client(&cfg.hosts, &cfg.credentials)
-            .await
-            .context(NewSessionSnafu)?;
+        let session = create_scylla_client(
+            &cfg.hosts,
+            cfg.credentials.as_ref(),
+            cfg.translations.as_ref().cloned(),
+        )
+        .await
+        .context(NewSessionSnafu)?;
         session
             .use_keyspace("indielinks", false)
             .await

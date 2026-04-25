@@ -62,6 +62,7 @@ use std::{fmt::Display, io, net::SocketAddr, ops::Deref, sync::Arc};
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use futures::{future::BoxFuture, stream::iter, StreamExt};
 use snafu::{prelude::*, Backtrace};
+use tap::Pipe;
 use tracing::{info, Level};
 use tracing_subscriber::{
     fmt::{self},
@@ -83,7 +84,7 @@ use indielinks::{
         create_client as create_scylla_client, create_schema as create_scylladb_schema,
         get_current_schema_version as get_current_scylla_schema_version,
     },
-    util::Credentials,
+    util::{exactly_two, Credentials},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -253,6 +254,49 @@ const DDB_FNS: &[DynamoDbSchemaUpdate] = &[
 ];
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug)]
+pub struct Translation(pub (SocketAddr, SocketAddr));
+
+impl clap::builder::ValueParserFactory for Translation {
+    type Parser = TranslationParser;
+
+    fn value_parser() -> Self::Parser {
+        TranslationParser
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TranslationParser;
+
+impl clap::builder::TypedValueParser for TranslationParser {
+    type Value = Translation;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> std::result::Result<Self::Value, clap::Error> {
+        use clap::error::ErrorKind;
+        value
+            .to_str()
+            .ok_or(clap::Error::new(ErrorKind::InvalidValue))?
+            .split(',')
+            .collect::<Vec<&str>>()
+            .into_iter()
+            .pipe(exactly_two)
+            .map_err(|_| clap::Error::new(ErrorKind::WrongNumberOfValues))?
+            .pipe(
+                |(from, to)| match (from.parse::<SocketAddr>(), to.parse::<SocketAddr>()) {
+                    (Ok(from), Ok(to)) => Ok(Translation((from, to))),
+                    (_, _) => Err(clap::Error::new(ErrorKind::InvalidValue)),
+                },
+            )
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                              main                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -335,9 +379,20 @@ Specify as either an AWS region ('us-west-2', e.g.) or as an URL ('http://localh
                     Arg::new("creds")
                         .short('c')
                         .long("creds")
+                        .help("Specify credentals as \"USERNAME,PASSWORD\"")
                         .num_args(1)
                         .env("INDIELINKS_SCHEMAS_CREDS")
                         .value_parser(value_parser!(Credentials)),
+                )
+                .arg(
+                    Arg::new("translation")
+                        .short('t')
+                        .help("Specify an address translation as \"FROM:TO\"")
+                        .long_help("Can be handy with either NAT or Docker & may be given more than once.
+
+For each node in the cluster, give this argument once, specify it as local/internal address, comma, address as viewed from where this program is being run.")
+                        .action(ArgAction::Append)
+                        .value_parser(value_parser!(Translation))
                 )
                 .arg(
                     Arg::new("host")
@@ -382,8 +437,12 @@ Specify as either an AWS region ('us-west-2', e.g.) or as an URL ('http://localh
             "scylla" => {
                 let creds = matches.remove_one::<Credentials>("creds");
                 let hosts = matches.remove_many::<SocketAddr>("host").unwrap(/* required */);
+                let translations = matches
+                    .remove_many::<Translation>("translation")
+                    .map(|t| t.into_iter().map(|x| x.0));
+
                 let client = Arc::new(
-                    create_scylla_client(hosts, &creds)
+                    create_scylla_client(hosts, creds.as_ref(), translations)
                         .await
                         .context(ScyllaClientSnafu)?,
                 );

@@ -39,5 +39,8 @@ while [ ${nnodes} -ne 3 ]; do
     fi
 done
 
+# TODO(sp1ff): IN-PROGRESS!
 AWS_EC2_METADATA_DISABLED=true cargo run --bin indielinks-schemas -- -v -p ddb http://localhost:8043
-cargo run --bin indielinks-schemas -- -v -p scylla 127.0.0.1:9043
+cargo run --bin indielinks-schemas -- -v -p scylla \
+  -t 172.11.0.3:9043,127.0.0.1:9044 -t 172.11.0.4:9043,127.0.0.1:9045 127.0.0.1:9043
+

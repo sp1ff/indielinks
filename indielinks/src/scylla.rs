@@ -47,6 +47,8 @@ use openraft::{
 };
 use pin_project::pin_project;
 use rmp_serde::{from_slice, to_vec};
+use scylla::errors::TranslationError;
+use scylla::policies::address_translator::UntranslatedPeer;
 use scylla::{
     client::{session::Session as InnerSession, session_builder::SessionBuilder},
     response::{PagingState, PagingStateResponse},
@@ -669,14 +671,45 @@ macro_rules! all_posts_case {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+struct Translations {
+    addresses: HashMap<SocketAddr, SocketAddr>,
+}
+
+impl Translations {
+    pub fn new(addresses: impl IntoIterator<Item = (SocketAddr, SocketAddr)>) -> Self {
+        Self {
+            addresses: addresses.into_iter().collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl scylla::policies::address_translator::AddressTranslator for Translations {
+    async fn translate_address(
+        &self,
+        untranslated_peer: &UntranslatedPeer,
+    ) -> StdResult<SocketAddr, TranslationError> {
+        self.addresses
+            .get(&untranslated_peer.untranslated_address())
+            .ok_or(TranslationError::NoRuleForAddress(
+                untranslated_peer.untranslated_address(),
+            ))
+            .copied()
+    }
+}
+
 /// Create an instance of the native ScyllaDB SDK client
 pub async fn create_client(
     hosts: impl IntoIterator<Item = impl Borrow<SocketAddr>>,
-    credentials: &Option<Credentials>,
+    credentials: Option<&Credentials>,
+    translations: Option<impl IntoIterator<Item = (SocketAddr, SocketAddr)>>,
 ) -> Result<InnerSession> {
     let mut builder = SessionBuilder::new().known_nodes_addr(hosts);
     if let Some(Credentials((user, pass))) = credentials {
         builder = builder.user(user.expose_secret(), pass.expose_secret())
+    }
+    if let Some(translations) = translations {
+        builder = builder.address_translator(Arc::new(Translations::new(translations)))
     }
     builder.build().await.context(NewSessionSnafu)
 }
@@ -997,10 +1030,11 @@ impl Session {
     /// of string consisting of the username & password.
     pub async fn new(
         hosts: impl IntoIterator<Item = impl Borrow<SocketAddr>>,
-        credentials: &Option<Credentials>,
+        credentials: Option<&Credentials>,
         node_id: NodeId,
+        translations: Option<impl IntoIterator<Item = (SocketAddr, SocketAddr)>>,
     ) -> Result<Session> {
-        let scylla = create_client(hosts, credentials).await?;
+        let scylla = create_client(hosts, credentials, translations).await?;
         scylla
             .use_keyspace("indielinks", false)
             .await
