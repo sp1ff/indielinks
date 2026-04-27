@@ -456,6 +456,11 @@ where
             .collect(),
     );
 
+    // drop the backend here, since it will likely depend on the test fixture. For instance, some of
+    // my tests have a backend that owns a ScyllaDB connection, which spews logs when the cluster
+    // goes down (!)
+    drop(backend);
+
     if !runner_config.no_teardown {
         rt.block_on(fixture.teardown(domain_config))?;
     }

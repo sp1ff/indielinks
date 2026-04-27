@@ -1,16 +1,140 @@
 #!/usr/bin/env bash
+VERSION=0.0.1
+
+help=
+nargs=0
+num_polls=20 # Give it ten seconds to shut down
+prev_option=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -h | --he | --hel | --help)
+            nargs=$(($nargs+1));
+            help=yes;;
+        -N | --num-polls | --num-checks)
+            nargs=$(($nargs+1));
+            prev_option=num_polls;;
+        -N=* | --num-polls=* | --num-checks=*)
+            nargs=$(($nargs+1));
+            num_polls=$optarg;;
+        -v | --verb | --verbose)
+            nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+            nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try 'scylla-downx --help' for more information.
+EOF
+            exit 2;;
+        *)
+            break;;
+    esac
+
+done
+
+shift $nargs;
+# $@ now contains the arguments, $# the number of arguments
+
+if test -n "${help}"; then
+    cat <<EOF
+scylla-down -- Tear-down a containerized ScyllaDB cluster for development & testing
+
+Usage:
+
+    scylla-down [OPTION...] ARGUMENT
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+    -N ATTEMPTS, --num-polls=ATTEMPTS  Specify the number of half-second
+                    'nodetool status' polls checking for cluster readiness
+                    before declaring failure (default: 20)
+
+Argument:
+
+The argument is optional. If specified, it will be treated as the path,
+relative to the 'infra' directory, of a docker compose env file to be used. If
+omitted, the compose file defaults will be used. Note that the docker compose
+project name will be derived from the env file on the assumption that its
+extension is '.env'.
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+scylla-down $VERSION
+EOF
+    exit 0
+fi
+
+set -euo pipefail
+if test -n "${verbose}"; then
+    set -x
+fi
+
 set -ex
 here=$(dirname $(realpath $0))
 cd $here
-docker compose -f compose.local.yaml down
+
+if [ $# -gt 1 ]; then
+    cat >&2 <<EOF
+More than one argument specified. Try 'scylla-down --help'.
+EOF
+    exit 2
+fi
+
+if [ "indielinks.env" == "${1:-}" ]; then
+    cat >&2 <<EOF
+'indielinks.env' is reserved; please use a different name for your env file.
+EOF
+    exit 2
+fi
+
+project_name=indielinks
+compose_args="-f compose.local.yaml down"
+if [ -n "${1:-}" ]; then
+    project_name="$(basename $1 .env)"
+    compose_args="-p $project_name --env-file $1 $compose_args"
+    source $1 # We need the values here, too!
+else
+    compose_args="-p indielinks $compose_args"
+    SCYLLA_NODE_1=1
+    SCYLLA_NODE_2=2
+    SCYLLA_NODE_3=3
+fi
+
+docker compose $compose_args
 ntries=1
-nnodes=$(docker ps|grep 'scylla-node-*'|wc -l)
+nnodes=$(docker ps|{ grep scylla-node-[${SCYLLA_NODE_1}${SCYLLA_NODE_2}${SCYLLA_NODE_3}] || true; }|wc -l)
 while [ ${nnodes} -ne 0 ]; do
     sleep 0.5
-    nnodes=$(docker ps|grep 'scylla-node-*'|wc -l)
+    nnodes=$(docker ps|{ grep scylla-node-[${SCYLLA_NODE_1}${SCYLLA_NODE_2}${SCYLLA_NODE_3}] || true; }|wc -l)
     ntries=$(($ntries+1))
-    # Give it ten seconds
-    if [ ${ntries} -gt 20 ]; then
+    if [ ${ntries} -gt ${num_polls} ]; then
         echo "ScyllaDB failed to shut down" >&2
         exit 1
     fi

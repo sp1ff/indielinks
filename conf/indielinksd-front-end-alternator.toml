@@ -1,10 +1,10 @@
 # indielinks configuration file for dev use with a ScyllaDB/Alternator (test) backend
 version = "1"
-log-file = "/tmp/indielinks.log"
+log-file = "/tmp/indielinks-front-end/indielinks.log"
 # Regrettably, it's important that these ports match those in indielinks-alternator-0.toml
-public-address = "0.0.0.0:20679"
-private-address = "127.0.0.1:20680"
-raft-grpc-address = "127.0.0.1:20681"
+public-address = "0.0.0.0:20694"
+private-address = "127.0.0.1:20695"
+raft-grpc-address = "127.0.0.1:20696"
 user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
 collection-page-size = 64
 
@@ -13,13 +13,13 @@ endpoint = "http://localhost:9090/api/v1/otlp/v1/metrics"
 
 [public-origin]
 scheme = "http"
-port = 20679
+port = 20694
 
 [public-origin.host]
 RegName = "indiemark.local"
 
 [storage-config.Dynamo]
-location = ["http://127.0.0.1:8043", "http://127.0.0.1:8044", "http://127.0.0.1:8045"]
+location = ["http://127.0.0.1:8046", "http://127.0.0.1:8047", "http://127.0.0.1:8048"]
 
 [pepper.peppers]
 "pepper-ver:20250213" = [0xb2, 0x91, 0x48, 0x34, 0x4d, 0x5f, 0xd3, 0x7e, 0x59, 0x71, 0x57, 0x91, 0xdd, 0x00, 0x32, 0x92, 0x62, 0xe9, 0x19, 0x77, 0x6d, 0xae, 0x4b, 0x5b, 0x6a, 0xab, 0x00, 0x67, 0x0e, 0x8c, 0xf4, 54]

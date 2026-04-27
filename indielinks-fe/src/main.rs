@@ -74,14 +74,13 @@
 use gloo_net::http::Request;
 use leptos::prelude::*;
 use leptos_router::{
-    NavigateOptions,
     components::{ProtectedRoute, Route, Router, Routes},
     hooks::{use_location, use_navigate},
     location::State,
-    path,
+    path, NavigateOptions,
 };
 use thaw::{Layout, LayoutHeader, Link, Tab, TabList};
-use tracing::{Level, debug, error, info};
+use tracing::{debug, error, info, Level};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 use wasm_bindgen::JsValue;
@@ -101,10 +100,8 @@ use indielinks_fe::{
 /// [indielinks-fe](crate) root component
 #[component]
 fn App() -> impl IntoView {
-    debug!("App invoked.");
-
-    // Next, I'm going to setup the network location at which we can reach indielinks. In my world,
-    // this would be a configuration item, typically provided by something as sophisticated as a
+    // Setup the network location at which we can reach indielinks. In my world (the backend), this
+    // would be a configuration item, typically provided by something as sophisticated as a
     // parameter management system, or as simple as a configuration file. In this world
     // (frontend/CSR/SPA) there are a few options, including fetching, at runtime a configuration
     // file from the same endpoint at which this WASM bundle is being served.

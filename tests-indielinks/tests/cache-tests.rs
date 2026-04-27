@@ -74,19 +74,19 @@ fn setup_indielinks_cluster_alternator() -> Result<()> {
 
 fn setup_scylla() -> Result<()> {
     teardown_scylla()?;
-    run("../infra/scylla-up", &[]).context(CommandSnafu {
+    run("../infra/scylla-up", [] as [&str; 0]).context(CommandSnafu {
         cmd: "scylla-up".to_owned(),
     })
 }
 
 fn teardown_indielinks_cluster() -> Result<()> {
-    run("../infra/indielinks-cluster-down", &[]).context(CommandSnafu {
+    run("../infra/indielinks-cluster-down", [] as [&str; 0]).context(CommandSnafu {
         cmd: "indielinks-cluster-down".to_owned(),
     })
 }
 
 fn teardown_scylla() -> Result<()> {
-    run("../infra/scylla-down", &[]).context(CommandSnafu {
+    run("../infra/scylla-down", [] as [&str; 0]).context(CommandSnafu {
         cmd: "scylla-down".to_string(),
     })
 }

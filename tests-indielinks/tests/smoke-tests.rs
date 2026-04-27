@@ -58,7 +58,15 @@
 //! for logging, so eht `RUST_LOG` environment variable is also respected.
 
 use std::{
-    collections::HashMap, process::ExitCode, result::Result as StdResult, str::FromStr, sync::Arc,
+    collections::HashMap,
+    ffi::OsString,
+    net::SocketAddr,
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    result::Result as StdResult,
+    str::FromStr,
+    sync::Arc,
 };
 
 use async_trait::async_trait;
@@ -133,33 +141,83 @@ type Result<T> = std::result::Result<T, Error>;
 // successfully
 
 #[instrument(level = Level::DEBUG)]
-fn setup_alternator_single_node() -> Result<()> {
-    teardown_single_node()?;
-    run("../infra/scylla-up", &[]).context(CommandSnafu {
+fn setup_alternator_single_node(
+    local_state_dir: &Path,
+    indielinks_config_file: &Path,
+    scylla_env_file: Option<&Path>,
+    indielinks: &Url,
+    ops: &Url,
+    grpc: &SocketAddr,
+) -> Result<()> {
+    teardown_single_node(local_state_dir, scylla_env_file)?;
+    run("../infra/scylla-up", scylla_env_file.into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
     })?;
-    run("../infra/indielinks-up", &["indielinksd-alternator.toml"]).context(CommandSnafu {
+
+    // There must be a nicer way to do this. We can go from strings to "OS" strings, so I can just
+    // say `....into()`; it's the other direction that's tricky.
+    let args: Vec<OsString> = vec![
+        "-v".into(),
+        "-G".into(),
+        format!("{grpc}").into(),
+        "-O".into(),
+        format!("{ops}").into(),
+        "-P".into(),
+        format!("{indielinks}").into(),
+        "-L".into(),
+        local_state_dir.as_os_str().into(),
+        indielinks_config_file.as_os_str().into(),
+    ];
+
+    run("../infra/indielinks-up", args).context(CommandSnafu {
         cmd: "indielinks-up".to_string(),
     })
 }
 
 #[instrument(level = Level::DEBUG)]
-fn setup_scylla_single_node() -> Result<()> {
-    teardown_single_node()?;
-    run("../infra/scylla-up", &[]).context(CommandSnafu {
+fn setup_scylla_single_node(
+    local_state_dir: &Path,
+    indielinks_config_file: &Path,
+    scylla_env_file: Option<&Path>,
+    indielinks: &Url,
+    ops: &Url,
+    grpc: &SocketAddr,
+) -> Result<()> {
+    teardown_single_node(local_state_dir, scylla_env_file)?;
+    run("../infra/scylla-up", scylla_env_file.into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
     })?;
-    run("../infra/indielinks-up", &["indielinksd-scylla.toml"]).context(CommandSnafu {
+
+    // There must be a nicer way to do this. We can go from strings to "OS" strings, so I can just
+    // say `....into()`; it's the other direction that's tricky.
+    let args: Vec<OsString> = vec![
+        "-v".into(),
+        "-G".into(),
+        format!("{grpc}").into(),
+        "-O".into(),
+        format!("{ops}").into(),
+        "-P".into(),
+        format!("{indielinks}").into(),
+        "-L".into(),
+        local_state_dir.as_os_str().into(),
+        indielinks_config_file.as_os_str().into(),
+    ];
+
+    run("../infra/indielinks-up", args).context(CommandSnafu {
         cmd: "indielinks-up".to_string(),
     })
 }
 
 #[instrument(level = Level::DEBUG)]
-fn teardown_single_node() -> Result<()> {
-    run("../infra/indielinks-down", &[]).context(CommandSnafu {
+fn teardown_single_node(local_state_dir: &Path, scylla_env_file: Option<&Path>) -> Result<()> {
+    run(
+        "../infra/indielinks-down",
+        &[OsStrExt::from_bytes(b"-L"), local_state_dir.as_os_str()],
+    )
+    .context(CommandSnafu {
         cmd: "indielinks-down".to_string(),
     })?;
-    run("../infra/scylla-down", &[]).context(CommandSnafu {
+    run("../infra/scylla-down", scylla_env_file.into_iter()).context(CommandSnafu {
         cmd: "scylla-down".to_string(),
     })
 }
@@ -205,8 +263,22 @@ impl FromStr for FixtureId {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
-    /// The location at which the indielinks instance under test can be reached
+    /// The location at which the indielinksd instance under test can be reached
     pub indielinks: Url,
+    #[serde(rename = "indielinks-alternator-config-file")]
+    pub indielinks_alternator_config_file: PathBuf,
+    #[serde(rename = "indielinks-scylla-config-file")]
+    pub indielinks_scylla_config_file: PathBuf,
+    /// The location at which the indielinksd instance under test's operational API can be reached
+    pub ops: Url,
+    /// The network location of the indielinksd instance under test's gRPC interface
+    pub grpc: SocketAddr,
+    /// The path at which the instance under test should store local test (PID file & like that)
+    #[serde(rename = "local-state-dir")]
+    pub local_state_dir: PathBuf,
+    /// The path to a .env file for the scylla Docker compose cluster
+    #[serde(rename = "scylla-env-file")]
+    pub scylla_env_file: Option<PathBuf>,
     pub scylla: ScyllaConfig,
     pub dynamo: DynamoConfig,
     /// The username of the test user that comes "pre-configured" with our integration tests
@@ -230,6 +302,12 @@ impl Default for Configuration {
             // I'd love to get rid of the requirement to add "indiemark.local" to your `/etc/hosts`,
             // but one thing at a time.
             indielinks: Url::parse("http://indiemark.local:20679").unwrap(/* known good */),
+            indielinks_alternator_config_file: PathBuf::from("indielinksd-alternator.toml"),
+            indielinks_scylla_config_file: PathBuf::from("indielinksd-scylla.toml"),
+            ops: Url::parse("http://localhost:20680").unwrap(/* known good */),
+            grpc: "127.0.0.1:20681".parse::<SocketAddr>().unwrap(/* known good */),
+            local_state_dir: PathBuf::from("."),
+            scylla_env_file: None,
             scylla: Default::default(),
             dynamo: Default::default(),
             username: Username::new("sp1ff").unwrap(/* known good */),
@@ -387,24 +465,40 @@ impl tests_support::Fixture for Fixture {
         Ok(backend)
     }
 
-    async fn setup(&self, _config: &Self::Configuration) -> StdResult<(), Self::Error> {
+    async fn setup(&self, config: &Self::Configuration) -> StdResult<(), Self::Error> {
         match self.id {
             FixtureId::ScyllaSingleNode | FixtureId::ScyllaSingleNodePreCharged => {
-                setup_scylla_single_node()
+                setup_scylla_single_node(
+                    &config.local_state_dir,
+                    &config.indielinks_scylla_config_file,
+                    config.scylla_env_file.as_deref(),
+                    &config.indielinks,
+                    &config.ops,
+                    &config.grpc,
+                )
             }
             FixtureId::DynamoDBSingleNode | FixtureId::DynamoDBSingleNodePreCharged => {
-                setup_alternator_single_node()
+                setup_alternator_single_node(
+                    &config.local_state_dir,
+                    &config.indielinks_alternator_config_file,
+                    config.scylla_env_file.as_deref(),
+                    &config.indielinks,
+                    &config.ops,
+                    &config.grpc,
+                )
             }
             _ => unimplemented!(),
         }
     }
 
-    async fn teardown(&self, _config: &Self::Configuration) -> StdResult<(), Self::Error> {
+    async fn teardown(&self, config: &Self::Configuration) -> StdResult<(), Self::Error> {
         match self.id {
             FixtureId::ScyllaSingleNode
             | FixtureId::DynamoDBSingleNode
             | FixtureId::ScyllaSingleNodePreCharged
-            | FixtureId::DynamoDBSingleNodePreCharged => teardown_single_node(),
+            | FixtureId::DynamoDBSingleNodePreCharged => {
+                teardown_single_node(&config.local_state_dir, config.scylla_env_file.as_deref())
+            }
             _ => unimplemented!(),
         }
     }

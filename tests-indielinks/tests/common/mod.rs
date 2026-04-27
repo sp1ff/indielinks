@@ -19,7 +19,7 @@
 //!
 //! Code common to the indielinks integration test framework goes here. See [indielinks_test] for a
 //! full description.
-use std::{collections::HashMap, env, fs, process::Command, sync::Arc};
+use std::{collections::HashMap, env, ffi::OsStr, fs, process::Command, sync::Arc};
 
 use libtest_mimic::Failed;
 use reqwest::Url;
@@ -70,9 +70,13 @@ type Result<T> = std::result::Result<T, Error>;
 const RUST_LOG: &str = "debug,aws_config=info,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,\
                         aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info";
 
-pub fn run(cmd: &str, args: &[&str]) -> Result<()> {
+pub fn run<I, S>(cmd: &str, args: I) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let output = Command::new(cmd)
-        .args(args.into_iter())
+        .args(args)
         .env("RUST_LOG", RUST_LOG)
         .output()
         .context(ProcessSnafu {

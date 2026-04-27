@@ -60,7 +60,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 fn setup() -> Result<()> {
     teardown()?;
-    run("../infra/scylla-up", &[]).context(CommandSnafu {
+    run("../infra/scylla-up", [] as [&str; 0]).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
     })?;
     Ok(())
@@ -68,7 +68,7 @@ fn setup() -> Result<()> {
 
 fn teardown() -> Result<()> {
     // Let's try & make this idempotent
-    run("../infra/scylla-down", &[]).context(CommandSnafu {
+    run("../infra/scylla-down", [] as [&str; 0]).context(CommandSnafu {
         cmd: "scylla-down".to_string(),
     })
 }

@@ -1,10 +1,108 @@
 #!/usr/bin/env bash
-set -ex
+VERSION=0.0.1
+
+help=
+local_state_dir="."
+nargs=0
+prev_option=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -L | --local-state | --local-state-dir)
+            nargs=$(($nargs+1));
+            prev_option=local_state_dir;;
+        -L=* | --local-state=* | --local-state-dir=*)
+            nargs=$(($nargs+1));
+            local_state_dir=$optarg;;
+        -h | --he | --hel | --help)
+            nargs=$(($nargs+1));
+            help=yes;;
+        -v | --verb | --verbose)
+            nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+            nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try '$0 --help' for more information.
+EOF
+            exit 2;;
+        *)
+            break;;
+    esac
+
+done
+shift $nargs;
+# $@ now contains the arguments, $# the number of arguments
+
+if test -n "${help}"; then
+    cat <<EOF
+indielinks-down -- tear-down a development indielinksd build by sending a SIGKILL
+
+Usage:
+
+    indielinks-down [OPTION...]
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+    -L DIR, --local-state-dir=DIR  Specify the directory where
+                    indielinks should place its pid file.
+                    Default "."
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+indielinks-down $VERSION
+EOF
+    exit 0
+fi
+
+set -euo pipefail
+if test -n "${verbose}"; then
+    set -x
+fi
+
+# Compute this before we cd, below:
+local_state_dir=$(realpath $local_state_dir)
+
 here=$(dirname $(realpath $0))
-cd $here
-# Use the PID file?
-pid=$(ps aux|grep 'target/.*/indielinks'|grep -v grep|awk '{print $2}')
+cd $here/../indielinks
+
+if [ $# -ne 0 ]; then
+    echo "'indielinks-down' takes no arguments" >&2
+    echo "Try 'indielinks-down --help'" >&2
+    exit 2
+fi
+
+pid=$(cat ${local_state_dir}/indielinksd.pid 2> /dev/null || true)
 if test -n "$pid"; then
-    kill ${pid}
+    # I want this script to be idempotent-- it's fine to run it more than once;
+    # if the process is already dead, that's fine.
+    kill ${pid} || true
 fi
 

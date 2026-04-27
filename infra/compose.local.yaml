@@ -1,12 +1,81 @@
-# Docker Compose file enabling local development for indielinks.
+# Docker Compose file enabling local development & testing for indielinks.
 
 # At this point, it just stands-up a local, three-node ScyllaDB
 # cluster. In particular, the indielinks binary is intended to be run
-# locally on "bare metal" (i.e. not in a Docker container). I'll
-# containerize it at some point, probably when I move from EC2 to ECS
-# in the (AWS) cloud, at which point I may add it here.
+# locally on "bare metal" (i.e. _not_ in a Docker container, and _not_
+# as part of a `docker compose` cluster). I'll containerize it at some
+# point, probably when I move from EC2 to ECS in the (AWS) cloud, at
+# which point I may add it here.
 
-name: indielinks
+# This compose file is designed to be parameterized through the caller
+# specifying the following environment variables (Nb. that this can be
+# done through the `.env` file as well as in the traditional way):
+
+# - SCYLLA_SUBNET: IPV4 subnet, in CIDR format, for this
+# cluster/project's bridge network. Default: 172.11.0.0/24
+# - SCYLLA_NODE_1: Numeric suffix distinguishing the first node in this
+# cluster (i.e. "10", or something like that). Default: 1
+# - SCYLLA_NATIVE_PORT_1: The port on the host machine that will be
+# mapped to 9042 in the first container (on which the `scylla`
+# instance will listen for the native/Cassandra protocol). Default:
+# 9043
+# - SCYLLA_ALTERNATOR_PORT_1: The port on the host machine that will be
+# mapped to 8042 in the first container (on which the `scylla`
+# instance will listen for the Alternator/DynamoDB protocol). Default:
+# 8043
+# - SCYLLA_NODE_1_ADDRESS: The IP address to be assigned to the first
+# node in this cluster _in the Docker bridge network_. Default:
+# 172.11.0.2.
+# - SCYLLA_NODE_2: Same as SCYLLA_NODE_1, but for the second node. Default: 2
+# - SCYLLA_NATIVE_PORT_2: Same as SCYLLA_NATIVE_PORT_1, but for the
+# second node. Default 9044
+# - SCYLLA_ALTERNATOR_PORT_2: Same as SCYLLA_ALTERNATOR_PORT_1, but for
+# the second node. Default: 8044.
+# - SCYLLA_NODE_2_ADDRESS: Same as SCYLLA_NODE_1_ADDRESS, but for the
+# second node. Default: 172.11.0.3.
+# - SCYLLA_NODE_3: Same as SCYLLA_NODE_1, but for the third node. Default: 3
+# - SCYLLA_NATIVE_PORT_3: Same as SCYLLA_NATIVE_PORT_1, but for the
+# third node. Default 9045
+# - SCYLLA_ALTERNATOR_PORT_3: Same as SCYLLA_ALTERNATOR_PORT_1, but for
+# the third node. Default: 8045.
+# - SCYLLA_NODE_3_ADDRESS: Same as SCYLLA_NODE_1_ADDRESS, but for the
+# third node. Default: 172.11.0.4.
+
+# For reference, here's a simple list of the 13 (!) environment
+# variables read by this compose file along with their default values:
+
+# - SCYLLA_SUBNET: 172.11.0.0/24
+# - SCYLLA_NODE_1: 1
+# - SCYLLA_NATIVE_PORT_1: 9043
+# - SCYLLA_ALTERNATOR_PORT_1: 8043
+# - SCYLLA_NODE_1_ADDRESS: 172.11.0.2
+# - SCYLLA_NODE_2: 2
+# - SCYLLA_NATIVE_PORT_2: 9044
+# - SCYLLA_ALTERNATOR_PORT_2: 8044
+# - SCYLLA_NODE_2_ADDRESS: 172.11.0.3
+# - SCYLLA_NODE_3: 3
+# - SCYLLA_NATIVE_PORT_3: 9045
+# - SCYLLA_ALTERNATOR_PORT_3: 8045
+# - SCYLLA_NODE_3_ADDRESS: 172.11.0.4
+
+# The defaults are chosen so that this file can be used in a `docker
+# compose` command with *none* of these variables set and work with
+# the integration tests' default configurations, as well the
+# indielinksd configuration files
+# `/conf/indielinksd-{alternator,scylla}{-0,-1,-2,-3,-4,}.toml. If
+# you're not using the defaults, you're going to need to update the
+# configuration for indielinksd and/or the integration tests.
+
+# This complexity enables the developer to run integration tests
+# and/or development stacks simultaneously in multiple git worktrees
+# on the same host (the author uses a git worktree-based workflow),
+# but the developer who just wants to work in a single worktree
+# shouldn't be inconvenienced.
+
+# This is a lot of configuration to keep track of and this file is not
+# meant to be used "by hand"; you'll almost certainly want to use the
+# scripts `scylla-up` and `scylla-down` which should be more
+# ergonomic.
 
 # This is important; we need to guarantee static IP addresses inside
 # the network created by `docker compose` for each ScyllaDB host. If
@@ -27,45 +96,45 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.11.0.0/24
+        - subnet: ${SCYLLA_SUBNET:-172.11.0.0/24}
 
 services:
 
   scylla-node-1:
-    container_name: scylla-node-1
+    container_name: scylla-node-${SCYLLA_NODE_1:-1}
     image: scylladb/scylla:latest
-    command: --smp 1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt --rf-rack-valid-keyspaces=true --rack=rack1  --broadcast-rpc-address 172.11.0.4 --native-transport-port 9042 # always_use_lwt?
+    command: --smp 1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt --rf-rack-valid-keyspaces=true --rack=rack1 --broadcast-rpc-address ${SCYLLA_NODE_1_ADDRESS:-172.11.0.2} --native-transport-port 9042 # always_use_lwt?
     # Port numbers chosen so as not to collide with my local SycllaDB instance
     ports:
-      - 9043:9042 # Cassandra native protocol
-      - 8043:8042 # Alternator port
+      - ${SCYLLA_NATIVE_PORT_1:-9043}:9042     # Cassandra native protocol
+      - ${SCYLLA_ALTERNATOR_PORT_1:-8043}:8042 # Alternator port
     networks:
       scylla-net:
-        ipv4_address: 172.11.0.2
+        ipv4_address: ${SCYLLA_NODE_1_ADDRESS:-172.11.0.2}
 
   scylla-node-2:
-    container_name: scylla-node-2
+    container_name: scylla-node-${SCYLLA_NODE_2:-2}
     image: scylladb/scylla:latest
-    command: --smp 1 --seeds=scylla-node-1  --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt --rf-rack-valid-keyspaces=true --rack=rack2 --broadcast-rpc-address 172.11.0.3 --native-transport-port 9042
+    command: --smp 1 --seeds=scylla-node-1  --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt --rf-rack-valid-keyspaces=true --rack=rack2 --broadcast-rpc-address ${SCYLLA_NODE_2_ADDRESS:-172.11.0.3} --native-transport-port 9042 
     ports:
-      - 9044:9042 # Cassandra native protocol
-      - 8044:8042 # Alternator port
+      - ${SCYLLA_NATIVE_PORT_2:-9044}:9042     # Cassandra native protocol
+      - ${SCYLLA_ALTERNATOR_PORT_2:-8044}:8042 # Alternator port
     networks:
       scylla-net:
-        ipv4_address: 172.11.0.3
+        ipv4_address: ${SCYLLA_NODE_2_ADDRESS:-172.11.0.3}
     depends_on:
       - scylla-node-1
 
   scylla-node-3:
-    container_name: scylla-node-3
+    container_name: scylla-node-${SCYLLA_NODE_3:-3}
     image: scylladb/scylla:latest
-    command: --smp 1 --seeds=scylla-node-1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt --rf-rack-valid-keyspaces=true --rack=rack3 --broadcast-rpc-address 172.11.0.4 --native-transport-port 9042
+    command: --smp 1 --seeds=scylla-node-1 --alternator-port 8042 --alternator-write-isolation only_rmw_uses_lwt --rf-rack-valid-keyspaces=true --rack=rack3 --broadcast-rpc-address ${SCYLLA_NODE_3_ADDRESS:-172.11.0.4} --native-transport-port 9042 
     ports:
-      - 9045:9042 # Cassandra native protocol
-      - 8045:8042 # Alternator port
+      - ${SCYLLA_NATIVE_PORT_3:-9045}:9042     # Cassandra native protocol
+      - ${SCYLLA_ALTERNATOR_PORT_3:-8045}:8042 # Alternator port
     networks:
       scylla-net:
-        ipv4_address: 172.11.0.4
+        ipv4_address: ${SCYLLA_NODE_3_ADDRESS:-172.11.0.4}
     depends_on:
       - scylla-node-1
 

@@ -50,7 +50,7 @@ pub async fn delicious_smoke_test(
         username, api_key
     ))?)
     .await?;
-    assert!(StatusCode::OK == rsp.status());
+    assert!(StatusCode::OK == rsp.status(), "{rsp:#?}");
     let body = rsp.json::<GenericRsp>().await?;
     assert!(body.result_code == format!("{} has no posts, yet", username));
 

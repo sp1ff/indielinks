@@ -1,32 +1,171 @@
 #!/usr/bin/env bash
+VERSION=0.0.1
+
+grpc_endpoint="localhost:20681"
+help=
+local_state_dir="."
+nargs=0
+num_polls=120 # generous limit of two minutse
+prev_option=
+public_endpoint="http://localhost:20679/"
+ops_endpoint="http://localhost:20680/"
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -G | --grpc | --grpc-endpoint)
+            nargs=$(($nargs+1));
+            prev_option=grpc_endpoint;;
+        -G=* | --grpc=* | --grpc-endpoint=*)
+            nargs=$(($nargs+1));
+            grpc_endpoint="${optarg}";;
+        -L | --local-state | --local-state-dir)
+            nargs=$(($nargs+1));
+            prev_option=local_state_dir;;
+        -L=* | --local-state=* | --local-state-dir=*)
+            nargs=$(($nargs+1));
+            local_tate_dir=$optarg;;
+        -N | --num-polls | --num-checks)
+            nargs=$(($nargs+1));
+            prev_option=num_polls;;
+        -N=* | --num-polls=* | --num-checks=*)
+            nargs=$(($nargs+1));
+            num_polls=$optarg;;
+        -O | --ops | --ops-endpoint)
+            nargs=$(($nargs+1));
+            prev_option=ops_endpoint;;
+        -O=* | --ops=* | --ops-endpoint=*)
+            nargs=$(($nargs+1));
+            ops_endpoint="${optarg}";;
+        -P | --public | --public-endpoint)
+            nargs=$(($nargs+1));
+            prev_option=public_endpoint;;
+        -P=* | --public=* | --public-endpoint=*)
+            nargs=$(($nargs+1));
+            public_endpoint="${optarg}";;
+        -h | --he | --hel | --help)
+            nargs=$(($nargs+1));
+            help=yes;;
+        -v | --verb | --verbose)
+            nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+            nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try '$0 --help' for more information.
+EOF
+            exit 2;;
+        *)
+            break;;
+    esac
+
+done
+
+shift $nargs;
+# $@ now contains the arguments, $# the number of arguments
+
+if test -n "${help}"; then
+    cat <<EOF
+indielinks-up -- spin-up a development indielinks build
+
+Usage:
+
+    indielinks-up [OPTION...] ARGUMENT
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+    -G GRPC, --grpc-endpoint=GRPC  Specify the network location
+                    where the gRPC endpoint will be. Default
+                    localhost:20681
+    -L DIR, --local-state-dir=DIR  Specify the directory where
+                    indielinks should place its pid file.
+                    Default "."
+    -N NUM, --num-polls=N  Specify the number of one second
+                    interval polls of the indielinks /healthcheck
+                    endpoint before determining the build didn't
+                    come up. Default: 120 (it's long to account
+                    for the possiblity of building the binary)
+    -O OPS, --ops-endpoint=OPS  Specify the URL of the ops
+                    endpoint for the the indielinksd instance.
+                    Default: http://localhost:20680
+    -P PUB, --public-endpoint=PUB  Specify the URL of
+                    the public endpoint for the indielinksd instance.
+                    Default: http://localhost:20679
+
+Argument:
+
+    Relative path to the indielinksd configuration file to be used
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+indielinks-up $VERSION
+EOF
+    exit 0
+fi
+
+set -euo pipefail
+if test -n "${verbose}"; then
+    set -x
+fi
+
+# Compute this before we cd, below:
+local_state_dir=$(realpath $local_state_dir)
+
+here=$(dirname $(realpath $0))
+cd $here/../indielinks
+
 if [ $# -ne 1 ]; then
     echo "Invoke as 'indielinks-up CONFIG-FILE'" >&2
+    echo "Try 'indielinks-up --help'" >&2
     exit 2
 fi
+
 config="$1"
 rust_log="debug,aws_config=warn,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,aws_smithy_http_client=info,aws_sdk_dynamodb=info,hyper=info,scylla=info,openraft=info"
 
-set -ex
-here=$(dirname $(realpath $0))
-cd $here/../indielinks
-# Run `indielinks` as a daemon in the indielinks directory
-(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -C -c ${here}/../conf/${config}) > /tmp/stdout.log 2>&1 < /dev/null &
+# Run `indielinksd` as a daemon in the indielinks directory
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L "${local_state_dir}" -C -c ${here}/../conf/${config}) > "${local_state_dir}"/stdout.log 2>&1 < /dev/null &
 
+# Wait for the daemon to healthcheck:
 sleep=0.5
 # curl can fail if the server isn't up, yet
-set +e
-status=$(curl -s http://localhost:20679/healthcheck)
+status=$(curl -s ${public_endpoint}healthcheck || true)
 ntries=1
 while [ "${status}" != "GOOD" ]; do
     sleep 1.0
-    status=$(curl -s http://localhost:20679/healthcheck)
+    status=$(curl -s ${public_endpoint}healthcheck || true)
     ntries=$(($ntries+1))
-    # Give it five seconds
-    if [ ${ntries} -gt 120 ]; then
+    if [ ${ntries} -gt ${num_polls} ]; then
         echo "indielinksd failed to come up!" >&2
         exit 1
     fi
 done
 
 # Initialize this instance as a single-node Raft cluster
-curl -v -H 'Content-Type: application/json' http://localhost:20680/ops/cache/init-cluster --data '{"0":{"addr":"127.0.0.1:20681"}}'
+curl -v -H 'Content-Type: application/json' ${ops_endpoint}ops/cache/init-cluster --data "{\"0\":{\"addr\":\"${grpc_endpoint}\"}}"

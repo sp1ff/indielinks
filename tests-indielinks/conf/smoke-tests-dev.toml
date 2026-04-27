@@ -5,13 +5,18 @@
 
 runner.log-level = "DEBUG"
 runner.logging = true
-runner.no-setup = true
+runner.no-setup = false
 runner.no-teardown = true
 runner.enforce-single-threaded=true
 
+domain.local-state-dir = "."
+domain.indielinks-alternator-config-file = "indielinksd-alternator.toml"
+domain.indielinks-scylla-config-file = "indielinksd-scylla.toml"
+domain.username = "sp1ff"
 # The URL at which indielinks can be reached from *within* a test'
 domain.indielinks = "http://indiemark.local:20679"
-domain.username = "sp1ff"
+domain.ops = "http://localhost:20680"
+domain.grpc = "127.0.0.1:20681"
 domain.api-key = "v1:5eb56ceebb7425aafe36eabca8b923054b4907d9375acd0b9950c51b57b201fb73e437428050f451b57632f99a3bbd5bed1c0f51cc0df752147090ed26e975f4"
 
 # Regrettably, this must match exactly the indielinks configuration item of the same name
@@ -20,7 +25,7 @@ domain.api-key = "v1:5eb56ceebb7425aafe36eabca8b923054b4907d9375acd0b9950c51b57b
 
 [domain.scylla]
 hosts = ["127.0.0.1:9043"]
+translations=[["172.11.0.3:9043", "127.0.0.1:9044"], ["172.11.0.4:9043", "127.0.0.1:9045"]]
 
 [domain.dynamo]
 location = ["http://127.0.0.1:8043", "http://127.0.0.1:8044", "http://127.0.0.1:8045"]
-

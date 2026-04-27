@@ -1,16 +1,132 @@
 #!/usr/bin/env bash
-set -ex
+VERSION=0.0.1
+
+help=
+nargs=0
+no_schemas=
+num_polls=20 # Give the cluster ten seconds to come up
+prev_option=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -N | --num-polls | --num-checks)
+            nargs=$(($nargs+1));
+            prev_option=num_polls;;
+        -N=* | --num-polls=* | --num-checks=*)
+            nargs=$(($nargs+1));
+            num_polls=$optarg;;
+        -S | --no-schemas | --no-init)
+            nargs=$(($nargs+1));
+            no_schemas=yes;;
+        -h | --he | --hel | --help)
+            nargs=$(($nargs+1));
+            help=yes;;
+        -v | --verb | --verbose)
+            nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+            nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try 'scylla-up --help' for more information.
+EOF
+            exit 2;;
+        *)
+            break;;
+    esac
+
+done
+
+shift $nargs;
+# $@ now contains the arguments, $# the number of arguments
+
+if test -n "${help}"; then
+    cat <<EOF
+scylla-up -- Stand-up a containerized ScyllaDB cluster for development & testing
+
+Usage:
+
+    scylla-up [OPTION...] ARGUMENT
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+    -N ATTEMPTS, --num-polls=ATTEMPTS  Specify the number of half-second
+                    'nodetool status' polls checking for cluster readiness
+                    before declaring failure (default: 20)
+    -S, --no-schemas  Don't run 'indielinks-schemas' to initialize the
+                    ScyllaDB keyspace & schema
+
+Argument:
+
+The argument is optional. If specified, it will be treated as the path,
+relative to the 'infra' directory, of a docker compose env file to be used. If
+omitted, the compose file defaults will be used. Note that the docker compose
+project name will be derived from the env file on the assumption that its
+extension is '.env'.
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+scylla-up $VERSION
+EOF
+    exit 0
+fi
+
+set -euo pipefail
+if test -n "${verbose}"; then
+    set -x
+fi
+
 here=$(dirname $(realpath $0))
 cd $here
 
+if [ $# -gt 1 ]; then
+    cat >&2 <<EOF
+More than one argument specified. Try 'scylla-up --help'.
+EOF
+    exit 2
+fi
+
+if [ "indielinks.env" == "${1:-}" ]; then
+    cat >&2 <<EOF
+'indielinks.env' is reserved; please use a different name for your env file.
+EOF
+    exit 2
+fi
+
 # "make sure the aio-max-nr value is high enough (1048576 or more)"
-# <https://university.scylladb.com/setup-a-scylla-cluster/?utm_source=chatgpt.com>
+# <https://university.scylladb.com/setup-a-scylla-cluster>
 max_nr=$(cat /proc/sys/fs/aio-max-nr)
 if [ ${max_nr} -lt 1048576 ]; then
     # I'm uncomfortable reconfiguring the system in order to get this to run,
     # but it should be treated as an error:
     cat >&2 <<EOF
-    This system is not correctly configured to run ScyllaDB (even in testing).
+This system is not correctly configured to run ScyllaDB (even in testing).
 On Linux, do the following:
 
     echo "fs.aio-max-nr = 1048576" | sudo tee -a /etc/sysctl.conf
@@ -21,26 +137,49 @@ EOF
    exit 1 
 fi
 
-docker compose -f compose.local.yaml up -d
+project_name=indielinks
+compose_args="-f compose.local.yaml up -d"
+if [ -n "${1:-}" ]; then
+    project_name="$(basename $1 .env)"
+    compose_args="-p $project_name --env-file $1 $compose_args"
+    source $1 # We need the values here, too!
+else
+    compose_args="-p indielinks $compose_args"
+    SCYLLA_NODE_1=1
+    SCYLLA_ALTERNATOR_PORT_1=8043
+    SCYLLA_NODE_2_ADDRESS=172.11.0.3
+    SCYLLA_NODE_3_ADDRESS=172.11.0.4
+    SCYLLA_NATIVE_PORT_1=9043
+    SCYLLA_NATIVE_PORT_2=9044
+    SCYLLA_NATIVE_PORT_3=9045
+fi
+
+docker compose $compose_args
 ntries=1
-nnodes=$(docker exec scylla-node-1 nodetool status|grep -F UN|wc -l)
+# `nodetool status` can fail if the container process isn't up yet; `grep` fails when it finds
+# no matches. Neither is an error status as far as we're concerned.
+nnodes=$({ docker exec scylla-node-${SCYLLA_NODE_1} nodetool status || true; }|{ grep -F UN || true; }|wc -l)
 while [ ${nnodes} -ne 3 ]; do
     sleep 0.5
     set +e
-    docker exec scylla-node-1 nodetool status
+    docker exec scylla-node-${SCYLLA_NODE_1} nodetool status
     set -e
-    nnodes=$(docker exec scylla-node-1 nodetool status|grep -F UN|wc -l)
+    nnodes=$({ docker exec scylla-node-${SCYLLA_NODE_1} nodetool status || true; }|{ grep -F UN || true; }|wc -l)
     ntries=$(($ntries+1))
-    # Give it ten seconds
-    if [ ${ntries} -gt 25 ]; then
+    if [ ${ntries} -gt ${num_polls} ]; then
         echo "ScyllaDB failed to come up" >&2
         docker ps -a
         exit 1
     fi
 done
 
-# TODO(sp1ff): IN-PROGRESS!
-AWS_EC2_METADATA_DISABLED=true cargo run --bin indielinks-schemas -- -v -p ddb http://localhost:8043
-cargo run --bin indielinks-schemas -- -v -p scylla \
-  -t 172.11.0.3:9043,127.0.0.1:9044 -t 172.11.0.4:9043,127.0.0.1:9045 127.0.0.1:9043
+if [ -n "$no_schemas" ]; then
+    exit 0
+fi
 
+# Need to set RUST_LOG, here.
+AWS_EC2_METADATA_DISABLED=true cargo run --bin indielinks-schemas -- -v -p ddb http://localhost:${SCYLLA_ALTERNATOR_PORT_1}
+cargo run --bin indielinks-schemas -- -v -p scylla \
+      -t ${SCYLLA_NODE_2_ADDRESS}:${SCYLLA_NATIVE_PORT_1},127.0.0.1:${SCYLLA_NATIVE_PORT_2} \
+      -t ${SCYLLA_NODE_3_ADDRESS}:${SCYLLA_NATIVE_PORT_1},127.0.0.1:${SCYLLA_NATIVE_PORT_3} \
+      127.0.0.1:${SCYLLA_NATIVE_PORT_1}
