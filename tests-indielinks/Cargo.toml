@@ -53,11 +53,7 @@ wiremock = "0.6.3"
 tests-support = { path = "../tests-support" }
 
 [[test]]
-name = "background-scylla"
-harness = false
-
-[[test]]
-name = "background-alternator"
+name = "background-task-tests"
 harness = false
 
 [[test]]
