@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -125,29 +125,37 @@ pub fn SignIn() -> impl IntoView {
         }
     });
 
-    // Ugh: I really need to move this stuff to CSS:
     view! {
-        <div style="display: flex; align-items: center; justify-content: space-around; flex-direction: column;">
-            <form style="padding: 1em;" on:submit=move |ev| {
-                // If I don't say this, the damn page reloads before the HTTP call returns
-                ev.prevent_default();
-                on_submit.dispatch(());
+        <div class="flex items-center justify-around flex-col" >
+            <form
+                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center pt-4"
+                on:submit=move |ev| {
+                  // If I don't say this, the damn page reloads before the HTTP call returns
+                  ev.prevent_default();
+                  on_submit.dispatch(());
             }>
-                // ChatGPT claims that stacking three divs on top of one another is idiomatic, here
-                <div style="margin-bottom: 8px;">
-                    <label for="username" style="width: 100px; display: inline-block;">"Username:"</label>
-                    <input type="text" id="username" name="username" node_ref=username_element required />
-                </div>
-                <div style="margin-bottom: 12px;">
-                    <label for="password" style="width: 100px; display: inline-block;">"Password:"</label>
-                    <input type="password" id="password" name="password" node_ref=password_element required />
-                </div>
-                <div style="display: flex; align-items: center; justify-content: space-around;">
-                    <input type="submit" value="Login" />
-                </div>
+                <label for="username">"Username:"</label>
+                <input autofocus required
+                    type="text"
+                    id="username" name="username"
+                    node_ref=username_element
+                    class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
+                />
+                <label for="password">"Password:"</label>
+                <input required
+                    type="password"
+                    id="password" name="password"
+                    node_ref=password_element
+                    class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
+                />
+                <input
+                    type="submit"
+                    value="Login"
+                    class="bg-transparent border px-4 py-2 hover:bg-sky-300 hover:text-gray-900 transition-colors cursor-pointer col-span-2 mx-auto focus:bg-sky-300"
+                />
             </form>
             <Show when=move || error.get().is_some()>
-                <div style="color: red;">
+                <div style="color: red;" class="pt-4">
                 { move || error.get().unwrap() }
                 </div>
             </Show>
