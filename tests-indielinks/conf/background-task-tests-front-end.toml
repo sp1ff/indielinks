@@ -1,0 +1,25 @@
+# Run the integration test "background-task-tests" against a
+# completely different ScyllaDB/indielinksd stack than the default.
+# This can be handy for working in two git worktrees simultaneously.
+# It's named "front-end" because that was the first git worktree in
+# which I wanted a separate stack.
+
+runner.log-level = "DEBUG"
+runner.logging = true
+runner.no-setup = false
+runner.no-teardown = false
+runner.enforce-single-threaded=true
+
+domain.scylla-env-file = "front-end.env"
+
+[domain.origin]
+scheme = "http"
+port = 20694
+host = { RegName = "indiemark.local" }
+
+[domain.scylla]
+hosts = ["127.0.0.1:9046"]
+translations=[["172.12.0.3:9046", "127.0.0.1:9047"], ["172.12.0.4:9046", "127.0.0.1:9048"]]
+
+[domain.dynamo]
+location = ["http://127.0.0.1:8046", "http://127.0.0.1:8047", "http://127.0.0.1:8048"]

@@ -164,6 +164,7 @@ pub async fn first_background(
     backend: Arc<dyn TasksBackend + Send + Sync>,
     storage: Arc<dyn StorageBackend + Send + Sync>,
 ) -> Result<(), Failed> {
+    debug!("first_background!");
     // Ok: we have a `TasksBackend` instance. We'll use this to construct a `BackgroundTasks`
     // instance. This can both send & process tasks via `backend`.
     let tasks = Arc::new(BackgroundTasks::new(backend));
@@ -239,7 +240,7 @@ pub async fn first_background(
     debug!("Tasks sent off; sleeping...done.");
 
     debug!("Shutting down...");
-    processor.shutdown(Duration::from_secs(2)).await?;
+    processor.shutdown(Duration::from_secs(/*2*/ 4)).await?;
     debug!("Shutting down...done.");
 
     assert!(DATA1.load(Ordering::SeqCst));

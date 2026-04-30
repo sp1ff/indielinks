@@ -1,20 +1,163 @@
 #!/usr/bin/env bash
+VERSION=0.0.1
 
+set -euo pipefail
+
+config_base=
+haproxy_id=0
+haproxy_port=20673
+help=
+local_state_base="/tmp/indielinksd-"
+nargs=0
+num_nodes=
+num_polls=120 # generous limit of two minutes
+prev_option=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -C | --config | --config-base)
+            nargs=$(($nargs+1));
+            prev_option=config_base;;
+        -C=* | --config=* | --config-base=*)
+            nargs=$(($nargs+1));
+            config_base=$optarg;;
+        -H | --haproxy | --haproxy-port)
+            nargs=$(($nargs+1));
+            prev_option=haproxy_port;;
+        -H=* | --haproxy=* | --haproxy-port=*)
+            nargs=$(($nargs+1));
+            haproxy_port=$optarg;;
+        -I | --haproxy-id)
+            nargs=$(($nargs+1));
+            prev_option=haproxy_id;;
+        -I=* | --haproxy-id=*)
+            nargs=$(($nargs+1));
+            haproxy_id=$optarg;;
+        -L | --local-state | --local-state-base)
+            nargs=$(($nargs+1));
+            prev_option=local_state_base;;
+        -L=* | --local-state=* | --local-state-base=*)
+            nargs=$(($nargs+1));
+            local_state_base=$optarg;;
+        -N | --num-polls | --num-checks)
+            nargs=$(($nargs+1));
+            prev_option=num_polls;;
+        -N=* | --num-polls=* | --num-checks=*)
+            nargs=$(($nargs+1));
+            num_polls=$optarg;;
+        -h | --he | --hel | --help)
+            nargs=$(($nargs+1));
+            help=yes;;
+        -v | --verb | --verbose)
+            nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+            nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try '$0 --help' for more information.
+EOF
+            exit 2;;
+        *)
+            shift $nargs;
+            # $@ now contains the arguments, $# the number of arguments
+            num_nodes="$1"
+            shift
+        break;;
+    esac
+
+done
+
+if test -n "${help}"; then
+    cat <<EOF
+indielinks-cluster-up -- Stand-up a cluster of indielinks instances
+
+Usage:
+
+    indielinks-cluster-up [OPTION...] 3|5
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+    -C CFG, --config-base=CFG  Specify the prefix to be used for
+                    the indielinksd configuration files to be
+                    used. Each instance will append its instance
+                    number and ".toml" to this base, so
+                    -C file- will produce configuration files of
+                    file-0.toml, file-1.toml & so on.
+    -H PORT, --haproxy-port=PORT  Specify the port on which haproxy
+                    should listen.
+                    Default: 20673
+    -I ID, --haproxy-id=ID  Arbitrary identifier for the haproxy
+                    instance fronting this cluster.
+                    Default: 0.
+    -L DIR, --local-state-base=DIR  Specify the directories where
+                    indielinksd should place their pid file. Each
+                    instance will append its instance number to this
+                    prefix to get the final directory name, so
+                    -L /tmp/x will produce directories /tmp/x{0,1,2}
+                    for a three-node cluster.
+                    Default "/tmp/indielinksd-"
+    -N NUM, --num-polls=N  Specify the number of one second
+                    interval polls of the indielinks /healthcheck
+                    endpoint before determining the build didn't
+                    come up. Default: 120 (it's long to account
+                    for the possiblity of building the binary)
+
+Argument:
+
+This script takes a single argument: 3 or 5. This indicates that a three-
+or a five-node cluster should be stood-up.
+
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+indielinks-cluster-up $VERSION
+EOF
+    exit 0
+fi
+
+if test -n "${verbose}"; then
+    set -x
+fi
+
+# Invoke as `hc port num_polls`
 function hc() {
     local port=$1
+    local num_polls=$2
     # curl can fail if the server isn't up, yet
-    set +e
-    status=$(curl -s http://localhost:${port}/healthcheck)
-    set -e
+    status=$(curl -s http://localhost:${port}/healthcheck || true)
     ntries=1
     while [ "${status}" != "GOOD" ]; do
         sleep 1.0
-        set +e
-        status=$(curl -s http://localhost:${port}/healthcheck)
-        set -e
+        status=$(curl -s http://localhost:${port}/healthcheck || true)
         ntries=$(($ntries+1))
-        # Give this a few minutes (!) since we're potentially building in a subshell
-        if [ ${ntries} -gt 120 ]; then
+        if [ ${ntries} -gt ${num_polls} ]; then
             echo "indielinks failed to come up on port ${port}" >&2
             return "1"
         fi
@@ -22,52 +165,112 @@ function hc() {
     return "0"
 }
 
-if [ $# -ne 2 ]; then
-    echo "Invoke as 'indielinks-cluster-up CONFIG-FILE-BASE-NAME' 3|5" >&2
+# Parse the public port from an indielinks configuration file
+function parse_public_port() {
+    local config_file=$1
+    local port=$(sed -nE 's/public-address[[:space:]]*=[[:space:]]*"[.0-9]+:([0-9]+)"/\1/p' $config_file)
+    echo $port
+}
+
+if [ -z "${config_base}" ]; then
+    echo "--config-base is mandatory" >&2
     exit 2
 fi
 
-config="$1"
-nodes="$2"
-rust_log="debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info"
-
-set -ex
-
-[ -d /tmp/indielinksd-0 ] || mkdir /tmp/indielinksd-0
-[ -d /tmp/indielinksd-1 ] || mkdir /tmp/indielinksd-1
-[ -d /tmp/indielinksd-2 ] || mkdir /tmp/indielinksd-2
-if [ "${nodes}" == "5" ]; then
-    [ -d /tmp/indielinksd-3 ] || mkdir /tmp/indielinksd-3
-    [ -d /tmp/indielinksd-4 ] || mkdir /tmp/indielinksd-4
+if [ $# -ne 0 ]; then
+    echo "Unexpected argument(s); try 'indielinks-cluster-up --help'" >&2
+    exit 2
 fi
 
 here=$(dirname $(realpath $0))
 cd $here/../indielinks
 
-# Run five copies of the `indielinksd` daemon. If I don't place each `cargo run` invocation
-# into a sub-shell, `Command::output()` hangs.
-(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-0 -c ${here}/../conf/${config}-0.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
-(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-1 -c ${here}/../conf/${config}-1.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
-(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-2 -c ${here}/../conf/${config}-2.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
-if [ "${nodes}" == "5" ]; then
-    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-3 -c ${here}/../conf/${config}-3.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
-    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L /tmp/indielinksd-4 -c ${here}/../conf/${config}-4.toml) > /tmp/indielinksd-0/stdout.log 2>&1 < /dev/null &
+# Parse the public ports on which our instances are listening from the given
+# config files: public-address = "0.0.0.0:20679"
+port_0=$(parse_public_port "${config_base}0.toml")
+port_1=$(parse_public_port "${config_base}1.toml")
+port_2=$(parse_public_port "${config_base}2.toml")
+if [ "${num_nodes}" == "5" ]; then
+    port_3=$(parse_public_port "${config_base}3.toml")
+    port_4=$(parse_public_port "${config_base}4.toml")
+fi
+
+# emit an haproxy config file based on that & 3/5 nodes
+haproxy_config=/tmp/haproxy.${haproxy_id}.conf
+cat > ${haproxy_config} <<EOF
+global
+    maxconn 256
+    stats socket /tmp/haproxy.${haproxy_id}.sock mode 600 level admin
+    log stdout format raw local0
+
+defaults
+    mode http
+    timeout connect 3s
+    timeout client  30s
+    timeout server  30s
+    option httplog
+
+frontend fe_http
+    bind :${haproxy_port}
+    default_backend be_servers
+
+backend be_servers
+    balance roundrobin
+
+    # Actively check /healthcheck; require 200 and body containing "GOOD"
+    option httpchk GET /healthcheck HTTP/1.1
+
+    http-check expect status 200
+    http-check expect string GOOD
+
+    server s1 127.0.0.1:${port_0} check inter 2s fall 3 rise 2
+    server s2 127.0.0.1:${port_1} check inter 2s fall 3 rise 2
+    server s3 127.0.0.1:${port_2} check inter 2s fall 3 rise 2
+EOF
+
+if [ "${num_nodes}" == "5" ]; then
+    cat >> ${haproxy_config} <<EOF
+    server s1 127.0.0.1:${port_3} check inter 2s fall 3 rise 2
+    server s2 127.0.0.1:${port_4} check inter 2s fall 3 rise 2
+EOF
+fi
+
+rust_log="${RUST_LOG:-debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info}"
+
+# Clean-up & (re-)create the local state directories for each instance
+test -d ${local_state_base}0 || mkdir ${local_state_base}0
+test -d ${local_state_base}1 || mkdir ${local_state_base}1
+test -d ${local_state_base}2 || mkdir ${local_state_base}2
+if [ "${num_nodes}" == "5" ]; then
+    test -d ${local_state_base}3 || mkdir ${local_state_base}3
+    test -d ${local_state_base}4 || mkdir ${local_state_base}4
+fi
+
+# Run three or five copies of the `indielinksd` daemon. If I don't place each
+# `cargo run` invocation into a sub-shell, `Command::output()` hangs (?)
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}0 -c ${config_base}0.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}1 -c ${config_base}1.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}2 -c ${config_base}2.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
+if [ "${num_nodes}" == "5" ]; then
+    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}3 -c ${config_base}3.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
+    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}4 -c ${config_base}4.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
 fi
 
 # The problem with running these in subshells is that we arrive here with the
-# build process (potentially) in-progress, which can take quite some time.
-
-# Wait for the entire cluster to healthcheck
-hc 20679 || exit 1
-hc 20682 || exit 1
-hc 20685 || exit 1
-if [ "${nodes}" == "5" ]; then
-    hc 20688 || exit 1
-    hc 20691 || exit 1
+# build process (potentially) in-progress, which can take quite some time. Wait
+# for the entire cluster to healthcheck.
+hc ${port_0} ${num_polls} || exit 1
+hc ${port_1} ${num_polls} || exit 1
+hc ${port_2} ${num_polls} || exit 1
+if [ "${num_nodes}" == "5" ]; then
+    hc ${port_3} ${num_polls} || exit 1
+    hc ${port_4} ${num_polls} || exit 1
 fi
 
-# If I don't place my `haproxy` invocation into a sub-shell, `Command::output()` hangs.
-(haproxy -f ${here}/../tests-indielnks/conf/haproxy-${nodes}-nodes.conf) > /tmp/haproxy.log 2>&1 < /dev/null &
+# Alright, the cluster is up & alive. Spin-up `haproxy`. If I don't place my
+# `haproxy` invocation into a sub-shell, `Command::output()` hangs.
+(haproxy -f ${haproxy_config}) > /tmp/haproxy.${haproxy_id}.log 2>&1 < /dev/null &
+echo "$!" > /tmp/haproxy.${haproxy_id}.pid
 sleep 0.5
 
-echo "indielinksd up & fronted by haproxy."
+echo "indielinksd up & fronted by haproxy. The haproxy log file is at /tmp/haproxy.${haproxy_id}.log"

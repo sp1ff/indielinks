@@ -18,21 +18,37 @@
 //! This (admittedly sparse) integration test exercises [indielinks] configured to run in a cluster
 //! as a distributed cache baed on [openraft].
 
-use std::{process::ExitCode, result::Result as StdResult, str::FromStr, sync::Arc};
+use std::{
+    collections::HashMap,
+    env, fs,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    result::Result as StdResult,
+    str::FromStr,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
+use indielinks_cache::types::{ClusterNode, NodeId};
 use libtest_mimic::Failed;
 use serde::Deserialize;
-use snafu::{ResultExt, Snafu};
+use snafu::{IntoError, ResultExt, Snafu};
+use tap::Pipe;
 use tracing::debug;
 
 use indielinks::cache::Backend as CacheBackend;
 
-use tests_indielinks::cache::{openraft_test_suite, raft_ops};
+use tests_indielinks::{
+    cache::{openraft_test_suite, raft_ops},
+    helper::{DynamoConfig, ScyllaConfig},
+};
 
-use tests_support::{sync_integration_test, Fixture, IntegrationTest, SyncIntegrationTest};
+use tests_support::{
+    sync_integration_test, Fixture, IntegrationTest, SyncIntegrationTest, TestConfiguration,
+};
 
-use common::{run, Configuration};
+use common::run;
+use url::Url;
 
 mod common;
 
@@ -44,6 +60,13 @@ pub enum Error {
     Command { cmd: String, source: common::Error },
     #[snafu(display("Error obtaining test configuration: {source}"))]
     Configuration { source: common::Error },
+    #[snafu(display("Failed to parse {pth}: {source}"))]
+    De {
+        pth: String,
+        source: toml::de::Error,
+    },
+    #[snafu(display("Failed to read INDIELINKS_TEST_CONFIG: {source}"))]
+    Env { source: std::env::VarError },
     #[snafu(display("Couldn't parse {text} as a FixtureId"))]
     FixtureId { text: String },
     #[snafu(display("{source}"))]
@@ -51,6 +74,8 @@ pub enum Error {
         #[snafu(source(from(tests_support::Error<CacheFixture>, Box::new)))]
         source: Box<tests_support::Error<CacheFixture>>,
     },
+    #[snafu(display("Failed to read {pth}: {source}"))]
+    Read { pth: String, source: std::io::Error },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -61,32 +86,54 @@ type Result<T> = std::result::Result<T, Error>;
 
 // A collection of little functions for standing-up & tearing-down associated services.
 
-fn setup_indielinks_cluster_alternator() -> Result<()> {
-    teardown_indielinks_cluster()?;
+fn setup_indielinks_cluster_alternator(
+    config_base: &str,
+    local_state_dir_base: &str,
+    haproxy_id: &str,
+    haproxy_port: u16,
+) -> Result<()> {
+    teardown_indielinks_cluster(local_state_dir_base, haproxy_id)?;
     run(
         "../infra/indielinks-cluster-up",
-        &["indielinksd-alternator", "5"],
+        [
+            "-L",
+            local_state_dir_base,
+            "-C",
+            config_base,
+            "-I",
+            haproxy_id,
+            "-H",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .chain([format!("{haproxy_port}"), "5".to_owned()].into_iter()),
     )
     .context(CommandSnafu {
         cmd: "indielinks-cluster-up".to_owned(),
     })
 }
 
-fn setup_scylla() -> Result<()> {
-    teardown_scylla()?;
-    run("../infra/scylla-up", [] as [&str; 0]).context(CommandSnafu {
+fn setup_scylla(scylla_env_file: Option<&Path>) -> Result<()> {
+    teardown_scylla(scylla_env_file.clone())?;
+    run("../infra/scylla-up", scylla_env_file.into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_owned(),
     })
 }
 
-fn teardown_indielinks_cluster() -> Result<()> {
-    run("../infra/indielinks-cluster-down", [] as [&str; 0]).context(CommandSnafu {
+fn teardown_indielinks_cluster(local_state_dir_base: &str, haproxy_id: &str) -> Result<()> {
+    run(
+        "../infra/indielinks-cluster-down",
+        ["-L", local_state_dir_base, "-I", haproxy_id]
+            .into_iter()
+            .map(str::to_owned),
+    )
+    .context(CommandSnafu {
         cmd: "indielinks-cluster-down".to_owned(),
     })
 }
 
-fn teardown_scylla() -> Result<()> {
-    run("../infra/scylla-down", [] as [&str; 0]).context(CommandSnafu {
+fn teardown_scylla(scylla_env_file: Option<&Path>) -> Result<()> {
+    run("../infra/scylla-down", scylla_env_file.into_iter()).context(CommandSnafu {
         cmd: "scylla-down".to_string(),
     })
 }
@@ -124,6 +171,102 @@ impl FromStr for FixtureId {
     }
 }
 
+/// Cache tests configuration
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Configuration {
+    /// The network location at which an operational interface can be reached
+    pub ops: Url,
+    /// .env file for ScyllaDB docker compose cluster
+    #[serde(rename = "scylla-env-file")]
+    pub scylla_env_file: Option<PathBuf>,
+    /// Prefix for local state directories for all cluster members
+    #[serde(rename = "local-state-base")]
+    pub local_state_base: String,
+    /// Prefix for Alternator indielinks configuration files for all cluster members
+    #[serde(rename = "alternator-config-base")]
+    pub alternator_config_base: String,
+    /// Prefix for Scylla indielinks configuration files for all cluster members
+    #[serde(rename = "scylla-config-base")]
+    pub scylla_config_base: String,
+    /// Arbitrary identifier to distinguish the haproxy instance from others that may be running
+    #[serde(rename = "haproxy-id")]
+    pub haproxy_id: String,
+    /// Port on which haproxy should listen
+    #[serde(rename = "haproxy-port")]
+    pub haproxy_port: u16,
+    /// gRPC endpoints for Raft configuration nodes, when run in cluster mode
+    #[serde(rename = "raft-nodes", deserialize_with = "de_raft_nodes::deserialize")]
+    pub raft_nodes: HashMap<NodeId, ClusterNode>,
+    pub scylla: ScyllaConfig,
+    pub dynamo: DynamoConfig,
+}
+
+mod de_raft_nodes {
+    use std::{collections::HashMap, num::ParseIntError};
+
+    use indielinks_cache::types::{ClusterNode, NodeId};
+    use serde::{Deserialize, Deserializer};
+    use tap::Pipe;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<NodeId, ClusterNode>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        HashMap::<String, ClusterNode>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(k, v)| k.parse::<NodeId>().map(|i| (i, v)))
+            .collect::<Result<Vec<(NodeId, ClusterNode)>, ParseIntError>>()
+            .map_err(|err| {
+                serde::de::Error::custom(format!(
+                    "Found a key that couldn't be parsed as a NodeId: {err}"
+                ))
+            })?
+            .into_iter()
+            .collect::<HashMap<NodeId, ClusterNode>>()
+            .pipe(Ok)
+    }
+}
+
+impl Configuration {
+    /// Obtain a [Configuration]
+    ///
+    /// Check the `INDIELINKS_TEST_CONFIG` environment variable; if defined & non-empty, attempt to
+    /// parse a [Configuration] from the file named therein; else return a default instance.
+    #[allow(dead_code)]
+    pub fn new() -> Result<Configuration> {
+        match env::var("INDIELINKS_TEST_CONFIG") {
+            Ok(f) => fs::read_to_string(&f)
+                .context(ReadSnafu { pth: f.clone() })?
+                .pipe(|s| toml::from_str::<Configuration>(&s))
+                .context(DeSnafu { pth: f.clone() }),
+            Err(env::VarError::NotPresent) => Ok(Configuration::default()),
+            Err(err) => Err(EnvSnafu.into_error(err)),
+        }
+    }
+}
+
+impl Default for Configuration {
+    /// Default configuration
+    ///
+    /// When invoked with a bare `cargo test` (i.e. without `INDIELINKS_TEST_CONFIG` set), this is
+    /// the configuration that will be used, so be sure the tests will pass with it.
+    fn default() -> Self {
+        Configuration {
+            ops: Url::parse("http://127.0.0.1:20680").unwrap(/* known good */),
+            scylla_env_file: None,
+            local_state_base: "/tmp/indielinksd-".to_owned(),
+            alternator_config_base: "../conf/indielinksd-alternator-".to_owned(),
+            scylla_config_base: "../conf/indielinksd-scylla-".to_owned(),
+            haproxy_id: "0".to_owned(),
+            haproxy_port: 20673,
+            raft_nodes: HashMap::from([(0, "127.0.0.1:20681".parse().unwrap(/* known good */))]),
+            scylla: ScyllaConfig::default(),
+            dynamo: DynamoConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct CacheFixture {
     id: FixtureId,
@@ -157,12 +300,17 @@ impl Fixture for CacheFixture {
             .map(|x| Arc::new(x) as Arc<dyn CacheBackend + Send + Sync>) // Unsize coercion
     }
 
-    async fn setup(&self, _: &Self::Configuration) -> StdResult<(), Self::Error> {
+    async fn setup(&self, configuration: &Self::Configuration) -> StdResult<(), Self::Error> {
         match self.id {
             FixtureId::DynamoDBCluster => {
                 debug!("DynamoDBCluster setup...");
-                setup_scylla()?;
-                setup_indielinks_cluster_alternator()?;
+                setup_scylla(configuration.scylla_env_file.as_deref())?;
+                setup_indielinks_cluster_alternator(
+                    &configuration.alternator_config_base,
+                    &configuration.local_state_base,
+                    &configuration.haproxy_id,
+                    configuration.haproxy_port,
+                )?;
                 debug!("DynamoDBCluster setup...done.");
             }
             _ => unimplemented!(),
@@ -170,12 +318,15 @@ impl Fixture for CacheFixture {
         Ok(())
     }
 
-    async fn teardown(&self, _: &Self::Configuration) -> StdResult<(), Self::Error> {
+    async fn teardown(&self, configuration: &Self::Configuration) -> StdResult<(), Self::Error> {
         match self.id() {
             FixtureId::DynamoDBCluster => {
                 debug!("DynamoDBCluster teardown...");
-                teardown_indielinks_cluster()?;
-                teardown_scylla()?;
+                teardown_indielinks_cluster(
+                    &configuration.local_state_base,
+                    &configuration.haproxy_id,
+                )?;
+                teardown_scylla(configuration.scylla_env_file.as_deref())?;
                 debug!("DynamoDBCluster teardown...done");
             }
             _ => unimplemented!(),
@@ -242,21 +393,9 @@ inventory::submit!(CacheTest {
 });
 
 fn main() -> Result<ExitCode> {
-    // We have no way to augment the set of command-line arguments this program will accept, so
-    // we'll examine an environment variable to determine where to get our configuration:
-    let config = Configuration::new().context(ConfigurationSnafu)?;
-
-    sync_integration_test::<_, _, CacheFixture, CacheTest>(
-        tests_support::TestConfiguration {
-            runner: Some(tests_support::TestRunnerConfiguration {
-                log_level: config.log_level,
-                logging: config.logging,
-                no_setup: config.no_setup,
-                no_teardown: config.no_teardown,
-                enforce_single_threaded: true,
-            }),
-            domain: config,
-        },
+    sync_integration_test(
+        TestConfiguration::<CacheFixture>::new_or_default("INDIELINKS_CACHE_TESTS_CONFIG")
+            .context(IntegrationTestSnafu)?,
         inventory::iter::<CacheFixture>.into_iter(),
         inventory::iter::<CacheTest>,
     )

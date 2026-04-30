@@ -1102,16 +1102,16 @@ impl Session {
             "select * from posts_by_posted where user_id=? and posted < ? and tags contains ? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering",
             "select * from posts_by_posted where user_id=? and posted >= ? and posted < ? and tags contains ? and tags contains ? and tags contains ? and unread=true order by posted desc allow filtering", // GetAllPost31
 
-            "select * from posts where user_id=? and tags contains ? allow filtering", // GetPosts15
+            "select * from posts where user_id=? and tags contains ? allow filtering", // GetPostsForTag
             "select * from posts where id=?", // GetPostById
             // I hate to add the `if exists` clause here, making this an LWT, but if I don't I
             // expose myself to the possibility of a post being deleted out from under me while
             // renaming, which would leave the system in an invalid state.
-            "update posts set tags=? where user_id=? and url=? if exists",
-            "insert into tasks (id, created, task, tag, lease_expires, done) values (?, ?, ?, ?, ?, ?)",
-            "select * from tasks where done=false and lease_expires < ? allow filtering",
-            "update tasks set lease_expires = ? where id = ? if lease_expires = ?",
-            "update tasks set done=true where id=?",
+            "update posts set tags=? where user_id=? and url=? if exists", // RenameTag
+            "insert into tasks (id, created, task, tag, lease_expires, done) values (?, ?, ?, ?, ?, ?)", // InsertTask
+            "select * from tasks where done=false and lease_expires < ? allow filtering", // Scantasks
+            "update tasks set lease_expires = ? where id = ? if lease_expires = ?", // TakeLease
+            "update tasks set done=true where id=?", // FinishTasks
             "select * from users where id=?",
             "insert into following (user_id, actor_id, id, created, accepted) values (?, ?, ?, ?, ?) if not exists", // AddFollows
             "update following set accepted = true where user_id = ? and actor_id = ? if exists", // ConfirmFollow

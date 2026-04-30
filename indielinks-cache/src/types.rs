@@ -106,7 +106,7 @@ impl FromStr for ClusterNode {
 
 // Not sure about this... `openraft` demands that our `Node` implementation implement `Default`,
 // which doesn't make a lot of sense to me, if we're going to include the network location of the
-// node in tye type-- their implemetnation of `Default` just provisions the instance with the empty
+// node in tye type-- their implementation of `Default` just provisions the instance with the empty
 // string (!?)
 impl Default for ClusterNode {
     fn default() -> Self {

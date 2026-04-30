@@ -301,11 +301,6 @@ inventory::submit!(Fixture {
     name: "Scylla (single-node)"
 });
 
-inventory::submit!(Fixture {
-    id: FixtureId::DynamoDBSingleNode,
-    name: "Alternator (single-node)"
-});
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         the test type                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -369,7 +364,8 @@ fn main() -> Result<ExitCode> {
     // I'm not sure I'm going to be able to keep this `Default`, but I'm going to start as if I can;
     // that way, the user can just say `cargo test` with no config files, no environment variables.
     async_integration_test(
-        TestConfiguration::<Fixture>::new_or_default().context(ConfigurationSnafu)?,
+        TestConfiguration::<Fixture>::new_or_default("INDIELINKS_BACKGROUND_TASK_TESTS_CONFIG")
+            .context(ConfigurationSnafu)?,
         inventory::iter::<Fixture>.into_iter(),
         inventory::iter::<Test>,
     )

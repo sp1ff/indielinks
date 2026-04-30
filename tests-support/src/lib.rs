@@ -530,8 +530,11 @@ where
     F: std::fmt::Debug + Fixture,
     <<F as Fixture>::Id as FromStr>::Err: std::error::Error,
 {
-    pub fn new<P: AsRef<Path>>(default_config: P) -> Result<TestConfiguration<F>, F> {
-        match env::var("INDIELINKS_TEST_CONFIG") {
+    pub fn new<P: AsRef<Path>>(
+        env_var: &str,
+        default_config: P,
+    ) -> Result<TestConfiguration<F>, F> {
+        match env::var(env_var) {
             Ok(s) => Self::from_path(s),
             Err(env::VarError::NotPresent) => Self::from_path(default_config.as_ref()),
             Err(err) => Err(EnvSnafu.into_error(err)),
@@ -555,8 +558,8 @@ where
     F::Configuration: Default,
     <<F as Fixture>::Id as FromStr>::Err: std::error::Error,
 {
-    pub fn new_or_default() -> Result<TestConfiguration<F>, F> {
-        match env::var("INDIELINKS_TEST_CONFIG") {
+    pub fn new_or_default(env_var: &str) -> Result<TestConfiguration<F>, F> {
+        match env::var(env_var) {
             Ok(s) => Self::from_path(s),
             Err(env::VarError::NotPresent) => Ok(Default::default()),
             Err(err) => Err(EnvSnafu.into_error(err)),

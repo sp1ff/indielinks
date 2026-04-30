@@ -1,44 +1,141 @@
 #!/usr/bin/env bash
+VERSION=0.0.1
 
-function instance() {
+set -euo pipefail
+
+haproxy_id=0
+help=
+local_state_base="/tmp/indielinksd-"
+nargs=0
+prev_option=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -I | --haproxy-id)
+            nargs=$(($nargs+1));
+            prev_option=haproxy_id;;
+        -I=* | --haproxy-id=*)
+            nargs=$(($nargs+1));
+            haproxy_id=$optarg;;
+        -L | --local-state | --local-state-base)
+            nargs=$(($nargs+1));
+            prev_option=local_state_base;;
+        -L=* | --local-state=* | --local-state-base=*)
+            nargs=$(($nargs+1));
+            local_state_base=$optarg;;
+        -h | --he | --hel | --help)
+            nargs=$(($nargs+1));
+            help=yes;;
+        -v | --verb | --verbose)
+            nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+            nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try '$0 --help' for more information.
+EOF
+        exit 2;;
+        *)
+            break;;
+    esac
+
+done
+
+shift $nargs;
+# $@ now contains the arguments, $# the number of arguments
+
+if test -n "${help}"; then
+    cat <<EOF
+indielinks-cluster-down -- Tear-down a cluster of indielinks instances
+
+Usage:
+
+    indielinks-cluster-down [OPTION...]
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+    -I ID, --haproxy-id=ID  Arbitrary identifier for the haproxy
+                    instance fronting this cluster.
+                    Default: 0.
+    -L DIR, --local-state-base=DIR  Specify the directories where
+                    indielinksd should place their pid file. Each
+                    instance will append its instance number to this
+                    prefix to get the final directory name, so
+                    -L /tmp/x will produce directories /tmp/x{0,1,2}
+                    for a three-node cluster.
+                    Default "/tmp/indielinksd-"
+
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+indielinks-cluster-down $VERSION
+EOF
+    exit 0
+fi
+
+if test -n "${verbose}"; then
+    set -x
+fi
+
+if [ $# -ne 0 ]; then
+    echo "Unexpected argument(s); try 'indielinks-cluster-down --help'" >&2
+    exit 2
+fi
+
+function kill_instance() {
     local id="$1"
-    if [ -r /tmp/indielinks-${id}/indielinks.pid ]; then
-        local pid=$(cat /tmp/indielinks-${id}/indielinks.pid)
-        if [ -n "${pid}" ]; then
-            set +e
-            kill ${pid}
-            set -e
-        fi
+    local local_state_base="$2"
+    local pid=$(cat ${local_state_base}${id}/indielinksd.pid || true)
+    if [ -n "${pid}" ]; then
+        kill ${pid} || true
     fi
     return "0"
 }
 
-set -ex
 here=$(dirname $(realpath $0))
-cd $here
+cd $here/../indielinks
 
-instance 0
-instance 1
-instance 2
-instance 3
-instance 4
+kill_instance 0 ${local_state_base}
+kill_instance 1 ${local_state_base}
+kill_instance 2 ${local_state_base}
+kill_instance 3 ${local_state_base}
+kill_instance 4 ${local_state_base}
 
-sleep 0.5
+pid=$(cat /tmp/haproxy.${haproxy_id}.pid || true)
+test -n "${pid}" && { kill "${pid}" || true; }
 
-ps aux|grep indielinks
-for pid in $(ps aux|grep 'target/debug/indielinks'|grep -vE 'tmux|grep|bash|cargo|cache'|awk '{print $2}'); do
-    kill "${pid}"
-done
-
-rm -rf /tmp/indielinksd-0
-rm -rf /tmp/indielinksd-1
-rm -rf /tmp/indielinksd-2
-rm -rf /tmp/indielinksd-3
-rm -rf /tmp/indielinksd-4
-
-pid=$(ps aux|grep 'haproxy -f.*conf'|grep -v grep|awk '{print $2}')
-if [ -n "${pid}" ]; then
-    kill $pid
-fi
+rm -rf ${local_state_base}0
+rm -rf ${local_state_base}1
+rm -rf ${local_state_base}2
+rm -rf ${local_state_base}3
+rm -rf ${local_state_base}4
+rm -f /tmp/haproxy.${haproxy_id}.{conf,log,pid,sock}
 
 echo "indielinks cluster down; all logs & pid files removed."
