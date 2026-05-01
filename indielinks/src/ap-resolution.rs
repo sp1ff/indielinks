@@ -30,20 +30,20 @@
 use std::sync::Arc;
 
 use either::Either;
-use http::method::Method;
+use http::{self, method::Method};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use url::Url;
 
 use indielinks_shared::{entities::UserPrivateKey, origin::Origin};
 
-use indielinks_cache::cache::Cache;
+use bytes::Bytes;
+use indielinks_cache::{cache::Cache, network::ClientFactory};
 
 use crate::{
     acct::Account,
     ap_entities::{ap_request, Actor, Note, WebfingerResponse},
     cache::{GrpcClient, GrpcClientFactory},
-    client_types::ClientType,
     entities::User,
 };
 
@@ -52,7 +52,10 @@ use crate::{
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
-pub enum Error {
+pub enum Error<FC: indielinks_cache::network::Client + 'static = GrpcClient>
+where
+    FC::ErrorType: std::error::Error + std::fmt::Debug + 'static,
+{
     #[snafu(display("While sending an ActivityPub request, {source}"))]
     Ap {
         source: crate::ap_entities::Error,
@@ -60,7 +63,7 @@ pub enum Error {
     },
     #[snafu(display("While making a Grpc call, {source}"))]
     Grpc {
-        source: indielinks_cache::cache::Error<GrpcClient>,
+        source: indielinks_cache::cache::Error<FC>,
         backtrace: Backtrace,
     },
     #[snafu(display("No 'self' Link from a webfinger"))]
@@ -72,7 +75,7 @@ pub enum Error {
     },
 }
 
-type Result<T> = std::result::Result<T, Error>;
+type Result<T, FC = GrpcClient> = std::result::Result<T, Error<FC>>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                    ActivityPub entity cache                                    //
@@ -84,15 +87,15 @@ type Result<T> = std::result::Result<T, Error>;
 // There will presumably only ever be one instance of this type in a given process, but enforcing
 // singleton semantics is messy, and IMO is now understood as an anti-pattern.
 #[derive(Clone)]
-pub struct ApResolver {
+pub struct ApResolver<F: ClientFactory = GrpcClientFactory, C = crate::client_types::ClientType> {
     /// The origin for this [indielinks] instance (used to form AP key identifiers)
     origin: Origin,
-    client: ClientType,
+    client: C,
     // We need to share ownership of each cache with the GRPC server; this list will grow
     // substantially
-    actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
-    notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
-    handles: Arc<Cache<GrpcClientFactory, Account, Actor>>,
+    actors: Arc<Cache<F, Url, Actor>>,
+    notes: Arc<Cache<F, Url, Note>>,
+    handles: Arc<Cache<F, Account, Actor>>,
 }
 
 #[derive(Clone, Debug)]
@@ -112,14 +115,21 @@ pub struct Metrics {
 // The problem is, `ApResolver` under the hood works in terms of `Cache`-- a Raft cluster working
 // together to implement a key/value cache. Since the underlying `Actor` may have been hosted on
 // another node, we only have a temporary copy in our method, and so can't return a reference.
-impl ApResolver {
+impl<F, C> ApResolver<F, C>
+where
+    F: ClientFactory + Send + Sync + Clone + 'static,
+    F::CacheClient: Clone + Send + Sync + std::fmt::Debug + 'static,
+    C: tower::Service<http::Request<Bytes>, Response = http::Response<Bytes>> + Send,
+    C::Error: std::error::Error + Send + Sync + 'static,
+    C::Future: Send,
+{
     pub fn new(
         origin: Origin,
-        client: ClientType,
-        actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
-        notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
-        handles: Arc<Cache<GrpcClientFactory, Account, Actor>>,
-    ) -> ApResolver {
+        client: C,
+        actors: Arc<Cache<F, Url, Actor>>,
+        notes: Arc<Cache<F, Url, Note>>,
+        handles: Arc<Cache<F, Account, Actor>>,
+    ) -> ApResolver<F, C> {
         ApResolver {
             origin,
             client,
@@ -132,7 +142,7 @@ impl ApResolver {
         &mut self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
-    ) -> Result<Actor> {
+    ) -> Result<Actor, F::CacheClient> {
         if let Some(actor) = self.actors.get(url).await.context(GrpcSnafu)? {
             actor
         } else {
@@ -162,7 +172,7 @@ impl ApResolver {
         &mut self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
-    ) -> Result<Url> {
+    ) -> Result<Url, F::CacheClient> {
         let actor = self.get_actor(principal, url).await?;
         Ok(actor.inbox().clone())
     }
@@ -171,7 +181,7 @@ impl ApResolver {
         &mut self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
-    ) -> Result<Url> {
+    ) -> Result<Url, F::CacheClient> {
         let actor = self.get_actor(principal, url).await?;
         Ok(actor.outbox().clone())
     }
@@ -180,7 +190,7 @@ impl ApResolver {
         &mut self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
-    ) -> Result<Option<Url>> {
+    ) -> Result<Option<Url>, F::CacheClient> {
         let actor = self.get_actor(principal, url).await?;
         Ok(actor.shared_inbox().cloned())
     }
@@ -189,7 +199,7 @@ impl ApResolver {
         &mut self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
-    ) -> Result<Note> {
+    ) -> Result<Note, F::CacheClient> {
         // Check the cache, first:
         if let Some(note) = self.notes.get(url).await.context(GrpcSnafu)? {
             note
@@ -212,7 +222,7 @@ impl ApResolver {
         .pipe(Ok)
     }
     /// Enter a Note with a known ID into the cache
-    pub async fn enter_note(&mut self, url: &Url, note: &Note) -> Result<()> {
+    pub async fn enter_note(&mut self, url: &Url, note: &Note) -> Result<(), F::CacheClient> {
         self.notes
             .insert(url.clone(), note.clone())
             .await
@@ -223,7 +233,7 @@ impl ApResolver {
         &mut self,
         principal: Either<&User, &UserPrivateKey>,
         handle: &Account,
-    ) -> Result<Actor> {
+    ) -> Result<Actor, F::CacheClient> {
         if let Some(actor) = self.handles.get(handle).await.context(GrpcSnafu)? {
             actor
         } else {
@@ -276,39 +286,76 @@ impl ApResolver {
 
 #[cfg(test)]
 mod test {
-    use either::Either::Right;
-    use governor::{Quota, RateLimiter};
-    use nonzero::nonzero;
-    use wiremock::{
-        matchers::{method, path},
-        Mock, MockServer, ResponseTemplate,
+    use std::{
+        collections::HashMap,
+        convert::Infallible,
+        future::{ready, Ready},
+        sync::Arc,
+        task::Poll,
     };
 
+    use bytes::Bytes;
+    use either::Either::Right;
+    use indielinks_cache::{
+        network::null_client::NullClientFactory, raft::CacheNode, types::InMemoryLogStore,
+    };
     use indielinks_shared::{
         entities::generate_rsa_keypair,
+        known_good,
         origin::{Host, Protocol, RegName},
     };
 
-    use indielinks_cache::{raft::CacheNode, types::InMemoryLogStore};
-
-    use crate::{client::make_client, http::HostExtractor};
-
     use super::*;
 
-    #[tokio::test]
-    async fn test_ap_resolver_actor_to_inbox() {
-        // Setup a `wiremock` server that just servces my indieweb.social Actor document
-        let mock_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/users/sp1ff"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(TEST_ACTOR_DOCUMENT))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+    /// Canned-response HTTP client for use in unit tests.
+    ///
+    /// Each entry is consumed on first use via `remove()`; a second request for the same URL
+    /// returns 404. This enforces that the cache is working: if `ApResolver` hits the mock twice
+    /// for the same URL, the test fails rather than silently succeeding.
+    struct MockHttpClient {
+        responses: HashMap<String, http::Response<Bytes>>,
+    }
 
-        let cache_node = CacheNode::new(
+    impl MockHttpClient {
+        fn new(entries: impl IntoIterator<Item = (String, http::Response<Bytes>)>) -> Self {
+            Self {
+                responses: entries.into_iter().collect(),
+            }
+        }
+    }
+
+    impl tower::Service<http::Request<Bytes>> for MockHttpClient {
+        type Response = http::Response<Bytes>;
+        type Error = Infallible;
+        type Future = Ready<std::result::Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(
+            &mut self,
+            _: &mut std::task::Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, req: http::Request<Bytes>) -> Self::Future {
+            let rsp = self
+                .responses
+                .remove(&req.uri().to_string())
+                .unwrap_or_else(|| {
+                    http::Response::builder()
+                        .status(404)
+                        .body(Bytes::new())
+                        .unwrap()
+                });
+            ready(Ok(rsp))
+        }
+    }
+
+    async fn make_resolver(
+        client: MockHttpClient,
+    ) -> ApResolver<NullClientFactory, MockHttpClient> {
+        let cache_node = CacheNode::<NullClientFactory>::new(
             &Default::default(),
-            GrpcClientFactory,
+            NullClientFactory,
             InMemoryLogStore::default(),
         )
         .await
@@ -317,46 +364,108 @@ mod test {
             .initialize([(0, Default::default())].into())
             .await
             .unwrap();
-        let actor_cache: Cache<GrpcClientFactory, Url, Actor> = Cache::new(0, cache_node.clone());
-        let note_cache: Cache<GrpcClientFactory, Url, Note> = Cache::new(1, cache_node.clone());
-        let handle_cache: Cache<GrpcClientFactory, Account, Actor> = Cache::new(2, cache_node);
+        let actors = Arc::new(Cache::new(0, cache_node.clone()));
+        let notes = Arc::new(Cache::new(1, cache_node.clone()));
+        let handles = Arc::new(Cache::new(2, cache_node));
+        let origin: Origin = (
+            Protocol::Http,
+            Host::RegName(RegName::new("localhost").unwrap()),
+            1234u16,
+        )
+            .into();
+        ApResolver::new(origin, client, actors, notes, handles)
+    }
 
-        let mut resolver: ApResolver = ApResolver::new(
-            (
-                Protocol::Http,
-                Host::RegName(RegName::new("localhost").unwrap()),
-                1234,
-            )
-                .into(),
-            make_client(
-                "ap_resolution::test Client/0.0.1 +sp1ff@pobox.com",
-                true,
-                HostExtractor,
-                RateLimiter::keyed(Quota::per_second(nonzero!(16u32)))
-                    .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from([])),
-                &Default::default(),
-            )
-            .unwrap(),
-            Arc::new(actor_cache),
-            Arc::new(note_cache),
-            Arc::new(handle_cache),
-        );
+    fn actor_response() -> http::Response<Bytes> {
+        http::Response::builder()
+            .status(200)
+            .body(Bytes::from(TEST_ACTOR_DOCUMENT))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_actor_operations() {
+        let actor_url = "https://indieweb.social/users/sp1ff";
+        let client = MockHttpClient::new([(actor_url.to_string(), actor_response())]);
+        let mut resolver = make_resolver(client).await;
 
         let (_, private_key) = generate_rsa_keypair().unwrap();
-        let actor =
-            Url::parse(&format!("{}/users/sp1ff", &mock_server.uri())).expect("Malformed URL!?");
-        let url = resolver
+        let actor = known_good!(Url::parse(actor_url));
+
+        let inbox = resolver
             .actor_id_to_inbox(Right(&private_key), &actor)
             .await
-            .expect("Failed to retrieve actor inbox?");
-        let golden =
-            Url::parse("https://indieweb.social/users/sp1ff/inbox").expect("Malformed URL!?");
-        assert!(url == golden);
-        let url = resolver
+            .expect("Failed to retrieve actor inbox");
+        let golden = known_good!(Url::parse("https://indieweb.social/users/sp1ff/inbox"));
+        assert_eq!(inbox, golden);
+
+        // Second call must hit the cache (mock entry already consumed).
+        let inbox2 = resolver
             .actor_id_to_inbox(Right(&private_key), &actor)
             .await
-            .expect("Failed to retrieve actor inbox?");
-        assert!(url == golden);
+            .expect("Failed to retrieve actor inbox on second call");
+        assert_eq!(inbox2, golden);
+
+        // What the hekc-- I'm here
+        let outbox = resolver
+            .actor_id_to_outbox(Right(&private_key), &actor)
+            .await
+            .expect("Failed to retrieve outbox with no network call");
+        assert_eq!(
+            outbox,
+            known_good!(Url::parse("https://indieweb.social/users/sp1ff/outbox")),
+        );
+        let shared_inbox = resolver
+            .actor_id_to_shared_inbox(Right(&private_key), &actor)
+            .await
+            .expect("Failed to retrieve shared inbox with no network call")
+            .expect("Missing the shared inbox");
+        assert_eq!(
+            shared_inbox,
+            known_good!(Url::parse("https://indieweb.social/inbox")),
+        );
+
+        // Now, we _should_ have the Actor in-cache, so this should work, too
+        let actor = resolver
+            .get_actor(Right(&private_key), &actor)
+            .await
+            .expect("Failed to retrieve the actor");
+        assert_eq!(actor.id().as_str(), "https://indieweb.social/users/sp1ff");
+    }
+
+    #[tokio::test]
+    async fn test_handle_to_actor() {
+        let actor_url = "https://indieweb.social/users/sp1ff";
+        let webfinger_url =
+            "https://indieweb.social/.well-known/webfinger?resource=sp1ff@indieweb.social";
+
+        let client = MockHttpClient::new([
+            (
+                webfinger_url.to_string(),
+                http::Response::builder()
+                    .status(200)
+                    .body(Bytes::from(TEST_WEBFINGER_DOCUMENT))
+                    .unwrap(),
+            ),
+            (actor_url.to_string(), actor_response()),
+        ]);
+        let mut resolver = make_resolver(client).await;
+
+        let (_, private_key) = generate_rsa_keypair().unwrap();
+        let handle: Account = known_good!("sp1ff@indieweb.social".parse());
+
+        let actor = resolver
+            .handle_to_actor(Right(&private_key), &handle)
+            .await
+            .expect("Failed to resolve handle to ctor");
+        assert_eq!(actor.id().as_str(), "https://indieweb.social/users/sp1ff");
+
+        // Should be in-cache
+        let actor2 = resolver
+            .handle_to_actor(Right(&private_key), &handle)
+            .await
+            .expect("Failed to resolve handle to actor (second call)");
+        assert_eq!(actor2.id().as_str(), "https://indieweb.social/users/sp1ff");
     }
 
     static TEST_ACTOR_DOCUMENT: &str = r#"{
@@ -438,5 +547,17 @@ mod test {
         "mediaType":"image/jpeg",
         "url":"https://cdn.masto.host/indiewebsocial/accounts/headers/107/934/171/185/300/184/original/8c2ab41be165ea81.jpeg"
     }
+}"#;
+
+    static TEST_WEBFINGER_DOCUMENT: &str = r#"{
+    "subject":"acct:sp1ff@indieweb.social",
+    "aliases":["https://indieweb.social/users/sp1ff"],
+    "links":[
+        {
+            "rel":"self",
+            "type":"application/activity+json",
+            "href":"https://indieweb.social/users/sp1ff"
+        }
+    ]
 }"#;
 }

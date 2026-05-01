@@ -135,7 +135,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
-use tower::{Service, ServiceExt};
+use tower::ServiceExt;
 use tracing::error;
 use url::Url;
 
@@ -147,7 +147,6 @@ use indielinks_shared::{
 
 use crate::{
     acct::Account,
-    client_types::ClientType,
     entities::{FollowId, LikeId, OutgoingReply, OutgoingShare, ReplyId, ShareId, User},
     sanitized_html::{parse, ParseResult, SanitizedHtml},
 };
@@ -257,12 +256,12 @@ pub enum Error {
     },
     #[snafu(display("While sending an ActivityPub request, {source}"))]
     RequestCall {
-        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
         backtrace: Backtrace,
     },
     #[snafu(display("While waiting to send a request, {source}"))]
     RequestReady {
-        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to resolve keyid {}: {source}"))]
@@ -2213,15 +2212,20 @@ impl From<Html> for SanitizedHtml {
 ///
 /// This is where we set the [Request] [Extension] that will trigger request signing as well as the
 /// required headers.
-async fn ap_request_core<B: ToJld>(
-    client: &mut ClientType,
+async fn ap_request_core<B: ToJld, C>(
+    client: &mut C,
     origin: &Origin,
     principal: Either<&User, &UserPrivateKey>,
     url: &Url,
     method: Method,
     context: Option<Context>,
     body: &B,
-) -> Result<http::Response<Bytes>> {
+) -> Result<http::Response<Bytes>>
+where
+    C: tower::Service<http::Request<Bytes>, Response = http::Response<Bytes>> + Send,
+    C::Error: std::error::Error + Send + Sync + 'static,
+    C::Future: Send,
+{
     let request = Request::builder()
         .method(method)
         .uri(url.as_str())
@@ -2234,10 +2238,16 @@ async fn ap_request_core<B: ToJld>(
     client
         .ready()
         .await
-        .context(RequestReadySnafu)?
+        .map_err(|e| Error::RequestReady {
+            source: Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>,
+            backtrace: Backtrace::capture(),
+        })?
         .call(request)
         .await
-        .context(RequestCallSnafu)
+        .map_err(|e| Error::RequestCall {
+            source: Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>,
+            backtrace: Backtrace::capture(),
+        })
 }
 
 /// Send an ActivityPub request
@@ -2245,15 +2255,20 @@ async fn ap_request_core<B: ToJld>(
 /// Strongly-typed request function: the caller can invoke it in terms of the request payload and
 /// the expected response. If the request carries no body, pass `&()`. If the response is expected
 /// to carry no body, see [ap_request_no_response].
-pub async fn ap_request<B: ToJld, R: serde::de::DeserializeOwned>(
-    client: &mut ClientType,
+pub async fn ap_request<B: ToJld, R: serde::de::DeserializeOwned, C>(
+    client: &mut C,
     origin: &Origin,
     principal: Either<&User, &UserPrivateKey>,
     url: &Url,
     method: Method,
     context: Option<Context>,
     body: &B,
-) -> Result<R> {
+) -> Result<R>
+where
+    C: tower::Service<http::Request<Bytes>, Response = http::Response<Bytes>> + Send,
+    C::Error: std::error::Error + Send + Sync + 'static,
+    C::Future: Send,
+{
     let response = ap_request_core(client, origin, principal, url, method, context, body).await?;
 
     if !response.status().is_success() {
@@ -2273,15 +2288,20 @@ pub async fn ap_request<B: ToJld, R: serde::de::DeserializeOwned>(
 /// Strongly-typed request function: the caller can invoke it in terms of the request payload and
 /// the expected response. If the request carries no body, pass `&()`. If the response is expected
 /// to carry a body, see [ap_request].
-pub async fn ap_request_no_response<B: ToJld>(
-    client: &mut ClientType,
+pub async fn ap_request_no_response<B: ToJld, C>(
+    client: &mut C,
     origin: &Origin,
     principal: Either<&User, &UserPrivateKey>,
     url: &Url,
     method: Method,
     context: Option<Context>,
     body: &B,
-) -> Result<()> {
+) -> Result<()>
+where
+    C: tower::Service<http::Request<Bytes>, Response = http::Response<Bytes>> + Send,
+    C::Error: std::error::Error + Send + Sync + 'static,
+    C::Future: Send,
+{
     let response = ap_request_core(client, origin, principal, url, method, context, body).await?;
     if !response.status().is_success() {
         return FailedApSnafu { rsp: response }.fail();

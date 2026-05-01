@@ -23,10 +23,7 @@ use std::{
     fmt::Debug,
     io::Cursor,
     num::NonZero,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -64,8 +61,6 @@ pub type StdResult<T, E> = std::result::Result<T, E>;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("The CacheNode representing this process has already been constructed"))]
-    CacheNodeAlready,
     #[snafu(display("Failed to change cluster membership: {source}"))]
     ChangeMembership {
         #[snafu(source(from(RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>, Box::new)))]
@@ -630,14 +625,11 @@ pub struct Metrics {
     pub raft: RaftMetrics<NodeId, ClusterNode>,
 }
 
-// I really can't see a case where you'd want more than one "cluster node" in a process. I thought
-// to is to hold an `RwLock` of that node inside a `OnceLock`; the first caller would call
-// `get_or_init()` and the closure would capture the configuration from the enclosing ctor. The
-// problem with this is, a second caller with a different configuration wouldn't fail-- they would
-// receive the previously-constructed instance, which seems bad.
-//
-// For now, I'm just going to go with the simple approach:
-static CACHE_NODE_CREATED: AtomicBool = AtomicBool::new(false);
+// I originally couldn't see a case where you'd want more than one "cluster node" in a process, and
+// setup an `AtomicBool` that would record the first instance creation, and had the `CacheNode` ctor
+// checkit & fail on the second invocation. Since then, however, I realized there _is_ a quite
+// important use case for this: testing! I've removed that logic & now let the application author
+// do what they want in this regard.
 
 /// Singleton type representing the current [indielinks-cache] node.
 struct CacheNodeInner<F: ClientFactory> {
@@ -659,14 +651,6 @@ where
         factory: F,
         storage: T,
     ) -> Result<CacheNodeInner<F>> {
-        let already = CACHE_NODE_CREATED
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err();
-
-        if already {
-            return Err(Error::CacheNodeAlready);
-        }
-
         let raft_config = Arc::new(
             openraft::Config {
                 cluster_name: config.cluster_name.clone(),

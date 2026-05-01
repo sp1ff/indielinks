@@ -21,3 +21,10 @@ pub mod instance_state;
 pub mod nonempty_string;
 pub mod origin;
 pub mod service;
+
+#[macro_export]
+macro_rules! known_good {
+    ($e:expr) => {
+        $e.expect(concat!(stringify!($e), " is expected to be valid!"))
+    };
+}
