@@ -11,7 +11,27 @@ ver="r${GIT_COMMIT}"
 rel="0.0.1~git.${ver}"
 # Unhappy, but we need to build everything for Debian here (see the README)
 cargo clean
-cargo deb --manifest-path=indielinks/Cargo.toml --deb-version=${rel}
+
+# We also need to build the workspace ourselves, in order to get the
+# front end built
+cargo build --release
+cd indielinks-fe
+npx @tailwindcss/cli -i style.css -o tailwind.css
+INDIELINKS_FE_API="http://localhost:20676" INDIELINKS_BASE="/fe" INDIELINKS_PAGE_SIZE="20" trunk build --release
+
+cd dist
+wasm=$(ls -1 indielinks-fe*.wasm)
+js=$(ls -1 indielinks-fe*.js)
+css=$(ls -1 style-*.css)
+mv $wasm indielinks-fe.wasm
+mv $js indielinks-fe.js
+mv $css style.css
+sed -i -e s@$wasm@fe/indielinks-fe.wasm@g index.html
+sed -i -e s@$js@fe/indielinks-fe.js@g index.html
+sed -i -e s@$css@fe/style.css@g index.html
+cd ../..
+
+cargo deb --no-build --manifest-path=indielinks/Cargo.toml --deb-version=${rel}
 pkg=$(ls -1 target/debian/indielinks*.deb|head -n1)
 sudo dpkg --debug=2 -i ${pkg}
 indielinksd --version
@@ -22,8 +42,27 @@ indic --help
 scylla=$(dig +short scylla-node-1)
 sudo sed -i -e "s@^hosts = \\[\".*@hosts = [\"${scylla}:9042\"]@" /etc/indielinks.toml
 indielinks-post-install --verbose -s ${scylla}:9042 --no-systemd
+# Wait a few moments for the service to healthcheck
+sleep 0.5
+n=0
+hc=$(curl -s http://127.0.0.1:20676/healthcheck)
+if [ "${hc}" != "GOOD" ]; then
+    sleep 0.5
+    n=$(($n+1))
+    if [ $n -gt 20 ]; then
+        echo "indielinks failed to come up" >&2
+        exit 1
+    fi
+    hc=$(curl -s http://127.0.0.1:20676/healthcheck)
+fi
 # indielinks now up & running
 indic -A http://127.0.0.1:20676 add-user -u john.doe -p 'f00-b@r-sp1at' -m 'john.doe@gmail.com'
+# Check that the wasm bundle is being served
+status_code=$(curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:20676/fe)
+if [ ${status_code} -ne 200 ]; then
+    echo "requesting the front-end returned status code ${status_code}" >&2
+    exit 1
+fi
 indielinks-ctl -v restart
 indielinks-ctl -v stop
 sudo dpkg --debug=2 -r indielinks

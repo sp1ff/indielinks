@@ -21,6 +21,8 @@ RUN set -ex && \
     libprotobuf-dev dnsutils git adduser acl \
     # optional cargo-deb dependencies \
     dpkg dpkg-dev liblzma-dev \
+    # for Tailwind \
+    nodejs npm \
     # not needed; just for my sanity while debugging \
     less procps gdb sudo info vim curl lsof && \
     # tidy-up \
@@ -58,4 +60,11 @@ RUN set -ex && \
     . /home/packager/.cargo/env && \
     rustup target add wasm32-unknown-unknown && \
     cargo install cargo-deb && \
-    cargo install --locked trunk
+    cargo install --locked trunk && \
+    # If we attempt to install tailwind, and the pwd is /, npm \
+    # fails (ah, Javascript!) \
+    cd /home/packager && \
+    sudo npm install -g tailwindcss @tailwindcss/cli && \
+    # I've decided I loathe node.js, but until I can find something better: \
+    # https://github.com/npm/cli/issues/4828 \
+    sudo npm install -g @tailwindcss/oxide-linux-x64-gnu

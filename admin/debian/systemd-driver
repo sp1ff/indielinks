@@ -35,4 +35,23 @@ fi
 indielinks-post-install $ipi_args
 # indielinks now up & running
 sudo systemctl restart indielinks
+# Wait a few moments for the service to healthcheck
+sleep 0.5
+n=0
+hc=$(curl -s http://127.0.0.1:20676/healthcheck)
+if [ "${hc}" != "GOOD" ]; then
+    sleep 0.5
+    n=$(($n+1))
+    if [ $n -gt 20 ]; then
+        echo "indielinks failed to come up" >&2
+        exit 1
+    fi
+    hc=$(curl -s http://127.0.0.1:20676/healthcheck)
+fi
+# Check that the wasm bundle is being served
+status_code=$(curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:20676/fe)
+if [ ${status_code} -ne 200 ]; then
+    echo "requesting the front-end returned status code ${status_code}" >&2
+    exit 1
+fi
 sudo dpkg --debug=2 -r indielinks

@@ -82,7 +82,7 @@ pub async fn accept_follow_smoke(
     // Nb. that `request` is now a *reqwest* `Request`, not an axum `Request`. Sign it:
     let request = make_signed_request(
         axum::http::Method::POST,
-        url.join(&format!("/users/{}/inbox", &username))?,
+        url.join(&format!("/users/{}/inbox", username))?,
         Jld::new(&follow, None)?.to_string().into(),
         &mock_origin,
         mock_user.priv_key(),
@@ -96,7 +96,7 @@ pub async fn accept_follow_smoke(
     // Let's at least check that the follower now shows-up!
     let request = make_signed_request(
         axum::http::Method::GET,
-        url.join(&format!("/users/{}/followers", &username))?,
+        url.join(&format!("/users/{}/followers", username))?,
         reqwest::Body::default(),
         &mock_origin,
         mock_user.priv_key(),

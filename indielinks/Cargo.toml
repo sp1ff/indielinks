@@ -110,6 +110,11 @@ assets = [
        ["../conf/indielinks-deb.toml", "/etc/indielinks.toml", "644"],
        ["../scripts/indielinks-post-install", "/usr/bin/indielinks-post-install", "755"],
        ["../scripts/indielinks-ctl", "/usr/bin/indielinks-ctl", "755"],
+       ["../indielinks-fe/dist/index.html", "/usr/share/indielinks/assets/index.html", "644"],
+       ["../indielinks-fe/dist/indielinks-fe.js", "/usr/share/indielinks/assets/indielinks-fe.js", "644"],
+       ["../indielinks-fe/dist/style.css", "/usr/share/indielinks/assets/style.css", "644"],
+       ["../indielinks-fe/dist/indielinks-fe.wasm", "/usr/share/indielinks/assets/indielinks-fe.wasm", "644"],
+
 ]
 # indielinks requries a post-installation script to be run by the
 # operator before it can startup. If using stystemd, enable the unit,
