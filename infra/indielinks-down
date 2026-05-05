@@ -106,3 +106,8 @@ if test -n "$pid"; then
     kill ${pid} || true
 fi
 
+rm -f \
+    ${local_state_dir}/indielinksd.daemonization.log \
+    ${local_state_dir}/indielinksd.pid \
+    ${local_state_dir}/stdout.log
+
