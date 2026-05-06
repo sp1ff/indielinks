@@ -148,12 +148,12 @@ pub fn mk_ser_err(err: impl std::error::Error + Send + Sync + 'static) -> Serial
 }
 
 pub fn mk_serde_de_err<'de, D: serde::Deserializer<'de>>(err: impl std::error::Error) -> D::Error {
-    <D::Error as serde::de::Error>::custom(format!("{:?}", err))
+    <D::Error as serde::de::Error>::custom(format!("{err:?}"))
 }
 
 /*pub*/
 fn mk_serde_ser_err<S: serde::Serializer>(err: impl std::error::Error) -> S::Error {
-    <S::Error as serde::ser::Error>::custom(format!("{:?}", err))
+    <S::Error as serde::ser::Error>::custom(format!("{err:?}"))
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

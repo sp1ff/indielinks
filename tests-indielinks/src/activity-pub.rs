@@ -128,8 +128,8 @@ pub async fn posting_creates_note(
         api_key
     );
 
-    client.get(format!("{}api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy&shared=true&replace=true", url))
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}:{}",  username, api_key))
+    client.get(format!("{url}api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy&shared=true&replace=true"))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {username}:{api_key}"))
         .send()
         .await?;
 
@@ -183,7 +183,7 @@ pub async fn posting_creates_note(
 
     let request = make_signed_request(
         axum::http::Method::POST,
-        url.join(&format!("/users/{}/inbox", username))?,
+        url.join(&format!("/users/{username}/inbox"))?,
         Jld::new(&like, None)?.to_string().into(),
         &mock_origin,
         mock_user.priv_key(),
@@ -207,7 +207,7 @@ pub async fn send_follow(
 
     let (mock_server, mock_user, client) = setup_test(&username, helper.clone()).await?;
 
-    let id = Url::parse(&format!("{}/users/{}", url, username)).unwrap(/* known good */);
+    let id = Url::parse(&format!("{url}/users/{username}")).unwrap(/* known good */);
 
     let mock_origin: Origin = mock_server.uri().try_into()?;
 
@@ -232,10 +232,10 @@ pub async fn send_follow(
 
     // Let's ask to send a follow:
     client
-        .post(format!("{}api/v1/users/follow", url))
+        .post(format!("{url}api/v1/users/follow"))
         .header(
             reqwest::header::AUTHORIZATION,
-            format!("Bearer {}:{}", username, api_key),
+            format!("Bearer {username}:{api_key}"),
         )
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(
@@ -271,7 +271,7 @@ pub async fn send_follow(
     // Next, we send the Accept on behalf of our mock server
     let request = make_signed_request(
         axum::http::Method::POST,
-        url.join(&format!("/users/{}/inbox", username))?,
+        url.join(&format!("/users/{username}/inbox"))?,
         Jld::new(
             &Accept::new(
                 ObjectField::Iri(mock_user
@@ -292,7 +292,7 @@ pub async fn send_follow(
     client.execute(request).await?;
 
     let following = client
-        .get(format!("{}users/{}/following", url, username))
+        .get(format!("{url}users/{username}/following"))
         .send()
         .await?
         .json::<CollectionPage>()
@@ -354,8 +354,8 @@ pub async fn as_follower(
         )
         .await?;
 
-    client.get(format!("{}api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy&shared=true&replace=true", indielinks))
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}:{}",  username, api_key))
+    client.get(format!("{indielinks}api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy&shared=true&replace=true"))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {username}:{api_key}"))
         .send()
         .await?;
 
@@ -412,8 +412,8 @@ pub async fn as_follower(
         .into_iter(),
         "<p>Greate site!</p>".into(),
         Replies::new(
-            Url::parse(&format!("{}/replies", id))?,
-            Url::parse(&format!("{}/replies?page=true", id))?,
+            Url::parse(&format!("{id}/replies"))?,
+            Url::parse(&format!("{id}/replies?page=true"))?,
             None,
         ),
     )?;
@@ -529,10 +529,10 @@ pub async fn context_with_mastodon(
 
     // Alright-- with all that setup, we should be able to issue a "context" request:
     let response = client
-        .get(format!("{}api/v1/users/context", indielinks))
+        .get(format!("{indielinks}api/v1/users/context"))
         .header(
             reqwest::header::AUTHORIZATION,
-            format!("Bearer {}:{}", test_username, api_key),
+            format!("Bearer {test_username}:{api_key}"),
         )
         .body(serde_json::to_string(&ThreadContextRequest {
             ap_id: note_id,

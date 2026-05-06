@@ -251,18 +251,18 @@ impl Error {
     pub fn as_status_and_msg(&self) -> (StatusCode, String) {
         match self {
             Error::NoPosts { username, .. } => {
-                (StatusCode::OK, format!("{} has no posts, yet", username))
+                (StatusCode::OK, format!("{username} has no posts, yet"))
             }
             ////////////////////////////////////////////////////////////////////////////////////////
             // Broken requests-- tell the caller how to fix it
             ////////////////////////////////////////////////////////////////////////////////////////
             Error::BadAuthHeaderParse { value, .. } => (
                 StatusCode::BAD_REQUEST,
-                format!("Bad Authorization header: {:?}", value),
+                format!("Bad Authorization header: {value:?}"),
             ),
             Error::BadBase64Encoding { text, source, .. } => (
                 StatusCode::BAD_REQUEST,
-                format!("Bad base64 encoding {}: {}", text, source),
+                format!("Bad base64 encoding {text}: {source}"),
             ),
             Error::BadTagName { .. } => (
                 StatusCode::BAD_REQUEST,
@@ -271,16 +271,15 @@ impl Error {
             ),
             Error::InvalidAuthHeaderValue { value, source, .. } => (
                 StatusCode::BAD_REQUEST,
-                format!("Bad Authorization header {:?}: {}", value, source),
+                format!("Bad Authorization header {value:?}: {source}"),
             ),
             Error::InvalidQueryToken { value, source, .. } => (
                 StatusCode::BAD_REQUEST,
-                format!("Bad Authorization query token {}: {}", value, source),
+                format!("Bad Authorization query token {value}: {source}"),
             ),
-            Error::MissingColon { text, .. } => (
-                StatusCode::BAD_REQUEST,
-                format!("Missing colon in {}", text),
-            ),
+            Error::MissingColon { text, .. } => {
+                (StatusCode::BAD_REQUEST, format!("Missing colon in {text}"))
+            }
             Error::MissingQueryParams { .. } => {
                 (StatusCode::BAD_REQUEST, "No query parameters".to_string())
             }
@@ -294,7 +293,7 @@ impl Error {
             ),
             Error::NotUtf8 { source, .. } => (
                 StatusCode::BAD_REQUEST,
-                format!("Bad UTF-8 encoding: {:?}", source),
+                format!("Bad UTF-8 encoding: {source:?}"),
             ),
             ////////////////////////////////////////////////////////////////////////////////////////
             // Authorization failure-- don't tell a potential attacker the way in which they failed
@@ -322,29 +321,29 @@ impl Error {
             ),
             Error::AddPost { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to add post: {}", source),
+                format!("Failed to add post: {source}"),
             ),
             Error::BadTagCloud {
                 username, source, ..
             } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to lookup user {}'s tag cloud: {}", username, source),
+                format!("Failed to lookup user {username}'s tag cloud: {source}"),
             ),
             Error::DeletePosts { uri, source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to delete post {:?}: {}", uri, source),
+                format!("Failed to delete post {uri:?}: {source}"),
             ),
             Error::DeleteTag { tag, source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to delete {}: {}", tag, source),
+                format!("Failed to delete {tag}: {source}"),
             ),
             Error::Feed { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to serialize Atom feed: {}", source),
+                format!("Failed to serialize Atom feed: {source}"),
             ),
             Error::GetPosts { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch posts: {}", source),
+                format!("Failed to fetch posts: {source}"),
             ),
             Error::PostsByDay { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -352,25 +351,25 @@ impl Error {
             ),
             Error::PostByUri { uri, source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch posts by {}: {}", uri, source),
+                format!("Failed to fetch posts by {uri}: {source}"),
             ),
             Error::TagCloudForUri { uri, source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch the tag cloud for {}: {}", uri, source),
+                format!("Failed to fetch the tag cloud for {uri}: {source}"),
             ),
             Error::RecentPosts { source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch recent posts: {}", source),
+                format!("Failed to fetch recent posts: {source}"),
             ),
             Error::RenameTag {
                 old, new, source, ..
             } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to rename {} to {}: {}", old, new, source),
+                format!("Failed to rename {old} to {new}: {source}"),
             ),
             Error::SendCreate { postid: _, source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to schedule send of Create activity: {}", source),
+                format!("Failed to schedule send of Create activity: {source}"),
             ),
             Error::UpdateUserPostTimes { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -382,10 +381,7 @@ impl Error {
             ),
             Error::User { username, source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "Internal server error looking-up user {}: {:?}",
-                    username, source
-                ),
+                format!("Internal server error looking-up user {username}: {source:?}"),
             ),
         }
     }

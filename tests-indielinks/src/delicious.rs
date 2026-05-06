@@ -46,13 +46,12 @@ pub async fn delicious_smoke_test(
 
     // Hit `/posts/update` with no posts
     let rsp = reqwest::get(url.join(&format!(
-        "/api/v1/posts/update?auth_token={}:{}",
-        username, api_key
+        "/api/v1/posts/update?auth_token={username}:{api_key}"
     ))?)
     .await?;
     assert!(StatusCode::OK == rsp.status(), "{rsp:#?}");
     let body = rsp.json::<GenericRsp>().await?;
-    assert!(body.result_code == format!("{} has no posts, yet", username));
+    assert!(body.result_code == format!("{username} has no posts, yet"));
 
     // Now, hit `/posts/get` without an auth token; should be 401'd
     assert!(
@@ -63,7 +62,7 @@ pub async fn delicious_smoke_test(
     let mut headers = HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}:{}", username, api_key))?,
+        HeaderValue::from_str(&format!("Bearer {username}:{api_key}"))?,
     );
 
     let client = reqwest::Client::builder()
@@ -153,7 +152,7 @@ pub async fn delicious_smoke_test(
 
     let day = body.date.format("%Y-%m-%d").to_string();
     let rsp = client
-        .get(url.join(&format!("/api/v1/posts/get?dt={}", day))?)
+        .get(url.join(&format!("/api/v1/posts/get?dt={day}"))?)
         .send()
         .await?;
     assert!(StatusCode::OK == rsp.status());
@@ -163,7 +162,7 @@ pub async fn delicious_smoke_test(
 
     // Let's try filtering on the basis of a few tags
     let rsp = client
-        .get(url.join(&format!("/api/v1/posts/get?dt={}&tag=news", day))?)
+        .get(url.join(&format!("/api/v1/posts/get?dt={day}&tag=news"))?)
         .send()
         .await?;
     assert!(StatusCode::OK == rsp.status());
@@ -172,7 +171,7 @@ pub async fn delicious_smoke_test(
     assert!(body.posts.len() == 1);
 
     let rsp = client
-        .get(url.join(&format!("/api/v1/posts/get?dt={}&tag=news,daily", day))?)
+        .get(url.join(&format!("/api/v1/posts/get?dt={day}&tag=news,daily"))?)
         .send()
         .await?;
     assert!(StatusCode::OK == rsp.status());
@@ -181,10 +180,7 @@ pub async fn delicious_smoke_test(
     assert!(body.posts.len() == 1);
 
     let rsp = client
-        .get(url.join(&format!(
-            "/api/v1/posts/get?dt={}&tag=news,daily,splat",
-            day
-        ))?)
+        .get(url.join(&format!("/api/v1/posts/get?dt={day}&tag=news,daily,splat"))?)
         .send()
         .await?;
     assert!(StatusCode::OK == rsp.status());
@@ -215,7 +211,7 @@ pub async fn posts_recent(
     let mut headers = HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}:{}", username, api_key)).unwrap(/* Known good */),
+        HeaderValue::from_str(&format!("Bearer {username}:{api_key}")).unwrap(/* Known good */),
     );
 
     let client = reqwest::Client::builder()
@@ -297,7 +293,7 @@ pub async fn posts_all(
     let mut headers = HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}:{}", username, api_key))?,
+        HeaderValue::from_str(&format!("Bearer {username}:{api_key}"))?,
     );
 
     let client = reqwest::Client::builder()
@@ -367,7 +363,7 @@ pub async fn tags_rename_and_delete(
     let mut headers = HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}:{}", username, api_key))?,
+        HeaderValue::from_str(&format!("Bearer {username}:{api_key}"))?,
     );
 
     let client = reqwest::Client::builder()

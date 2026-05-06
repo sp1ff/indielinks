@@ -14,8 +14,7 @@ fi
 
 set -e
 cargo clippy -j ${nproc} -- --no-deps -Dwarnings \
-      -A clippy::result_large_err \
-      -A clippy::uninlined_format_args
+      -A clippy::result_large_err
 cargo fmt -- --check
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps -j ${nproc}
 # Need to address these two, plus a host of warnings.  Actually, this is so painful that I'm just

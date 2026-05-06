@@ -82,7 +82,7 @@ pub async fn accept_follow_smoke(
     // Nb. that `request` is now a *reqwest* `Request`, not an axum `Request`. Sign it:
     let request = make_signed_request(
         axum::http::Method::POST,
-        url.join(&format!("/users/{}/inbox", username))?,
+        url.join(&format!("/users/{username}/inbox"))?,
         Jld::new(&follow, None)?.to_string().into(),
         &mock_origin,
         mock_user.priv_key(),
@@ -96,7 +96,7 @@ pub async fn accept_follow_smoke(
     // Let's at least check that the follower now shows-up!
     let request = make_signed_request(
         axum::http::Method::GET,
-        url.join(&format!("/users/{}/followers", username))?,
+        url.join(&format!("/users/{username}/followers"))?,
         reqwest::Body::default(),
         &mock_origin,
         mock_user.priv_key(),
@@ -126,12 +126,12 @@ pub async fn accept_follow_smoke(
     let page = rsp.json::<CollectionPage>().await?;
     assert_eq!(
         page.first.unwrap(),
-        Url::parse(&format!("{}/users/sp1ff/followers?page=0", origin))?
+        Url::parse(&format!("{origin}/users/sp1ff/followers?page=0"))?
     );
     assert!(page.next.is_none());
     assert_eq!(
         page.part_of.unwrap(),
-        Url::parse(&format!("{}/users/sp1ff/followers", origin))?
+        Url::parse(&format!("{origin}/users/sp1ff/followers"))?
     );
     let items = page.ordered_items.unwrap();
     assert_eq!(items.len(), 1);

@@ -343,7 +343,7 @@ impl Error {
             ////////////////////////////////////////////////////////////////////////////////////////
             Error::BadAuthHeaderParse { value, .. } => (
                 StatusCode::BAD_REQUEST,
-                format!("Bad Authorization header: {:?}", value),
+                format!("Bad Authorization header: {value:?}"),
             ),
             Error::CsrfMismatch { .. } => (
                 StatusCode::BAD_REQUEST,
@@ -351,11 +351,11 @@ impl Error {
             ),
             Error::InvalidAuthHeaderValue { value, source, .. } => (
                 StatusCode::BAD_REQUEST,
-                format!("Bad Authorization header {:?}: {}", value, source),
+                format!("Bad Authorization header {value:?}: {source}"),
             ),
             Error::MissingColon { text, .. } => (
                 StatusCode::BAD_REQUEST,
-                format!("Missing colon in {}", text),
+                format!("Missing colon in {text}"),
             ),
             Error::NonUtf8Header { source, .. } => (StatusCode::BAD_REQUEST, format!("{source:?}")),
             Error::MultipleAuthnHeaders => (
@@ -379,10 +379,7 @@ impl Error {
             ),
             Error::NoKeys { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "No signing keys found ({}); did you configure the program?",
-                    source
-                ),
+                format!("No signing keys found ({source}); did you configure the program?"),
             ),
             Error::UnknownUser { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
             Error::UnsupportedAuthScheme { .. } => {
@@ -442,7 +439,7 @@ impl Error {
                 username, source, ..
             } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Couldn't validate password for {}: {}", username, source),
+                format!("Couldn't validate password for {username}: {source}"),
             ),
             Error::Refresh { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -501,7 +498,7 @@ impl Error {
                 username, source, ..
             } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to mint a token for {}: {}", username, source),
+                format!("Failed to mint a token for {username}: {source}"),
             ),
             Error::UnpackPaginationToken { source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -515,10 +512,7 @@ impl Error {
             ),
             Error::User { username, source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "Internal server error looking-up user {}: {:?}",
-                    username, source
-                ),
+                format!("Internal server error looking-up user {username}: {source:?}"),
             ),
             Error::UserForId { user_id, source } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -759,7 +753,7 @@ async fn signup(
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponseBody {
-                        error: format!("Insufficient password strength: {}", feedback),
+                        error: format!("Insufficient password strength: {feedback}"),
                     }),
                 )
                     .into_response()
@@ -791,7 +785,7 @@ async fn signup(
                 (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponseBody {
-                        error: format!("Username {} is already claimed; sorry", username),
+                        error: format!("Username {username} is already claimed; sorry"),
                     }),
                 )
                     .into_response()
@@ -1115,7 +1109,7 @@ async fn follow(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorResponseBody {
-                        error: format!("{}", err),
+                        error: format!("{err}"),
                     },
                 )
                     .into_response()
@@ -1176,7 +1170,7 @@ async fn like(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorResponseBody {
-                        error: format!("{}", err),
+                        error: format!("{err}"),
                     },
                 )
                     .into_response()
@@ -1239,7 +1233,7 @@ async fn reply(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorResponseBody {
-                        error: format!("{}", err),
+                        error: format!("{err}"),
                     },
                 )
                     .into_response()
@@ -1297,7 +1291,7 @@ async fn mint_key(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ErrorResponseBody {
-                        error: format!("{}", err),
+                        error: format!("{err}"),
                     },
                 )
                     .into_response()

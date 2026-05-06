@@ -356,7 +356,7 @@ impl<'de> Deserialize<'de> for Account {
                 E: Error,
             {
                 Account::from_uri(s).map_err(|err| {
-                    let err_s = format!("{}", err);
+                    let err_s = format!("{err}");
                     Error::invalid_value(Unexpected::Str(s), &err_s.as_str())
                 })
             }

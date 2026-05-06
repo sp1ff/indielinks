@@ -374,7 +374,7 @@ mod de_level {
     {
         let text = String::deserialize(deserializer)?;
         Level::from_str(&text).map_err(|_| {
-            serde::de::Error::custom(format!("{} cannot be interepreted as a log level", text))
+            serde::de::Error::custom(format!("{text} cannot be interepreted as a log level"))
         })
     }
 }

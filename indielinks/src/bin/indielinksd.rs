@@ -1636,7 +1636,7 @@ fn daemonize(local_statedir: &Path, no_chdir: bool, log_fd: RawFd) -> Result<()>
         }
 
         let pid = getpid();
-        let pid_buf = format!("{}", pid).into_bytes();
+        let pid_buf = format!("{pid}").into_bytes();
         let pid_length = pid_buf.len();
         let pid_c = CString::new(pid_buf).unwrap();
         let n = write(fd, pid_c.as_ptr() as *const libc::c_void, pid_length);

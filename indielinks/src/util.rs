@@ -158,7 +158,7 @@ impl<'de> Deserialize<'de> for Key {
         D: Deserializer<'de>,
     {
         <ByteBuf as serde::Deserialize>::deserialize(deserializer)
-            .map_err(|err| <D::Error as serde::de::Error>::custom(format!("{:?}", err)))?
+            .map_err(|err| <D::Error as serde::de::Error>::custom(format!("{err:?}")))?
             .pipe(|x| x.into_vec())
             .conv::<SecretSlice<u8>>()
             .pipe(Key)

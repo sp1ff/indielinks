@@ -307,94 +307,81 @@ type Result<T> = std::result::Result<T, Error>;
 
 /// Return an URL naming a follow activity
 pub fn make_follow_id(username: &Username, id: &FollowId, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/follows/{}", origin, username, id)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/follows/{id}")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming a like activity
 pub fn make_like_id(username: &Username, id: &LikeId, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/likes/{}", origin, username, id)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/likes/{id}")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming the instance actor public key
 pub fn make_instance_actor_key_id(origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/actor#main-key", origin)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/actor#main-key")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming a public key
 pub fn make_key_id(username: &Username, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}#main-key", origin, username)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}#main-key")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming a user's "followers" collection
 pub fn make_user_followers(username: &Username, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/followers", origin, username,)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/followers")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming a user's "following" collection
 pub fn make_user_following(username: &Username, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/following", origin, username)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/following")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming an indielinks user
 pub fn make_user_id(username: &Username, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}", origin, username)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming an indielinks user's inbox
 pub fn make_user_inbox(username: &Username, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/inbox", origin, username)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/inbox")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming an indielinks user's outbox
 pub fn make_user_outbox(username: &Username, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/outbox", origin, username)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/outbox")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming an indielinks user's post activity
 pub fn make_user_post_id(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/posts/{}", origin, username, postid)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/posts/{postid}")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming an indielinks user's reply activity
 pub fn make_user_reply_id(username: &Username, replyid: &ReplyId, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/posts/{}", origin, username, replyid)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/posts/{replyid}")).context(UrlParseSnafu)
 }
 
 pub fn make_post_reply_id(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!(
-        "{}/users/{}/posts/{}/replies",
-        origin, username, postid
-    ))
-    .context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/posts/{postid}/replies")).context(UrlParseSnafu)
 }
 
 /// Return an URL naming an indielinks user's share activity
 pub fn make_user_share_id(username: &Username, shareid: &ShareId, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!("{}/users/{}/posts/{}", origin, username, shareid)).context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/posts/{shareid}")).context(UrlParseSnafu)
 }
 
 pub fn make_post_reply_first(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
     Url::parse(&format!(
-        "{}/users/{}/posts/{}/replies?page=true",
-        origin, username, postid
+        "{origin}/users/{username}/posts/{postid}/replies?page=true"
     ))
     .context(UrlParseSnafu)
 }
 
 pub fn make_reply_reply_id(username: &Username, postid: &ReplyId, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!(
-        "{}/users/{}/posts/{}/replies",
-        origin, username, postid
-    ))
-    .context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/posts/{postid}/replies")).context(UrlParseSnafu)
 }
 
 pub fn make_share_reply_id(username: &Username, postid: &ShareId, origin: &Origin) -> Result<Url> {
-    Url::parse(&format!(
-        "{}/users/{}/posts/{}/replies",
-        origin, username, postid
-    ))
-    .context(UrlParseSnafu)
+    Url::parse(&format!("{origin}/users/{username}/posts/{postid}/replies")).context(UrlParseSnafu)
 }
 
 pub fn make_reply_reply_first(
@@ -403,8 +390,7 @@ pub fn make_reply_reply_first(
     origin: &Origin,
 ) -> Result<Url> {
     Url::parse(&format!(
-        "{}/users/{}/posts/{}/replies?page=true",
-        origin, username, postid
+        "{origin}/users/{username}/posts/{postid}/replies?page=true"
     ))
     .context(UrlParseSnafu)
 }
@@ -415,8 +401,7 @@ pub fn make_share_reply_first(
     origin: &Origin,
 ) -> Result<Url> {
     Url::parse(&format!(
-        "{}/users/{}/posts/{}/replies?page=true",
-        origin, username, postid
+        "{origin}/users/{username}/posts/{postid}/replies?page=true"
     ))
     .context(UrlParseSnafu)
 }
@@ -701,7 +686,7 @@ struct Endpoints {
 impl Endpoints {
     pub fn new(origin: &Origin) -> Result<Endpoints> {
         Ok(Endpoints {
-            shared_inbox: Url::parse(&format!("{}/inbox", origin)).context(UrlParseSnafu)?,
+            shared_inbox: Url::parse(&format!("{origin}/inbox")).context(UrlParseSnafu)?,
         })
     }
 }
@@ -741,8 +726,8 @@ impl PublicKey {
         public_key_pem: S,
     ) -> Result<PublicKey> {
         Ok(PublicKey {
-            id: Url::parse(&format!("{}/actor#main-key", origin)).context(UrlParseSnafu)?,
-            owner: Url::parse(&format!("{}/actor", origin)).context(UrlParseSnafu)?,
+            id: Url::parse(&format!("{origin}/actor#main-key")).context(UrlParseSnafu)?,
+            owner: Url::parse(&format!("{origin}/actor")).context(UrlParseSnafu)?,
             public_key_pem: public_key_pem.as_ref().to_owned(),
         })
     }
@@ -916,12 +901,12 @@ pub struct InstanceActor {
 impl InstanceActor {
     pub fn new<S: AsRef<str>>(origin: &Origin, public_key_pem: S) -> Result<InstanceActor> {
         Ok(InstanceActor {
-            id: Url::parse(&format!("{}/actor", origin)).context(UrlParseSnafu)?,
+            id: Url::parse(&format!("{origin}/actor")).context(UrlParseSnafu)?,
             preferred_username: format!("{}", origin.host()),
             public_key: PublicKey::for_instance_actor(origin, public_key_pem)?,
             endpoints: Endpoints::new(origin)?,
-            inbox: Url::parse(&format!("{}/actor/inbox", origin)).context(UrlParseSnafu)?,
-            outbox: Url::parse(&format!("{}/actor/outbox", origin)).context(UrlParseSnafu)?,
+            inbox: Url::parse(&format!("{origin}/actor/inbox")).context(UrlParseSnafu)?,
+            outbox: Url::parse(&format!("{origin}/actor/outbox")).context(UrlParseSnafu)?,
         })
     }
 }
@@ -1217,7 +1202,7 @@ fn parse_post(origin: &Origin, post: &Post) -> Result<Html> {
     let html = if tagline.is_empty() {
         untagged
     } else {
-        format!("{} {}", untagged, tagline)
+        format!("{untagged} {tagline}")
     };
 
     let ParseResult { html, .. } = parse(&html).context(ParseSnafu)?;
@@ -2537,7 +2522,7 @@ impl Link {
         Ok(Link {
             rel: LinkRelation::Myself,
             r#type: Some(MediaType::ActivityPub),
-            href: Url::parse(&format!("{}/actor", origin)).context(UrlParseSnafu)?,
+            href: Url::parse(&format!("{origin}/actor")).context(UrlParseSnafu)?,
         })
     }
     pub fn href(&self) -> &Url {

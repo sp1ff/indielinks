@@ -243,33 +243,33 @@ impl Error {
     /// Convert this error into an HTTP status code & message suitable for the response body
     pub fn as_status_and_msg(&self) -> (StatusCode, String) {
         match self {
-            Error::Accept { .. } => (StatusCode::BAD_GATEWAY, format!("{}", self)),
+            Error::Accept { .. } => (StatusCode::BAD_GATEWAY, format!("{self}")),
             Error::AcceptLookup { source } => (
                 StatusCode::BAD_REQUEST,
-                format!("Unsupported Accept header value: {}", source),
+                format!("Unsupported Accept header value: {source}"),
             ),
-            Error::AcceptResponse { .. } => (StatusCode::BAD_GATEWAY, format!("{}", self)),
-            Error::Actor { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
-            Error::ApResolution { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
-            Error::BadKeyId { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
-            Error::BadSignature { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
-            Error::Cavage2323 { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
-            Error::ContentDigest { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
-            Error::Jrd { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
-            Error::KeyId { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
-            Error::MismatchedActorId { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
-            Error::MissingContentDigest => (StatusCode::UNAUTHORIZED, format!("{}", self)),
+            Error::AcceptResponse { .. } => (StatusCode::BAD_GATEWAY, format!("{self}")),
+            Error::Actor { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
+            Error::ApResolution { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
+            Error::BadKeyId { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
+            Error::BadSignature { .. } => (StatusCode::UNAUTHORIZED, format!("{self}")),
+            Error::Cavage2323 { .. } => (StatusCode::UNAUTHORIZED, format!("{self}")),
+            Error::ContentDigest { .. } => (StatusCode::UNAUTHORIZED, format!("{self}")),
+            Error::Jrd { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
+            Error::KeyId { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
+            Error::MismatchedActorId { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
+            Error::MissingContentDigest => (StatusCode::UNAUTHORIZED, format!("{self}")),
             Error::NoUser { username, .. } => {
-                (StatusCode::NOT_FOUND, format!("Unknown user {}", username))
+                (StatusCode::NOT_FOUND, format!("Unknown user {username}"))
             }
-            Error::NonUtf8Signature { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
-            Error::Note { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
-            Error::OneSignature { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
-            Error::PostUserMismatch { .. } => (StatusCode::NOT_FOUND, format!("{}", self)),
-            Error::PublicKey { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
-            Error::ResolveKeyId { .. } => (StatusCode::UNAUTHORIZED, format!("{}", self)),
-            Error::SignatureParse { .. } => (StatusCode::BAD_REQUEST, format!("{}", self)),
-            _ => (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", self)),
+            Error::NonUtf8Signature { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
+            Error::Note { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
+            Error::OneSignature { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
+            Error::PostUserMismatch { .. } => (StatusCode::NOT_FOUND, format!("{self}")),
+            Error::PublicKey { .. } => (StatusCode::UNAUTHORIZED, format!("{self}")),
+            Error::ResolveKeyId { .. } => (StatusCode::UNAUTHORIZED, format!("{self}")),
+            Error::SignatureParse { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
+            _ => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
         }
     }
 }
@@ -497,7 +497,7 @@ fn handle_err<E: std::error::Error>(
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponseBody {
-            error: format!("{}", err),
+            error: format!("{err}"),
         }),
     )
         .into_response()
@@ -1181,7 +1181,7 @@ async fn inbox(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponseBody {
-                error: format!("{}", err),
+                error: format!("{err}"),
             }),
         )
             .into_response()

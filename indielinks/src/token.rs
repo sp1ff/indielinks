@@ -163,7 +163,7 @@ pub fn mint_token(
     let claims = AccessClaims {
         issued_at: now,
         issuer: issuer.clone(),
-        audience: format!("api.{}", issuer),
+        audience: format!("api.{issuer}"),
         not_before: now,
         expires: now + *lifetime,
         subject: username.clone(),
@@ -212,7 +212,7 @@ pub fn verify_token(token_string: &str, keys: &SigningKeys, issuer: &Host) -> Re
         }
         .fail();
     }
-    if format!("api.{}", issuer) != claims.audience {
+    if format!("api.{issuer}") != claims.audience {
         return UnknownAudienceSnafu {
             audience: claims.audience.clone(),
         }
@@ -329,7 +329,7 @@ impl RefreshCsrfToken<Unsigned> {
         // let nonce = format!("{:016x}", self.nonce)
         let nonce = self.nonce.to_base64().unwrap().into_owned();
         let signature = key.sign(&session, &nonce).context(SignatureSnafu)?;
-        let token_string = format!("{}.{}.{}", session, nonce, signature);
+        let token_string = format!("{session}.{nonce}.{signature}");
         Ok(RefreshCsrfToken {
             session: self.session,
             nonce: self.nonce,
@@ -460,7 +460,7 @@ pub fn mint_refresh_and_csrf_tokens(
     let claims = RefreshClaims {
         issued_at: now,
         issuer: issuer.clone(),
-        audience: format!("api.{}", issuer),
+        audience: format!("api.{issuer}"),
         not_before: now,
         expires: now + *lifetime,
         session,
@@ -535,7 +535,7 @@ pub fn verify_refresh_token(
         }
         .fail();
     }
-    if format!("api.{}", issuer) != claims.audience {
+    if format!("api.{issuer}") != claims.audience {
         return UnknownAudienceSnafu {
             audience: claims.audience.clone(),
         }

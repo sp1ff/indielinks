@@ -260,9 +260,9 @@ impl Host {
 impl Display for Host {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Host::IpLiteral(ipv6) => write!(f, "{}", ipv6),
-            Host::Ipv4Address(ipv4) => write!(f, "{}", ipv4),
-            Host::RegName(reg_name) => write!(f, "{}", reg_name),
+            Host::IpLiteral(ipv6) => write!(f, "{ipv6}"),
+            Host::Ipv4Address(ipv4) => write!(f, "{ipv4}"),
+            Host::RegName(reg_name) => write!(f, "{reg_name}"),
         }
     }
 }

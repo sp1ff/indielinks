@@ -160,7 +160,7 @@ fn mk_ser_err(err: impl std::error::Error + Send + Sync + 'static) -> Serializat
 }
 
 fn mk_serde_de_err<'de, D: serde::Deserializer<'de>>(err: impl std::error::Error) -> D::Error {
-    <D::Error as serde::de::Error>::custom(format!("{:?}", err))
+    <D::Error as serde::de::Error>::custom(format!("{err:?}"))
 }
 
 define_id!(FollowId, "followid");

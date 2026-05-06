@@ -235,7 +235,7 @@ pub async fn make_signed_request(
         .header(reqwest::header::HOST, "localhost")
         .body(body)?;
     let req = ensure_sha_256(req)?;
-    let (mut req, sig) = sign_request(req, &format!("{}/users/{}", origin, username), priv_key)?;
+    let (mut req, sig) = sign_request(req, &format!("{origin}/users/{username}"), priv_key)?;
     req.headers_mut().append(
         "Signature",
         http::HeaderValue::from_str(&sig.to_string()[10..])?,
