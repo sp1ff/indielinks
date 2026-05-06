@@ -1,5 +1,9 @@
+[runner]
+log-level = "DEBUG"
+logging = false
 no-setup = false
 no-teardown = false
-logging = false
-log_level = "DEBUG"
-base_port = 20800
+enforce-single-threaded = true
+
+[domain]
+base-port = 20800
