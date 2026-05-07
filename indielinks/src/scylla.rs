@@ -1116,7 +1116,7 @@ impl Session {
             // renaming, which would leave the system in an invalid state.
             "update posts set tags=? where user_id=? and url=? if exists", // RenameTag
             "insert into tasks (id, created, task, tag, lease_expires, done) values (?, ?, ?, ?, ?, ?)", // InsertTask
-            "select * from tasks where done=false and lease_expires < ? allow filtering", // Scantasks
+            "select * from tasks where done=false and lease_expires < ? allow filtering", // ScanTasks
             "update tasks set lease_expires = ? where id = ? if lease_expires = ?", // TakeLease
             "update tasks set done=true where id=?", // FinishTasks
             "select * from users where id=?",

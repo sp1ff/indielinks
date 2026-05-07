@@ -21,6 +21,7 @@ use leptos::{
     prelude::*,
 };
 use serde::{Deserialize, Serialize};
+use thaw::{Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection};
 use tracing::{debug, error, info};
 
 use indielinks_shared::api::REFRESH_CSRF_COOKIE;
@@ -74,12 +75,9 @@ async fn login(
 /// The indielinks login page
 #[component]
 pub fn SignIn() -> impl IntoView {
-    debug!("SignIn invoked.");
     // I think this is one of those things that "should never fail"; or where failure indicates a
     // coding error.
-    let api = use_context::<Api>()
-        .expect("No context for the API location!?")
-        .0;
+    let api = expect_context::<Api>().0;
 
     // TBH, I have *no* idea what this does:
     let username_element: NodeRef<html::Input> = NodeRef::new();
@@ -111,6 +109,7 @@ pub fn SignIn() -> impl IntoView {
 
     Effect::new(move |_| {
         // Still figuring this out...
+        let toaster = ToasterInjection::expect_context();
         match on_submit.value().get() {
             Some(Ok(new_token)) => {
                 info!("My effect has been invoked with a new token");
@@ -119,16 +118,28 @@ pub fn SignIn() -> impl IntoView {
             }
             Some(Err(err)) => {
                 info!("My effect has been invoked with an error value of {err:?}");
-                set_error.set(Some(err))
+                // set_error.set(Some(err))
+                let message = format!("{err}");
+                toaster.dispatch_toast(
+                    move || {
+                        view! {
+                            <Toast>
+                                <ToastTitle>"Login"</ToastTitle>
+                                <ToastBody>{message}</ToastBody>
+                            </Toast>
+                        }
+                    },
+                    ToastOptions::default().with_intent(ToastIntent::Error),
+                );
             }
             None => info!("Effect invoked with no value!?"),
         }
     });
 
     view! {
-        <div class="flex items-center justify-around flex-col" >
+        <div class="flex items-center justify-around flex-col pt-[32px]" >
             <form
-                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center pt-4"
+                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center pt-4 border border-solid border-sky-100 p-8 text-gray-600"
                 on:submit=move |ev| {
                   // If I don't say this, the damn page reloads before the HTTP call returns
                   ev.prevent_default();

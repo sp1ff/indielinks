@@ -30,7 +30,7 @@ use snafu::Snafu;
 
 use crate::entities::mk_serde_de_err;
 
-#[derive(Debug, Snafu)]
+#[derive(Clone, Debug, Snafu)]
 #[snafu(display("Empty string"))]
 pub struct Empty;
 

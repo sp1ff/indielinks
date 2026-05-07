@@ -29,3 +29,4 @@ wasm-cookies = "0.2.1"
 web-sys = "0.3.77"
 reactive_stores = "0.4.2"
 send_wrapper = "0.6.0"
+secrecy = { version = "0.10.3", features = ["serde"] }
