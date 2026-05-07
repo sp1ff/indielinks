@@ -88,7 +88,8 @@ pub enum Error {
     AllPosts { source: storage::Error },
     #[snafu(display("/posts/add failed: {source}"))]
     AddPost {
-        source: crate::app_logic::Error,
+        #[snafu(source(from(crate::app_logic::Error, Box::new)))]
+        source: Box<crate::app_logic::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("The supplied API key couldn't be parsed"))]

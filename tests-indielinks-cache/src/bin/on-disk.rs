@@ -392,6 +392,7 @@ impl RaftLogReader<TypeConfig> for LogStore {
 impl RaftLogStorage<TypeConfig> for LogStore {
     type LogReader = LogStore;
 
+    #[allow(clippy::result_large_err)]
     async fn get_log_state(&mut self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
         let store = self.store.lock().expect("Poisoned mutex");
 
@@ -452,6 +453,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             )),
         }
     }
+    #[allow(clippy::result_large_err)]
     async fn append<I>(
         &mut self,
         entries: I,
@@ -488,6 +490,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     /// see how that could occur.
     ///
     /// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.truncate
+    #[allow(clippy::result_large_err)]
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
         info!("truncate: {log_id:?}");
         let store = self.store.lock().expect("Poisoned mutex");
@@ -510,6 +513,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     /// see how that could occur.
     ///
     /// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.purge
+    #[allow(clippy::result_large_err)]
     async fn purge(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
         info!("purge: {log_id:?}");
         let store = self.store.lock().expect("Poisoned mutex");

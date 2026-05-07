@@ -149,8 +149,9 @@ use crate::{
 pub enum Error {
     #[snafu(display("Failed to add a key to {user:?}: {source}"))]
     AddKey {
-        user: User,
-        source: entities::Error,
+        user: Box<User>,
+        #[snafu(source(from(entities::Error, Box::new)))]
+        source: Box<entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to add user: {source}"))]
@@ -181,7 +182,8 @@ pub enum Error {
     #[snafu(display("{username} is not a valid username"))]
     BadUsername {
         username: String,
-        source: crate::entities::Error,
+        #[snafu(source(from(crate::entities::Error, Box::new)))]
+        source: Box<crate::entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display(
@@ -200,17 +202,20 @@ pub enum Error {
     #[snafu(display("While computing the home timeline for {username}, {source}"))]
     HomeTimeline {
         username: Username,
-        source: crate::home_timeline::Error,
+        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
+        source: Box<crate::home_timeline::Error>,
     },
     #[snafu(display("Invalid API key: {source}"))]
     InvalidApiKey {
-        source: authn::Error,
+        #[snafu(source(from(authn::Error, Box::new)))]
+        source: Box<authn::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("An Authorization header had a non-textual value: {source}"))]
     InvalidAuthHeaderValue {
-        value: HeaderValue,
-        source: authn::Error,
+        value: Box<HeaderValue>,
+        #[snafu(source(from(authn::Error, Box::new)))]
+        source: Box<authn::Error>,
     },
     #[snafu(display("Invalid credentials: {source}"))]
     InvalidCredentials { source: authn::Error },
@@ -244,41 +249,50 @@ pub enum Error {
     #[snafu(display("{source}"))]
     NoPepper { source: peppers::Error },
     #[snafu(display("While packing the pagination token, {source}"))]
-    PackPaginationToken { source: crate::home_timeline::Error },
+    PackPaginationToken {
+        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
+        source: Box<crate::home_timeline::Error>,
+    },
     #[snafu(display("Couldn't validate password for user {username}: {source}"))]
     Password {
         username: String,
-        source: entities::Error,
+        #[snafu(source(from(entities::Error, Box::new)))]
+        source: Box<entities::Error>,
     },
     #[snafu(display("Failed to mint refresh and/or CSRF tokens: {source}"))]
     Refresh {
-        source: crate::token::Error,
+        #[snafu(source(from(crate::token::Error, Box::new)))]
+        source: Box<crate::token::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("While resolving {url}, {source}"))]
     Resolution {
-        url: Url,
-        source: crate::ap_resolution::Error,
+        url: Box<Url>,
+        #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
+        source: Box<crate::ap_resolution::Error>,
     },
     #[snafu(display(
         "Couldn't create background task for {username} following {actorid}: {source}"
     ))]
     SendFollow {
         username: Username,
-        actorid: Url,
-        source: background_tasks::Error,
+        actorid: Box<Url>,
+        #[snafu(source(from(background_tasks::Error, Box::new)))]
+        source: Box<background_tasks::Error>,
     },
     #[snafu(display("Couldn't create background task for {username} liking {id}: {source}"))]
     SendLike {
         username: Username,
-        id: Url,
-        source: background_tasks::Error,
+        id: Box<Url>,
+        #[snafu(source(from(background_tasks::Error, Box::new)))]
+        source: Box<background_tasks::Error>,
     },
     #[snafu(display("Couldn't create background task for {username} replying to {id}: {source}"))]
     SendReply {
         username: Username,
-        id: Url,
-        source: background_tasks::Error,
+        id: Box<Url>,
+        #[snafu(source(from(background_tasks::Error, Box::new)))]
+        source: Box<background_tasks::Error>,
     },
     #[snafu(display("While serializing an internal timeline request, {source}"))]
     SerInternalTimelineReq {
@@ -304,7 +318,10 @@ pub enum Error {
     #[snafu(display("Unknown username {username}"))]
     UnknownUser { username: String },
     #[snafu(display("While unpacking the pagination token, {source}"))]
-    UnpackPaginationToken { source: crate::home_timeline::Error },
+    UnpackPaginationToken {
+        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
+        source: Box<crate::home_timeline::Error>,
+    },
     #[snafu(display("Authorization scheme {scheme} not supported"))]
     UnsupportedAuthScheme {
         scheme: String,
@@ -312,8 +329,9 @@ pub enum Error {
     },
     #[snafu(display("Failed to write a new key for {user:?}: {source}"))]
     UpdateKey {
-        user: User,
-        source: crate::storage::Error,
+        user: Box<User>,
+        #[snafu(source(from(crate::storage::Error, Box::new)))]
+        source: Box<crate::storage::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to lookup user {username}: {source}"))]
@@ -329,7 +347,8 @@ pub enum Error {
     #[snafu(display("{username} is not a valid indielinks username"))]
     Username {
         username: String,
-        source: indielinks_shared::entities::Error,
+        #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
+        source: Box<indielinks_shared::entities::Error>,
     },
     #[snafu(display("Failed to create user: {source}"))]
     UserSignup { source: entities::Error },
@@ -628,8 +647,11 @@ async fn authenticate(
             .at_most_one()
             .map_err(|_| Error::MultipleAuthnHeaders)?
         {
-            Some(header_val) => AuthnScheme::try_from(header_val)
-                .context(InvalidAuthHeaderValueSnafu { value: header_val })?,
+            Some(header_val) => {
+                AuthnScheme::try_from(header_val).context(InvalidAuthHeaderValueSnafu {
+                    value: Box::new(header_val.clone()),
+                })?
+            }
             None => {
                 return NoAuthTokenSnafu.fail();
             }
@@ -1093,7 +1115,7 @@ async fn follow(
             .await
             .context(SendFollowSnafu {
                 username: user.username().clone(),
-                actorid: id.clone(),
+                actorid: Box::new(id.clone()),
             })?;
         Ok(())
     }
@@ -1153,7 +1175,7 @@ async fn like(
             .await
             .context(SendLikeSnafu {
                 username: user.username().clone(),
-                id: id.clone(),
+                id: Box::new(id.clone()),
             })?;
         Ok(())
     }
@@ -1217,7 +1239,7 @@ async fn reply(
             .await
             .context(SendReplySnafu {
                 username: user.username().clone(),
-                id: request.id,
+                id: Box::new(request.id),
             })?;
         Ok(())
     }
@@ -1263,13 +1285,15 @@ async fn mint_key(
         user: &User,
         expiry: Option<DateTime<Utc>>,
     ) -> Result<MintKeyRsp> {
-        let (keys, key_text) = user
-            .add_key(expiry)
-            .context(AddKeySnafu { user: user.clone() })?;
+        let (keys, key_text) = user.add_key(expiry).context(AddKeySnafu {
+            user: Box::new(user.clone()),
+        })?;
         storage
             .update_user_api_keys(user, &keys)
             .await
-            .context(UpdateKeySnafu { user: user.clone() })?;
+            .context(UpdateKeySnafu {
+                user: Box::new(user.clone()),
+            })?;
         Ok(MintKeyRsp { key_text })
     }
 
@@ -1697,7 +1721,9 @@ async fn context(
             .await
             .note_id_to_note(Either::Left(user), &ap_id)
             .await
-            .context(ResolutionSnafu { url: ap_id })?;
+            .context(ResolutionSnafu {
+                url: Box::new(ap_id),
+            })?;
 
         debug!("The Note is: {note:#?}");
 
@@ -1741,7 +1767,7 @@ async fn context(
                         .enter_note(note.id(), &note)
                         .await
                         .context(ResolutionSnafu {
-                            url: note.id().clone(),
+                            url: Box::new(note.id().clone()),
                         })?;
                     Ok(*note)
                 }
@@ -1750,7 +1776,7 @@ async fn context(
                     .await
                     .note_id_to_note(Left(user), &url)
                     .await
-                    .context(ResolutionSnafu { url })?
+                    .context(ResolutionSnafu { url: Box::new(url) })?
                     .pipe(Ok),
             }
         }
@@ -1795,7 +1821,9 @@ async fn context(
                     .await
                     .note_id_to_note(Left(user), url)
                     .await
-                    .context(ResolutionSnafu { url: url.clone() })?,
+                    .context(ResolutionSnafu {
+                        url: Box::new(url.clone()),
+                    })?,
             ),
             None => None,
         };

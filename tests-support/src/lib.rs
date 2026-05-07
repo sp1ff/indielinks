@@ -242,7 +242,8 @@ where
     #[snafu(display("Failed to parse {pathb:?}: {source}"))]
     De {
         pathb: PathBuf,
-        source: toml::de::Error,
+        #[snafu(source(from(toml::de::Error, Box::new)))]
+        source: Box<toml::de::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to read INDIELINKS_TEST_CONFIG: {source}"))]

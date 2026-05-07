@@ -77,12 +77,14 @@ pub enum Error {
     FlavorDe { n: i8, backtrace: Backtrace },
     #[snafu(display("openraft/protbuf interoperability error: {source}"))]
     Interop {
-        source: crate::protobuf_interop::Error,
+        #[snafu(source(from(crate::protobuf_interop::Error, Box::new)))]
+        source: Box<crate::protobuf_interop::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("gRPC error: {source}"))]
     Tonic {
-        source: tonic::Status,
+        #[snafu(source(from(tonic::Status, Box::new)))]
+        source: Box<tonic::Status>,
         backtrace: Backtrace,
     },
 }

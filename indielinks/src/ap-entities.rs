@@ -266,14 +266,16 @@ pub enum Error {
     },
     #[snafu(display("Failed to resolve keyid {}: {source}"))]
     ResolveKeyId {
-        key_id: Url,
-        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
+        key_id: Box<Url>,
+        #[snafu(source(from(either::Either<std::convert::Infallible, indielinks_shared::service::Error>, Box::new)))]
+        source: Box<either::Either<std::convert::Infallible, indielinks_shared::service::Error>>,
         // backtrace not included because it would make the error too large
     },
     #[snafu(display("Failed to resolve keyid {} because the Service wasn't ready: {source}"))]
     ResolveKeyIdReady {
-        key_id: Url,
-        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
+        key_id: Box<Url>,
+        #[snafu(source(from(either::Either<std::convert::Infallible, indielinks_shared::service::Error>, Box::new)))]
+        source: Box<either::Either<std::convert::Infallible, indielinks_shared::service::Error>>,
         // backtrace not included because it would make the error too large
     },
     #[snafu(display("Failed to deserialize the request body to JSON: {source}"))]

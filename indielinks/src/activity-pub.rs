@@ -72,9 +72,15 @@ use crate::{
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("ActivityPub entities error: {source}"))]
-    Ap { source: crate::ap_entities::Error },
+    Ap {
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
+    },
     #[snafu(display("ActivityPub entity resolver error: {source}"))]
-    ApResolver { source: crate::ap_resolution::Error },
+    ApResolver {
+        #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
+        source: Box<crate::ap_resolution::Error>,
+    },
     #[snafu(display("Failed to write a follow for {username} of {actorid}: {source}"))]
     AddFollowing {
         username: Username,
@@ -165,12 +171,14 @@ pub enum Error {
     },
     #[snafu(display("Failed to send a request: {source}"))]
     Request {
-        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
+        #[snafu(source(from(either::Either<std::convert::Infallible, indielinks_shared::service::Error>, Box::new)))]
+        source: Box<either::Either<std::convert::Infallible, indielinks_shared::service::Error>>,
         backtrace: Backtrace,
     },
     #[snafu(display("While waiting to send a request, {source}"))]
     RequestReady {
-        source: either::Either<std::convert::Infallible, indielinks_shared::service::Error>,
+        #[snafu(source(from(either::Either<std::convert::Infallible, indielinks_shared::service::Error>, Box::new)))]
+        source: Box<either::Either<std::convert::Infallible, indielinks_shared::service::Error>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize the request body to JSON: {source}"))]

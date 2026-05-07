@@ -44,6 +44,7 @@ struct Dropper {
 }
 
 impl Drop for Dropper {
+    #[allow(clippy::result_large_err)]
     fn drop(&mut self) {
         let backend = self.backend.clone();
         let result = tokio::task::block_in_place(move || {

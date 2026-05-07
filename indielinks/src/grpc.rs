@@ -189,6 +189,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         .into())
     }
     /// Lookup a value given a key
+    #[allow(clippy::result_large_err)]
     async fn cache_lookup(
         &self,
         req: tonic::Request<protobuf::CacheLookupRequest>,

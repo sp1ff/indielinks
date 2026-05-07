@@ -70,7 +70,8 @@ use crate::{
 pub enum Error {
     #[snafu(display("Authentication fialure: {source}"))]
     Authn {
-        source: crate::authn::Error,
+        #[snafu(source(from(crate::authn::Error, Box::new)))]
+        source: Box<crate::authn::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Invalid backoff configuration: {source}"))]

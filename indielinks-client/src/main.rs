@@ -74,7 +74,8 @@ use indielinks_client::{
 enum Error {
     #[snafu(display("While adding a link, {source}"))]
     AddLink {
-        source: indielinks_client::add_link::Error,
+        #[snafu(source(from(indielinks_client::add_link::Error, Box::new)))]
+        source: Box<indielinks_client::add_link::Error>,
     },
     #[snafu(display("While adding a user, {source}"))]
     AddUser {
@@ -90,7 +91,8 @@ enum Error {
     },
     #[snafu(display("While parsing the configuration file, {source}"))]
     Config {
-        source: toml::de::Error,
+        #[snafu(source(from(toml::de::Error, Box::new)))]
+        source: Box<toml::de::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Exhausted the buffer without matching the predicate"))]
@@ -107,7 +109,8 @@ enum Error {
     NoToken,
     #[snafu(display("While importing links from OneTab, {source}"))]
     Onetab {
-        source: indielinks_client::import_onetab::Error,
+        #[snafu(source(from(indielinks_client::import_onetab::Error, Box::new)))]
+        source: Box<indielinks_client::import_onetab::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to find the next ',' or ']'"))]
@@ -119,7 +122,8 @@ enum Error {
     },
     #[snafu(display("While importing links from Pinboard, {source}"))]
     Pinboard {
-        source: indielinks_client::import_pinboard::Error,
+        #[snafu(source(from(indielinks_client::import_pinboard::Error, Box::new)))]
+        source: Box<indielinks_client::import_pinboard::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Premature EOF while deserializing array elements"))]

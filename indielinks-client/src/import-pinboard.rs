@@ -52,7 +52,8 @@ pub enum Error {
     },
     #[snafu(display("While parsing the configuration file, {source}"))]
     Config {
-        source: toml::de::Error,
+        #[snafu(source(from(toml::de::Error, Box::new)))]
+        source: Box<toml::de::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize from JSON: {source}"))]
@@ -64,7 +65,8 @@ pub enum Error {
     Eob { backtrace: Backtrace },
     #[snafu(display("While importing posts, {source}"))]
     Import {
-        source: crate::import::Error,
+        #[snafu(source(from(crate::import::Error, Box::new)))]
+        source: Box<crate::import::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to open {path:?}: {source}"))]
@@ -109,7 +111,8 @@ pub enum Error {
     },
     #[snafu(display("Bad tagname: {source}"))]
     Tagname {
-        source: indielinks_shared::entities::Error,
+        #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
+        source: Box<indielinks_shared::entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Invalid API key"))]
@@ -119,8 +122,9 @@ pub enum Error {
     },
     #[snafu(display("While encoding {url} to a query string: {source}"))]
     UrlEncoding {
-        url: Url,
-        source: serde_urlencoded::ser::Error,
+        url: Box<Url>,
+        #[snafu(source(from(serde_urlencoded::ser::Error, Box::new)))]
+        source: Box<serde_urlencoded::ser::Error>,
         backtrace: Backtrace,
     },
 }

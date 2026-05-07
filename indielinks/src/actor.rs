@@ -86,18 +86,22 @@ pub enum Error {
         "An AP request was signed by {bearer}, but the payload indicated an actor of {payload}"
     ))]
     ActorMismatch {
-        bearer: Url,
-        payload: Url,
+        bearer: Box<Url>,
+        payload: Box<Url>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to create an ActivityPub ID: {source}"))]
     ApId { source: crate::ap_entities::Error },
     #[snafu(display("ActivityPub resolution error {source}"))]
-    ApResolution { source: crate::ap_resolution::Error },
+    ApResolution {
+        #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
+        source: Box<crate::ap_resolution::Error>,
+    },
     #[snafu(display("{url} could not be parsed as an in-reply-to"))]
     BadInReplyTo {
-        url: Url,
-        source: crate::ap_entities::Error,
+        url: Box<Url>,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to parse the key ID as an URL: {source}"))]
@@ -107,13 +111,15 @@ pub enum Error {
     },
     #[snafu(display("{url} could not be parsed as an object"))]
     BadObject {
-        url: Url,
-        source: crate::ap_entities::Error,
+        url: Box<Url>,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("Couldn't parse {url} as a Post ID: {source}"))]
     BadPost {
-        url: Url,
-        source: crate::ap_entities::Error,
+        url: Box<Url>,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("Signature validation failure: {source}"))]
     BadSignature {
@@ -181,13 +187,15 @@ pub enum Error {
     },
     #[snafu(display("A Note was expected in the `object` field: {source}"))]
     NotNote {
-        source: ap_entities::Error,
+        #[snafu(source(from(ap_entities::Error, Box::new)))]
+        source: Box<ap_entities::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to convert entity {id} to a Note: {source}"))]
     Note {
         id: Uuid,
-        source: crate::ap_entities::Error,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("Exactly one Signature header expected"))]
     OneSignature { backtrace: Backtrace },
@@ -207,12 +215,16 @@ pub enum Error {
     #[snafu(display("Failed to resolve recipients {recipients:?}: {source}"))]
     Recipients {
         recipients: Vec<Recipient>,
-        source: crate::activity_pub::Error,
+        #[snafu(source(from(crate::activity_pub::Error, Box::new)))]
+        source: Box<crate::activity_pub::Error>,
     },
     #[snafu(display("Failed to buld an http request: {source}"))]
     Request { source: crate::ap_entities::Error },
     #[snafu(display("Failed to resolve a key ID to an Actor: {source}"))]
-    ResolveKeyId { source: crate::ap_resolution::Error },
+    ResolveKeyId {
+        #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
+        source: Box<crate::ap_resolution::Error>,
+    },
     #[snafu(display("Couldn't parse the signature string: {source}"))]
     SignatureParse {
         source: picky::http::http_signature::HttpSignatureError,
@@ -224,7 +236,8 @@ pub enum Error {
     Storage { source: storage::Error },
     #[snafu(display("Failed to send a background task: {source}"))]
     TaskSend {
-        source: crate::background_tasks::Error,
+        #[snafu(source(from(crate::background_tasks::Error, Box::new)))]
+        source: Box<crate::background_tasks::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to read the request body as bytes: {source}"))]
@@ -234,7 +247,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to determine visibility: {source}"))]
     Visibility {
-        source: crate::activity_pub::Error,
+        #[snafu(source(from(crate::activity_pub::Error, Box::new)))]
+        source: Box<crate::activity_pub::Error>,
         backtrace: Backtrace,
     },
 }
@@ -590,8 +604,8 @@ async fn accept_create(
             create.actor()
         );
         return ActorMismatchSnafu {
-            bearer: actor.id().clone(),
-            payload: create.actor().clone(),
+            bearer: Box::new(actor.id().clone()),
+            payload: Box::new(create.actor().clone()),
         }
         .fail();
     }
@@ -698,8 +712,8 @@ async fn accept_share(
             announce.actor()
         );
         return ActorMismatchSnafu {
-            bearer: actor.id().clone(),
-            payload: announce.actor().clone(),
+            bearer: Box::new(actor.id().clone()),
+            payload: Box::new(announce.actor().clone()),
         }
         .fail();
     }
@@ -719,7 +733,7 @@ async fn accept_share(
         Err(crate::ap_entities::Error::MismatchedOrigin { .. }) => None,
         Err(err) => {
             return Err(BadObjectSnafu {
-                url: announce.object().clone(),
+                url: Box::new(announce.object().clone()),
             }
             .into_error(err))
         }
@@ -1056,7 +1070,7 @@ async fn accept_like(
     // first extracting the post ID from that URL...
     let (username, postid) =
         username_and_postid_from_url(origin, like.object()).context(BadPostSnafu {
-            url: like.object().clone(),
+            url: Box::new(like.object().clone()),
         })?;
     if username != *user.username() {
         error!(
@@ -1111,8 +1125,8 @@ async fn accept_accept(
             actor.id()
         );
         return ActorMismatchSnafu {
-            bearer: actor.id().clone(),
-            payload: accept.object_id().clone(),
+            bearer: Box::new(actor.id().clone()),
+            payload: Box::new(accept.object_id().clone()),
         }
         .fail();
     }

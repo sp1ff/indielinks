@@ -128,7 +128,8 @@ pub enum Error {
     },
     #[snafu(display("ScyllaDB query failed: {source}"))]
     Execution {
-        source: scylla::errors::ExecutionError,
+        #[snafu(source(from(scylla::errors::ExecutionError, Box::new)))]
+        source: Box<scylla::errors::ExecutionError>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize the first row: {source}"))]
@@ -147,12 +148,14 @@ pub enum Error {
     },
     #[snafu(display("Failed to convert to a RowsResult: {source}"))]
     IntoRowsResult {
-        source: scylla::response::query_result::IntoRowsResultError,
+        #[snafu(source(from(scylla::response::query_result::IntoRowsResultError, Box::new)))]
+        source: Box<scylla::response::query_result::IntoRowsResultError>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to set keyspace: {source}"))]
     Keyspace {
-        source: scylla::errors::UseKeyspaceError,
+        #[snafu(source(from(scylla::errors::UseKeyspaceError, Box::new)))]
+        source: Box<scylla::errors::UseKeyspaceError>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to serialize an openraft LogId: {source}"))]
@@ -196,7 +199,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to create a ScyllaDB session: {source}"))]
     NewSession {
-        source: scylla::errors::NewSessionError,
+        #[snafu(source(from(scylla::errors::NewSessionError, Box::new)))]
+        source: Box<scylla::errors::NewSessionError>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize a post count: {source}"))]
@@ -212,7 +216,8 @@ pub enum Error {
     #[snafu(display("Failed to prepare statement: {stmt}: {source}"))]
     Prepare {
         stmt: String,
-        source: scylla::errors::PrepareError,
+        #[snafu(source(from(scylla::errors::PrepareError, Box::new)))]
+        source: Box<scylla::errors::PrepareError>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize a RaftLog: {source}"))]
@@ -227,7 +232,8 @@ pub enum Error {
     },
     #[snafu(display("Expected rows: {source}"))]
     ResultNotRows {
-        source: scylla::response::query_result::IntoRowsResultError,
+        #[snafu(source(from(scylla::response::query_result::IntoRowsResultError, Box::new)))]
+        source: Box<scylla::response::query_result::IntoRowsResultError>,
         backtrace: Backtrace,
     },
     #[snafu(display("Deserialization error while validating schema: {source}"))]
@@ -268,7 +274,8 @@ pub enum Error {
     #[snafu(display("Failed to lookup user {username}: {source}"))]
     UserQuery {
         username: String,
-        source: scylla::errors::ExecutionError,
+        #[snafu(source(from(scylla::errors::ExecutionError, Box::new)))]
+        source: Box<scylla::errors::ExecutionError>,
         backtrace: Backtrace,
     },
     #[snafu(display("Expected UTF-8: {source}"))]
@@ -2416,6 +2423,7 @@ fn from_vec_error(log_id: LogId<NodeId>, err: rmp_serde::encode::Error) -> Stora
 impl CacheBackend for Session {
     /// Append log entries
     #[tracing::instrument(skip(self))]
+    #[allow(clippy::result_large_err)]
     async fn append(&self, entries: Vec<Entry<TypeConfig>>) -> StdResult<(), StorageError<NodeId>> {
         // Make one pass; produce both a vector of `BatchStatement` and a vector of tuples
         let (batch, logs): (Vec<BatchStatement>, Vec<RaftLog>) = entries

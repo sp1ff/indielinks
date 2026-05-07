@@ -44,7 +44,8 @@ use crate::{import::import_posts, service::ReqBody};
 pub enum Error {
     #[snafu(display("While importing posts, {source}"))]
     Import {
-        source: crate::import::Error,
+        #[snafu(source(from(crate::import::Error, Box::new)))]
+        source: Box<crate::import::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to open {path:?}: {source}"))]

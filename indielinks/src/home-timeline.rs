@@ -111,7 +111,10 @@ use crate::{
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("While resolving an ActivityPub entity, {source}"))]
-    ApResolution { source: crate::ap_resolution::Error },
+    ApResolution {
+        #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
+        source: Box<crate::ap_resolution::Error>,
+    },
     #[snafu(display("Bad pagination token format"))]
     BadToken { backtrace: Backtrace },
     #[snafu(display("While streaming follows, {source}"))]
@@ -124,7 +127,8 @@ pub enum Error {
     #[snafu(display("While looking-up {user}'s outbox page, {source}"))]
     OutboxLookup {
         user: Username,
-        source: crate::ap_entities::Error,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("While fetching an Outbox page, {source}"))]
     OutboxPage { source: crate::ap_entities::Error },
