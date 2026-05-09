@@ -79,8 +79,8 @@ use leptos_router::{
     hooks::use_location,
     path,
 };
-use thaw::{ConfigProvider, Layout, LayoutHeader, Link, Tab, TabList, ToasterProvider};
-use tracing::{Level, debug, error, info};
+use thaw::{ConfigProvider, Layout, LayoutHeader, Tab, TabList, ToasterProvider};
+use tracing::{Level, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 // use wasm_bindgen::JsValue;
@@ -89,10 +89,9 @@ use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
 use indielinks_fe::{
     add_link::AddLink,
-    feeds::Feeds,
-    home::Home,
-    http::{refresh_token1, string_for_status},
+    http::{refresh_token, string_for_status},
     instance::Instance,
+    personal::Personal,
     signin::SignIn,
     types::{Api, Base, PageSize, Token, USER_AGENT},
 };
@@ -132,11 +131,11 @@ fn App() -> impl IntoView {
     provide_context(Token::new(None));
     let token = expect_context::<Token>();
 
-    let selected_value = RwSignal::new("instance".to_owned());
+    let selected_value = RwSignal::new(String::new());
 
     // If I don't use a `LocalResource`; if I, say, just call `refresh_token()` directly in an
     // `Await` below, I get pages of warnings about the future not being Send (?)
-    let try_token_refresh = LocalResource::new(|| async move { refresh_token1().await.is_ok() });
+    let try_token_refresh = LocalResource::new(|| async move { refresh_token().await.is_ok() });
 
     let on_sign_out = Action::new_unsync(move |_: &()| {
         wasm_cookies::delete(REFRESH_CSRF_COOKIE);
@@ -166,6 +165,14 @@ fn App() -> impl IntoView {
                 <Suspense fallback=move || view! { <p>"Attempting a token refresh"</p> }>
                     {move || try_token_refresh.get().map(|_| { view! {
                         <Router base=base.clone()>
+                            { move || {
+                                selected_value.set(if use_location().pathname.get() == "/h" {
+                                    "home"
+                                } else {
+                                    "popular"
+                                }.to_owned());
+
+                            } }
                             <LayoutHeader class="w-full text-sky-100 flex bg-sky-600 items-baseline">
 
                                 <div class="text-sky-100 font-header font-bold text-6xl pt-[6px] pb-[6px] pl-[12px] pr-[28px]">indielinks</div>
@@ -173,17 +180,14 @@ fn App() -> impl IntoView {
                                 // Tab list running across the top when logged in:
                                 <Show when=move || token.get().is_some() >
                                     <TabList selected_value>
-                                        <Tab value="instance" >
+                                        <Tab value="popular" >
                                             // Regrettably, we have to style the text here, because Thaw
                                             // sets these properties (the `ConfigProvider` component,
                                             // specifically).
-                                            <A href="/"  attr:class="font-header font-medium text-2xl text-sky-100">"instance"</A>
+                                            <A href="/"  attr:class="font-header font-medium text-2xl text-sky-100">"popular"</A>
                                         </Tab>
                                         <Tab value="home" >
                                             <A href="/h" attr:class="font-header font-medium text-2xl text-sky-100">"home"</A>
-                                        </Tab>
-                                        <Tab value="feeds">
-                                            <A href="/f" attr:class="font-header font-medium text-2xl text-sky-100">"feeds"</A>
                                         </Tab>
                                     </TabList>
                                 </Show>
@@ -224,15 +228,7 @@ fn App() -> impl IntoView {
                                         // None means that this information is still loading
                                         condition = move || Some(token.get().is_some())
                                         redirect_path = || "/"
-                                        view=Home
-                                    />
-                                    <ProtectedRoute
-                                        path=path!("/f")
-                                        // Some(true) means display, Some(false) means do *not* display, and
-                                        // None means that this information is still loading
-                                        condition = move || Some(token.get().is_some())
-                                        redirect_path = || "/"
-                                        view=Feeds
+                                        view=Personal
                                     />
                                     <ProtectedRoute
                                         path=path!("/a")

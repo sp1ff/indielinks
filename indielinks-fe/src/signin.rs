@@ -22,7 +22,7 @@ use leptos::{
 };
 use serde::{Deserialize, Serialize};
 use thaw::{Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
@@ -82,11 +82,6 @@ pub fn SignIn() -> impl IntoView {
     // TBH, I have *no* idea what this does:
     let username_element: NodeRef<html::Input> = NodeRef::new();
     let password_element: NodeRef<html::Input> = NodeRef::new();
-
-    // I want to display an error message below the form in the case of error. I think this is the
-    // way to do it:
-    let (error, set_error): (ReadSignal<Option<String>>, WriteSignal<Option<String>>) =
-        signal(None);
 
     let token = use_context::<Token>().expect("No token Cell!?");
 
@@ -165,11 +160,6 @@ pub fn SignIn() -> impl IntoView {
                     class="bg-transparent border px-4 py-2 hover:bg-sky-300 hover:text-gray-900 transition-colors cursor-pointer col-span-2 mx-auto focus:bg-sky-300"
                 />
             </form>
-            <Show when=move || error.get().is_some()>
-                <div style="color: red;" class="pt-4">
-                { move || error.get().unwrap() }
-                </div>
-            </Show>
         </div>
     }
 }

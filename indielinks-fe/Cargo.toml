@@ -30,3 +30,5 @@ web-sys = "0.3.77"
 reactive_stores = "0.4.2"
 send_wrapper = "0.6.0"
 secrecy = { version = "0.10.3", features = ["serde"] }
+gloo-timers = { version = "0.4.0", features = ["futures"] }
+icondata = "0.7.0"

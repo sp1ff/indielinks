@@ -21,7 +21,8 @@ use std::{result::Result as StdResult, sync::Arc};
 use gloo_net::http::Request;
 use leptos::prelude::*;
 use secrecy::{ExposeSecret, SecretString};
-use snafu::{IntoError, OptionExt, ResultExt, Snafu};
+use serde::Serialize;
+use snafu::{IntoError, ResultExt, Snafu};
 use tap::Pipe;
 use wasm_cookies::FromUrlEncodingError;
 
@@ -29,88 +30,8 @@ use indielinks_shared::api::{LoginRsp, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_
 
 use crate::types::{Api, Token, USER_AGENT};
 
-// To be removed (?)
-pub fn string_for_status(
-    rsp: gloo_net::http::Response,
-) -> Result<gloo_net::http::Response, String> {
-    let status = rsp.status();
-    if status >= 200 && status < 300 {
-        Ok(rsp)
-    } else {
-        Err(rsp.status_text())
-    }
-}
-
-// To be removed
-pub fn error_for_status(
-    rsp: gloo_net::http::Response,
-) -> Result<gloo_net::http::Response, gloo_net::Error> {
-    let status = rsp.status();
-    if status >= 200 && status < 300 {
-        Ok(rsp)
-    } else {
-        Err(gloo_net::Error::GlooError(rsp.status_text()))
-    }
-}
-
-// To be removed
-pub async fn refresh_token1() -> Result<(), gloo_net::Error> {
-    let api = use_context::<Api>()
-        .expect("No context for the API location!?")
-        .0;
-    let token = use_context::<Token>().expect("No context for the access token!?");
-
-    // We need to prove that we have code execution privileges by copying the CSRF token from it's cookie to
-    // a request header
-    let csrf_token = wasm_cookies::get(REFRESH_CSRF_COOKIE)
-        .ok_or(gloo_net::Error::GlooError(
-            "Missing refresh CSRF cookie".to_owned(),
-        ))?
-        .map_err(|_| gloo_net::Error::GlooError("Invalid refresh CSRF cookie value".to_owned()))?;
-    let rsp = Request::post(&format!("{api}/api/v1/users/refresh"))
-        .credentials(web_sys::RequestCredentials::Include)
-        .header("User-Agent", USER_AGENT)
-        .header(REFRESH_CSRF_HEADER_NAME, &csrf_token)
-        .send()
-        .await
-        .and_then(error_for_status)?
-        .json::<LoginRsp>()
-        .await?;
-    token.set(Some(rsp.token));
-    Ok(())
-}
-
-/// Attempt a request; if the request is denied with 401 Unauthorized, refresh our access token &
-/// re-try
-// To be removed
-pub async fn send_with_retry<F, Fut>(
-    make_request: F,
-) -> Result<gloo_net::http::Response, gloo_net::Error>
-where
-    F: Fn() -> Fut,
-    // It would be nice to derive the error type from F. The approach: Change refresh_token() to
-    // return a dedicated error type (it could be a sum type). Make callers implement `From<this
-    // type>` for their error types. Then, they can write their functors to return their own error
-    // types.
-    Fut: Future<Output = Result<gloo_net::http::Response, gloo_net::Error>>,
-{
-    // Huh. Seems prolix.
-    // Also, do I want to return a distinguishable error code for "token expired", to trigger the refresh?
-    match make_request().await {
-        Ok(rsp) => {
-            if rsp.status() == 401 {
-                refresh_token1().await?;
-                make_request().await
-            } else {
-                Ok(rsp)
-            }
-        }
-        err @ Err(_) => {
-            return err;
-        }
-    }
-}
-
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module Error type                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // `Backtrace` isn't `Clone`, so just forgoing it until I know I need it.
@@ -144,6 +65,17 @@ pub enum Error {
 
 // Soon:
 // type Result<T> = std::result::Result<T, Error>;
+
+pub fn string_for_status(
+    rsp: gloo_net::http::Response,
+) -> Result<gloo_net::http::Response, String> {
+    let status = rsp.status();
+    if status >= 200 && status < 300 {
+        Ok(rsp)
+    } else {
+        Err(rsp.status_text())
+    }
+}
 
 // Rename this to just `error_for_status`
 pub fn error_for_status1(rsp: gloo_net::http::Response) -> Result<gloo_net::http::Response, Error> {
@@ -197,20 +129,17 @@ pub async fn refresh_token() -> StdResult<Option<SecretString>, Error> {
     Ok(Some(response.token.into()))
 }
 
-/// Attempt a request; if the request is denied with 401 Unauthorized, refresh our access token &
-/// re-try
-// To be renamed
-pub async fn send_with_retry1<F>(make_request: F) -> Result<gloo_net::http::Response, Error>
+// Expects `Token` in context.
+async fn send_with_retry_internal<F, Fut>(
+    send_request: F,
+) -> Result<gloo_net::http::Response, Error>
 where
-    F: Fn() -> gloo_net::http::RequestBuilder,
+    F: Fn(&str) -> Fut,
+    // At first, it seemeed appealing to allow the caller to return their own error type. However,
+    // it turned messy quickly. Better to have `send_request()` return an `gloo_net::Error`, and
+    // this function a module `Error`.
+    Fut: Future<Output = Result<gloo_net::http::Response, gloo_net::Error>>,
 {
-    let send_request = |token: &str| {
-        make_request()
-            .header("User-Agent", USER_AGENT)
-            .header("Authorization", &format!("Bearer {token}"))
-            .send()
-    };
-
     let token = expect_context::<Token>();
 
     match token.get() {
@@ -235,4 +164,44 @@ where
             None => NoRefreshSnafu.fail(),
         },
     }
+}
+
+/// Attempt a request; if the request is denied with 401 Unauthorized, refresh our access token &
+/// re-try
+pub async fn send_with_retry_no_body<F>(make_request: F) -> Result<gloo_net::http::Response, Error>
+where
+    F: Fn() -> gloo_net::http::RequestBuilder,
+{
+    let send_request = |token: &str| {
+        make_request()
+            .header("User-Agent", USER_AGENT)
+            .header("Authorization", &format!("Bearer {token}"))
+            .send()
+    };
+    send_with_retry_internal(send_request).await
+}
+
+// to be renamed
+pub async fn send_with_retry<B, F>(
+    make_request: F,
+    body: B,
+) -> Result<gloo_net::http::Response, Error>
+where
+    B: Clone + Serialize,
+    F: Fn() -> gloo_net::http::RequestBuilder + Clone,
+{
+    let send_request = move |token: &str| {
+        let body = body.clone();
+        let token = token.to_owned();
+        let make_request = make_request.clone();
+        async move {
+            make_request()
+                .header("User-Agent", USER_AGENT)
+                .header("Authorization", &format!("Bearer {token}"))
+                .json(&body)?
+                .send()
+                .await
+        }
+    };
+    send_with_retry_internal(send_request).await
 }

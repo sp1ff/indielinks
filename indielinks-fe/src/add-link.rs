@@ -24,13 +24,13 @@ use leptos_router::{
 use snafu::{ResultExt, Snafu};
 use tap::Pipe;
 use thaw::{Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection};
-use tracing::{debug, error, info};
+use tracing::debug;
 use url::Url;
 
 use indielinks_shared::api::PostAddReq;
 
 use crate::{
-    http::{error_for_status1, send_with_retry1},
+    http::{error_for_status1, send_with_retry_no_body},
     types::{Api, Base},
 };
 
@@ -121,13 +121,13 @@ impl Default for FormElements {
     }
 }
 
-async fn submit(form: Form, elements: FormElements) -> Result<()> {
+async fn submit(form: Form) -> Result<()> {
     let api = expect_context::<Api>().0;
 
     let request: PostAddReq = form.try_into()?;
     let qs = serde_urlencoded::to_string(&request).context(RequestSerSnafu)?;
     let url = format!("{api}/api/v1/posts/add?{qs}");
-    send_with_retry1(|| Request::post(&url))
+    send_with_retry_no_body(|| Request::post(&url))
         .await
         .context(HttpSnafu)?
         .pipe(error_for_status1)
@@ -176,7 +176,7 @@ fn use_add_link() -> (Form, FormElements, Action<(), ()>) {
         let from = from.clone();
         let navigate = navigate.clone();
         async move {
-            match submit(form, elements).await {
+            match submit(form).await {
                 Ok(_) => {
                     if form.another.get() {
                         form.reset();
@@ -280,7 +280,7 @@ pub fn AddLink() -> impl IntoView {
                 <input class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
                        type="text"
                        id="tags" name="tags"
-                       placeholder="Space-delimited tags..."
+                       placeholder="Comma-delimited tags..."
                        node_ref=elements.tags
                        bind:value=form.tags />
 

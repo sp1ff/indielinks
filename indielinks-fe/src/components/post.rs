@@ -18,12 +18,16 @@
 //! Displaying a given [FeedPost] turns out to be fairly complicated when taking into account likes,
 //! shares, replies &c, as well as the fact that you can "drill down" into any given post to see the
 //! conversation. This module hosts a top-level component, [Post] that handles all of this.
+//!
+//! While these have been factored-out into their own module, I've made little-to-no effort to make
+//! these truly generic components: they're styled directly here, they show toast on errors, &c.
 
 use std::{cmp::PartialEq, result::Result as StdResult, sync::Arc};
 
 use gloo_net::http::Request;
 use leptos::{either::Either, html, prelude::*};
 use snafu::{ResultExt, Snafu};
+use thaw::{Icon, Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection};
 use tracing::{debug, error};
 use url::Url;
 
@@ -32,9 +36,9 @@ use indielinks_shared::api::{
 };
 
 use crate::{
-    components::dropdown::{Dropdown, DropdownMenuItem, DropdownMenuItems, DropdownTrigger},
+    components::dropdown::{Dropdown, DropdownIconTrigger, DropdownMenuItem, DropdownMenuItems},
     http::send_with_retry,
-    types::{Api, Token},
+    types::Api,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -66,6 +70,10 @@ pub enum Error {
         #[snafu(source(from(gloo_net::Error, Arc::new)))]
         source: Arc<gloo_net::Error>,
     },
+    #[snafu(display("While sending an HTTP request, {source}"))]
+    Request1 {
+        source: crate::http::Error,
+    },
     #[snafu(display("Got response status {status}"))]
     Status {
         status: u16,
@@ -91,6 +99,22 @@ impl From<gloo_net::Error> for Error {
     }
 }
 
+fn pop_toast(toaster: ToasterInjection, intent: ToastIntent, title: String, message: String) {
+    toaster.dispatch_toast(
+        move || {
+            view! {
+                <Toast>
+                    <ToastTitle>{title}</ToastTitle>
+                    <ToastBody>
+                        {message}
+                    </ToastBody>
+                </Toast>
+            }
+        },
+        ToastOptions::default().with_intent(intent),
+    );
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                            ViewPost                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -109,13 +133,12 @@ pub struct MenuId {
 
 // It's a pity to represent both the post & actor using `Url`-- could I use newtypes to distinguish
 // between the two? I have a task to look at this more generally on the backend.
-fn use_replying(post_id: Url, actor_id: Url) -> Action<String, ()> {
+fn use_replying(post_id: Url, actor_id: Url) -> Action<String, Result<()>> {
     // This seems awfully complex, but the closure we pass to the `Action` constructor must
     // implement `Fn`; i.e. all of its captures must either be `Copy` or moved into the closure.
 
     // That wouldn't be so bad, except this closure needs *another* closure (that it will pass to
     // `send_with_retry()`), and *that* one must also be `Fn`!
-
     Action::new_local(move |text: &String| {
         // Now, both `post_id` and `actor_id`, being referenced inside this block, have bee *moved*
         // here. I would have thought that we could just move them again into the next closure, but
@@ -123,50 +146,24 @@ fn use_replying(post_id: Url, actor_id: Url) -> Action<String, ()> {
         let post_id = post_id.clone();
         let actor_id = actor_id.clone();
         let text = text.clone();
-
-        // Now, they're going to be moved into this closure, but we need the post ID later,
-        // so create one more copy:
-        let logged_post_id = post_id.clone();
-
-        let send_reply_request = move || {
-            // As mentioned above, this closure needs to be `Fn`, so we give ourselves clones
-            // of `post_id` and `actor_id`...
-            let post_id = post_id.clone(); // let post_id = value.clone()
-            let actor_id = actor_id.clone();
-            let text = text.clone();
-            // and then move those clones into this `async move` block...
-            async move {
-                let api = expect_context::<Api>().0;
-
-                // Regrettably, at this time, this lambda has to return a `gloo_net::Error`.
-                let token = expect_context::<Token>()
-                    .get()
-                    .ok_or(gloo_net::Error::GlooError(
-                        "Missing token; this is a bug.".to_owned(),
-                    ))?;
-                Request::post(&format!("{api}/api/v1/users/reply"))
-                    .header("Authorization", &format!("Bearer {token}"))
-                    .json(&ReplyRequest {
-                        // taking care to clone them before using (so that this block can be invoked
-                        // again, if needed).
-                        id: post_id.clone(),
-                        actor: actor_id.clone(),
-                        text: text.clone(),
-                    })
-                    .map_err(|err| gloo_net::Error::GlooError(format!("{err}")))?
-                    .send()
-                    .await
-            }
-        };
         async move {
-            match send_with_retry(send_reply_request)
-                .await
-                .context(RequestSnafu)
-                .and_then(error_for_status)
-            {
-                Ok(_) => debug!("Liked post {logged_post_id}"),
-                Err(err) => debug!("While liking post {logged_post_id}, {err}."),
-            }
+            send_with_retry(
+                move || {
+                    let api = expect_context::<Api>().0;
+                    Request::post(&format!("{api}/api/v1/users/reply"))
+                },
+                ReplyRequest {
+                    // taking care to clone them before using (so that this block can
+                    // be invoked again, if needed).
+                    id: post_id.clone(),
+                    actor: actor_id.clone(),
+                    text: text.clone(),
+                },
+            )
+            .await
+            .context(Request1Snafu)
+            .and_then(error_for_status)
+            .map(|_| ())
         }
     })
 }
@@ -180,72 +177,74 @@ fn ReplyingPost(
     // I never called `use_replying()`-- there must be something in the view! macro doing this.
     post_id: Url,
     actor_id: Url,
-    reply_elt: NodeRef<html::Input>,
+    reply_elt: NodeRef<html::Textarea>,
     set_replying: WriteSignal<bool>,
 ) -> impl IntoView {
     let send_reply = use_replying(post_id, actor_id);
 
+    let toaster = ToasterInjection::expect_context();
+
+    Effect::new(move |_| {
+        if let Some(Err(err)) = send_reply.value().get() {
+            pop_toast(
+                toaster,
+                ToastIntent::Error,
+                "Replying".into_owned(),
+                format!("{err}"),
+            )
+        }
+    });
+
     // I need to factor this out.
-    fn string_for_node_ref(node: &NodeRef<html::Input>) -> String {
+    fn string_for_node_ref(node: &NodeRef<html::Textarea>) -> String {
         node.get().expect("NodeRef not mounted?").value()
     }
 
     view! {
-        <div class="feed-item-reply">
-            <div style="flex: 1 1 0; min-height 0; display: flex; flex-direction: column;">
-                <input type="textarea" node_ref=reply_elt style="flex: 1 1 0; resize: none; width: 100%;"/>
-            </div>
-            <div class="feed-item-reply-actions">
-                <button on:click=move |_| {
-                    let text = string_for_node_ref(&reply_elt);
-                    set_replying.set(false);
-                    send_reply.dispatch(text);
-                }>"send"</button>
-                <button on:click=move |_| set_replying.set(false)>"cancel"</button>
+        <div class="flex flex-col">
+            <textarea
+                   rows="4"
+                   node_ref=reply_elt
+                   placeholder="Your reply..."
+                   class="bg-transparent border-0 border-b border-r outline-none"/>
+            <div class="space-x-2">
+                <Icon icon=icondata::BsSend
+                      class="text-gray-600"
+                      on_click=move |_| {
+                          let text = string_for_node_ref(&reply_elt);
+                          set_replying.set(false);
+                          send_reply.dispatch(text);
+                      }/>
+                <Icon icon=icondata::TbSendOffOutline
+                      class="text-gray-600"
+                      on_click=move |_| set_replying.set(false) />
             </div>
         </div>
     }
 }
 
-fn use_post_controls(post_id: Url, actor_id: Url) -> Action<(), ()> {
+fn use_post_controls(post_id: Url, actor_id: Url) -> Action<(), Result<()>> {
     Action::new_local(move |_: &()| {
         // Both `post_id` and `actor_id`, being referenced inside this block, have bee *moved*
         // here. I would have thought that we could just move them again into the next closure, but
         // the if I do that, without keeping copies here, the borrow checker complains. So:
         let post_id = post_id.clone();
         let actor_id = actor_id.clone();
-        let logged_post_id = post_id.clone();
-        let send_like = move || {
-            let post_id = post_id.clone(); // let post_id = value.clone()
-            let actor_id = actor_id.clone();
-            async move {
-                let api = expect_context::<Api>().0;
-                // Regrettably, at this time, this lambda has to return a `gloo_net::Error`.
-                let token = expect_context::<Token>()
-                    .get()
-                    .ok_or(gloo_net::Error::GlooError(
-                        "Missing token; this is a bug.".to_owned(),
-                    ))?;
-                Request::post(&format!("{api}/api/v1/users/like"))
-                    .header("Authorization", &format!("Bearer {token}"))
-                    .json(&LikeRequest {
-                        id: post_id.clone(),
-                        actor: actor_id.clone(),
-                    })
-                    .map_err(|err| gloo_net::Error::GlooError(format!("{err}")))?
-                    .send()
-                    .await
-            }
-        };
         async move {
-            match send_with_retry(send_like)
-                .await
-                .context(RequestSnafu)
-                .and_then(error_for_status)
-            {
-                Ok(_) => debug!("Liked post {logged_post_id}"),
-                Err(err) => debug!("While liking post {logged_post_id}, {err}."),
-            }
+            send_with_retry(
+                move || {
+                    let api = expect_context::<Api>().0;
+                    Request::post(&format!("{api}/api/v1/users/like"))
+                },
+                LikeRequest {
+                    id: post_id.clone(),
+                    actor: actor_id.clone(),
+                },
+            )
+            .await
+            .context(Request1Snafu)
+            .and_then(error_for_status)
+            .map(|_| ())
         }
     })
 }
@@ -268,12 +267,31 @@ fn PostControls(
 
     let send_like = use_post_controls(post_id, actor_id);
 
+    let toaster = ToasterInjection::expect_context();
+
+    Effect::new(move |_| {
+        if let Some(Err(err)) = send_like.value().get() {
+            pop_toast(
+                toaster,
+                ToastIntent::Error,
+                "Liking".into_owned(),
+                format!("{err}"),
+            )
+        }
+    });
+
     view! {
-        <div class="feed-item-actions">
-            <button on:click=move |_| {send_like.dispatch(());}>"like"</button>
+        <div class="text-sm">
+            <Icon icon=icondata::AiStarOutlined
+                class="text-gray-600 cursor-pointer"
+                on_click=move |_| { send_like.dispatch(()); }
+                />
             " "
             <Dropdown open_menu>
-                <DropdownTrigger text="share".to_string() menu_id=share_menu_id.clone() />
+                <DropdownIconTrigger
+                    icon=icondata::ChQuote
+                    class="text-gray-600 cursor-pointer"
+                    menu_id=share_menu_id.clone() />
                 <DropdownMenuItems menu_id=share_menu_id.clone()>
                     <DropdownMenuItem
                         text="share".to_string()
@@ -284,13 +302,19 @@ fn PostControls(
                 </DropdownMenuItems>
             </Dropdown>
             " "
-            <button on:click=move |_| set_replying.set(true)>"reply"</button>
+            <Icon icon=icondata::BsReply
+                class="text-gray-600 cursor-pointer"
+                on_click=move |_| set_replying.set(true)
+                />
             " "
             <Dropdown open_menu>
-                <DropdownTrigger text="more".to_string() menu_id=misc_menu_id.clone() />
+                <DropdownIconTrigger
+                    icon=icondata::BsThreeDots
+                    class="text-gray-600 cursor-pointer"
+                    menu_id=misc_menu_id.clone() />
                 <DropdownMenuItems menu_id=misc_menu_id.clone()>
                     <DropdownMenuItem
-                        text="copy lnk".to_string()
+                        text="copy link".to_string()
                         handler=Callback::new(|()| debug!("Copy link selected"))/>
                 </DropdownMenuItems>
             </Dropdown>
@@ -309,27 +333,20 @@ fn ViewPost(
 ) -> impl IntoView {
     let (replying, set_replying) = signal::<bool>(false);
 
-    let reply_element: NodeRef<html::Input> = NodeRef::new();
+    let reply_element: NodeRef<html::Textarea> = NodeRef::new();
     let post_id = post.id.clone();
     let post_actor = post.actor.clone();
 
-    // Build the style string from props known at construction time. Both `current` and `on_click`
-    // are fixed for the lifetime of this stub instance, so a static string reference is fine.
-    let mut style = String::from("display:flex; flex-direction: column; gap: 0.5rem;");
+    // Turn off the the cursor pointer if this is the currently focused post:
+    let mut cls = "text-left m-2 text-gray-800 cursor-pointer".to_owned();
     if current {
-        // Extra height distinguishes the focal post from parent/children.
-        style.push_str(" min-height: 4em;");
-    }
-    if on_click.is_some() {
-        // Pointer cursor signals to the user that the post is navigable.
-        style.push_str(" cursor: pointer;");
+        cls += " cursor-pointer";
     }
 
     view! {
-        <div class="feed-item" style=style>
+        <div class="mx-auto flex flex-col m-2 p-2 border border-solid border-sky-100">
             <div
-                class="feed-item-content"
-                style="text-align: left;"
+                class={cls}
                 inner_html=post.content
                 on:click=move |_| {
                     if let Some(cb) = on_click {
@@ -390,32 +407,19 @@ pub fn use_conversation_stack() -> RwSignal<Vec<ThreadContextResponse>> {
 }
 
 async fn get_context(url: Url) -> Result<ThreadContextResponse> {
-    let send_context_request = move || {
-        let url = url.clone();
-        async move {
+    send_with_retry(
+        move || {
             let api = expect_context::<Api>().0;
-            // Regrettably, at this time, this lambda has to return a `gloo_net::Error`.
-            let token = expect_context::<Token>()
-                .get()
-                .ok_or(gloo_net::Error::GlooError(
-                    "Missing token; this is a bug.".to_owned(),
-                ))?;
             Request::post(&format!("{api}/api/v1/users/context"))
-                .header("Authorization", &format!("Bearer {token}"))
-                .json(&ThreadContextRequest { ap_id: url })
-                .map_err(|err| gloo_net::Error::GlooError(format!("{err}")))?
-                .send()
-                .await
-        }
-    };
-
-    send_with_retry(send_context_request)
-        .await
-        .context(RequestSnafu)
-        .and_then(error_for_status)?
-        .json::<ThreadContextResponse>()
-        .await
-        .context(LoadSnafu)
+        },
+        ThreadContextRequest { ap_id: url },
+    )
+    .await
+    .context(Request1Snafu)
+    .and_then(error_for_status)?
+    .json::<ThreadContextResponse>()
+    .await
+    .context(LoadSnafu)
 }
 
 /// Renders a conversation thread centred on the post at the top of the stack.
@@ -442,12 +446,13 @@ pub fn ViewConversation(
     // once per instance, so this dispatch happens exactly once.
     action.dispatch(initial_url);
 
+    let toaster = ToasterInjection::expect_context();
+
     // Whenever the Action resolves — from the initial load or any subsequent
     // navigation dispatch — push the new response onto the stack.
     Effect::new(move |_| {
         // So this seems a bit dodgy to me... what if we have multiple invocations of `action` in
         // flight simultaneously?
-        debug!("ViewConversation: the Effect has fired.");
         if let Some(response) = action.value().get() {
             match response {
                 Ok(ctx) => {
@@ -456,6 +461,12 @@ pub fn ViewConversation(
                 }
                 Err(err) => {
                     error!("Failed to retrieve thread context: {err:#?}");
+                    pop_toast(
+                        toaster,
+                        ToastIntent::Error,
+                        "Conversation".into_owned(),
+                        format!("{err}"),
+                    )
                 }
             }
         }
@@ -481,11 +492,15 @@ pub fn ViewConversation(
     };
 
     view! {
-        <div style="display: flex; flex-direction: column; height: 100%; \
-                    overflow-y: auto; padding: 4px; box-sizing: border-box;">
+        <div class="border border-solid border-sky-600"
+            // style="display: flex; flex-direction: column; height: 100%; \
+            //         overflow-y: auto; padding: 4px; box-sizing: border-box;"
+            >
 
-            <div style="margin-bottom: 4px;">
-                <button on:click=on_back>"←"</button>
+            <div /*style="margin-bottom: 4px;"*/>
+                <Icon icon=icondata::BiArrowBackRegular
+                      class="text-gray-600 cursor-pointer"
+                      on_click=on_back />
             </div>
 
             {move || {
