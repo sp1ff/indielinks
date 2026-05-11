@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
+
+set -euo pipefail
+
 function hc {
     local bin="$1"
     local port="$2"
-    # curl can fail if the server isn't up, yet
-    set +e
-    local status=$(curl -s http://localhost:${port}/healthcheck)
+    local status=$(curl -s http://localhost:${port}/healthcheck || true)
     local ntries=1
     while [ "${status}" != "GOOD" ]; do
         sleep 0.5
-        status=$(curl -s http://localhost:${port}/healthcheck)
         ntries=$(($ntries+1))
-        # Give it five seconds
-        if [ ${ntries} -gt 10 ]; then
+        # Give it ten seconds
+        if [ ${ntries} -gt 20 ]; then
             echo "${bin} failed to come up" >&2
             set -e
             return "1"
         fi
+        status=$(curl -s http://localhost:${port}/healthcheck || true)
     done
-    set -e
     return "0"
 }
 
@@ -28,7 +28,7 @@ fi
 bin="$1"
 port="$2"
 
-set -e
+set -x
 here=$(dirname $(realpath $0))
 cd $here/../tests-indielinks-cache
 
