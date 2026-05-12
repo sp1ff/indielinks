@@ -167,6 +167,10 @@ while [ ${nnodes} -ne 3 ]; do
         docker ps -a
         exit 1
     fi
+    # For trouble-shooting
+    set +e
+    docker exec scylla-node-${SCYLLA_NODE_1} nodetool status
+    set -e
     nnodes=$({ docker exec scylla-node-${SCYLLA_NODE_1} nodetool status || true; }|{ grep -F UN || true; }|wc -l)
     echo "I see $nnodes ScyllaDB nodes"
 done

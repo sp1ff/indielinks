@@ -1,6 +1,6 @@
 # This is the Github continuous integration job for `indielinks`.
 
-# It runs on Ubuntu, using three versions of Rust: a "pined" least
+# It runs on Ubuntu, using three versions of Rust: a "pinned" least
 # supported version, the current stable version and the current
 # nightly version. After building, it will run the unit & integration
 # test suites.
@@ -48,7 +48,7 @@ jobs:
       with:
         toolchain: ${{ matrix.rust }}
 
-    # https://university.scylladb.com/setup-a-scylla-cluster/?utm_source=chatgpt.com
+    # Cf. <https://university.scylladb.com/setup-a-scylla-cluster>
     - name: Configure System
       if: matrix.os == 'ubuntu-latest'
       shell: bash
@@ -60,19 +60,20 @@ jobs:
     - name: Install tools
       shell: bash
       run: |
-        sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+        sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+        protobuf-compiler libprotobuf-dev
         rustup component add clippy
         rustup component add rustfmt
         rustup target add wasm32-unknown-unknown
-        cargo install --locked cargo-audit
+        cargo install --force cargo-audit
 
     - name: Lint
       shell: bash
       run: 'admin/run-linters'
 
-    # Un-comment this step to enable ssh'ing into the runner & trouble-shoot
-    # - name: Setup tmate session
-    #   uses: mxschmitt/action-tmate@v3
+    # Un-comment this step to enable ssh'ing into the runner & trouble-shooting
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
 
     - name: Build indielinks & run unit & integration tests
       shell: bash
