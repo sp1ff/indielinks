@@ -5,7 +5,7 @@ set -euo pipefail
 function hc {
     local bin="$1"
     local port="$2"
-    local status=$(curl -s http://localhost:${port}/healthcheck || true)
+    local status=$(curl -4 -s http://localhost:${port}/healthcheck || true)
     local ntries=1
     while [ "${status}" != "GOOD" ]; do
         sleep 0.5
@@ -13,10 +13,13 @@ function hc {
         # Give it ten seconds
         if [ ${ntries} -gt 20 ]; then
             echo "${bin} failed to come up" >&2
+            ps aux|grep "${bin}"
+            set +e
+            curl -4 -v http://localhost:${port}/healthcheck
             set -e
             return "1"
         fi
-        status=$(curl -s http://localhost:${port}/healthcheck || true)
+        status=$(curl -4 -s http://localhost:${port}/healthcheck || true)
     done
     return "0"
 }

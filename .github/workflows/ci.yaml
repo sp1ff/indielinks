@@ -72,8 +72,8 @@ jobs:
       run: 'admin/run-linters'
 
     # Un-comment this step to enable ssh'ing into the runner & trouble-shooting
-    - name: Setup tmate session
-      uses: mxschmitt/action-tmate@v3
+    # - name: Setup tmate session
+    #   uses: mxschmitt/action-tmate@v3
 
     - name: Build indielinks & run unit & integration tests
       shell: bash
