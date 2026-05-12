@@ -42,7 +42,7 @@ use leptos_router::{
     params::Params,
 };
 use nonempty_collections::{set::NESet, vector::NEVec};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use snafu::prelude::*;
 use tap::Pipe;
 use thaw::{
@@ -76,7 +76,7 @@ pub enum Error {
     Params {
         source: leptos_router::params::ParamsError,
     },
-    #[snafu(display("While re-encoding the query paramets, {source}"))]
+    #[snafu(display("While re-encoding the query parameters, {source}"))]
     ParamsSer {
         source: serde_urlencoded::ser::Error,
     },
@@ -136,9 +136,18 @@ impl FromStr for Unread {
 }
 
 // Newtype on which we can implement `FromStr`
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, PartialEq)]
 struct Tags(NESet<Tagname>);
+
+impl Serialize for Tags {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let s = self.0.iter().map(|tagname| tagname.to_string()).join(",");
+        serializer.serialize_str(&s)
+    }
+}
 
 impl FromStr for Tags {
     type Err = Error;
@@ -163,7 +172,7 @@ impl FromStr for Tags {
 #[derive(Clone, Debug, Default, Params, PartialEq, Serialize)]
 struct QueryParams {
     #[serde(skip_serializing_if = "Option::is_none")]
-    tags: Option<Tags>,
+    tag: Option<Tags>,
     #[serde(skip_serializing_if = "Option::is_none")]
     page: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -187,7 +196,7 @@ impl QueryParams {
             None | Some(0) => Ok(None),
             Some(n) => Ok(Some(
                 serde_urlencoded::to_string(&Self {
-                    tags: self.tags.clone(),
+                    tag: self.tag.clone(),
                     page: Some(n - 1),
                     unread: self.unread,
                 })
@@ -199,7 +208,7 @@ impl QueryParams {
     }
     fn qs_for_incremented_page(&self) -> Result<String> {
         serde_urlencoded::to_string(&Self {
-            tags: self.tags.clone(),
+            tag: self.tag.clone(),
             page: Some(self.page.unwrap_or(0) + 1),
             unread: self.unread,
         })
@@ -213,7 +222,7 @@ impl QueryParams {
         Ok((
             self.unread.map(|x| !x.0).unwrap_or(true),
             serde_urlencoded::to_string(&Self {
-                tags: self.tags.clone(),
+                tag: self.tag.clone(),
                 page: self.page,
                 unread: self.unread.map(|x| Unread(!x.0)).or(Some(Unread(true))),
             })
@@ -652,6 +661,7 @@ async fn submit(form: Form) -> Result<()> {
 
     let request: PostAddReq = form.try_into()?;
     let qs = serde_urlencoded::to_string(&request).context(ParamsSerSnafu)?;
+    debug!("submit(): {qs}");
     let url = format!("{api}/api/v1/posts/add?{qs}");
     send_with_retry_no_body(|| Request::post(&url))
         .await
@@ -899,12 +909,11 @@ pub fn LinkFeed() -> impl IntoView {
             rerender.track();
             async move {
                 let query_params = use_query::<QueryParams>().get().unwrap_or_default();
-                debug!("Loading post data from {query_params:?}");
                 load_data(
                     api,
                     query_params.page.unwrap_or(0),
                     PAGE_SIZE,
-                    query_params.tags.map(|tags| tags.0),
+                    query_params.tag.map(|tags| tags.0),
                     query_params.unread.unwrap_or(Unread(false)).0,
                 )
                 .await
