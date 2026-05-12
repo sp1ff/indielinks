@@ -59,7 +59,7 @@ use indielinks_shared::{
 
 use crate::{
     http::{error_for_status1, send_with_retry_no_body},
-    types::Api,
+    types::{Api, Base},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -230,6 +230,7 @@ impl QueryParams {
 
 #[component]
 fn BackButton() -> Result<impl IntoView> {
+    let base = expect_context::<Base>().0;
     let navigate = use_navigate();
     let query_params = use_query::<QueryParams>()
         .get_untracked()
@@ -240,7 +241,7 @@ fn BackButton() -> Result<impl IntoView> {
             <Icon icon=icondata::VsChevronLeft
                 class="text-gray-800"
                 on_click=move |_| {
-                    navigate(&format!("/h?{qs}"), Default::default())
+                    navigate(&format!("{base}/h?{qs}"), Default::default())
                 }/>
         }),
     }
@@ -248,6 +249,7 @@ fn BackButton() -> Result<impl IntoView> {
 
 #[component]
 fn ToggleButton() -> Result<impl IntoView> {
+    let base = expect_context::<Base>().0;
     let navigate = use_navigate();
     let query_params = use_query::<QueryParams>()
         .get_untracked()
@@ -259,7 +261,7 @@ fn ToggleButton() -> Result<impl IntoView> {
             <Button
                 class="!font-normal !text-gray-600"
                 appearance=ButtonAppearance::Transparent
-                on_click=move |_| { navigate(&format!("/h?{qs}"), Default::default()) }
+                on_click=move |_| { navigate(&format!("{base}/h?{qs}"), Default::default()) }
             >
                 "unread links"
             </Button>
@@ -269,7 +271,7 @@ fn ToggleButton() -> Result<impl IntoView> {
             <Button
                 class="!font-normal !text-gray-600"
                 appearance=ButtonAppearance::Transparent
-                on_click=move |_| { navigate(&format!("/h?{qs}"), Default::default()) }
+                on_click=move |_| { navigate(&format!("{base}/h?{qs}"), Default::default()) }
             >
                 "all links"
             </Button>
@@ -279,6 +281,7 @@ fn ToggleButton() -> Result<impl IntoView> {
 
 #[component]
 fn ForwardButton(last: bool) -> Result<impl IntoView> {
+    let base = expect_context::<Base>().0;
     let navigate = use_navigate();
     let query_params = use_query::<QueryParams>()
         .get_untracked()
@@ -290,7 +293,7 @@ fn ForwardButton(last: bool) -> Result<impl IntoView> {
         Ok(view! { <Icon icon=icondata::VsChevronRight
         class="text-gray-800"
         on_click=move |_| {
-            navigate(&format!("/h?{qs}"), Default::default())
+            navigate(&format!("{base}/h?{qs}"), Default::default())
         } />})
     }
 }
@@ -486,6 +489,7 @@ fn ViewPost(
     /// Trigger a re-render
     rerender: ArcTrigger,
 ) -> impl IntoView {
+    let base = expect_context::<Base>().0;
     let api = expect_context::<Api>();
 
     // Seems inefficient-- pass the query parameters as a property?
@@ -500,7 +504,7 @@ fn ViewPost(
     let title = post.title().to_owned();
     let posted = post.posted().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let mut tag_base = "/h?".to_owned();
+    let mut tag_base = format!("{base}/h?");
     let unread = query_params.unread.unwrap_or(Unread(false)).0;
     if unread {
         tag_base += "unread&"

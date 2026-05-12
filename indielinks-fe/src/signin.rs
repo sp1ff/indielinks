@@ -83,7 +83,7 @@ pub fn SignIn() -> impl IntoView {
     let username_element: NodeRef<html::Input> = NodeRef::new();
     let password_element: NodeRef<html::Input> = NodeRef::new();
 
-    let token = use_context::<Token>().expect("No token Cell!?");
+    let token = expect_context::<Token>();
 
     let navigate = leptos_router::hooks::use_navigate();
 
@@ -100,7 +100,7 @@ pub fn SignIn() -> impl IntoView {
         async move { login(&api_val, username, password).await }
     });
 
-    let base = use_context::<Base>().expect("No API base!?").0;
+    let base = expect_context::<Base>().0;
 
     Effect::new(move |_| {
         // Still figuring this out...
