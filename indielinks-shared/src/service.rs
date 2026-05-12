@@ -354,6 +354,17 @@ where
 //                                      exponential backoffs                                      //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// A response type that can report whether it represents a transient condition worth retrying.
+pub trait RetryableResponse {
+    fn is_retryable(&self) -> bool;
+}
+
+impl<B> RetryableResponse for http::Response<B> {
+    fn is_retryable(&self) -> bool {
+        matches!(self.status().as_u16(), 408 | 409 | 429 | 500..=599)
+    }
+}
+
 // Apparently, we need to build our own Policy. Actually, this makes sense, because it enables
 // us to decide when to retry versus when to give up.
 #[derive(Clone, Debug)]
@@ -362,7 +373,7 @@ pub struct ExponentialBackoffPolicy {
     pub num_attempts: usize,
 }
 
-impl<Req: Clone, Res: std::fmt::Debug, E>
+impl<Req: Clone, Res: std::fmt::Debug + RetryableResponse, E>
     tower::retry::Policy<Req, Res, /*indielinks_shared::service::Error*/ E>
     for ExponentialBackoffPolicy
 {
@@ -377,14 +388,8 @@ impl<Req: Clone, Res: std::fmt::Debug, E>
         _: &mut Req,
         result: &mut std::result::Result<Res, E>,
     ) -> Option<Self::Future> {
-        // Regrettably, at this time, I'm reduced to using a `Buffer` layer between my `Retry` layer
-        // and my `RateLimit` layer, because the latter is not Clone, and the former requires that
-        // it wrap a Clonable. This is regrettable because `Buffer` erases the type of any `Error`
-        // thrown by its inner service, so we have, at *this* point, no way to distinguish between
-        // retryable and non-retryable errors.
         match result {
-            Ok(_) => None,
-            Err(_) => {
+            Ok(res) if res.is_retryable() => {
                 if self.num_attempts > 0 {
                     self.num_attempts -= 1;
                     Some(self.backoff.next_backoff())
@@ -392,6 +397,7 @@ impl<Req: Clone, Res: std::fmt::Debug, E>
                     None
                 }
             }
+            _ => None,
         }
     }
 
@@ -545,5 +551,94 @@ impl Default for ExponentialBackoffParameters {
             jitter: Jitter::try_from(10.0).unwrap(/* known good */),
             num_attempts: 3,
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod tests {
+    use tower::retry::Policy;
+    use tower::retry::backoff::{ExponentialBackoffMaker, MakeBackoff};
+
+    use super::*;
+
+    fn response(status: u16) -> http::Response<()> {
+        http::Response::builder().status(status).body(()).unwrap()
+    }
+
+    fn policy(num_attempts: usize) -> ExponentialBackoffPolicy {
+        ExponentialBackoffPolicy {
+            backoff: ExponentialBackoffMaker::new(
+                Duration::from_millis(1),
+                Duration::from_millis(10),
+                0.0,
+                tower::util::rng::HasherRng::new(),
+            )
+            .unwrap()
+            .make_backoff(),
+            num_attempts,
+        }
+    }
+
+    #[test]
+    fn retryable_status_codes() {
+        for status in [408u16, 409, 429, 500, 503, 599] {
+            assert!(
+                response(status).is_retryable(),
+                "expected {status} to be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn non_retryable_status_codes() {
+        for status in [200u16, 201, 301, 400, 401, 404] {
+            assert!(
+                !response(status).is_retryable(),
+                "expected {status} to not be retryable"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_on_retryable_response_when_attempts_remain() {
+        let mut p = policy(2);
+        let mut req = ();
+        assert!(
+            p.retry(&mut req, &mut Ok::<_, &str>(response(503)))
+                .is_some()
+        );
+        assert_eq!(p.num_attempts, 1);
+    }
+
+    #[test]
+    fn no_retry_when_attempts_exhausted() {
+        let mut p = policy(0);
+        let mut req = ();
+        assert!(
+            p.retry(&mut req, &mut Ok::<_, &str>(response(503)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn no_retry_on_success_response() {
+        let mut p = policy(3);
+        let mut req = ();
+        assert!(
+            p.retry(&mut req, &mut Ok::<_, &str>(response(200)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn no_retry_on_error() {
+        let mut p = policy(3);
+        let mut req = ();
+        assert!(
+            p.retry(&mut req, &mut Err::<http::Response<()>, &str>("oops"))
+                .is_none()
+        );
     }
 }
