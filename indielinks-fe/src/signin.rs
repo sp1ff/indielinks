@@ -108,7 +108,7 @@ pub fn SignIn() -> impl IntoView {
         match on_submit.value().get() {
             Some(Ok(new_token)) => {
                 info!("My effect has been invoked with a new token");
-                token.set(Some(new_token));
+                token.set(Some(new_token.into()));
                 navigate(&format!("{}/h", base), Default::default())
             }
             Some(Err(err)) => {

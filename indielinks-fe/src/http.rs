@@ -124,7 +124,7 @@ pub async fn refresh_token() -> StdResult<Option<SecretString>, Error> {
         .await
         .context(LoginResponseDeserSnafu)?;
 
-    token.set(Some(response.token.clone()));
+    token.set(Some(response.token.clone().into()));
 
     Ok(Some(response.token.into()))
 }
@@ -145,7 +145,9 @@ where
     match token.get() {
         Some(token) => {
             // We have a token laying around, so use it. Retry with refresh on 401.
-            let response = send_request(&token).await.context(SendSnafu)?;
+            let response = send_request(token.expose_secret())
+                .await
+                .context(SendSnafu)?;
             if response.status() == 401 {
                 match refresh_token().await? {
                     Some(token) => send_request(token.expose_secret()).await.context(SendSnafu),

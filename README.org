@@ -1,6 +1,6 @@
 #+TITLE: indielinks
 #+DESCRIPTION: Bookmarks in the Fediverse
-#+DATE: <2026-03-14 Sat 19:39>
+#+DATE: <2026-05-12 Tue 15:49>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -38,7 +38,7 @@ indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.ht
 
 To run indielinks locally, you'll need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or Docker (to pull & run ScyllaDB images). See the [[INSTALL.org]] file for details.
 
-To build from source, the Rust stable [[https://rustup.rs/][toolchain]] is required. The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend. 
+To build from source, the Rust stable [[https://rustup.rs/][toolchain]] is required. The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend, along with [[https://tailwindcss.com/][TailwindCSS]]. 
 * Installation
 
 I hope that in the not-too-distant future, an indielinks instance will be available on the web. In the mean time, indielinks can be installed locally, running against ScyllaDB. I also maintain an Arch package on the [[https://aur.archlinux.org/packages/indielinks-git][AUR]], and a Debian binary package on my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]]. See [[INSTALL.org]] for details.
