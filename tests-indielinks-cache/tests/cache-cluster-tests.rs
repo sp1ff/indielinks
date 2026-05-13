@@ -15,7 +15,7 @@
 
 //! # [indielinks-cache] cluster integration tests
 //!
-//! Runs the smoke test suite against three cluster configurations (fixtures):
+//! Runs the test suite against three cluster configurations (fixtures):
 //! in-memory log store, on-disk log store, and single-node.
 
 use std::{process::ExitCode, result::Result as StdResult, str::FromStr};
@@ -24,6 +24,9 @@ use async_trait::async_trait;
 use libtest_mimic::Failed;
 use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
+use tests_indielinks_cache::{
+    admin, eviction, healthcheck, invalid_cache_id, multi_key, overwrite, smoke,
+};
 use tests_support::{
     Fixture, IntegrationTest, SyncIntegrationTest, TestConfiguration, sync_integration_test,
 };
@@ -238,16 +241,84 @@ impl CacheClusterTest {
 
 inventory::collect!(CacheClusterTest);
 
+// ---- 00: smoke ----
+
 inventory::submit!(CacheClusterTest::new(
     "00_smoke",
-    |config| common::smoke::test(config.base_port),
+    |config| smoke::test(config.base_port),
     Some(&[CacheClusterId::InMemory, CacheClusterId::OnDisk]),
 ));
 
 inventory::submit!(CacheClusterTest::new(
     "00_single_node_smoke",
-    |config| common::smoke::single_node(config.base_port),
+    |config| smoke::single_node(config.base_port),
     Some(&[CacheClusterId::SingleNode]),
+));
+
+// ---- 01: healthcheck ----
+
+inventory::submit!(CacheClusterTest::new(
+    "01_healthcheck",
+    |config| healthcheck::test(config.base_port, 5),
+    Some(&[CacheClusterId::InMemory, CacheClusterId::OnDisk]),
+));
+
+inventory::submit!(CacheClusterTest::new(
+    "01_single_node_healthcheck",
+    |config| healthcheck::single_node(config.base_port),
+    Some(&[CacheClusterId::SingleNode]),
+));
+
+// ---- 01: multiple keys ----
+
+inventory::submit!(CacheClusterTest::new(
+    "01_multiple_keys",
+    |config| multi_key::test(config.base_port),
+    Some(&[CacheClusterId::InMemory, CacheClusterId::OnDisk]),
+));
+
+inventory::submit!(CacheClusterTest::new(
+    "01_single_node_multiple_keys",
+    |config| multi_key::single_node(config.base_port),
+    Some(&[CacheClusterId::SingleNode]),
+));
+
+// ---- 02: overwrite ----
+
+inventory::submit!(CacheClusterTest::new(
+    "02_overwrite",
+    |config| overwrite::test(config.base_port),
+    Some(&[CacheClusterId::InMemory, CacheClusterId::OnDisk]),
+));
+
+inventory::submit!(CacheClusterTest::new(
+    "02_single_node_overwrite",
+    |config| overwrite::single_node(config.base_port),
+    Some(&[CacheClusterId::SingleNode]),
+));
+
+// ---- 02: invalid cache ID ----
+
+inventory::submit!(CacheClusterTest::new(
+    "02_invalid_cache_id",
+    |config| invalid_cache_id::test(config.base_port),
+    None, // runs on all fixtures
+));
+
+// ---- 03: LRU eviction (single-node only) ----
+
+inventory::submit!(CacheClusterTest::new(
+    "03_lru_eviction",
+    |config| eviction::test(config.base_port),
+    Some(&[CacheClusterId::SingleNode]),
+));
+
+// ---- 04: cluster membership shrink ----
+
+inventory::submit!(CacheClusterTest::new(
+    "04_remove_member",
+    |config| admin::remove_member(config.base_port),
+    Some(&[CacheClusterId::InMemory, CacheClusterId::OnDisk]),
 ));
 
 impl IntegrationTest for CacheClusterTest {

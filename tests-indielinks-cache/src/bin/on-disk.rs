@@ -697,6 +697,10 @@ async fn cache_lookup(
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
         }
+        Err(ref err @ Error::CacheId { .. }) => {
+            error!("{err:?}");
+            StatusCode::BAD_REQUEST.into_response()
+        }
         Err(err) => {
             error!("{err:?}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

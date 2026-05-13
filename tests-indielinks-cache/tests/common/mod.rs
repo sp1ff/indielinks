@@ -19,8 +19,6 @@ use std::{ffi::OsStr, process::Command};
 
 use snafu::{Backtrace, ResultExt, Snafu};
 
-pub mod smoke;
-
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Failed to run {command}; stdout was '{stdout}' & stderr was '{stderr}'."))]
