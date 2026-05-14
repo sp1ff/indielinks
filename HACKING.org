@@ -1,6 +1,6 @@
 #+TITLE: HACKING
 #+DESCRIPTION: How to hack on indielinks
-#+DATE: <2026-03-14 Sat 20:36>
+#+DATE: <2026-05-14 Thu 11:28>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -15,12 +15,13 @@ See also the documentation-only source file in =indielinks/src/_docs.rs=.
 indielinks itself is a workspace containing a number of crates:
 
   - indielinks :: the indielinks server
-  - indielinks-test :: integration tests for the indielinks crate
+  - indielinks-shared :: types shared between indielinks & its clients
   - indielinks-cache :: logic for turning a cluster of indielinks nodes into a distributed cache backed by the Raft consensus protocol
-  - indielinks-cache-test :: integration tests for indielinks-cache
   - indielinks-fe :: the indielinks web front end
   - indielinks-client :: a CLI for interacting with the indielinks server
-  - indielinks-shared :: types shared between indielinks & its clients
+  - tests-support :: support code for indielinks integration tests
+  - tests-indielinks :: integration tests for the indielinks crate
+  - tests-indielinks-cache :: integration tests for indielinks-cache
 
 other directories:
 
@@ -37,7 +38,7 @@ indielinks builds on stable Rust. Assuming you've got the toolchain installed (s
   cargo build
 #+END_SRC
 
-You may find it useful to generate rustdocs (especially the aforementioned documentation-only moduel):
+You may find it useful to generate rustdocs (especially the aforementioned documentation-only module):
 
 #+BEGIN_SRC bash
   cargo doc --open
@@ -66,7 +67,7 @@ You've got a build & it tests-out. Now you want to actually run the thing & see 
   cd infra && ./scylla-down && ./scylla-up && cd ..
 #+END_SRC
 
-This will stand-up a containerized three-node ScyllaDB cluster on the local machine.
+This will stand-up a containerized three-node ScyllaDB cluster on the local machine & setup the schema.
 ** Start the indielinks Server
 
 #+BEGIN_SRC bash
@@ -86,26 +87,31 @@ In a different shell:
 This will configure the indielinks server as a single-node Raft cluster, and then healthcheck it. The healthcheck invocation should return status 200 and the response body should be the string "GOOD".
 ** Provision a User
 
-Pick a username. Don't choose a trivial password: the signup endpoint requires a minimum complexity. Don't worry about the email address; indielinks doesn't validate it at this point.
+Pick a username & password. Don't choose a trivial password: the signup endpoint requires a minimum complexity. Don't worry about the email address; indielinks doesn't validate it at this point.
 
 #+BEGIN_SRC bash
   export user=<your username here>
   cargo run -p indielinks-client --bin=indic -- -v -C -A http://localhost:20679 add-user -u ${user} -p 'f00-b@r-sp1at' -m '${user}@gmail.com'
 #+END_SRC
 
-Make a note of the API key that's printed on stdout. If the key is "abc", do:
+Make a note of the API key that's printed on stdout.
+** Start the Front End
+
+In one shell:
 
 #+BEGIN_SRC bash
-  api_key=${user}:abc
+  cd indielinks-fe && \
+  npx @tailwindcss/cli -i style.css -o tailwind.css --watch
 #+END_SRC
-** Start the Front End
+
+and in another:
 
 #+BEGIN_SRC bash
   cd indielinks-fe && \
   INDIELINKS_FE_API="http://localhost:20679" trunk serve --port=18080 index.html
 #+END_SRC
 
-Point your favorite browser to http://localhost:18080. You should be able to sign-in, add posts & view them. The Feeds page is in progress.
+Point your favorite browser to http://localhost:18080. You should be able to sign-in, add posts & view them. The "popular" page is in progress.
 * Commit Procedure
 
   - cut a branch

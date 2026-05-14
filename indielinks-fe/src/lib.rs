@@ -22,5 +22,6 @@ pub mod feeds;
 pub mod home;
 pub mod http;
 pub mod instance;
+pub mod personal;
 pub mod signin;
 pub mod types;

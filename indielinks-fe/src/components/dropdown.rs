@@ -74,6 +74,7 @@
 
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
+use thaw::Icon;
 use tracing::debug;
 use wasm_bindgen::prelude::*;
 use web_sys::MouseEvent;
@@ -107,8 +108,6 @@ where
     // compile time).
     MenuId: Clone + Send + Sync + 'static,
 {
-    debug!("use_dropdown: hook invoked");
-
     // The signal tracking which menu (if any) is currently open.
     // `None` means all menus are closed. We use `RwSignal` (read-write signal)
     // rather than a split `(ReadSignal, WriteSignal)` pair so that a single
@@ -270,6 +269,37 @@ where
         >
             {text}
         </button>
+    }
+}
+
+/// Like [DropdownTrigger], but use a Thaw `<Icon>` instead of text
+#[component]
+pub fn DropdownIconTrigger<MenuId>(
+    #[prop(into)] icon: Signal<icondata::Icon>,
+    #[prop(into, optional)] class: MaybeProp<String>,
+    menu_id: MenuId,
+) -> impl IntoView
+where
+    // `Debug` is added here (beyond the base bounds on `use_dropdown`) so we
+    // can include the id in log messages.  The trigger is the only place we
+    // need to print a `MenuId` value, so we don't widen the bound on
+    // `use_dropdown` or `Dropdown` — keeping those APIs as permissive as
+    // possible.
+    MenuId: Clone + Send + Sync + 'static + std::fmt::Debug,
+{
+    // Retrieve the signal provided by the nearest ancestor `<Dropdown>`.
+    // We panic rather than silently no-oping because a `DropdownTrigger`
+    // outside a `Dropdown` is a programming error, not a recoverable condition.
+    let open_menu = use_context::<RwSignal<Option<MenuId>>>()
+        .expect("DropdownTrigger must be used inside a Dropdown");
+
+    view! {
+        <Icon icon=icon.get() class on_click=move |event: MouseEvent| {
+            // Stop propagation before updating the signal.  See the
+            // doc-comment on this component for a full explanation.
+            event.stop_propagation();
+            open_menu.set(Some(menu_id.clone()));
+        } />
     }
 }
 

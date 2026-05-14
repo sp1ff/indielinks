@@ -16,6 +16,8 @@ docker build -t indielinks-debian:latest \
        .
 
 name=local-install-archaic
+# Ensure we start with a clean database
+docker compose -f compose.yaml -f local-install-archaic.yaml --project-name $name down
 docker compose -f compose.yaml -f local-install-archaic.yaml --project-name $name up -d
 echo "Waiting on 'host'..."
 docker compose -f compose.yaml -f local-install-archaic.yaml --project-name $name wait host

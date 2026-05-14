@@ -22,7 +22,7 @@ use indielinks_shared::entities::Username;
 use serde::{ser::SerializeStruct, Deserialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::{
     http::ErrorResponseBody,
@@ -154,9 +154,63 @@ async fn dump_timelines(
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DropRequest {
+    user: Option<String>,
+}
+
+/// Drop the home timelines, or just the timeline for a particular user
+async fn drop_timelines(
+    State(state): State<Arc<Indielinks>>,
+    Query(drop_req): Query<DropRequest>,
+) -> axum::response::Response {
+    async fn drop_timelines1(state: Arc<Indielinks>, name: Option<&str>) -> Result<()> {
+        match name {
+            Some(name) => {
+                let user = state
+                    .storage
+                    .user_for_name(name)
+                    .await
+                    .context(UserLookupSnafu {
+                        username: name.to_owned(),
+                    })?
+                    .context(UserSnafu {
+                        username: name.to_owned(),
+                    })?;
+                let _ = state
+                    .home_timelines
+                    .lock()
+                    .await
+                    .pop(user.id())
+                    .or_else(|| {
+                        debug!("User {} had no timeline, anyway.", user.username());
+                        None
+                    });
+            }
+            None => {
+                state.home_timelines.lock().await.clear();
+            }
+        }
+        Ok(())
+    }
+
+    match drop_timelines1(state, drop_req.user.as_deref()).await {
+        Ok(_) => http::StatusCode::ACCEPTED.into_response(),
+        Err(err) => {
+            error!("{err:#?}");
+            axum::Json(ErrorResponseBody {
+                error: format!("{err}"),
+            })
+            .into_response()
+        }
+    }
+}
+
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
     Router::new()
         .route("/dump", get(dump_timelines))
+        .route("/drop", get(drop_timelines))
         .layer(SetResponseHeaderLayer::if_not_present(
             CONTENT_TYPE,
             HeaderValue::from_static("text/json; charset=utf-8"),

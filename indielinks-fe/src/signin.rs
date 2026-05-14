@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -21,7 +21,8 @@ use leptos::{
     prelude::*,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use thaw::{Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection};
+use tracing::{error, info};
 
 use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
@@ -74,23 +75,15 @@ async fn login(
 /// The indielinks login page
 #[component]
 pub fn SignIn() -> impl IntoView {
-    debug!("SignIn invoked.");
     // I think this is one of those things that "should never fail"; or where failure indicates a
     // coding error.
-    let api = use_context::<Api>()
-        .expect("No context for the API location!?")
-        .0;
+    let api = expect_context::<Api>().0;
 
     // TBH, I have *no* idea what this does:
     let username_element: NodeRef<html::Input> = NodeRef::new();
     let password_element: NodeRef<html::Input> = NodeRef::new();
 
-    // I want to display an error message below the form in the case of error. I think this is the
-    // way to do it:
-    let (error, set_error): (ReadSignal<Option<String>>, WriteSignal<Option<String>>) =
-        signal(None);
-
-    let token = use_context::<Token>().expect("No token Cell!?");
+    let token = expect_context::<Token>();
 
     let navigate = leptos_router::hooks::use_navigate();
 
@@ -107,50 +100,66 @@ pub fn SignIn() -> impl IntoView {
         async move { login(&api_val, username, password).await }
     });
 
-    let base = use_context::<Base>().expect("No API base!?").0;
+    let base = expect_context::<Base>().0;
 
     Effect::new(move |_| {
         // Still figuring this out...
+        let toaster = ToasterInjection::expect_context();
         match on_submit.value().get() {
             Some(Ok(new_token)) => {
                 info!("My effect has been invoked with a new token");
-                token.set(Some(new_token));
+                token.set(Some(new_token.into()));
                 navigate(&format!("{}/h", base), Default::default())
             }
             Some(Err(err)) => {
                 info!("My effect has been invoked with an error value of {err:?}");
-                set_error.set(Some(err))
+                // set_error.set(Some(err))
+                let message = format!("{err}");
+                toaster.dispatch_toast(
+                    move || {
+                        view! {
+                            <Toast>
+                                <ToastTitle>"Login"</ToastTitle>
+                                <ToastBody>{message}</ToastBody>
+                            </Toast>
+                        }
+                    },
+                    ToastOptions::default().with_intent(ToastIntent::Error),
+                );
             }
             None => info!("Effect invoked with no value!?"),
         }
     });
 
-    // Ugh: I really need to move this stuff to CSS:
     view! {
-        <div style="display: flex; align-items: center; justify-content: space-around; flex-direction: column;">
-            <form style="padding: 1em;" on:submit=move |ev| {
-                // If I don't say this, the damn page reloads before the HTTP call returns
-                ev.prevent_default();
-                on_submit.dispatch(());
+        <div class="flex items-center justify-around flex-col pt-[32px]" >
+            <form
+                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center pt-4 border border-solid border-sky-100 p-8 text-gray-600"
+                on:submit=move |ev| {
+                  // If I don't say this, the damn page reloads before the HTTP call returns
+                  ev.prevent_default();
+                  on_submit.dispatch(());
             }>
-                // ChatGPT claims that stacking three divs on top of one another is idiomatic, here
-                <div style="margin-bottom: 8px;">
-                    <label for="username" style="width: 100px; display: inline-block;">"Username:"</label>
-                    <input type="text" id="username" name="username" node_ref=username_element required />
-                </div>
-                <div style="margin-bottom: 12px;">
-                    <label for="password" style="width: 100px; display: inline-block;">"Password:"</label>
-                    <input type="password" id="password" name="password" node_ref=password_element required />
-                </div>
-                <div style="display: flex; align-items: center; justify-content: space-around;">
-                    <input type="submit" value="Login" />
-                </div>
+                <label for="username">"Username:"</label>
+                <input autofocus required
+                    type="text"
+                    id="username" name="username"
+                    node_ref=username_element
+                    class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
+                />
+                <label for="password">"Password:"</label>
+                <input required
+                    type="password"
+                    id="password" name="password"
+                    node_ref=password_element
+                    class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
+                />
+                <input
+                    type="submit"
+                    value="Login"
+                    class="bg-transparent border px-4 py-2 hover:bg-sky-300 hover:text-gray-900 transition-colors cursor-pointer col-span-2 mx-auto focus:bg-sky-300"
+                />
             </form>
-            <Show when=move || error.get().is_some()>
-                <div style="color: red;">
-                { move || error.get().unwrap() }
-                </div>
-            </Show>
         </div>
     }
 }

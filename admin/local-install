@@ -110,7 +110,7 @@ install -C -D -t /home/$USER/bin scripts/indielinks-ctl
 cd indielinks-fe/dist
 wasm=$(ls -1 indielinks-fe*.wasm)
 js=$(ls -1 indielinks-fe*.js)
-css=$(ls -1 style-*.css)
+css=$(ls -1 tailwind-*.css)
 mv -v $wasm indielinks-fe.wasm
 mv -v $js indielinks-fe.js
 mv -v $css style.css

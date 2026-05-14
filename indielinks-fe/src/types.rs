@@ -19,6 +19,7 @@
 //! of shared types for this crate.
 
 use leptos::prelude::RwSignal;
+use secrecy::SecretString;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                   indielinks-fe common types                                   //
@@ -32,8 +33,10 @@ pub struct Base(pub String); // How to represent the path portion of an `Url` he
 #[derive(Clone, Debug)]
 pub struct PageSize(pub usize);
 
-// and a type alias for obvious reasons:
-pub type Token = RwSignal<Option<String>>;
+// and a type alias for obvious reasons. We want this to be reactive because the whole structure of
+// the app is driven by this. We either have one or we don't: in the case of, say, network error, we
+// simply don't have a token. This will drive the display logic at the top level.
+pub type Token = RwSignal<Option<SecretString>>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                    indielinks-fe constants                                     //

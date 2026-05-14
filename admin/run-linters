@@ -1,7 +1,7 @@
 #!/bin/bash
 set -x
 
-if rg -t rust -t protobuf -g '!.old-files' -g '!hello-scylla' 'TODO|TOOD|LATER|IN-?PROGRESS|\\todo|todo!|dbg!'; then
+if rg -t rust -t protobuf -t css -t html -g '!.personal' 'TODO|TOOD|LATER|IN-?PROGRESS|\\todo|todo!|dbg!'; then
     echo "You have TODO-s"
     exit 1
 fi
@@ -16,7 +16,7 @@ set -e
 cargo clippy -j ${nproc} -- --no-deps -Dwarnings
 cargo fmt -- --check
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps -j ${nproc}
-# Need to address these two, plus a host of warnings.  Actually, this is so painful that I'm just
-# stopping for now; will take a task to turn this back on.
+# Need to address these two, plus a host of warnings
+# Actually, just turning the thing off, for now.
 # cargo audit --ignore=RUSTSEC-2023-0071 --ignore=RUSTSEC-2026-0001 --ignore=RUSTSEC-2026-0049 --ignore=RUSTSEC-2026-0098 --ignore=RUSTSEC-2026-0099
 

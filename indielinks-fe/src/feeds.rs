@@ -15,625 +15,386 @@
 
 //! # indielinks-fe Feeds
 //!
-//! This is the top-level page for displaying the user's assorted ActivityPub "feeds".
+//! Components for displaying the user's home feed of ActivityPub activities.
 
-// It's also the place where I'm trying to up-level my Leptos coding a bit. The problem I'm having
-// is that a Leptos component combines state, logic, and presentation. A sufficiently complex
-// component that combines all three can quickly become un-readable (and un-manageable, un-testable,
-// and so on).
-//
-// I'm going to try a few things to address this problem:
-//
-// 1. begin thinking of my UI as smaller, composable components (avoiding "God components")
-//
-// 2. for each component, respect the "three layer model"
-//    <https://martinfowler.com/bliki/PresentationDomainDataLayering.html>: state, logic &
-//    presentation (alternatively <https://www.russ.dev/posts/frontend-architecture/>, view, model,
-//    data access). The latter two are often implemented via what are regrettably named "hooks":
-//    factory functions that create all the reactive plumbing & return the tuple or struct to the
-//    caller (presumably the component, which will incorporate them into the JSX or view! handling
-//    presentation)
-//
-// 3. for each component, strive to produce what Fowler calls a "headless component": an
-//    independently testable unit of code that models state & logic without presentation
-//    <https://martinfowler.com/articles/headless-component.html>
-
-use std::{cmp::PartialEq, collections::VecDeque, hash::Hash, result::Result as StdResult};
+use std::{collections::VecDeque, result::Result as StdResult, sync::Arc};
 
 use gloo_net::http::Request;
-use leptos::{
-    either::{Either, EitherOf3},
-    html,
-    prelude::*,
-    tachys::view::keyed::SerializableKey,
+use leptos::{either::Either, prelude::*};
+use nonempty_collections::NEVec;
+use snafu::prelude::*;
+use tap::Pipe;
+use thaw::{
+    Button, ButtonAppearance, Icon, InfoLabel, InfoLabelInfo, Spinner, Toast, ToastBody,
+    ToastIntent, ToastOptions, ToastTitle, ToasterInjection,
 };
-use snafu::{Backtrace, ResultExt, Snafu};
-use tracing::{debug, error};
-use url::Url;
+use tracing::{error, info};
 
 use indielinks_shared::api::{
-    FeedPost, LikeRequest, ReplyRequest, TimelineInitialPage, TimelineInitialRsp, TimelineReq,
-    TimelineSincePage, TimelineSinceRsp, TimelineToken,
+    FeedPost, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp,
+    TimelineReq, TimelineSincePage, TimelineSinceRsp, TimelineToken,
 };
 
 use crate::{
-    components::dropdown::{
-        Dropdown, DropdownMenuItem, DropdownMenuItems, DropdownTrigger, use_dropdown,
+    components::{
+        dropdown::use_dropdown,
+        post::{MenuId, Post},
     },
-    http::send_with_retry,
-    types::{Api, Token},
+    http::{error_for_status1, send_with_retry},
+    types::Api,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug, Snafu)]
+#[derive(Clone, Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("While deserializing the initial timeline, {source}"))]
-    Load {
-        source: gloo_net::Error,
-        backtrace: Backtrace,
-    },
-    Refresh,
     #[snafu(display("While sending an HTTP request, {source}"))]
-    Request {
-        source: gloo_net::Error,
-        backtrace: Backtrace,
+    Http { source: crate::http::Error },
+    #[snafu(display("While deserializing the initial timeline request, {source}"))]
+    InitialResponseDe {
+        #[snafu(source(from(gloo_net::Error, Arc::new)))]
+        source: Arc<gloo_net::Error>,
     },
-    #[snafu(display("Got response status {status}"))]
-    Status {
-        status: u16,
-        backtrace: Backtrace,
+    #[snafu(display("While serializing the initial timeline request, {source}"))]
+    TimelineRequest {
+        #[snafu(source(from(gloo_net::Error, Arc::new)))]
+        source: Arc<gloo_net::Error>,
+    },
+    #[snafu(display("While deserializing an update to the timeline, {source}"))]
+    UpdateBefore {
+        #[snafu(source(from(gloo_net::Error, Arc::new)))]
+        source: Arc<gloo_net::Error>,
     },
     #[snafu(display("While deserializing an update to the timeline, {source}"))]
     UpdateSince {
-        source: gloo_net::Error,
-        backtrace: Backtrace,
+        #[snafu(source(from(gloo_net::Error, Arc::new)))]
+        source: Arc<gloo_net::Error>,
     },
 }
 
-pub type Result<T> = StdResult<T, Error>;
-
-fn error_for_status(rsp: gloo_net::http::Response) -> Result<gloo_net::http::Response> {
-    let status = rsp.status();
-    if status >= 200 && status < 300 {
-        Ok(rsp)
-    } else {
-        Err(StatusSnafu { status }.build())
-    }
-}
-
-impl From<gloo_net::Error> for Error {
-    fn from(_value: gloo_net::Error) -> Error {
-        Error::Refresh
-    }
-}
+type Result<T> = StdResult<T, Error>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// The top navigation widget for a timeline
-//
-// This component manages a small div at the top of a timeline for either reloading or updating the
-// timeline contents. If the timeline is initially empty, it functions as a "refresh" button (i.e.
-// clicking on it will trigger a reload). If the timeline is live, it functions as an "update"
-// button (i.e. just load new timeline items). In both cases, on click, it will turn from a
-// clickable button to a plain text string that says "loading...", and on load it will revert to the
-// appropriate button.
-#[component]
-fn TimelineTopNav<O, T>(
-    token: RwSignal<Option<TimelineToken>>,
-    update: Action<TimelineToken, O>,
-    reload: LocalResource<T>,
-) -> impl IntoView
-where
-    O: Send + Sync + 'static,
-    T: Clone + 'static,
-{
-    let on_update = move |token: TimelineToken| {
-        update.dispatch(token);
-    };
-
-    let on_reload = move |_| {
-        reload.refetch();
-    };
-
-    let action_pending = Memo::new(move |_| reload.get().is_none() || update.pending().get());
-
-    view! {
-        <div class="">
-        {
-            move || {
-                if action_pending.get() {
-                    EitherOf3::A(view!{<span class="timeline-top-nav">"loading..."</span>})
-                } else {
-                    if let Some(token) = token.get() {
-                        EitherOf3::B(view!{<button class="timeline-top-nav" on:click=move |_| on_update(token.clone())>"update"</button>})
-                    } else {
-                        EitherOf3::C(view!{<button class="timeline-top-nav" on:click=on_reload>"reload"</button>})
-                    }
-                }
-            }
-        }
-        </div>
-    }
-}
-
-// The feed itself
-//
-// This componenet manages a stack of `FeedPost`s in a timeline. Since I can reuse for for the home,
-// local & federated timelines, it seemed worth it to factor it out.
-#[component]
-fn Timeline<IF, I, KF, K>(each: IF, key: KF) -> impl IntoView
-where
-    IF: Fn() -> I + Send + 'static,
-    I: IntoIterator<Item = FeedPost> + Send + 'static,
-    KF: Fn(&FeedPost) -> K + Send + Clone + 'static,
-    K: Eq + Hash + SerializableKey + 'static,
-{
-    let open_menu = use_dropdown::<MenuId>();
-
-    view! {
-        <For each=each key=key
-            children=move |post: FeedPost| {
-                view!{<ViewPost post=post.clone() open_menu/>}}>
-        </For>
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum DropdownSort {
-    Share,
-    Miscellaneous,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct MenuId {
-    url: Url,
-    sort: DropdownSort,
-}
-
-#[component]
-fn ViewPost(post: FeedPost, open_menu: RwSignal<Option<MenuId>>) -> impl IntoView {
-    let api = expect_context::<Api>().0;
-    let token = expect_context::<Token>();
-
-    let (replying, set_replying) = signal::<bool>(false);
-
-    // I need to factor this out.
-    fn string_for_node_ref(node: &NodeRef<html::Input>) -> String {
-        node.get().expect("NodeRef not mounted?").value()
-    }
-
-    let api2 = api.clone();
-    let send_like = Action::new_local(move |(id, actor): &(Url, Url)| {
-        let api = api2.clone();
-        let token = token.clone();
-        let id2 = id.clone();
-        let id = id.clone();
-        let actor = actor.clone();
-        let send_like = move || {
-            let api = api.clone();
-            let token = token.clone();
-            let id = id.clone();
-            let actor = actor.clone();
-            async move {
-                // Regrettably, at this time, this lambda has to return a `gloo_net::Error`.
-                let token = token.get().ok_or(gloo_net::Error::GlooError(
-                    "Missing token; this is a bug.".to_owned(),
-                ))?;
-                Request::post(&format!("{api}/api/v1/users/like"))
-                    .header("Authorization", &format!("Bearer {token}"))
-                    .json(&LikeRequest {
-                        id: id.clone(),
-                        actor: actor.clone(),
-                    })
-                    .map_err(|err| gloo_net::Error::GlooError(format!("{err}")))?
-                    .send()
-                    .await
-            }
-        };
-        async move {
-            match send_with_retry(send_like)
-                .await
-                .context(RequestSnafu)
-                .and_then(error_for_status)
-            {
-                Ok(_) => debug!("Liked post {id2}"),
-                Err(err) => debug!("While liking post {id2}, {err}."),
-            }
-        }
-    });
-
-    let reply_element: NodeRef<html::Input> = NodeRef::new();
-    let send_reply = Action::new_local(move |(id, actor): &(Url, Url)| {
-        let api = api.clone();
-        let token = token.clone();
-        let id2 = id.clone();
-        let id = id.clone();
-        let actor = actor.clone();
-        let send_reply = move || {
-            let api = api.clone();
-            let token = token.clone();
-            let id = id.clone();
-            let actor = actor.clone();
-            let text = string_for_node_ref(&reply_element);
-            async move {
-                // Regrettably, at this time, this lambda has to return a `gloo_net::Error`.
-                let token = token.get().ok_or(gloo_net::Error::GlooError(
-                    "Missing token; this is a bug.".to_owned(),
-                ))?;
-                Request::post(&format!("{api}/api/v1/users/reply"))
-                    .header("Authorization", &format!("Bearer {token}"))
-                    .json(&ReplyRequest {
-                        id: id.clone(),
-                        actor: actor.clone(),
-                        text,
-                    })
-                    .map_err(|err| gloo_net::Error::GlooError(format!("{err}")))?
-                    .send()
-                    .await
-            }
-        };
-        async move {
-            match send_with_retry(send_reply)
-                .await
-                .context(RequestSnafu)
-                .and_then(error_for_status)
-            {
-                Ok(_) => debug!("Replied to post {id2}"),
-                Err(err) => error!("While replying to post {id2}, {err}."),
-            }
-        }
-    });
-
-    let share_menu_id = MenuId {
-        url: post.id.clone(),
-        sort: DropdownSort::Share,
-    };
-    let misc_menu_id = MenuId {
-        url: post.id.clone(),
-        sort: DropdownSort::Miscellaneous,
-    };
-
-    let post_id = post.id.clone();
-    let post_actor = post.actor.clone();
-    view! {
-        <div class="feed-item" style="display:flex; flex-direction: column; gap: 0.5rem;">
-            <div class="feed-item-content" style="text-align: center;" inner_html=post.content></div>
-            {
-                // let post_id = post_id.clone();
-                // let post_actor = post_actor.clone();
-                move || {
-                    let post_id = post_id.clone();
-                    let post_actor = post_actor.clone();
-                    let share_menu_id = share_menu_id.clone();
-                    let misc_menu_id = misc_menu_id.clone();
-                    if replying.get() {
-                        Either::Left(view!{
-                            <div class="feed-item-reply">
-                                <div style="flex: 1 1 0; min-height 0; display: flex; flex-direction: column;">
-                                    <input type="textarea" node_ref=reply_element style="flex: 1 1 0; resize: none; width: 100%;"/>
-                                </div>
-                                <div class="feed-item-reply-actions">
-                                    <button on:click=move |_| {
-                                        set_replying.set(false);
-                                        send_reply.dispatch((post_id.clone(), post_actor.clone()));
-                                    }>"send"</button>
-                                    <button on:click=move |_| set_replying.set(false)>"cancel"</button>
-                                </div>
-                            </div>
-                        })
-                    } else {
-                        Either::Right(
-                            view! {
-                                <div class="feed-item-actions">
-                                    <button on:click=move |_| {send_like.dispatch((post_id.clone(), post_actor.clone()));}>"like"</button>
-                                    " "
-                                    <Dropdown open_menu>
-                                        <DropdownTrigger text="share".to_string() menu_id=share_menu_id.clone() />
-                                        <DropdownMenuItems menu_id=share_menu_id.clone()>
-                                            <DropdownMenuItem
-                                                text="share".to_string()
-                                                handler=Callback::new(|()| debug!("Share selected"))/>
-                                            <DropdownMenuItem
-                                                text="quote".to_string()
-                                                handler=Callback::new(|()| debug!("Quote selected"))/>
-                                        </DropdownMenuItems>
-                                    </Dropdown>
-                                    " "
-                                    <button on:click=move |_| set_replying.set(true)>"reply"</button>
-                                    " "
-                                    <Dropdown open_menu>
-                                        <DropdownTrigger text="more".to_string() menu_id=misc_menu_id.clone() />
-                                        <DropdownMenuItems menu_id=misc_menu_id.clone()>
-                                            <DropdownMenuItem
-                                                text="copy lnk".to_string()
-                                                handler=Callback::new(|()| debug!("Copy link selected"))/>
-                                        </DropdownMenuItems>
-                                    </Dropdown>
-                                </div>
-                            }
-                        )
-                    }
-                }
-            }
-        </div>
-    }
-}
-
-#[component]
-fn TimelineBottomNav() -> impl IntoView {
-    view! {}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                    The Home Feed Component                                     //
+//                                             TopNav                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Title panel for the Home timeline
-///
-/// Could just be flat text, but might want to add a context menu at some point.
-// Definitely a candidate for being factored-out: just text and perhaps a sub-component.
-#[component]
-fn HomeTimelineTitle() -> impl IntoView {
-    view! {
-        <div class="feed-title">
-            <span>"Home"</span>
-        </div>
-    }
-}
-
-// My first hook... not sure how reusable this is going to be, but at least it will help me seperate
-// state + logic from presentation.
-
-#[allow(dead_code)]
-struct HomeTimelineHook {
-    posts: ReadSignal<VecDeque<FeedPost>>,
-    set_posts: WriteSignal<VecDeque<FeedPost>>,
-    since: RwSignal<Option<TimelineToken>>,
-    before: RwSignal<Option<TimelineToken>>,
-    // This is a little weird; you'd expect the `LocalResource` to be parameterized by the type of
-    // thing it loads, but we're updating `set_posts` under the hood, instead.
-    load: LocalResource<()>,
-    update: Action<TimelineToken, ()>,
-}
-
-// Expects the Api & Token to be in context.
-async fn load_home() -> Result<TimelineInitialRsp> {
-    // Not sure this is the best way to handle this, but even if I arrange the code so as to pass
-    // the textual token down, how to handle refresh on expiry? At a minimum, we'd need shared,
-    // mutable ownership.
-    let api = expect_context::<Api>().0;
-    let token = expect_context::<Token>();
-
-    let send_request = move || {
-        let api = api.clone();
-        let token = token.clone();
-        async move {
-            // Regrettably, at this time, this lambda has to return a `gloo_net::Error`.
-            let token = token.get().ok_or(gloo_net::Error::GlooError(
-                "Missing token; this is a bug.".to_owned(),
-            ))?;
-            Request::post(&format!("{api}/api/v1/users/timeline"))
-                .header("Authorization", &format!("Bearer {token}"))
-                .json(&TimelineReq::Initial { max_posts: None })
-                .map_err(|err| gloo_net::Error::GlooError(format!("{err}")))?
-                .send()
-                .await
-        }
-    };
-
-    send_with_retry(send_request)
-        .await
-        .context(RequestSnafu)
-        .and_then(error_for_status)?
-        .json::<TimelineInitialRsp>()
-        .await
-        .context(LoadSnafu)
-}
-
+/// Asynchronously load feed items newer than `since`. Expects `Api` to be available in the context.
 async fn update_home_since(since: TimelineToken) -> Result<TimelineSinceRsp> {
-    // Not sure this is the best way to handle this, but even if I arrange the code so as to pass
-    // the textual token down, how to handle refresh on expiry? At a minimum, we'd need shared,
-    // mutable ownership.
+    // Not sure this is the best way to handle this.
     let api = expect_context::<Api>().0;
-    let token = expect_context::<Token>();
 
-    let send_request = move || {
-        let api = api.clone();
-        let token = token.clone();
-        let since = since.clone();
-        async move {
-            // Regrettably, at this time, this lambda has to return a `gloo_net::Error`.
-            let token = token.get().ok_or(gloo_net::Error::GlooError(
-                "Missing token; this is a bug.".to_owned(),
-            ))?;
-            Request::post(&format!("{api}/api/v1/users/timeline"))
-                .header("Authorization", &format!("Bearer {token}"))
-                .json(&TimelineReq::Since {
-                    since: since.clone(),
-                    max_posts: None,
-                })
-                .map_err(|err| gloo_net::Error::GlooError(format!("{err}")))?
-                .send()
-                .await
-        }
-    };
-
-    send_with_retry(send_request)
-        .await
-        .context(RequestSnafu)
-        .and_then(error_for_status)?
-        .json::<TimelineSinceRsp>()
-        .await
-        .context(UpdateSinceSnafu)
+    send_with_retry(
+        move || Request::post(&format!("{api}/api/v1/users/timeline")),
+        TimelineReq::Since {
+            since,
+            max_posts: None,
+        },
+    )
+    .await
+    .context(HttpSnafu)?
+    .pipe(error_for_status1)
+    .context(HttpSnafu)?
+    .json::<TimelineSinceRsp>()
+    .await
+    .context(UpdateSinceSnafu)
 }
 
-fn use_home_timeline(_api: String, _token: RwSignal<Option<String>>) -> HomeTimelineHook {
-    let (posts, set_posts) = signal(VecDeque::new());
-    let since_s = RwSignal::<Option<TimelineToken>>::new(None);
-    let before_s = RwSignal::<Option<TimelineToken>>::new(None);
-    let load = LocalResource::new(
-        // This has to be a type that implements `Fn()` and returns a future with static lifetime.
-        move || async move {
-            debug!("Fetching the user's home timeline.");
-            // This is lame-- handle the error case
-            if let Ok(Some(TimelineInitialPage {
-                posts,
-                since,
-                before,
-            })) = load_home().await
-            {
-                set_posts.update(|x| {
-                    *x = posts.into_iter().collect();
-                });
-                since_s.update(|a| *a = Some(since));
-                before_s.update(|b| *b = Some(before));
-            } else {
-                debug!("This user appears to have no posts in their home timeline!");
-            }
-        },
-    );
-    let update = Action::new_local(move |since: &TimelineToken| {
-        let since = since.clone();
+/// Top navigation panel for the home feed
+#[component]
+fn TopNav(since: TimelineToken, posts_s: RwSignal<VecDeque<FeedPost>>) -> Result<impl IntoView> {
+    let since_s = RwSignal::new(since);
+
+    let update = Action::new_local(move |_: &()| {
         async move {
-            debug!("Updating the timeline.");
-            // This is lame-- handle the error case
-            if let Ok(Some(TimelineSincePage { posts, since })) = update_home_since(since).await {
-                // This is really irritating, but `VecDeque ` doesn't have a ""bulk prepend""
-                set_posts.update(|x /*: &mut VecDeque<FeedPost>*/| {
-                    posts.into_iter().rev().for_each(|post| x.push_front(post));
-                });
-                since_s.update(|b| *b = Some(since));
-            } else {
+            match update_home_since(since_s.get_untracked()).await {
+                Ok(Some(TimelineSincePage { posts, since })) => {
+                    since_s.set(since);
+                    // This is really irritating, but `VecDeque ` doesn't have a ""bulk prepend""
+                    // (at least on stable)
+                    posts_s.update(|x /*: &mut VecDeque<FeedPost>*/| {
+                        posts.into_iter().rev().for_each(|post| x.push_front(post));
+                    });
+                    Ok(())
+                }
+                Ok(None) => {
+                    info!("No new feed items");
+                    Ok(())
+                }
+                Err(err) => {
+                    error!("While updating the home timeline, {err}");
+                    Err(err)
+                }
             }
         }
     });
 
-    HomeTimelineHook {
-        posts,
-        set_posts,
-        since: since_s,
-        before: before_s,
-        load,
-        update,
-    }
-}
+    let toaster = ToasterInjection::expect_context();
 
-#[component]
-fn HomeTimeline(_set_mode: WriteSignal<Option<Url>>) -> impl IntoView {
-    let api = expect_context::<Api>().0;
-    let token = expect_context::<Token>();
-
-    let HomeTimelineHook {
-        posts,
-        set_posts: _,
-        since,
-        before: _,
-        load,
-        update,
-    } = use_home_timeline(api, token);
-
-    view! {
-        <Await future=load.into_future() let:_unit>
-            <div class="feed">
-                <HomeTimelineTitle />
-                <TimelineTopNav token=since update reload=load/>
-                <Timeline each=move || posts.get() key=|post| post.id.clone()/>
-                <TimelineBottomNav />
-            </div>
-        </Await>
-    }
-}
-
-#[component]
-fn HomeThread() -> impl IntoView {
-    view! {
-        <div class="feed">
-            <span>"Home thread"</span>
-        </div>
-    }
-}
-
-/// # The "Home" feed component
-///
-/// ## Introduction
-///
-/// Conventionally, ActivityPub apps offer a few different feeds to their users. The "Home" feed
-/// simply consists of all the posts by people the user follows, together with replies to & shares
-/// of their own posts (I'm probably missing something; I've never come across a formal defintion).
-/// The [indielinks] API exposes this timeline at the `/user/timeline` endpoint. [HomeFeed] is a
-/// Leptos component for rendering the output.
-// I might want to generalize this at some later point in time; it seems that the same component,
-// suitably parameterized, ought to be able to handle the home, local & federated timelines, and
-// perhaps even a notifications feed (i.e. follows, likes, & so forth). That said, I'm just now
-// turning my hand to writing reusable Leptos components, and I'll probably start with something
-// more basic, so for now let's keep this purpose-built.
-#[component]
-fn HomeFeed() -> impl IntoView {
-    // We can display the Home feed in one of two "modes": the default, which is just a list of
-    // posts, or "thread", in which the user has clicked on a post and we're now showing the thread
-    // containing that post (not implemented as of yet). This is a signal which we'll pass down
-    // to our sub-components allowing them to place us into "threaded" mode.
-    let (mode, set_mode) = signal::<Option<Url>>(None);
-
-    view! {
-        // There will be errors that make it impossible to render the feed at all (can't reach the
-        // API, for instance)
-        <ErrorBoundary
-            fallback=|_errors| view!{<p>"Ooops!"</p>}>
-            // We can display either as a straightforward timeline, or as a "threaded view" when
-            // someone clicks on a post
-            {
+    Effect::new(move |_| {
+        if let Some(Err(err)) = update.value().get() {
+            toaster.dispatch_toast(
                 move || {
-                    if mode.get().is_some() {
-                        Either::Left(view!{<HomeThread />})
-                    } else {
-                        Either::Right(view!{<HomeTimeline _set_mode=set_mode/>})
+                    view! {
+                        <Toast>
+                            <ToastTitle>"New posts"</ToastTitle>
+                            <ToastBody>{format!("{err}")} </ToastBody>
+                            </Toast>
                     }
+                },
+                ToastOptions::default().with_intent(ToastIntent::Error),
+            )
+        }
+    });
+
+    Ok(view! {
+        <div class="mx-auto flex">
+            <div class="mx-auto flex items-center">
+                <Button
+                    class="!font-normal !text-gray-600"
+                    appearance=ButtonAppearance::Transparent
+                    on_click=move |_| { update.dispatch(());} >
+                    "new posts"
+                </Button>
+            </div>
+        </div>
+    })
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           BottomNav                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Asynchronously load feed items older than `before`. Expects `Api` to be available in the context.
+async fn update_home_before(before: TimelineToken) -> Result<TimelineBeforeRsp> {
+    // Not sure this is the best way to handle this.
+    let api = expect_context::<Api>().0;
+
+    send_with_retry(
+        move || Request::post(&format!("{api}/api/v1/users/timeline")),
+        TimelineReq::Before {
+            before,
+            max_posts: None,
+        },
+    )
+    .await
+    .context(HttpSnafu)?
+    .pipe(error_for_status1)
+    .context(HttpSnafu)?
+    .json::<TimelineBeforeRsp>()
+    .await
+    .context(UpdateBeforeSnafu)
+}
+
+/// Bottom navigation panel on the user's home feed
+#[component]
+fn BottomNav(
+    before: TimelineToken,
+    posts_s: RwSignal<VecDeque<FeedPost>>,
+) -> Result<impl IntoView> {
+    let before_s = RwSignal::new(before);
+
+    let update = Action::new_local(move |_: &()| {
+        async move {
+            match update_home_before(before_s.get_untracked()).await {
+                Ok(Some(TimelineBeforePage { posts, before })) => {
+                    before_s.set(before);
+                    // This is really irritating, but `VecDeque ` doesn't have a ""bulk prepend""
+                    // (at least on stable)
+                    posts_s.update(|x /*: &mut VecDeque<FeedPost>*/| {
+                        posts.into_iter().for_each(|post| x.push_back(post));
+                    });
+                    Ok(())
+                }
+                Ok(None) => {
+                    info!("No new feed items");
+                    Ok(())
+                }
+                Err(err) => {
+                    error!("While updating the home timeline, {err}");
+                    Err(err)
                 }
             }
-        </ErrorBoundary>
-    }
+        }
+    });
+
+    let toaster = ToasterInjection::expect_context();
+
+    Effect::new(move |_| {
+        if let Some(Err(err)) = update.value().get() {
+            toaster.dispatch_toast(
+                move || {
+                    view! {
+                        <Toast>
+                            <ToastTitle>"Older posts"</ToastTitle>
+                            <ToastBody>{format!("{err}")} </ToastBody>
+                            </Toast>
+                    }
+                },
+                ToastOptions::default().with_intent(ToastIntent::Error),
+            )
+        }
+    });
+
+    Ok(view! {
+        <div class="mx-auto flex pt-[8px]">
+            <div class="mx-auto flex items-center">
+                <Button
+                    class="!font-normal !text-gray-600"
+                    appearance=ButtonAppearance::Transparent
+                    on_click=move |_| { update.dispatch(());} >
+                    "older posts"
+                </Button>
+            </div>
+        </div>
+    })
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                      The Feeds Component                                       //
+//                                            ItemFeed                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// The indielinks' user "feeds" page
+/// A component rendering the user's home feed of items, exclusive of navigation widgets
 #[component]
-pub fn Feeds() -> impl IntoView {
-    let _api = expect_context::<Api>().0;
+pub fn ItemFeed(
+    posts: NEVec<FeedPost>,
+    since: TimelineToken,
+    before: TimelineToken,
+) -> Result<impl IntoView> {
+    let open_menu = use_dropdown::<MenuId>();
+    let posts_s = RwSignal::<VecDeque<FeedPost>>::new(VecDeque::from_iter(posts.into_iter()));
 
-    // I'm still confused on how & when these `View` constructing functions are invoked, but it
-    // seems that this function won't be invoked until after sign-in, so we can extract the token &
-    // provide it to all our subordinate components via context rather than prop drilling.
-    let _token = expect_context::<Token>()
-        .get_untracked()
-        .expect("No token; this is a bug & should be reported.");
+    Ok(view! {
+        <TopNav since posts_s />
+        <For each=move || posts_s.get()
+             key=|post| post.id.clone()
+             children=move |post: FeedPost| {
+                 view! { <Post post open_menu /> }
+             } >
+        </For>
+        <BottomNav before posts_s />
+    })
+}
+
+/// Initialize the home timeline
+async fn initial_load(api: String) -> Result<TimelineInitialRsp> {
+    send_with_retry(
+        move || Request::post(&format!("{api}/api/v1/users/timeline")),
+        TimelineReq::Initial { max_posts: None },
+    )
+    .await
+    .context(HttpSnafu)?
+    .pipe(error_for_status1)
+    .context(HttpSnafu)?
+    .json::<TimelineInitialRsp>()
+    .await
+    .context(InitialResponseDeSnafu)
+}
+
+/// This is the root "item feed" component
+///
+/// This handles errors in subordinate components, & showing a spinner until the initial load is
+/// complete. When that initial load resolves, it will instantiate the [ItemFeed] component with
+/// that initial list of items.
+///
+/// Assumes that `Api` is provided via context.
+// *Still* finding my way, here. I initially fought with the system, trying to use `<Suspense>` to
+// handle that initial load, and then drive reactivity off the deque of items. Finally, I decided to
+// split the responsibilities into two components. Still. Coding speculatively, here.
+#[component]
+pub fn ItemFeedOuter() -> impl IntoView {
+    let api = expect_context::<Api>().0;
+
+    // Setup a local resource yielding a `Result<Option<TimelineInitialPage>>>>`. In the event that
+    // it comes back `None` (meaning that the user has no posts in their timeline, likely because
+    // they're not following anyone, yet), we want to have a means by which we can *force* a reload
+    // of this resource. "A trigger is a data-less signal with the sole purpose of notifying other
+    // reactive code of a change."
+    let rerender = ArcTrigger::new();
+
+    // This will reactively track the trigger, re-running and yielding a new `Result` every time it
+    // is fired. Any code that reactively tracks this resource's `Result` with then also be re-run.
+    let posts = LocalResource::new({
+        let api = api.clone();
+        let rerender = rerender.clone();
+        move || {
+            let api = api.clone();
+            let rerender = rerender.clone();
+            async move {
+                rerender.track();
+                initial_load(api).await
+            }
+        }
+    });
 
     view! {
-        <div class="feeds-layout" style="display: flex; height: 100vh;">
-          <div class="feeds-sidebar" style="display: flex;">
-            <span>"profile, search box & preferences to go here!"</span>
-          </div>
-          <div class="feeds-content">
-            // <div class="feed">
-            //   <span>"Home"</span>
-            // </div>
-            <HomeFeed />
-            <div class="feed">
-              <span>"Local"</span>
-            </div>
-            <div class="feed">
-              <span>"Federated"</span>
-            </div>
-            <div class="feed">
-              <span>"Notifications"</span>
-            </div>
-          </div>
-        </div>
+        <ErrorBoundary
+            // In the event of an unrecoverable error in any of our child components, we'll end-up
+            // here, rendering a little "Oops!" label on which the usewr can click to get more
+            // information. This mirrors the fallback for the saved links feed.
+            fallback=|errors| view! {
+                <InfoLabel>
+                    <InfoLabelInfo slot>
+                        <ul>
+                        { move || errors
+                          .get()
+                          .into_iter()
+                          .map(|(_, err)| view!{ <li>{err.to_string()}</li>})
+                          .collect::<Vec<_>>() }
+                        </ul>
+                    </InfoLabelInfo>
+                    "Ooops!"
+                </InfoLabel>
+            } >
+            <Transition fallback=move || view! { <Spinner /> } >
+            {
+                // let on_click=on_click.clone();
+                // The trick here is to provide a lambda returning a `Result`; that way, we can
+                // use the `?` sigil in the natural way, and, on failure, our "fallback" will be
+                // triggered.
+                move || -> Result<_> {
+                    // We also need to reference the local resource in order to get the
+                    // `<Transition>` to fire:
+                    let initial_response: Option<TimelineInitialRsp> = posts.get().transpose()?;
+                    // The trick here is that, although `initial_response` is an `Option<...>`,
+                    // and therefore the `.map()` invocation below will results in an
+                    // `Option<Result<impl IntoView>>`, we *know* we'll never hit the `None`
+                    // case, due to the fact that we're in a `<Transition>` component. So this
+                    // idiom avoids any ungainly `match`ing (or whatever) on the `Option` while
+                    // still avoiding a blank screen.
+                    //
+                    // Now, I don't entirely understand how, but the `Err` variant returned by
+                    // `ItemFeed` is somehow *also* propagated back up to our fallback.
+
+                    let on_click = {
+                        let rerender = rerender.clone();
+                        move |_| rerender.notify()
+                    };
+
+                    Ok(initial_response.map(|initial_response| {
+                        match initial_response {
+                            Some(TimelineInitialPage { posts, since, before }) => {
+                                Either::Left(view! { <ItemFeed posts since before /> })
+                            },
+                            None => Either::Right(view! {
+                                <div class="mx-auto max-w-md m-8 p-8 text-gray-600">
+                                    <p>"You don't have any posts in your home timeline, yet. You can start by following "<a href="https://indieweb.social/@sp1ff" class="text-blue-600 underline hover:text-blue-800 visited:text-purple-600">me</a>" on Mastodon. I'll be adding a \"find people to follow\" page soon."
+                                    <Icon icon=icondata::IoReloadOutline
+                                          class="text-gray-800 m-2 cursor-pointer"
+                                          on_click=on_click />
+                                    </p>
+                                </div>
+                            }),
+                        }
+                    }))
+                    // So, the upshot of all this is that we'll get a spinner during the initial
+                    // load (only), we can drive reactive re-rendering off a deque of posts in
+                    // the `ItemFeed` component, *and* we can naturally use the `?` sigil to
+                    // trigger the fallback view above. Nice!
+                }
+            }
+            </Transition>
+        </ErrorBoundary>
     }
 }

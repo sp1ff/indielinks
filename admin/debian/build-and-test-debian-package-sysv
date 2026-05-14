@@ -26,6 +26,8 @@ docker build -t indielinks-debian:latest \
        .
 
 name=debian-packaging
+# Ensure that we're starting from a clean database
+docker compose -f compose.yaml -f debian-packaging.yaml --project-name $name down
 docker compose -f compose.yaml -f debian-packaging.yaml --project-name $name up -d
 echo "Waiting on 'host'..."
 docker compose -f compose.yaml -f debian-packaging.yaml --project-name $name wait host
