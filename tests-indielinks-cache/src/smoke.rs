@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -10,7 +10,7 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
 use std::{thread::sleep, time::Duration};
@@ -21,9 +21,9 @@ use libtest_mimic::Failed;
 use reqwest::blocking::{Client, ClientBuilder};
 use tracing::debug;
 
-use tests_indielinks_cache::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
+use crate::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
 
-fn get_metrics(client: &Client, port: u16) -> Result<Metrics, Failed> {
+pub fn get_metrics(client: &Client, port: u16) -> Result<Metrics, Failed> {
     Ok(client
         .get(format!("http://127.0.0.1:{port}/admin/metrics"))
         .send()?
@@ -31,8 +31,6 @@ fn get_metrics(client: &Client, port: u16) -> Result<Metrics, Failed> {
         .json::<Metrics>()?)
 }
 
-// Not sure why rustc complains these test functions are never used.
-#[allow(dead_code)]
 pub fn test(base_port: u16) -> Result<(), Failed> {
     // We expect a five-node cluster to be up & ready to take traffic on localhost, port `base_port`
     // through `base_port` + 4.
@@ -55,6 +53,15 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
         ])
         .send()?
         .error_for_status()?;
+
+    // The /admin/init endpoint blocks until a leader is elected, so we expect one now.
+    let metrics = get_metrics(&client, base_port)?;
+    assert!(
+        metrics.raft.current_leader.is_some_and(|id| id <= 2),
+        "expected a leader in [0, 2] after initialization, got {:?}",
+        metrics.raft.current_leader,
+    );
+    debug!("Leader after init: {:?}", metrics.raft.current_leader);
 
     // Pretty-sure Raft initialization is taking place async-- may need to wait here until the
     // metrics report a non-None leader.
@@ -108,9 +115,7 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
         .error_for_status()?
         .json::<CacheLookupResponse>()?;
     assert_eq!(
-        rsp.value
-            .map(|val| serde_json::from_value::<usize>(val))
-            .transpose()?,
+        rsp.value.map(serde_json::from_value::<usize>).transpose()?,
         Some(11)
     );
 
@@ -153,16 +158,13 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
         .json::<CacheLookupResponse>()?;
     // This will invalidate the cache
     assert_eq!(
-        rsp.value
-            .map(|val| serde_json::from_value::<usize>(val))
-            .transpose()?,
+        rsp.value.map(serde_json::from_value::<usize>).transpose()?,
         None
     );
 
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn single_node(port: u16) -> Result<(), Failed> {
     // We expect a single-node cluster to be up & ready to take traffic on localhost, listening on port `port`.
     let client = ClientBuilder::new()
@@ -221,9 +223,7 @@ pub fn single_node(port: u16) -> Result<(), Failed> {
         .error_for_status()?
         .json::<CacheLookupResponse>()?;
     assert_eq!(
-        rsp.value
-            .map(|val| serde_json::from_value::<usize>(val))
-            .transpose()?,
+        rsp.value.map(serde_json::from_value::<usize>).transpose()?,
         Some(11)
     );
 

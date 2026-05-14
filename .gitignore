@@ -1,3 +1,4 @@
 Cargo.lock
 hello-scylla
 target
+.agent-lockbox
