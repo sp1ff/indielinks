@@ -355,194 +355,27 @@ pub enum Error {
 }
 
 impl Error {
-    pub fn as_status_and_msg(&self) -> (StatusCode, String) {
+    pub fn status(&self) -> StatusCode {
         match self {
             ////////////////////////////////////////////////////////////////////////////////////////
             // Broken requests-- tell the caller how to fix it
             ////////////////////////////////////////////////////////////////////////////////////////
-            Error::BadAuthHeaderParse { value, .. } => (
-                StatusCode::BAD_REQUEST,
-                format!("Bad Authorization header: {value:?}"),
-            ),
-            Error::CsrfMismatch { .. } => (
-                StatusCode::BAD_REQUEST,
-                "The refresh CSRF token didn't match the CSRF header value".to_owned(),
-            ),
-            Error::InvalidAuthHeaderValue { value, source, .. } => (
-                StatusCode::BAD_REQUEST,
-                format!("Bad Authorization header {value:?}: {source}"),
-            ),
-            Error::MissingColon { text, .. } => (
-                StatusCode::BAD_REQUEST,
-                format!("Missing colon in {text}"),
-            ),
-            Error::NonUtf8Header { source, .. } => (StatusCode::BAD_REQUEST, format!("{source:?}")),
-            Error::MultipleAuthnHeaders => (
-                StatusCode::BAD_REQUEST,
-                "Multiple authorization headers".to_string(),
-            ),
+            Error::BadAuthHeaderParse { .. } => StatusCode::BAD_REQUEST,
+            Error::CsrfMismatch { .. } => StatusCode::BAD_REQUEST,
+            Error::InvalidAuthHeaderValue { .. } => StatusCode::BAD_REQUEST,
+            Error::MissingColon { .. } => StatusCode::BAD_REQUEST,
+            Error::NonUtf8Header { .. } => StatusCode::BAD_REQUEST,
             ////////////////////////////////////////////////////////////////////////////////////////
             // Authorization failure-- don't tell a potential attacker the way in which they failed
             ////////////////////////////////////////////////////////////////////////////////////////
-            Error::BadApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            Error::BadUsername { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            Error::InvalidApiKey { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            Error::InvalidCredentials { .. } => {
-                (StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
-            }
-            Error::MissingCookie { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            Error::MissingHeader { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            Error::NoAuthToken { .. } => (
-                StatusCode::UNAUTHORIZED,
-                "No Authorization header or auth_token".to_string(),
-            ),
-            Error::NoKeys { source, .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("No signing keys found ({source}); did you configure the program?"),
-            ),
-            Error::UnknownUser { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
-            Error::UnsupportedAuthScheme { .. } => {
-                (StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
-            }
-            Error::Username { .. } => (StatusCode::UNAUTHORIZED, "Unauthorized".to_string()),
+            Error::InvalidCredentials { .. } => StatusCode::UNAUTHORIZED,
+            Error::NoAuthToken { .. } => StatusCode::UNAUTHORIZED,
+            Error::NoKeys { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::UnsupportedAuthScheme { .. } => StatusCode::UNAUTHORIZED,
             ////////////////////////////////////////////////////////////////////////////////////////
             // Internal failure-- own up to it:
             ////////////////////////////////////////////////////////////////////////////////////////
-            Error::AddKey {
-                user: _, source, ..
-            } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to add key: {source}"),
-            ),
-            Error::AddUser { source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to add user: {source}"),
-            ),
-            Error::Ap { source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed ActivityPub request: {source}")
-            ),
-            Error::BadTimelineResponse { source, ..} => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to serialize a /timeline response: {source}"),
-            ),
-            Error::BadUserId { user_id, .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("User ID {user_id} is unknown, but was expected to be.")
-            ),
-            Error::FormInternalTimelineReq { source, .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("While forming an internal timeline request, {source}"),
-            ),
-            Error::HomeTimeline { username, source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("While computing the home timeline for {username}, {source}")
-            ),
-            Error::LocalClient { source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Internal communication error: {source}"),
-            ),
-            Error::NoPepper { .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "No pepper available".to_string(),
-            ),
-            Error::NodeHash { userid, source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to hash {userid} to a node: {source}"),
-            ),
-            Error::PackPaginationToken { source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("While packing the pagination token, {source}")
-            ),
-            Error::Password {
-                username, source, ..
-            } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Couldn't validate password for {username}: {source}"),
-            ),
-            Error::Refresh { .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Couldn't mint refresh and/or CSRF tokens".to_owned(),
-            ),
-            Error::Resolution { url, source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("When looking-up {url}, {source}"),
-            ),
-            Error::SendFollow {
-                username,
-                actorid,
-                source,
-                ..
-            } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "Couldn't schedule a follow request for {actorid} on behalf of {username}: {source}"
-                ),
-            ),
-            Error::SendLike {
-                username,
-                id,
-                source,
-                ..
-            } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "Couldn't schedule a like request for {id} on behalf of {username}: {source}"
-                ),
-            ),
-            Error::SendReply {
-                username,
-                id,
-                source,
-                ..
-            } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "Couldn't schedule a reply to {id} on behalf of {username}: {source}"
-                ),
-            ),
-            Error::SerInternalTimelineReq { source, .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("While serializing an internal timeline request, {source}"),
-            ),
-            Error::SocketAddr {node_id, source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("While retrieving the address of node {node_id}, {source}")
-            ),
-            Error::TimelineRedirect { status, .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("A timeline redirect request received status {status}"),
-            ),
-            Error::Token {
-                username, source, ..
-            } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to mint a token for {username}: {source}"),
-            ),
-            Error::UnpackPaginationToken { source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("While unpacking the pagination token, {source}")
-            ),
-            Error::UpdateKey {
-                user: _, source, ..
-            } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to update key: {source}"),
-            ),
-            Error::User { username, source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Internal server error looking-up user {username}: {source:?}"),
-            ),
-            Error::UserForId { user_id, source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!(
-                    "When looking up user ID {user_id}, {source}",
-                ),
-            ),
-            Error::UserSignup { source } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to create user: {source}"),
-            ),
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }
@@ -551,8 +384,13 @@ impl Error {
 // make the implementation of handlers much easier...
 impl axum::response::IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
-        let (code, msg) = self.as_status_and_msg();
-        (code, Json(ErrorResponseBody { error: msg })).into_response()
+        (
+            self.status(),
+            Json(ErrorResponseBody {
+                error: self.to_string(),
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -795,9 +633,7 @@ async fn signup(
             err => {
                 error!("{:#?}", err);
                 user_signups_failures.add(1, &[]);
-                // Arghhhhh...
-                let (status, msg) = UserSignupSnafu.into_error(err).as_status_and_msg();
-                (status, Json(ErrorResponseBody { error: msg })).into_response()
+                UserSignupSnafu.into_error(err).into_response()
             }
         },
         Err(Error::AddUser { source }) => match source {
@@ -815,16 +651,13 @@ async fn signup(
             err => {
                 error!("{:#?}", err);
                 user_signups_failures.add(1, &[]);
-                // Arghhhhh...
-                let (status, msg) = AddUserSnafu.into_error(err).as_status_and_msg();
-                (status, Json(ErrorResponseBody { error: msg })).into_response()
+                AddUserSnafu.into_error(err).into_response()
             }
         },
         Err(err) => {
             error!("{:#?}", err);
             user_signups_failures.add(1, &[]);
-            let (status, msg) = err.as_status_and_msg();
-            (status, Json(ErrorResponseBody { error: msg })).into_response()
+            err.into_response()
         }
     }
 }
@@ -951,8 +784,7 @@ async fn login(
         Err(err) => {
             error!("{:#?}", err);
             user_logins_failures.add(1, &[KeyValue::new("username", login_req.username)]);
-            let (status, msg) = err.as_status_and_msg();
-            (status, Json(ErrorResponseBody { error: msg })).into_response()
+            err.into_response()
         }
     }
 }
@@ -1029,8 +861,7 @@ async fn refresh(
         Err(err) => {
             error!("{:#?}", err);
             user_refreshes_failures.add(1, &[]);
-            let (status, msg) = err.as_status_and_msg();
-            (status, Json(ErrorResponseBody { error: msg })).into_response()
+            err.into_response()
         }
     }
 }
