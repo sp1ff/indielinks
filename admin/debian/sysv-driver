@@ -16,13 +16,13 @@ cargo clean
 # front end built
 cargo build --release
 cd indielinks-fe
-npx @tailwindcss/cli -i style.css -o tailwind.css
+tailwindcss -i style.css -o tailwind.css
 INDIELINKS_FE_API="http://localhost:20676" INDIELINKS_BASE="/fe" INDIELINKS_PAGE_SIZE="20" trunk build --release
 
 cd dist
 wasm=$(ls -1 indielinks-fe*.wasm)
 js=$(ls -1 indielinks-fe*.js)
-css=$(ls -1 style-*.css)
+css=$(ls -1 tailwind-*.css)
 mv $wasm indielinks-fe.wasm
 mv $js indielinks-fe.js
 mv $css style.css

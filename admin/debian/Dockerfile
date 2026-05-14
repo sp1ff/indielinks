@@ -28,6 +28,11 @@ RUN set -ex && \
     # tidy-up \
     apt-get clean && \
     rm -rf /tmp/* /var/tmp/* && \
+    # In the year 2026, merely installing TailwindCSS in such a way as \
+    # to have the build process find it has been a constant source of \
+    # pain. Trying \ installing the "standalone binary", now. \
+    curl -sL https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-linux-x64 -o /usr/local/bin/tailwindcss && \
+    chmod +x /usr/local/bin/tailwindcss && \
     # set the timezone to civilization (i.e. the Pacific) \
     ln -fs /usr/share/zoneinfo/US/Pacific /etc/localtime && \
     dpkg-reconfigure -f noninteractive tzdata && \
@@ -60,11 +65,11 @@ RUN set -ex && \
     . /home/packager/.cargo/env && \
     rustup target add wasm32-unknown-unknown && \
     cargo install cargo-deb && \
-    cargo install --locked trunk && \
+    cargo install --locked trunk
     # If we attempt to install tailwind, and the pwd is /, npm \
     # fails (ah, Javascript!) \
-    cd /home/packager && \
-    sudo npm install -g tailwindcss @tailwindcss/cli && \
-    # I've decided I loathe node.js, but until I can find something better: \
-    # https://github.com/npm/cli/issues/4828 \
-    sudo npm install -g @tailwindcss/oxide-linux-x64-gnu
+    # cd /home/packager && \
+    # sudo npm install -g tailwindcss @tailwindcss/cli && \
+    # # I've decided I loathe node.js, but until I can find something better: \
+    # # https://github.com/npm/cli/issues/4828 \
+    # sudo npm install -g @tailwindcss/oxide-linux-x64-gnu
