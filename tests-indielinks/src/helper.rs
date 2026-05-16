@@ -131,6 +131,10 @@ impl Default for ScyllaConfig {
             hosts: vec!["127.0.0.1:9043".parse::<SocketAddr>().unwrap(/* known good */)],
             translations: Some(vec![
                 (
+                    "172.11.0.2:9043".parse::<SocketAddr>().unwrap(),
+                    "127.0.0.1:9043".parse::<SocketAddr>().unwrap(),
+                ),
+                (
                     "172.11.0.3:9043".parse::<SocketAddr>().unwrap(),
                     "127.0.0.1:9044".parse::<SocketAddr>().unwrap(),
                 ),

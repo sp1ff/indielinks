@@ -4,7 +4,7 @@ VERSION=0.0.1
 help=
 nargs=0
 no_schemas=
-num_polls=30 # Give the cluster ten seconds to come up
+num_polls=30 # Give the cluster thirty seconds to come up
 prev_option=
 verbose=
 version=
@@ -160,7 +160,7 @@ ntries=1
 # no matches. Neither is an error status as far as we're concerned.
 nnodes=$({ docker exec scylla-node-${SCYLLA_NODE_1} nodetool status || true; }|{ grep -F UN || true; }|wc -l)
 while [ ${nnodes} -ne 3 ]; do
-    sleep 0.5
+    sleep 1.0
     ntries=$(($ntries+1))
     if [ ${ntries} -gt ${num_polls} ]; then
         echo "ScyllaDB failed to come up" >&2
@@ -170,6 +170,7 @@ while [ ${nnodes} -ne 3 ]; do
     # For trouble-shooting
     set +e
     docker exec scylla-node-${SCYLLA_NODE_1} nodetool status
+    docker ps -a
     set -e
     nnodes=$({ docker exec scylla-node-${SCYLLA_NODE_1} nodetool status || true; }|{ grep -F UN || true; }|wc -l)
     echo "I see $nnodes ScyllaDB nodes"

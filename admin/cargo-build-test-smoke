@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -ex
+set -euxo pipefail
 
 # By default, which I anticipate will be running on the developer's machine, I
 # want to constrain the number of cores `cargo` can have. However, when running
@@ -8,7 +8,7 @@ set -ex
 cargo_args=
 
 # *Any* argument will disable this
-if test -z "$1"; then
+if test -z "${1:-}"; then
     nproc=$(nproc)
     nproc=$(($nproc/4))
     if [ $nproc -eq 0 ]; then
@@ -18,4 +18,7 @@ if test -z "$1"; then
 fi
 cargo build ${cargo_args}
 cargo build ${cargo_args} -p indielinks-fe --target=wasm32-unknown-unknown
+# Pre-build all the tests; that way, integration test scripts won't hang-up
+# waiting for services to come up.
+cargo test ${cargo_args} --no-run
 cargo test ${cargo_args}
