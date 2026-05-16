@@ -1,6 +1,6 @@
 [runner]
 log-level = "DEBUG"
-logging = false
+logging = true
 no-setup = false
 no-teardown = false
 enforce-single-threaded = true

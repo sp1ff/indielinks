@@ -1,0 +1,23 @@
+# Run the integration test "background-task-tests" against a
+# completely different ScyllaDB/indielinksd stack than the default.
+# This stack is intended for use in the "bugfix" git worktree.
+
+runner.log-level = "DEBUG"
+runner.logging = false
+runner.no-setup = false
+runner.no-teardown = false
+runner.enforce-single-threaded=true
+
+domain.scylla-env-file = "bugfix.env"
+
+[domain.origin]
+scheme = "http"
+port = 20709
+host = { RegName = "indiemark.local" }
+
+[domain.scylla]
+hosts = ["127.0.0.1:9049"]
+translations=[["172.13.0.2:9049", "127.0.0.1:9049"], ["172.13.0.3:9049", "127.0.0.1:9050"], ["172.13.0.4:9049", "127.0.0.1:9051"]]
+
+[domain.dynamo]
+location = ["http://127.0.0.1:8049", "http://127.0.0.1:8050", "http://127.0.0.1:8051"]

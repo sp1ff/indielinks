@@ -345,8 +345,10 @@ impl SyncIntegrationTest for CacheClusterTest {
 
 fn main() -> Result<ExitCode> {
     sync_integration_test(
-        TestConfiguration::<CacheClusterFixture>::new_or_default("INDIELINKS_CACHE_TEST_CONFIG")
-            .context(IntegrationTestSnafu)?,
+        TestConfiguration::<CacheClusterFixture>::new_or_default(
+            "INDIELINKS_CACHE_CLUSTER_TESTS_CONFIG",
+        )
+        .context(IntegrationTestSnafu)?,
         inventory::iter::<CacheClusterFixture>.into_iter(),
         inventory::iter::<CacheClusterTest>,
     )

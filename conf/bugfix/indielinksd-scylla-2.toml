@@ -1,21 +1,21 @@
 version = "1"
-log-file = "/tmp/indielinksd-front-end-4/indielinksd.log"
-public-address = "0.0.0.0:20706"
-private-address = "127.0.0.1:20707"
-raft-grpc-address = "127.0.0.1:20708"
+log-file = "/tmp/indielinksd-bugfix-2/indielinksd.log"
+public-address = "0.0.0.0:20715"
+private-address = "127.0.0.1:20716"
+raft-grpc-address = "127.0.0.1:20717"
 user-agent = "indielinksd/0.0.1; +sp1ff@pobox.com"
 collection-page-size = 64
 
 [public-origin]
 scheme = "http"
-port = 20674
+port = 20675
 
 [public-origin.host]
 RegName = "indiemark.local"
 
 [storage-config.Scylla]
-hosts = ["127.0.0.1:9046"]
-translations=[["172.12.0.3:9046", "127.0.0.1:9047"], ["172.12.0.4:9046", "127.0.0.1:9048"]]
+hosts = ["127.0.0.1:9049"]
+translations=[["172.13.0.3:9049", "127.0.0.1:9050"], ["172.13.0.4:9049", "127.0.0.1:9051"]]
 
 [pepper.peppers]
 "pepper-ver:20250213" = [0xb2, 0x91, 0x48, 0x34, 0x4d, 0x5f, 0xd3, 0x7e, 0x59, 0x71, 0x57, 0x91, 0xdd, 0x00, 0x32, 0x92, 0x62, 0xe9, 0x19, 0x77, 0x6d, 0xae, 0x4b, 0x5b, 0x6a, 0xab, 0x00, 0x67, 0x0e, 0x8c, 0xf4, 54]
@@ -70,7 +70,7 @@ pickup-timeout = { secs = 1, nanos = 0 }
 
 [raft-config]
 cluster-name = "indielinks"
-this-node = 4
+this-node = 2
 heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
 election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
 election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
