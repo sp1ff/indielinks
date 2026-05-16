@@ -401,7 +401,7 @@ impl Default for TestRunnerConfiguration {
     fn default() -> Self {
         Self {
             log_level: Level::INFO,
-            logging: true,
+            logging: false,
             no_setup: false,
             no_teardown: false,
             enforce_single_threaded: true,
