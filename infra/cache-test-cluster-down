@@ -22,3 +22,6 @@ if [ "${bin}" == "on-disk" ]; then
     rm -rf /tmp/on-disk-node-3
     rm -rf /tmp/on-disk-node-4
 fi
+
+cd $here/../tests-indielinks-cache
+rm -f n{0,1,2,3,4}.log
