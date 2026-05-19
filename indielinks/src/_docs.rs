@@ -267,21 +267,6 @@
 //! crate and looking for patterns in my own refined types that might be amenable to abstraction,
 //! even through macros.
 //!
-//! ## Integration Tests
-//!
-//! I've begun building-out integration tests in dedicated crates (e.g. [tests-indielinks]). While
-//! these tests fit into the standard Rust integration test framework, I've created them with custom
-//! harnesses that will stand-up ScyllaDB, spin-up an indielinks instance & then allow the tests to
-//! interact with indielinks as HTTP clients. I wrote about this in detail [here].
-//!
-//! [tests-indielinks]: ../../tests_indielinks/index.html
-//! [here]: https://www.unwoundstack.com/blog/integration-testing-rust-binaries.html
-//!
-//! More recently, I've started building-out a general integration testing framework for indielinks,
-//! in [tests-support]. You can read more about that [here](../../tests_support/index.html).
-//!
-//! [tests-support]: ../../tests_support/index.html
-//!
 //! ## indielinks as Client
 //!
 //! Middleware turns-out to be as useful when writing an HTTP client as when writing the server.
@@ -386,12 +371,45 @@
 //!
 //! ## Continuous Integration
 //!
-//! I've setup a continous integration job at Github. For the most part, however, it just
-//! replicates the `signoff` script in the `admin` folder. I prefer to do my validation locally.
-//! Where a CI framework like Github Actions really shine is being able to run that validation on
-//! multiple platforms, using multiple toolchains, and so forth. Regrettably, the Github Action
-//! runners need 3-4x the time to run the suite than my development machine. So, before every
-//! commit, do an `admin/signoff`.
+//! I've setup a continous integration job at Github. For the most part, however, it just replicates
+//! the `signoff` script in the `admin` folder. I prefer to do my validation locally. Where a CI
+//! framework like Github Actions really shines is being able to run that validation on multiple
+//! platforms, using multiple toolchains, across different configurations, and so forth.
+//! Regrettably, the Github Action runners need 3-4x the time to run the suite than my development
+//! machine. So, before every push, do an `admin/signoff`.
+//!
+//! ## Integration Testing & "Stacks"
+//!
+//! There are integration tests residing in dedicated crates (e.g. [tests-indielinks]). While these
+//! tests fit into the standard Rust integration test framework, I've created them with custom
+//! harnesses that will stand-up ScyllaDB, spin-up an indielinks instance & then allow the tests to
+//! interact with indielinks as HTTP clients. I wrote about this in detail [here].
+//!
+//! [tests-indielinks]: ../../tests_indielinks/index.html
+//! [here]: https://www.unwoundstack.com/blog/integration-testing-rust-binaries.html
+//!
+//! More recently, I've started building-out a general integration testing framework for indielinks,
+//! in [tests-support]. You can read more about that [here](../../tests_support/index.html).
+//!
+//! [tests-support]: ../../tests_support/index.html
+//!
+//! I also want to mention the idea of what I call an integration testing "stack". Each
+//! integration test fixture has a collection of configuration items such as local state
+//! directories, ports, docker project names and so on. Each fixture can only have one instance up &
+//! running at a time, because most of these items configure aspects of the fixture that would clash
+//! otherwise (you can't have two [indielinksd] instances listening on the same port numbers, for
+//! instance.)
+//!
+//! [indielinksd]: ../../indielinksd/index.html
+//!
+//! I use a git worktree-based [workflow](https://matklad.github.io/2024/07/25/git-worktrees.html),
+//! so I sometimes want to run the integration test suite in two worktrees at the same time. To
+//! enable this, I've introduced the idea of a "stack": a collection of configuration files for each
+//! fixture that will cause instances of that fixture using that collection to be indepdendent of
+//! any other, differently configured instance. They're all wrapped-up with a dedicated script that
+//! invokes `cargo test` with the appropriate environment variables. You can stand-up new stacks via
+//! the `create-stack` script in the `admin` folder, and you can see examples of the top-level
+//! scripts in `cargo-test-bugfix`, `cargo-test-pre-alpha` and so on, also in `admin`.
 //!
 //! ## The ChangeLog (or the lack thereof)
 //!
