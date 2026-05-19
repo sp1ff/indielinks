@@ -1,5 +1,6 @@
 version = "1"
-log-file = "/tmp/indielinksd-1/indielinksd.log"
+# This needs to agree with `cluster-local-state-base` in the smoke-test configuration
+log-file = "/tmp/indielinksd-cluster-1/indielinksd.log"
 public-address = "0.0.0.0:20682"
 private-address = "127.0.0.1:20683"
 raft-grpc-address = "127.0.0.1:20684"

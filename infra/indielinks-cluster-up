@@ -7,7 +7,7 @@ config_base=
 haproxy_id=0
 haproxy_port=20673
 help=
-local_state_base="/tmp/indielinksd-"
+local_state_base="/tmp/indielinksd-cluster-"
 nargs=0
 num_nodes=
 num_polls=120 # generous limit of two minutes
@@ -237,7 +237,7 @@ fi
 
 rust_log="${RUST_LOG:-debug,tower=info,h2=info,tower_http=info,aws_smithy_runtime=info,aws_sdk_dynamodb=info,hyper_util=info,openraft=info}"
 
-# Clean-up & (re-)create the local state directories for each instance
+# (Re-)create the local state directories for each instance
 test -d ${local_state_base}0 || mkdir ${local_state_base}0
 test -d ${local_state_base}1 || mkdir ${local_state_base}1
 test -d ${local_state_base}2 || mkdir ${local_state_base}2

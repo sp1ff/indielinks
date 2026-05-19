@@ -355,18 +355,20 @@
 //!
 //! 1) actor, webfinger, users, delicious, webfinger, grpc, ops, bookmarklets
 //!    - all the public endpoints
-//! 2) indielinks, activity-pub, dynamodb, scylla, client
+//! 2) app-logic
+//!    - nascent application logic module
+//! 3) indielinks, activity-pub, dynamodb, scylla, client
 //!    - implementations of lower-level abstractions
-//! 3) home-timeline
-//! 4) ap-resolution, metrics-task
-//! 5) ap-entities, background_tasks
+//! 4) home-timeline
+//! 5) ap-resolution, metrics-task
+//! 6) ap-entities, background_tasks
 //!    - internal subsystems
-//! 6) client-types (authn, http)
-//! 7) authn
-//! 8) storage
-//! 9) token, entities, acct
-//! 10) peppers, signing-keys, http
-//! 11) util, metrics, cache
+//! 7) client-types (authn, http)
+//! 8) authn
+//! 9) storage
+//! 10) token, entities, acct
+//! 11) peppers, signing-keys, http
+//! 12) util, metrics, cache
 //!    - depend on nothing
 //!
 //! ## Continuous Integration

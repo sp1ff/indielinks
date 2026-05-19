@@ -27,6 +27,7 @@ use axum::{
     Router,
 };
 use http::{header::CONTENT_TYPE, HeaderValue, StatusCode};
+use indielinks_shared::entities::UserId;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, Snafu};
 use tap::{Conv, Pipe, TryConv};
@@ -42,7 +43,8 @@ use indielinks_cache::{
 use url::Url;
 
 use crate::{
-    ap_entities::{Actor, Note},
+    ap_entities::{Actor, Item, Note},
+    app_logic,
     cache::GrpcClientFactory,
     indielinks::Indielinks,
     protobuf_interop::*,
@@ -265,20 +267,46 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
     /// Add an item to a user's home timeline (deferred; see plan 006)
     async fn insert_timeline_item(
         &self,
-        _req: tonic::Request<protobuf::InsertTimelineItemRequest>,
-    ) -> StdResult<tonic::Response<protobuf::InsertTimelineItemResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "insert_timeline_item is not yet implemented",
-        ))
+        request: tonic::Request<protobuf::InsertTimelineItemRequest>,
+    ) -> StdResult<tonic::Response</*protobuf::InsertTimelineItemResponse*/ ()>, tonic::Status>
+    {
+        let request = request.into_inner();
+
+        let user_id = rmp_serde::from_slice::<UserId>(&request.user_id).map_err(to_tonic)?;
+        let item = rmp_serde::from_slice::<Item>(&request.item).map_err(to_tonic)?;
+
+        let user = self
+            .state
+            .storage
+            .get_user_by_id(&user_id)
+            .await
+            .map_err(to_tonic)?
+            .ok_or_else(|| tonic::Status::not_found(format!("User {user_id} not found")))?;
+
+        app_logic::handle_timeline_insert(self.state.clone(), &user, &item).await;
+
+        Ok(().into())
     }
     /// Drop a user's home timeline (deferred; see plan 006)
     async fn drop_timeline(
         &self,
-        _req: tonic::Request<protobuf::DropTimelineRequest>,
-    ) -> StdResult<tonic::Response<protobuf::DropTimelineResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "drop_timeline is not yet implemented",
-        ))
+        request: tonic::Request<protobuf::DropTimelineRequest>,
+    ) -> StdResult<tonic::Response</*protobuf::DropTimelineResponse*/ ()>, tonic::Status> {
+        let request = request.into_inner();
+
+        let user_id = rmp_serde::from_slice::<UserId>(&request.user_id).map_err(to_tonic)?;
+
+        let user = self
+            .state
+            .storage
+            .get_user_by_id(&user_id)
+            .await
+            .map_err(to_tonic)?
+            .ok_or_else(|| tonic::Status::not_found(format!("User {user_id} not found")))?;
+
+        app_logic::handle_timeline_drop(self.state.clone(), &user).await;
+
+        Ok(().into())
     }
 }
 

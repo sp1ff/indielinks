@@ -197,19 +197,33 @@ pub trait Helper {
     ) -> StdResult<String, Failed>;
     /// Remove a user
     async fn remove_user(&self, username: &Username) -> StdResult<(), Failed>;
+    /// Retrieve the public address at which tests can reach indielinks, whether it's clustered or
+    /// single-node
+    fn indielinks(&self) -> Url;
+    /// Retrieve the nodes comprising the indielinks cluster under test.
+    // It would be nicer to return `impl Iterator<Item = ...>`, but that's not dyn compatible
+    fn nodes(&self) -> Vec<(Url, Url, SocketAddr)>;
 }
 
 /// Application state shared across all tests
 pub struct DynamoDBHelper {
     client: ::aws_sdk_dynamodb::Client,
+    indielinks: Url,
+    nodes: Vec<(Url, Url, SocketAddr)>,
 }
 
 impl DynamoDBHelper {
-    pub async fn new(cfg: &DynamoConfig) -> Result<DynamoDBHelper> {
+    pub async fn new(
+        indielinks: Url,
+        nodes: impl Iterator<Item = (Url, Url, SocketAddr)>,
+        cfg: &DynamoConfig,
+    ) -> Result<DynamoDBHelper> {
         Ok(DynamoDBHelper {
             client: create_ddb_client(&cfg.location, &cfg.credentials)
                 .await
                 .context(ClientSnafu)?,
+            indielinks,
+            nodes: nodes.collect(),
         })
     }
     pub fn get_client(&self) -> &aws_sdk_dynamodb::Client {
@@ -351,14 +365,24 @@ impl Helper for DynamoDBHelper {
         }
         Ok(())
     }
+    fn indielinks(&self) -> Url {
+        self.indielinks.clone()
+    }
+    fn nodes(&self) -> Vec<(Url, Url, SocketAddr)> {
+        self.nodes.clone()
+    }
 }
 
 pub struct ScyllaHelper {
     session: ::scylla::client::session::Session,
+    indielinks: Url,
+    nodes: Vec<(Url, Url, SocketAddr)>,
 }
 
 impl ScyllaHelper {
-    pub async fn new(cfg: &ScyllaConfig) -> Result<ScyllaHelper> {
+    pub async fn new(indielinks: Url,
+                     nodes: impl Iterator<Item = (Url, Url, SocketAddr)>,
+                     cfg: &ScyllaConfig) -> Result<ScyllaHelper> {
         let session = create_scylla_client(
             &cfg.hosts,
             cfg.credentials.as_ref(),
@@ -370,7 +394,7 @@ impl ScyllaHelper {
             .use_keyspace("indielinks", false)
             .await
             .context(KeyspaceSnafu)?;
-        Ok(ScyllaHelper { session })
+        Ok(ScyllaHelper { session, indielinks, nodes: nodes.collect()  })
     }
     pub fn get_client(&self) -> &scylla::client::session::Session {
         &self.session
@@ -458,5 +482,11 @@ impl Helper for ScyllaHelper {
                 .await?;
         }
         Ok(())
+    }
+    fn indielinks(&self) -> Url {
+        self.indielinks.clone()
+    }
+    fn nodes(&self) -> Vec<(Url, Url, SocketAddr)> {
+        self.nodes.clone()
     }
 }

@@ -255,7 +255,7 @@ impl Default for Configuration {
         Configuration {
             ops: Url::parse("http://127.0.0.1:20680").unwrap(/* known good */),
             scylla_env_file: None,
-            local_state_base: "/tmp/indielinksd-".to_owned(),
+            local_state_base: "/tmp/indielinksd-cluster-".to_owned(),
             alternator_config_base: "../conf/indielinksd-alternator-".to_owned(),
             scylla_config_base: "../conf/indielinksd-scylla-".to_owned(),
             haproxy_id: "0".to_owned(),

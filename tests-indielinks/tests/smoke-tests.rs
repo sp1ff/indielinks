@@ -58,15 +58,7 @@
 //! for logging, so eht `RUST_LOG` environment variable is also respected.
 
 use std::{
-    collections::HashMap,
-    ffi::OsString,
-    net::SocketAddr,
-    os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
-    process::ExitCode,
-    result::Result as StdResult,
-    str::FromStr,
-    sync::Arc,
+    collections::HashMap, ffi::OsString, iter::once, net::SocketAddr, os::unix::ffi::OsStrExt, path::{Path, PathBuf}, process::ExitCode, result::Result as StdResult, str::FromStr, sync::Arc
 };
 
 use async_trait::async_trait;
@@ -142,14 +134,10 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[instrument(level = Level::DEBUG)]
 fn setup_alternator_single_node(
-    local_state_dir: &Path,
-    indielinks_config_file: &Path,
+    config: &SingleNode,
     scylla_env_file: Option<&Path>,
-    indielinks: &Url,
-    ops: &Url,
-    grpc: &SocketAddr,
 ) -> Result<()> {
-    teardown_single_node(local_state_dir, scylla_env_file)?;
+    teardown_single_node(&config.local_state_dir, scylla_env_file)?;
     run("../infra/scylla-up", scylla_env_file.into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
     })?;
@@ -159,14 +147,14 @@ fn setup_alternator_single_node(
     let args: Vec<OsString> = vec![
         "-v".into(),
         "-G".into(),
-        format!("{grpc}").into(),
+        format!("{}", config.grpc).into(),
         "-O".into(),
-        format!("{ops}").into(),
+        format!("{}", config.ops).into(),
         "-P".into(),
-        format!("{indielinks}").into(),
+        format!("{}", config.indielinks).into(),
         "-L".into(),
-        local_state_dir.as_os_str().into(),
-        indielinks_config_file.as_os_str().into(),
+        config.local_state_dir.as_os_str().into(),
+        config.indielinks_alternator_config_file.as_os_str().into(),
     ];
 
     run("../infra/indielinks-up", args).context(CommandSnafu {
@@ -176,14 +164,10 @@ fn setup_alternator_single_node(
 
 #[instrument(level = Level::DEBUG)]
 fn setup_scylla_single_node(
-    local_state_dir: &Path,
-    indielinks_config_file: &Path,
+    config: &SingleNode,
     scylla_env_file: Option<&Path>,
-    indielinks: &Url,
-    ops: &Url,
-    grpc: &SocketAddr,
 ) -> Result<()> {
-    teardown_single_node(local_state_dir, scylla_env_file)?;
+    teardown_single_node(&config.local_state_dir, scylla_env_file)?;
     run("../infra/scylla-up", scylla_env_file.into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
     })?;
@@ -193,14 +177,14 @@ fn setup_scylla_single_node(
     let args: Vec<OsString> = vec![
         "-v".into(),
         "-G".into(),
-        format!("{grpc}").into(),
+        format!("{}", config.grpc).into(),
         "-O".into(),
-        format!("{ops}").into(),
+        format!("{}", config.ops).into(),
         "-P".into(),
-        format!("{indielinks}").into(),
+        format!("{}", config.indielinks).into(),
         "-L".into(),
-        local_state_dir.as_os_str().into(),
-        indielinks_config_file.as_os_str().into(),
+        config.local_state_dir.as_os_str().into(),
+        config.indielinks_scylla_config_file.as_os_str().into(),
     ];
 
     run("../infra/indielinks-up", args).context(CommandSnafu {
@@ -218,6 +202,89 @@ fn teardown_single_node(local_state_dir: &Path, scylla_env_file: Option<&Path>) 
         cmd: "indielinks-down".to_string(),
     })?;
     run("../infra/scylla-down", scylla_env_file.into_iter()).context(CommandSnafu {
+        cmd: "scylla-down".to_string(),
+    })
+}
+
+#[instrument(level = Level::DEBUG)]
+fn setup_scylla_cluster(config: &Clustered,
+                        scylla_env_file: Option<&Path>) -> Result<()> {
+    teardown_cluster(config, scylla_env_file)?;
+    run(
+        "../infra/scylla-up",
+        scylla_env_file.as_deref().into_iter(),
+    )
+    .context(CommandSnafu {
+        cmd: "scylla-up".to_string(),
+    })?;
+    let args: Vec<OsString> = vec![
+        "-v".into(),
+        "-C".into(),
+        config
+            .indielinks_scylla_cluster_config_base
+            .as_os_str()
+            .into(),
+        "-H".into(),
+        format!("{}", config.haproxy_port).into(),
+        "-I".into(),
+        format!("{}", config.haproxy_id).into(),
+        "-L".into(),
+        config.cluster_local_state_base.as_os_str().into(),
+        format!("{}", config.cluster_size).into(),
+    ];
+    run("../infra/indielinks-cluster-up", args).context(CommandSnafu {
+        cmd: "indielinks-cluster-up".to_string(),
+    })
+}
+
+#[instrument(level = Level::DEBUG)]
+fn setup_alternator_cluster(config: &Clustered,
+                            scylla_env_file: Option<&Path>) -> Result<()> {
+    teardown_cluster(config, scylla_env_file)?;
+    run(
+        "../infra/scylla-up",
+        scylla_env_file.as_deref().into_iter(),
+    )
+    .context(CommandSnafu {
+        cmd: "scylla-up".to_string(),
+    })?;
+    let args: Vec<OsString> = vec![
+        "-v".into(),
+        "-C".into(),
+        config
+            .indielinks_alternator_cluster_config_base
+            .as_os_str()
+            .into(),
+        "-H".into(),
+        format!("{}", config.haproxy_port).into(),
+        "-I".into(),
+        format!("{}", config.haproxy_id).into(),
+        "-L".into(),
+        config.cluster_local_state_base.as_os_str().into(),
+        format!("{}", config.cluster_size).into(),
+    ];
+    run("../infra/indielinks-cluster-up", args).context(CommandSnafu {
+        cmd: "indielinks-cluster-up".to_string(),
+    })
+}
+
+#[instrument(level = Level::DEBUG)]
+fn teardown_cluster(config: &Clustered,
+                    scylla_env_file: Option<&Path>) -> Result<()> {
+    let args: Vec<OsString> = vec![
+        "-I".into(),
+        format!("{}", config.haproxy_id).into(),
+        "-L".into(),
+        config.cluster_local_state_base.as_os_str().into(),
+    ];
+    run("../infra/indielinks-cluster-down", args).context(CommandSnafu {
+        cmd: "indielinks-cluster-down".to_string(),
+    })?;
+    run(
+        "../infra/scylla-down",
+        scylla_env_file.as_deref().into_iter(),
+    )
+    .context(CommandSnafu {
         cmd: "scylla-down".to_string(),
     })
 }
@@ -259,10 +326,10 @@ impl FromStr for FixtureId {
     }
 }
 
-/// Domain-specific configuration
+/// Configuration germane to fixtures that run indielinks in a single-node confguration
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Configuration {
+pub struct SingleNode {
     /// The location at which the indielinksd instance under test can be reached
     pub indielinks: Url,
     #[serde(rename = "indielinks-alternator-config-file")]
@@ -276,6 +343,82 @@ pub struct Configuration {
     /// The path at which the instance under test should store local test (PID file & like that)
     #[serde(rename = "local-state-dir")]
     pub local_state_dir: PathBuf,
+}
+
+impl Default for SingleNode {
+    fn default() -> Self {
+        Self {
+            // I'd love to get rid of the requirement to add "indiemark.local" to your `/etc/hosts`,
+            // but one thing at a time.
+            indielinks: Url::parse("http://indiemark.local:20679").unwrap(/* known good */),
+            indielinks_alternator_config_file: PathBuf::from("indielinksd-alternator.toml"),
+            indielinks_scylla_config_file: PathBuf::from("indielinksd-scylla.toml"),
+            ops: Url::parse("http://localhost:20680").unwrap(/* known good */),
+            grpc: "127.0.0.1:20681".parse::<SocketAddr>().unwrap(/* known good */),
+            local_state_dir: PathBuf::from("."),
+        }
+    }
+}
+
+/// Configuration germane to fixtures that run indielinks in a clustered confguration
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Clustered {
+    /// Config-file base for a scylla-backed indielinks cluster; each node appends its index + ".toml"
+    #[serde(rename = "indielinks-scylla-cluster-config-base")]
+    pub indielinks_scylla_cluster_config_base: PathBuf,
+    /// Config-file base for an alternator-backed indielinks cluster
+    #[serde(rename = "indielinks-alternator-cluster-config-base")]
+    pub indielinks_alternator_cluster_config_base: PathBuf,
+    /// Number of nodes in the indielinks cluster (3 or 5)
+    #[serde(rename = "cluster-size")]
+    pub cluster_size: u8,
+    /// Individual nodes; each node is (public HTTP API, local ops HTTP API, intracluster gRPC API)
+    pub nodes: Vec<(Url, Url, SocketAddr)>,
+    /// Disambiguates concurrent haproxy instances; passed as `-I` to indielinks-cluster-{up,down}
+    #[serde(rename = "haproxy-id")]
+    pub haproxy_id: u32,
+    /// The port at which haproxy shall listen
+    #[serde(rename = "haproxy-port")]
+    pub haproxy_port: u16,
+    /// Prefix for per-node local-state directories; each node appends its index
+    #[serde(rename = "cluster-local-state-base")]
+    pub cluster_local_state_base: PathBuf,
+}
+
+impl Default for Clustered {
+    fn default() -> Self {
+        Self {
+            indielinks_scylla_cluster_config_base: PathBuf::from("../conf/indielinksd-scylla-"),
+            indielinks_alternator_cluster_config_base: PathBuf::from(
+                "../conf/indielinksd-alternator-",
+            ),
+            cluster_size: 3,
+            nodes: vec![
+                ("http://indiemark.local:20679".parse::<Url>().unwrap(),
+                 "http://localhost:20680".parse::<Url>().unwrap(),
+                 "127.0.0.1:20681".parse::<SocketAddr>().unwrap()),
+                ("http://indiemark.local:20682".parse::<Url>().unwrap(),
+                 "http://localhost:20683".parse::<Url>().unwrap(),
+                 "127.0.0.1:20684".parse::<SocketAddr>().unwrap()),
+                ("http://indiemark.local:20685".parse::<Url>().unwrap(),
+                 "http://localhost:20686".parse::<Url>().unwrap(),
+                 "127.0.0.1:20687".parse::<SocketAddr>().unwrap()),
+            ],
+            haproxy_id: 0,
+            haproxy_port: 20673,
+            cluster_local_state_base: PathBuf::from("/tmp/indielinksd-cluster-"),
+        }
+    }
+}
+
+/// Domain-specific configuration
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Configuration {
+    #[serde(rename = "single-node")]
+    pub single_node: SingleNode,
+    pub clustered: Clustered,
     /// The path to a .env file for the scylla Docker compose cluster
     #[serde(rename = "scylla-env-file")]
     pub scylla_env_file: Option<PathBuf>,
@@ -299,14 +442,8 @@ pub struct Configuration {
 impl Default for Configuration {
     fn default() -> Self {
         Self {
-            // I'd love to get rid of the requirement to add "indiemark.local" to your `/etc/hosts`,
-            // but one thing at a time.
-            indielinks: Url::parse("http://indiemark.local:20679").unwrap(/* known good */),
-            indielinks_alternator_config_file: PathBuf::from("indielinksd-alternator.toml"),
-            indielinks_scylla_config_file: PathBuf::from("indielinksd-scylla.toml"),
-            ops: Url::parse("http://localhost:20680").unwrap(/* known good */),
-            grpc: "127.0.0.1:20681".parse::<SocketAddr>().unwrap(/* known good */),
-            local_state_dir: PathBuf::from("."),
+            single_node: Default::default(),
+            clustered: Default::default(),
             scylla_env_file: None,
             scylla: Default::default(),
             dynamo: Default::default(),
@@ -432,12 +569,13 @@ impl tests_support::Fixture for Fixture {
     ) -> StdResult<Self::Backend, Self::Error> {
         let backend = match self.id {
             FixtureId::ScyllaSingleNode
-            | FixtureId::ScyllaSingleNodePreCharged
-            | FixtureId::ScyllaCluster => {
+            | FixtureId::ScyllaSingleNodePreCharged => {
                 // This is really kind of lame; it would be nicer to do this as part of `setup()`,
                 // but because `Fixture` instances are immutable, we have to do it here.
                 let backend = Arc::new(
-                    ScyllaHelper::new(&config.scylla)
+                    ScyllaHelper::new(config.single_node.indielinks.clone(),
+                                      once((config.single_node.indielinks.clone(), config.single_node.ops.clone(), config.single_node.grpc.clone())),
+                                      &config.scylla)
                         .await
                         .context(HelperSnafu)?,
                 );
@@ -445,14 +583,25 @@ impl tests_support::Fixture for Fixture {
                     self.charge_tables_scylla(backend.get_client()).await?;
                 }
                 backend as Arc<dyn Helper + Send + Sync>
-            }
+            },
+            FixtureId::ScyllaCluster => {
+                let backend = Arc::new(
+                    ScyllaHelper::new(Url::parse(&format!("http://localhost:{}", config.clustered.haproxy_port)).unwrap(/* TODO(sp1ff): error */),
+                                      config.clustered.nodes.iter().cloned(),
+                                      &config.scylla)
+                        .await
+                        .context(HelperSnafu)?,
+                );
+                backend as Arc<dyn Helper + Send + Sync>
+            },
             FixtureId::DynamoDBSingleNode
-            | FixtureId::DynamoDBSingleNodePreCharged
-            | FixtureId::DynamoDBCluster => {
+            | FixtureId::DynamoDBSingleNodePreCharged => {
                 // This is really kind of lame; it would be nicer to do this as part of `setup()`,
                 // but because `Fixture` instances are immutable, we have to do it here.
                 let backend = Arc::new(
-                    DynamoDBHelper::new(&config.dynamo)
+                    DynamoDBHelper::new(config.single_node.indielinks.clone(),
+                                        once((config.single_node.indielinks.clone(), config.single_node.ops.clone(), config.single_node.grpc.clone())),
+                                        &config.dynamo)
                         .await
                         .context(HelperSnafu)?,
                 );
@@ -460,7 +609,17 @@ impl tests_support::Fixture for Fixture {
                     self.charge_tables_dynamodb(backend.get_client()).await?;
                 }
                 backend as Arc<dyn Helper + Send + Sync>
-            }
+            },
+            FixtureId::DynamoDBCluster => {
+                let backend = Arc::new(
+                    DynamoDBHelper::new(Url::parse(&format!("http://localhost:{}", config.clustered.haproxy_port)).unwrap(/* TODO(sp1ff): error */),
+                                        config.clustered.nodes.iter().cloned(),
+                                        &config.dynamo)
+                        .await
+                        .context(HelperSnafu)?,
+                );
+                backend as Arc<dyn Helper + Send + Sync>
+            },
         };
         Ok(backend)
     }
@@ -469,25 +628,18 @@ impl tests_support::Fixture for Fixture {
         match self.id {
             FixtureId::ScyllaSingleNode | FixtureId::ScyllaSingleNodePreCharged => {
                 setup_scylla_single_node(
-                    &config.local_state_dir,
-                    &config.indielinks_scylla_config_file,
+                    &config.single_node,
                     config.scylla_env_file.as_deref(),
-                    &config.indielinks,
-                    &config.ops,
-                    &config.grpc,
                 )
             }
             FixtureId::DynamoDBSingleNode | FixtureId::DynamoDBSingleNodePreCharged => {
                 setup_alternator_single_node(
-                    &config.local_state_dir,
-                    &config.indielinks_alternator_config_file,
+                    &config.single_node,
                     config.scylla_env_file.as_deref(),
-                    &config.indielinks,
-                    &config.ops,
-                    &config.grpc,
                 )
             }
-            _ => unimplemented!(),
+            FixtureId::ScyllaCluster => setup_scylla_cluster(&config.clustered, config.scylla_env_file.as_deref()),
+            FixtureId::DynamoDBCluster => setup_alternator_cluster(&config.clustered, config.scylla_env_file.as_deref()),
         }
     }
 
@@ -497,9 +649,9 @@ impl tests_support::Fixture for Fixture {
             | FixtureId::DynamoDBSingleNode
             | FixtureId::ScyllaSingleNodePreCharged
             | FixtureId::DynamoDBSingleNodePreCharged => {
-                teardown_single_node(&config.local_state_dir, config.scylla_env_file.as_deref())
+                teardown_single_node(&config.single_node.local_state_dir, config.scylla_env_file.as_deref())
             }
-            _ => unimplemented!(),
+            FixtureId::ScyllaCluster | FixtureId::DynamoDBCluster => teardown_cluster(&config.clustered, config.scylla_env_file.as_deref()),
         }
     }
 }
@@ -524,6 +676,16 @@ inventory::submit!(Fixture {
 inventory::submit!(Fixture {
     id: FixtureId::DynamoDBSingleNodePreCharged,
     name: "Alternator (single-node, pre-charged)"
+});
+
+inventory::submit!(Fixture {
+    id: FixtureId::ScyllaCluster,
+    name: "Scylla (cluster)",
+});
+
+inventory::submit!(Fixture {
+    id: FixtureId::DynamoDBCluster,
+    name: "Alternator (cluster)",
 });
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -569,7 +731,7 @@ inventory::collect!(Test);
 
 inventory::submit!(Test {
     name: "000test_healthcheck",
-    test_fn: |cfg, _| { Box::pin(test_healthcheck(cfg.indielinks)) },
+    test_fn: |_cfg, helper| { Box::pin(test_healthcheck(helper.indielinks())) },
     // I don't think there's much point in running this in more than one fixture
     fixtures: Some(&[FixtureId::DynamoDBSingleNode])
 });
@@ -578,7 +740,7 @@ inventory::submit!(Test {
     name: "001delicious_smoke_test",
     test_fn: |cfg, helper| {
         Box::pin(delicious_smoke_test(
-            cfg.indielinks,
+            helper.indielinks(),
             cfg.username,
             cfg.api_key,
             helper,
@@ -594,7 +756,7 @@ inventory::submit!(Test {
     name: "010delicious_posts_recent",
     test_fn: |cfg, helper| {
         Box::pin(posts_recent(
-            cfg.indielinks, /*url*/
+            helper.indielinks(),
             cfg.username,
             cfg.api_key,
             helper,
@@ -610,7 +772,7 @@ inventory::submit!(Test {
     name: "011delicious_posts_all",
     test_fn: |cfg, helper| {
         Box::pin(posts_all(
-            cfg.indielinks, /*url*/
+            helper.indielinks(),
             cfg.username,
             cfg.api_key,
             helper,
@@ -626,7 +788,7 @@ inventory::submit!(Test {
     name: "012delicious_tags_rename_and_delete",
     test_fn: |cfg: Configuration, helper| {
         Box::pin(tags_rename_and_delete(
-            cfg.indielinks,
+            helper.indielinks(),
             cfg.username,
             cfg.api_key,
             helper,
@@ -640,17 +802,17 @@ inventory::submit!(Test {
 
 inventory::submit!(Test {
     name: "020user_test_signup",
-    test_fn: |cfg: Configuration, helper| { Box::pin(test_signup(cfg.indielinks, helper)) },
+    test_fn: |_cfg: Configuration, helper| { Box::pin(test_signup(helper.indielinks(), helper)) },
     fixtures: None,
 });
 
 inventory::submit!(Test {
     name: "030webfinger_smoke",
-    test_fn: |cfg: Configuration, _helper| {
+    test_fn: |cfg: Configuration, helper| {
         Box::pin(webfinger_smoke(
-            cfg.indielinks.clone(),
+            helper.indielinks().clone(),
             cfg.username,
-            cfg.indielinks.clone().try_into().unwrap(/* Fail the test if this fails */),
+            helper.indielinks().clone().try_into().unwrap(/* Fail the test if this fails */),
         ))
     },
     fixtures: Some(&[
@@ -661,11 +823,11 @@ inventory::submit!(Test {
 
 inventory::submit!(Test {
     name: "040follow_smoke",
-    test_fn: |cfg: Configuration, _helper| {
+    test_fn: |cfg: Configuration, helper| {
         Box::pin(accept_follow_smoke(
-            cfg.indielinks.clone(),
+            helper.indielinks().clone(),
             cfg.username,
-            cfg.indielinks.try_into().unwrap(),
+            helper.indielinks().try_into().unwrap(),
         ))
     },
     fixtures: Some(&[
@@ -679,36 +841,36 @@ inventory::submit!(Test {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(posting_creates_note(
-            cfg.indielinks,
+            helper.indielinks(),
             version,
             pepper,
             helper,
         ))
     },
-    fixtures: None,
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
 });
 
 inventory::submit!(Test {
     name: "060send_follow",
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
-        Box::pin(send_follow(cfg.indielinks, version, pepper, helper))
+        Box::pin(send_follow(helper.indielinks(), version, pepper, helper))
     },
-    fixtures: None,
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
 });
 
 inventory::submit!(Test {
     name: "070as_follower",
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
-        Box::pin(as_follower(cfg.indielinks, version, pepper, helper))
+        Box::pin(as_follower(helper.indielinks(), version, pepper, helper))
     },
-    fixtures: None,
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
 });
 
 inventory::submit!(Test {
     name: "080user_test_mint_key",
-    test_fn: |cfg: Configuration, helper| { Box::pin(test_mint_key(cfg.indielinks, helper)) },
+    test_fn: |_cfg: Configuration, helper| { Box::pin(test_mint_key(helper.indielinks(), helper)) },
     fixtures: None,
 });
 
@@ -717,13 +879,13 @@ inventory::submit!(Test {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(context_with_mastodon(
-            cfg.indielinks,
+            helper.indielinks(),
             version,
             pepper,
             helper,
         ))
     },
-    fixtures: None,
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
 });
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

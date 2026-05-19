@@ -413,30 +413,7 @@ impl GrpcClient {
         }
     }
 
-    /// Forward a home timeline request to this node via gRPC
-    pub(crate) async fn timeline_forward(
-        &mut self,
-        user_id: &indielinks_shared::entities::UserId,
-        req: &indielinks_shared::api::TimelineReq,
-    ) -> Result<crate::app_logic::TimelineRsp> {
-        let user_id_bytes = rmp_serde::to_vec(user_id).context(SerSnafu { kind: "UserId" })?;
-        let req_bytes = rmp_serde::to_vec(req).context(SerSnafu {
-            kind: "TimelineReq",
-        })?;
-        let rsp = self
-            .ensure_connected()
-            .await?
-            .timeline(crate::protobuf_interop::protobuf::TimelineRequest {
-                user_id: user_id_bytes,
-                request: req_bytes,
-            })
-            .await
-            .context(TonicSnafu)?
-            .into_inner();
-        rmp_serde::from_slice::<crate::app_logic::TimelineRsp>(&rsp.response).context(DeSnafu)
-    }
-
-    async fn ensure_connected(
+    pub(crate) async fn ensure_connected(
         &mut self,
     ) -> Result<protobuf::grpc_service_client::GrpcServiceClient<tonic::transport::Channel>> {
         match &self.client {

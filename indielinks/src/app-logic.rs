@@ -25,6 +25,13 @@
 use std::{collections::HashSet, result::Result as StdResult, sync::Arc};
 
 use chrono::{DateTime, Utc};
+use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
+use serde::{Deserialize, Serialize};
+use snafu::{Backtrace, ResultExt, Snafu};
+use tap::Pipe;
+use tracing::debug;
+use url::Url;
+
 use indielinks_cache::types::NodeId;
 use indielinks_shared::{
     api::{
@@ -34,19 +41,16 @@ use indielinks_shared::{
     entities::{PostId, Tagname, UserId, Username},
     nonempty_string::NonEmptyString,
 };
-use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
-use serde::{Deserialize, Serialize};
-use snafu::{ResultExt, Snafu};
-use tap::Pipe;
-use tracing::debug;
-use url::Url;
 
 use crate::{
     activity_pub::SendCreate,
+    ap_entities::Item,
     background_tasks::{BackgroundTasks, Sender},
+    cache::GrpcClient,
     entities::User,
     home_timeline::{FirstPage, PostKey, Timeline},
     indielinks::Indielinks,
+    protobuf_interop::protobuf::{DropTimelineRequest, InsertTimelineItemRequest, TimelineRequest},
     signing_keys,
     storage::Backend as StorageBackend,
 };
@@ -59,6 +63,8 @@ use crate::{
 pub enum Error {
     #[snafu(display("While adding the post internally, {source}"))]
     AddPost { source: crate::storage::Error },
+    #[snafu(display("While connecting a gRPC client, {source}"))]
+    Connection { source: crate::cache::Error },
     #[snafu(display("While federating this post, {source}"))]
     Federation {
         source: crate::background_tasks::Error,
@@ -68,6 +74,16 @@ pub enum Error {
         username: Username,
         #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
         source: Box<crate::home_timeline::Error>,
+    },
+    #[snafu(display("While deserialzing to messagepack, {source}"))]
+    MessagePackDe {
+        source: rmp_serde::decode::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While serialzing to messagepack, {source}"))]
+    MessagePackSer {
+        source: rmp_serde::encode::Error,
+        backtrace: Backtrace,
     },
     #[snafu(display("Failed to hash UserId {userid}: {source}"))]
     NodeHash {
@@ -88,6 +104,14 @@ pub enum Error {
     },
     #[snafu(display("While forwarding timeline request via gRPC: {source}"))]
     TimelineForward { source: crate::cache::Error },
+    #[snafu(display("While forwarding a timeline insert request via gRPC: {source}"))]
+    TimelineInsertForward { source: crate::cache::Error },
+    #[snafu(display("gRPC error: {source}"))]
+    Tonic {
+        #[snafu(source(from(tonic::Status, Box::new)))]
+        source: Box<tonic::Status>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While unpacking the pagination token, {source}"))]
     UnpackPaginationToken {
         #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
@@ -98,10 +122,6 @@ pub enum Error {
 }
 
 pub type Result<T> = StdResult<T, Error>;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                           public API                                           //
-////////////////////////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         home timeline                                          //
@@ -238,10 +258,18 @@ async fn redirect_timeline(
         .context(SocketAddrSnafu {
             node_id: responsible_node,
         })?;
-    crate::cache::GrpcClient::new(responsible_node, addr)
-        .timeline_forward(user.id(), &request)
+    let response = GrpcClient::new(responsible_node, addr)
+        .ensure_connected()
         .await
-        .context(TimelineForwardSnafu)
+        .context(ConnectionSnafu)?
+        .timeline(TimelineRequest {
+            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
+            request: rmp_serde::to_vec(&request).context(MessagePackSerSnafu)?,
+        })
+        .await
+        .context(TonicSnafu)?
+        .into_inner();
+    rmp_serde::from_slice(&response.response).context(MessagePackDeSnafu)
 }
 
 /// Dispatch a home timeline request — execute locally or forward to the responsible node
@@ -255,6 +283,96 @@ pub async fn handle_timeline_or_redirect(
         Some(responsible_node) => {
             redirect_timeline(state.clone(), user, request, responsible_node).await
         }
+    }
+}
+
+pub async fn handle_timeline_insert(state: Arc<Indielinks>, user: &User, item: &Item) {
+    match state.home_timelines.lock().await.get_mut(user.id()) {
+        Some(timeline) => timeline.add(item.clone()),
+        // I suppose we *could* proactively start a timeline for `user`, even though they've never
+        // asked for it, but better, I think, to just let it go.
+        None => (),
+    }
+}
+
+async fn redirect_timeline_insert(
+    state: Arc<Indielinks>,
+    user: &User,
+    item: &Item,
+    responsible_node: NodeId,
+) -> Result<()> {
+    let addr = state
+        .cache_node
+        .socket_addr_for_id(responsible_node)
+        .await
+        .context(SocketAddrSnafu {
+            node_id: responsible_node,
+        })?;
+    GrpcClient::new(responsible_node, addr)
+        .ensure_connected()
+        .await
+        .context(ConnectionSnafu)?
+        .insert_timeline_item(InsertTimelineItemRequest {
+            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
+            item: rmp_serde::to_vec(item).context(MessagePackSerSnafu)?,
+        })
+        .await
+        .context(TonicSnafu)?;
+    Ok(())
+}
+
+/// Insert a new item into a (possibly) extant timeline
+pub async fn handle_timeline_insert_or_redirect(
+    state: Arc<Indielinks>,
+    user: &User,
+    item: &Item,
+) -> Result<()> {
+    match this_node_is_responsible(state.clone(), user).await? {
+        Some(responsible_node) => {
+            redirect_timeline_insert(state.clone(), user, item, responsible_node).await
+        }
+        None => {
+            handle_timeline_insert(state.clone(), user, item).await;
+            Ok(())
+        }
+    }
+}
+
+pub async fn handle_timeline_drop(state: Arc<Indielinks>, user: &User) {
+    let _ = state.home_timelines.lock().await.pop(user.id());
+}
+
+async fn redirect_timeline_drop(
+    state: Arc<Indielinks>,
+    user: &User,
+    responsible_node: NodeId,
+) -> Result<()> {
+    let addr = state
+        .cache_node
+        .socket_addr_for_id(responsible_node)
+        .await
+        .context(SocketAddrSnafu {
+            node_id: responsible_node,
+        })?;
+    GrpcClient::new(responsible_node, addr)
+        .ensure_connected()
+        .await
+        .context(ConnectionSnafu)?
+        .drop_timeline(DropTimelineRequest {
+            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
+        })
+        .await
+        .context(TonicSnafu)?;
+    Ok(())
+}
+
+/// Drop a timeline
+pub async fn handle_timeline_drop_or_redirect(state: Arc<Indielinks>, user: &User) -> Result<()> {
+    match this_node_is_responsible(state.clone(), user).await? {
+        Some(responsible_node) => {
+            redirect_timeline_drop(state.clone(), user, responsible_node).await
+        }
+        None => handle_timeline_drop(state.clone(), user).await.pipe(Ok),
     }
 }
 

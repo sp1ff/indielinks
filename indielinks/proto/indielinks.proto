@@ -199,20 +199,12 @@ message TimelineResponse {
 // Add an item to a user's home timeline (deferred)
 message InsertTimelineItemRequest {
     bytes user_id = 1;  // msgpack-encoded UserId
-    bytes request = 2;  // msgpack-encoded InsertTimelineItemReq
-}
-
-message InsertTimelineItemResponse {
-    bytes response = 1;  // msgpack-encoded InsertTimelineItemRsp
+    bytes item = 2;  // msgpack-encoded Item
 }
 
 // Drop a user's home timeline (deferred)
 message DropTimelineRequest {
     bytes user_id = 1;  // msgpack-encoded UserId
-}
-
-message DropTimelineResponse {
-    bytes response = 1;  // msgpack-encoded DropTimelineRsp
 }
 
 service GrpcService {
@@ -230,7 +222,7 @@ service GrpcService {
     // Forward a home timeline request to the responsible node
     rpc Timeline(TimelineRequest) returns (TimelineResponse) {}
     // Add an item to a user's home timeline (deferred)
-    rpc InsertTimelineItem(InsertTimelineItemRequest) returns (InsertTimelineItemResponse) {}
+    rpc InsertTimelineItem(InsertTimelineItemRequest) returns (google.protobuf.Empty) {}
     // Drop a user's home timeline (deferred)
-    rpc DropTimeline(DropTimelineRequest) returns (DropTimelineResponse) {}
+    rpc DropTimeline(DropTimelineRequest) returns (google.protobuf.Empty) {}
 }

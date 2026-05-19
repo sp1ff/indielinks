@@ -22,6 +22,7 @@
 use std::{ffi::OsStr, process::Command};
 
 use snafu::{prelude::*, Backtrace};
+use tracing::debug;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -49,8 +50,19 @@ const RUST_LOG: &str = "debug,aws_config=info,aws_runtime=info,aws_sdk_sts=info,
 pub fn run<I, S>(cmd: &str, args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
+    I::IntoIter: Clone,
     S: AsRef<OsStr>,
 {
+    let args = args.into_iter();
+
+    debug!("Invoking {cmd}:");
+    debug!(
+        "with arguments: {:?}",
+        args.clone()
+            .map(|s| s.as_ref().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    );
+
     let output = Command::new(cmd)
         .args(args)
         .env("RUST_LOG", RUST_LOG)

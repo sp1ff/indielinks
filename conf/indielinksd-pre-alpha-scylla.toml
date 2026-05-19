@@ -1,7 +1,10 @@
 # indielinks configuration file for dev use with a ScyllaDB (test) backend
 # when working in the pre-alpha worktree.
 version = "1"
+# This needs to agree with the `local-state-dir` item in `smoke-tests-pre-alpha.toml`
 log-file = "/tmp/indielinks-pre-alpha/indielinks.log"
+# These ports match those in pre-alpha/indielinksd-alternator-0.toml. That used to
+# be important, but I don't think it matters anymore.
 public-address = "0.0.0.0:20724"
 private-address = "127.0.0.1:20725"
 raft-grpc-address = "0.0.0.0:20726"
