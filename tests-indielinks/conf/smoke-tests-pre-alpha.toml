@@ -1,0 +1,29 @@
+# Run the integration test "smoke-tests" against the 'pre-alpha' stack.
+
+runner.log-level = "DEBUG"
+runner.logging = false
+runner.no-setup = false
+runner.no-teardown = false
+runner.enforce-single-threaded=true
+
+domain.local-state-dir = "/tmp/indielinks-pre-alpha"
+domain.indielinks-alternator-config-file = "indielinksd-pre-alpha-alternator.toml"
+domain.indielinks-scylla-config-file = "indielinksd-pre-alpha-scylla.toml"
+domain.username = "sp1ff"
+# The URL at which indielinks can be reached from *within* a test
+domain.indielinks = "http://indiemark.local:20724"
+domain.ops = "http://localhost:20725"
+domain.grpc = "127.0.0.1:20726"
+domain.api-key = "v1:5eb56ceebb7425aafe36eabca8b923054b4907d9375acd0b9950c51b57b201fb73e437428050f451b57632f99a3bbd5bed1c0f51cc0df752147090ed26e975f4"
+domain.scylla-env-file = "pre-alpha.env"
+
+# Regrettably, this must match exactly the indielinks configuration item of the same name
+[domain.pepper.peppers]
+"pepper-ver:20250213" = [0xb2, 0x91, 0x48, 0x34, 0x4d, 0x5f, 0xd3, 0x7e, 0x59, 0x71, 0x57, 0x91, 0xdd, 0x00, 0x32, 0x92, 0x62, 0xe9, 0x19, 0x77, 0x6d, 0xae, 0x4b, 0x5b, 0x6a, 0xab, 0x00, 0x67, 0x0e, 0x8c, 0xf4, 54]
+
+[domain.scylla]
+hosts = ["127.0.0.1:9052"]
+translations=[["172.14.0.3:9052", "127.0.0.1:9053"], ["172.14.0.4:9052", "127.0.0.1:9054"]]
+
+[domain.dynamo]
+location = ["http://127.0.0.1:8052", "http://127.0.0.1:8053", "http://127.0.0.1:8054"]

@@ -1,0 +1,828 @@
+#!/usr/bin/env bash
+VERSION=0.0.1
+
+help=
+nargs=0
+prev_option=
+verbose=
+version=
+for option
+do
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    case $option in
+        -h | --he | --hel | --help)
+            nargs=$(($nargs+1)); help=yes;;
+        -v | --verb | --verbose)
+            nargs=$(($nargs+1)); verbose=yes;;
+        -V | --vers | --version)
+            nargs=$(($nargs+1)); version=yes;;
+        -*)
+            cat >&2 <<USAGE
+Unrecognized option '$option'.
+Try 'create-stack --help' for more information.
+USAGE
+            exit 2;;
+        *)
+            break;;
+    esac
+done
+
+shift $nargs
+# $@ now contains the arguments, $# the number of arguments
+
+if test -n "${help}"; then
+    cat <<HELP
+create-stack -- Create configuration files for a new indielinks integration test stack
+
+Usage:
+
+    create-stack [OPTION...] NAME PARAMS-FILE
+
+Arguments:
+
+    NAME         Stack name (lowercase letters, digits, hyphens, underscores). May not
+                 be 'indielinks'.
+
+    PARAMS-FILE  Shell-sourceable file supplying:
+                   APP_PORT_BASE          Base port for the 5-node indielinksd cluster.
+                                          Node i gets ports base+3i (public),
+                                          base+3i+1 (private), base+3i+2 (gRPC).
+                   HAPROXY_PORT           HAProxy/load-balancer port
+                   SCYLLA_NATIVE_BASE     First ScyllaDB native-protocol port
+                                          (three consecutive ports are used)
+                   SCYLLA_ALTERNATOR_BASE First ScyllaDB Alternator-protocol port
+                                          (three consecutive ports are used)
+                   CACHE_PORT_BASE        Base port for the 5-node cache binary cluster
+                   SCYLLA_SUBNET          Docker bridge subnet in CIDR notation
+                                          (e.g. 172.13.0.0/24). Node addresses
+                                          will be <prefix>.2, .3, .4.
+                   SCYLLA_NODE_BASE       Numeric suffix of the first ScyllaDB Docker
+                                          container (three consecutive suffixes are used)
+
+Options:
+
+    -h, --help     Print this message & exit
+    -V, --version  Print this script's version & exit
+    -v, --verbose  Produce verbose output
+
+Generated files:
+
+    infra/<NAME>.env
+    conf/indielinksd-<NAME>-scylla.toml
+    conf/indielinksd-<NAME>-alternator.toml
+    conf/<NAME>/indielinksd-scylla-{0..4}.toml
+    conf/<NAME>/indielinksd-alternator-{0..4}.toml
+    tests-indielinks/conf/smoke-tests-<NAME>.toml
+    tests-indielinks/conf/cache-tests-<NAME>.toml
+    tests-indielinks/conf/background-task-tests-<NAME>.toml
+    tests-indielinks-cache/conf/cache-cluster-tests-<NAME>.toml
+    admin/cargo-test-<NAME>
+    .agents/bin/agent-sign-off
+
+HELP
+    exit 0
+fi
+
+if test -n "${version}"; then
+    echo "create-stack ${VERSION}"
+    exit 0
+fi
+
+if [ $# -ne 2 ]; then
+    cat >&2 <<USAGE
+Usage: create-stack [OPTION...] NAME PARAMS-FILE
+Try 'create-stack --help' for more information.
+USAGE
+    exit 2
+fi
+
+set -euo pipefail
+if test -n "${verbose}"; then
+    set -x
+fi
+
+name="$1"
+params_file="$2"
+
+# Validate name
+if ! echo "${name}" | grep -qE '^[a-z0-9][a-z0-9_-]*$'; then
+    cat >&2 <<ERR
+Error: NAME must match [a-z0-9][a-z0-9_-]* (got '${name}').
+Try 'create-stack --help' for more information.
+ERR
+    exit 2
+fi
+if [ "${name}" = "default" ] || [ "${name}" = "indielinks" ]; then
+    echo "Error: NAME '${name}' is reserved." >&2
+    exit 2
+fi
+
+# Source the params file
+source "${params_file}"
+
+required_vars=(APP_PORT_BASE HAPROXY_PORT SCYLLA_NATIVE_BASE SCYLLA_ALTERNATOR_BASE
+               CACHE_PORT_BASE SCYLLA_SUBNET SCYLLA_NODE_BASE)
+for var in "${required_vars[@]}"; do
+    if [ -z "${!var:-}" ]; then
+        echo "Error: required variable ${var} is not set in '${params_file}'." >&2
+        exit 2
+    fi
+done
+
+# Move to the repo root (this script lives in admin/)
+here=$(dirname "$(realpath "$0")")
+root=$(dirname "${here}")
+cd "${root}"
+
+# ---------------------------------------------------------------------------
+# Derive all port and subnet values before writing any file
+# ---------------------------------------------------------------------------
+
+subnet_prefix=$(echo "${SCYLLA_SUBNET}" | sed 's/\.[0-9]*\/[0-9]*$//')
+node1_suffix=$((SCYLLA_NODE_BASE))
+node2_suffix=$((SCYLLA_NODE_BASE + 1))
+node3_suffix=$((SCYLLA_NODE_BASE + 2))
+node1_addr="${subnet_prefix}.2"
+node2_addr="${subnet_prefix}.3"
+node3_addr="${subnet_prefix}.4"
+
+scylla_native_1=$((SCYLLA_NATIVE_BASE))
+scylla_native_2=$((SCYLLA_NATIVE_BASE + 1))
+scylla_native_3=$((SCYLLA_NATIVE_BASE + 2))
+
+scylla_alt_1=$((SCYLLA_ALTERNATOR_BASE))
+scylla_alt_2=$((SCYLLA_ALTERNATOR_BASE + 1))
+scylla_alt_3=$((SCYLLA_ALTERNATOR_BASE + 2))
+
+# Per-Raft-node ports (indexed 0-4)
+declare -a pub prv grpc
+for i in 0 1 2 3 4; do
+    pub[$i]=$((APP_PORT_BASE + 3*i))
+    prv[$i]=$((APP_PORT_BASE + 3*i + 1))
+    grpc[$i]=$((APP_PORT_BASE + 3*i + 2))
+done
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# write_file PATH: reads content from stdin, warns and overwrites if PATH exists
+write_file() {
+    local path="$1"
+    if [ -e "${path}" ]; then
+        echo "Warning: overwriting existing file '${path}'" >&2
+    fi
+    cat > "${path}"
+}
+
+mkdir -p "conf/${name}" ".agents/bin"
+
+echo "Generating stack '${name}'..."
+
+# ---------------------------------------------------------------------------
+# infra/<NAME>.env
+# ---------------------------------------------------------------------------
+
+write_file "infra/${name}.env" <<EOF
+# docker compose env file for ${name} stack
+SCYLLA_SUBNET="${SCYLLA_SUBNET}"
+SCYLLA_NODE_1=${node1_suffix}
+SCYLLA_NODE_2=${node2_suffix}
+SCYLLA_NODE_3=${node3_suffix}
+SCYLLA_NATIVE_PORT_1=${scylla_native_1}
+SCYLLA_NATIVE_PORT_2=${scylla_native_2}
+SCYLLA_NATIVE_PORT_3=${scylla_native_3}
+SCYLLA_ALTERNATOR_PORT_1=${scylla_alt_1}
+SCYLLA_ALTERNATOR_PORT_2=${scylla_alt_2}
+SCYLLA_ALTERNATOR_PORT_3=${scylla_alt_3}
+SCYLLA_NODE_1_ADDRESS=${node1_addr}
+SCYLLA_NODE_2_ADDRESS=${node2_addr}
+SCYLLA_NODE_3_ADDRESS=${node3_addr}
+EOF
+
+# ---------------------------------------------------------------------------
+# conf/indielinksd-<NAME>-scylla.toml  (single-node dev config, ScyllaDB)
+# ---------------------------------------------------------------------------
+
+write_file "conf/indielinksd-${name}-scylla.toml" <<EOF
+# indielinks configuration file for dev use with a ScyllaDB (test) backend
+# when working in the ${name} worktree.
+version = "1"
+log-file = "/tmp/indielinks-${name}/indielinks.log"
+public-address = "0.0.0.0:${pub[0]}"
+private-address = "127.0.0.1:${prv[0]}"
+raft-grpc-address = "0.0.0.0:${grpc[0]}"
+user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
+collection-page-size = 64
+
+[otlp-export]
+endpoint = "http://localhost:9090/api/v1/otlp/v1/metrics"
+
+[public-origin]
+scheme = "http"
+port = ${pub[0]}
+
+[public-origin.host]
+RegName = "indiemark.local"
+
+[storage-config.Scylla]
+hosts = ["127.0.0.1:${scylla_native_1}"]
+translations=[["${node1_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_1}"],["${node2_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_2}"],["${node3_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_3}"]]
+
+[pepper.peppers]
+"pepper-ver:20250213" = [0xb2, 0x91, 0x48, 0x34, 0x4d, 0x5f, 0xd3, 0x7e, 0x59, 0x71, 0x57, 0x91, 0xdd, 0x00, 0x32, 0x92, 0x62, 0xe9, 0x19, 0x77, 0x6d, 0xae, 0x4b, 0x5b, 0x6a, 0xab, 0x00, 0x67, 0x0e, 0x8c, 0xf4, 54]
+
+[signing-keys]
+"token-lifetime" = [300, 0] # seconds, nanoseconds => 5 min
+"refresh-token-lifetime" = [129600, 0] # seconds, nanoseconds => 36 hours
+
+[signing-keys.signing-keys.keys]
+"keyid:20250214" = [0xcf, 0x1e, 0x25, 0xb2, 0xde, 0x2a, 0x44, 0xde, 0xd1, 0xce, 0xc7, 0xfa, 0xdb, 0x5e, 0x03, 0xa3, 0x1e, 0x15, 0xa1, 0x8c, 0x01, 0xaa, 0x8c, 0xbb, 0xb9, 0xe4, 0x2f, 0xb1, 0xd7, 0x0b, 0xc4, 0x98, 0xdd, 0x80, 0xd0, 0x4d, 0x68, 0xf7, 0x1c, 0xb2, 0xcf, 0xf1, 0x06, 0xef, 0x47, 0x0b, 0x16, 0xdd, 0x69, 0x98, 0x3c, 0x6d, 0x79, 0xd6, 0xc9, 0x0c, 0xfc, 0x60, 0x13, 0xa0, 0x5f, 0x7c, 0x64, 0xea]
+
+[users-config]
+same-site = "Lax"
+secure-cookies = true
+[[users-config.allowed-origins]]     # http://localhost:18080
+scheme = "http"
+port = 18080
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:18080
+scheme = "http"
+port = 18080
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+[[users-config.allowed-origins]]     # http://localhost:20676
+scheme = "http"
+port = 20676
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:20676
+scheme = "http"
+port = 20676
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+[[users-config.allowed-origins]]     # http://localhost:18443
+scheme = "http"
+port = 18443
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:18443
+scheme = "http"
+port = 18443
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+
+[background-tasks]
+default-timeout = { secs = 5, nanos = 0 }
+max-concurrent-tasks = 16
+sleep-duration = { secs = 1, nanos = 0 }
+shutdown-timeout = { secs = 0, nanos = 500000000 } # "500ms"
+pickup-timeout = { secs = 1, nanos = 0 }
+
+[raft-config]
+cluster-name = "indielinks"
+this-node = 0
+heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
+election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
+election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
+
+[client-exponential-backoff]
+jitter = 10.0
+num-attempts = 3
+
+[client-exponential-backoff.durations.min]
+secs = 1
+nanos = 0
+[client-exponential-backoff.durations.max]
+secs = 3
+nanos = 0
+
+[client-rate-limits]
+per-second = 16
+custom = []
+
+[local-rate-limits]
+per-second = 32
+custom = []
+
+[general-purpose-rate-limits]
+per-second = 8
+custom = []
+EOF
+
+# ---------------------------------------------------------------------------
+# conf/indielinksd-<NAME>-alternator.toml  (single-node dev config, Alternator)
+# ---------------------------------------------------------------------------
+
+write_file "conf/indielinksd-${name}-alternator.toml" <<EOF
+# indielinks configuration file for dev use with a ScyllaDB/Alternator (test) backend
+# when working in the ${name} worktree.
+version = "1"
+log-file = "/tmp/indielinks-${name}/indielinks.log"
+# Regrettably, it's important that these ports match those in ${name}/indielinksd-alternator-0.toml
+public-address = "0.0.0.0:${pub[0]}"
+private-address = "127.0.0.1:${prv[0]}"
+raft-grpc-address = "0.0.0.0${grpc[0]}"
+user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
+collection-page-size = 64
+
+[otlp-export]
+endpoint = "http://localhost:9090/api/v1/otlp/v1/metrics"
+
+[public-origin]
+scheme = "http"
+port = ${pub[0]}
+
+[public-origin.host]
+RegName = "indiemark.local"
+
+[storage-config.Dynamo]
+location = ["http://127.0.0.1:${scylla_alt_1}", "http://127.0.0.1:${scylla_alt_2}", "http://127.0.0.1:${scylla_alt_3}"]
+
+[pepper.peppers]
+"pepper-ver:20250213" = [0xb2, 0x91, 0x48, 0x34, 0x4d, 0x5f, 0xd3, 0x7e, 0x59, 0x71, 0x57, 0x91, 0xdd, 0x00, 0x32, 0x92, 0x62, 0xe9, 0x19, 0x77, 0x6d, 0xae, 0x4b, 0x5b, 0x6a, 0xab, 0x00, 0x67, 0x0e, 0x8c, 0xf4, 54]
+
+[signing-keys]
+"token-lifetime" = [300, 0] # seconds, nanoseconds => 5 min
+"refresh-token-lifetime" = [129600, 0] # seconds, nanoseconds => 36 hours
+
+[signing-keys.signing-keys.keys]
+"keyid:20250214" = [0xcf, 0x1e, 0x25, 0xb2, 0xde, 0x2a, 0x44, 0xde, 0xd1, 0xce, 0xc7, 0xfa, 0xdb, 0x5e, 0x03, 0xa3, 0x1e, 0x15, 0xa1, 0x8c, 0x01, 0xaa, 0x8c, 0xbb, 0xb9, 0xe4, 0x2f, 0xb1, 0xd7, 0x0b, 0xc4, 0x98, 0xdd, 0x80, 0xd0, 0x4d, 0x68, 0xf7, 0x1c, 0xb2, 0xcf, 0xf1, 0x06, 0xef, 0x47, 0x0b, 0x16, 0xdd, 0x69, 0x98, 0x3c, 0x6d, 0x79, 0xd6, 0xc9, 0x0c, 0xfc, 0x60, 0x13, 0xa0, 0x5f, 0x7c, 0x64, 0xea]
+
+[users-config]
+same-site = "Lax"
+secure-cookies = true
+[[users-config.allowed-origins]]     # http://localhost:18080
+scheme = "http"
+port = 18080
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:18080
+scheme = "http"
+port = 18080
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+[[users-config.allowed-origins]]     # http://localhost:20676
+scheme = "http"
+port = 20676
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:20676
+scheme = "http"
+port = 20676
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+[[users-config.allowed-origins]]     # http://localhost:18443
+scheme = "http"
+port = 18443
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:18443
+scheme = "http"
+port = 18443
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+
+[background-tasks]
+default-timeout = { secs = 5, nanos = 0 }
+max-concurrent-tasks = 16
+sleep-duration = { secs = 1, nanos = 0 }
+shutdown-timeout = { secs = 0, nanos = 500000000 } # "500ms"
+pickup-timeout = { secs = 1, nanos = 0 }
+
+[raft-config]
+cluster-name = "indielinks"
+this-node = 0
+heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
+election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
+election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
+
+[client-exponential-backoff]
+jitter = 10.0
+num-attempts = 3
+
+[client-exponential-backoff.durations.min]
+secs = 1
+nanos = 0
+[client-exponential-backoff.durations.max]
+secs = 3
+nanos = 0
+
+[client-rate-limits]
+per-second = 16
+custom = []
+
+[local-rate-limits]
+per-second = 32
+custom = []
+
+[general-purpose-rate-limits]
+per-second = 8
+custom = []
+EOF
+
+# ---------------------------------------------------------------------------
+# conf/<NAME>/indielinksd-scylla-{0..4}.toml  (5-node Raft cluster, ScyllaDB)
+# ---------------------------------------------------------------------------
+
+for i in 0 1 2 3 4; do
+    write_file "conf/${name}/indielinksd-scylla-${i}.toml" <<EOF
+version = "1"
+log-file = "/tmp/indielinksd-${name}-${i}/indielinksd.log"
+public-address = "0.0.0.0:${pub[$i]}"
+private-address = "127.0.0.1:${prv[$i]}"
+raft-grpc-address = "127.0.0.1:${grpc[$i]}"
+user-agent = "indielinksd/0.0.1; +sp1ff@pobox.com"
+collection-page-size = 64
+
+[public-origin]
+scheme = "http"
+port = ${HAPROXY_PORT}
+
+[public-origin.host]
+RegName = "indiemark.local"
+
+[storage-config.Scylla]
+hosts = ["127.0.0.1:${scylla_native_1}"]
+translations=[["${node1_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_1}"],["${node2_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_2}"], ["${node3_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_3}"]]
+
+[pepper.peppers]
+"pepper-ver:20250213" = [0xb2, 0x91, 0x48, 0x34, 0x4d, 0x5f, 0xd3, 0x7e, 0x59, 0x71, 0x57, 0x91, 0xdd, 0x00, 0x32, 0x92, 0x62, 0xe9, 0x19, 0x77, 0x6d, 0xae, 0x4b, 0x5b, 0x6a, 0xab, 0x00, 0x67, 0x0e, 0x8c, 0xf4, 54]
+
+[signing-keys]
+"token-lifetime" = [300, 0] # seconds, nanoseconds => 5 min
+"refresh-token-lifetime" = [129600, 0] # seconds, nanoseconds => 36 hours
+
+[signing-keys.signing-keys.keys]
+"keyid:20250214" = [0xcf, 0x1e, 0x25, 0xb2, 0xde, 0x2a, 0x44, 0xde, 0xd1, 0xce, 0xc7, 0xfa, 0xdb, 0x5e, 0x03, 0xa3, 0x1e, 0x15, 0xa1, 0x8c, 0x01, 0xaa, 0x8c, 0xbb, 0xb9, 0xe4, 0x2f, 0xb1, 0xd7, 0x0b, 0xc4, 0x98, 0xdd, 0x80, 0xd0, 0x4d, 0x68, 0xf7, 0x1c, 0xb2, 0xcf, 0xf1, 0x06, 0xef, 0x47, 0x0b, 0x16, 0xdd, 0x69, 0x98, 0x3c, 0x6d, 0x79, 0xd6, 0xc9, 0x0c, 0xfc, 0x60, 0x13, 0xa0, 0x5f, 0x7c, 0x64, 0xea]
+
+[users-config]
+same-site = "None"
+secure-cookies = false
+[[users-config.allowed-origins]]     # http://localhost:18080
+scheme = "http"
+port = 18080
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:18080
+scheme = "http"
+port = 18080
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+[[users-config.allowed-origins]]     # http://localhost:20676
+scheme = "http"
+port = 20676
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:20676
+scheme = "http"
+port = 20676
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+[[users-config.allowed-origins]]     # http://localhost:18443
+scheme = "http"
+port = 18443
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:18443
+scheme = "http"
+port = 18443
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+
+[background-tasks]
+default-timeout = { secs = 5, nanos = 0 }
+max-concurrent-tasks = 16
+sleep-duration = { secs = 1, nanos = 0 }
+shutdown-timeout = { secs = 0, nanos = 500000000 } # "500ms"
+pickup-timeout = { secs = 1, nanos = 0 }
+
+[raft-config]
+cluster-name = "indielinks"
+this-node = ${i}
+heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
+election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
+election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
+
+[client-exponential-backoff]
+jitter = 10.0
+num-attempts = 3
+
+[client-exponential-backoff.durations.min]
+secs = 1
+nanos = 0
+[client-exponential-backoff.durations.max]
+secs = 3
+nanos = 0
+
+[client-rate-limits]
+per-second = 16
+custom = []
+
+[local-rate-limits]
+per-second = 32
+custom = []
+
+[general-purpose-rate-limits]
+per-second = 8
+custom = []
+EOF
+done
+
+# ---------------------------------------------------------------------------
+# conf/<NAME>/indielinksd-alternator-{0..4}.toml  (5-node Raft cluster, Alternator)
+# ---------------------------------------------------------------------------
+
+for i in 0 1 2 3 4; do
+    write_file "conf/${name}/indielinksd-alternator-${i}.toml" <<EOF
+version = "1"
+log-file = "/tmp/indielinksd-${name}-${i}/indielinksd.log"
+public-address = "0.0.0.0:${pub[$i]}"
+private-address = "127.0.0.1:${prv[$i]}"
+raft-grpc-address = "127.0.0.1:${grpc[$i]}"
+user-agent = "indielinksd/0.0.1; +sp1ff@pobox.com"
+collection-page-size = 64
+
+[public-origin]
+scheme = "http"
+port = ${HAPROXY_PORT}
+
+[public-origin.host]
+RegName = "indiemark.local"
+
+[storage-config.Dynamo]
+location = ["http://127.0.0.1:${scylla_alt_1}", "http://127.0.0.1:${scylla_alt_2}", "http://127.0.0.1:${scylla_alt_3}"]
+
+[pepper.peppers]
+"pepper-ver:20250213" = [0xb2, 0x91, 0x48, 0x34, 0x4d, 0x5f, 0xd3, 0x7e, 0x59, 0x71, 0x57, 0x91, 0xdd, 0x00, 0x32, 0x92, 0x62, 0xe9, 0x19, 0x77, 0x6d, 0xae, 0x4b, 0x5b, 0x6a, 0xab, 0x00, 0x67, 0x0e, 0x8c, 0xf4, 54]
+
+[signing-keys]
+"token-lifetime" = [300, 0] # seconds, nanoseconds => 5 min
+"refresh-token-lifetime" = [129600, 0] # seconds, nanoseconds => 36 hours
+
+[signing-keys.signing-keys.keys]
+"keyid:20250214" = [0xcf, 0x1e, 0x25, 0xb2, 0xde, 0x2a, 0x44, 0xde, 0xd1, 0xce, 0xc7, 0xfa, 0xdb, 0x5e, 0x03, 0xa3, 0x1e, 0x15, 0xa1, 0x8c, 0x01, 0xaa, 0x8c, 0xbb, 0xb9, 0xe4, 0x2f, 0xb1, 0xd7, 0x0b, 0xc4, 0x98, 0xdd, 0x80, 0xd0, 0x4d, 0x68, 0xf7, 0x1c, 0xb2, 0xcf, 0xf1, 0x06, 0xef, 0x47, 0x0b, 0x16, 0xdd, 0x69, 0x98, 0x3c, 0x6d, 0x79, 0xd6, 0xc9, 0x0c, 0xfc, 0x60, 0x13, 0xa0, 0x5f, 0x7c, 0x64, 0xea]
+
+[users-config]
+same-site = "None"
+secure-cookies = false
+[[users-config.allowed-origins]]     # http://localhost:18080
+scheme = "http"
+port = 18080
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:18080
+scheme = "http"
+port = 18080
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+[[users-config.allowed-origins]]     # http://localhost:20676
+scheme = "http"
+port = 20676
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:20676
+scheme = "http"
+port = 20676
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+[[users-config.allowed-origins]]     # http://localhost:18443
+scheme = "http"
+port = 18443
+[users-config.allowed-origins.host]
+RegName = "localhost"
+[[users-config.allowed-origins]]     # http://127.0.0.1:18443
+scheme = "http"
+port = 18443
+[users-config.allowed-origins.host]
+Ipv4Address = "127.0.0.1"
+
+[background-tasks]
+default-timeout = { secs = 5, nanos = 0 }
+max-concurrent-tasks = 16
+sleep-duration = { secs = 1, nanos = 0 }
+shutdown-timeout = { secs = 0, nanos = 500000000 } # "500ms"
+pickup-timeout = { secs = 1, nanos = 0 }
+
+[raft-config]
+cluster-name = "indielinks"
+this-node = ${i}
+heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
+election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
+election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
+
+[client-exponential-backoff]
+jitter = 10.0
+num-attempts = 3
+
+[client-exponential-backoff.durations.min]
+secs = 1
+nanos = 0
+[client-exponential-backoff.durations.max]
+secs = 3
+nanos = 0
+
+[client-rate-limits]
+per-second = 16
+custom = []
+
+[local-rate-limits]
+per-second = 32
+custom = []
+
+[general-purpose-rate-limits]
+per-second = 8
+custom = []
+EOF
+done
+
+# ---------------------------------------------------------------------------
+# tests-indielinks/conf/smoke-tests-<NAME>.toml
+# ---------------------------------------------------------------------------
+
+write_file "tests-indielinks/conf/smoke-tests-${name}.toml" <<EOF
+# Run the integration test "smoke-tests" against the '${name}' stack.
+
+runner.log-level = "DEBUG"
+runner.logging = false
+runner.no-setup = false
+runner.no-teardown = false
+runner.enforce-single-threaded=true
+
+domain.local-state-dir = "/tmp/indielinks-${name}"
+domain.indielinks-alternator-config-file = "indielinksd-${name}-alternator.toml"
+domain.indielinks-scylla-config-file = "indielinksd-${name}-scylla.toml"
+domain.username = "sp1ff"
+# The URL at which indielinks can be reached from *within* a test
+domain.indielinks = "http://indiemark.local:${pub[0]}"
+domain.ops = "http://localhost:${prv[0]}"
+domain.grpc = "127.0.0.1:${grpc[0]}"
+domain.api-key = "v1:5eb56ceebb7425aafe36eabca8b923054b4907d9375acd0b9950c51b57b201fb73e437428050f451b57632f99a3bbd5bed1c0f51cc0df752147090ed26e975f4"
+domain.scylla-env-file = "${name}.env"
+
+# Regrettably, this must match exactly the indielinks configuration item of the same name
+[domain.pepper.peppers]
+"pepper-ver:20250213" = [0xb2, 0x91, 0x48, 0x34, 0x4d, 0x5f, 0xd3, 0x7e, 0x59, 0x71, 0x57, 0x91, 0xdd, 0x00, 0x32, 0x92, 0x62, 0xe9, 0x19, 0x77, 0x6d, 0xae, 0x4b, 0x5b, 0x6a, 0xab, 0x00, 0x67, 0x0e, 0x8c, 0xf4, 54]
+
+[domain.scylla]
+hosts = ["127.0.0.1:${scylla_native_1}"]
+translations=[["${node2_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_2}"], ["${node3_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_3}"]]
+
+[domain.dynamo]
+location = ["http://127.0.0.1:${scylla_alt_1}", "http://127.0.0.1:${scylla_alt_2}", "http://127.0.0.1:${scylla_alt_3}"]
+EOF
+
+# ---------------------------------------------------------------------------
+# tests-indielinks/conf/cache-tests-<NAME>.toml
+# ---------------------------------------------------------------------------
+
+write_file "tests-indielinks/conf/cache-tests-${name}.toml" <<EOF
+# Run the integration test "cache-tests" against the '${name}' stack.
+
+runner.log-level = "DEBUG"
+runner.logging = false
+runner.no-setup = false
+runner.no-teardown = false
+runner.enforce-single-threaded=true
+
+domain.ops = "http://localhost:${prv[0]}"
+domain.scylla-env-file = "${name}.env"
+domain.local-state-base = "/tmp/indielinksd-${name}-"
+domain.alternator-config-base = "../conf/${name}/indielinksd-alternator-"
+domain.scylla-config-base = "../conf/${name}/indielinksd-scylla-"
+domain.haproxy-id = "${name}"
+domain.haproxy-port = ${HAPROXY_PORT}
+
+[domain.raft-nodes]
+"0" = { addr = "127.0.0.1:${grpc[0]}" }
+"1" = { addr = "127.0.0.1:${grpc[1]}" }
+"2" = { addr = "127.0.0.1:${grpc[2]}" }
+"3" = { addr = "127.0.0.1:${grpc[3]}" }
+"4" = { addr = "127.0.0.1:${grpc[4]}" }
+
+[domain.scylla]
+hosts = ["127.0.0.1:${scylla_native_1}"]
+translations=[["${node2_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_2}"], ["${node3_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_3}"]]
+
+[domain.dynamo]
+location = ["http://127.0.0.1:${scylla_alt_1}", "http://127.0.0.1:${scylla_alt_2}", "http://127.0.0.1:${scylla_alt_3}"]
+EOF
+
+# ---------------------------------------------------------------------------
+# tests-indielinks/conf/background-task-tests-<NAME>.toml
+# ---------------------------------------------------------------------------
+
+write_file "tests-indielinks/conf/background-task-tests-${name}.toml" <<EOF
+# Run the integration test "background-task-tests" against the '${name}' stack.
+
+runner.log-level = "DEBUG"
+runner.logging = true
+runner.no-setup = false
+runner.no-teardown = false
+runner.enforce-single-threaded=true
+
+domain.scylla-env-file = "${name}.env"
+
+[domain.origin]
+scheme = "http"
+port = ${pub[0]}
+host = { RegName = "indiemark.local" }
+
+[domain.scylla]
+hosts = ["127.0.0.1:${scylla_native_1}"]
+translations=[["${node2_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_2}"], ["${node3_addr}:${scylla_native_1}", "127.0.0.1:${scylla_native_3}"]]
+
+[domain.dynamo]
+location = ["http://127.0.0.1:${scylla_alt_1}", "http://127.0.0.1:${scylla_alt_2}", "http://127.0.0.1:${scylla_alt_3}"]
+EOF
+
+# ---------------------------------------------------------------------------
+# tests-indielinks-cache/conf/cache-cluster-tests-<NAME>.toml
+# ---------------------------------------------------------------------------
+
+write_file "tests-indielinks-cache/conf/cache-cluster-tests-${name}.toml" <<EOF
+[runner]
+log-level = "DEBUG"
+logging = false
+no-setup = false
+no-teardown = false
+enforce-single-threaded = true
+
+[domain]
+base-port = ${CACHE_PORT_BASE}
+EOF
+
+# ---------------------------------------------------------------------------
+# admin/cargo-test-<NAME>  (executable; uses sed to avoid heredoc escaping)
+# ---------------------------------------------------------------------------
+
+if [ -e "admin/cargo-test-${name}" ]; then
+    echo "Warning: overwriting existing file 'admin/cargo-test-${name}'" >&2
+fi
+sed "s/__STACK__/${name}/g" <<'CARGO_EOF' > "admin/cargo-test-${name}"
+#!/usr/bin/env bash
+set -euo pipefail
+# Pre-build all the tests; that way, integration test scripts won't hang-up
+# waiting for services to come up.
+time limitcpu /home/mgh/.cargo/bin/cargo -f -l 800 -- test --no-run
+INDIELINKS_CACHE_CLUSTER_TESTS_CONFIG=conf/cache-cluster-tests-__STACK__.toml \
+INDIELINKS_CACHE_TESTS_CONFIG=conf/cache-tests-__STACK__.toml \
+INDIELINKS_SMOKE_TESTS_CONFIG=conf/smoke-tests-__STACK__.toml \
+INDIELINKS_BACKGROUND_TASK_TESTS_CONFIG=conf/background-task-tests-__STACK__.toml \
+time limitcpu /home/mgh/.cargo/bin/cargo -f -l 800 -- test
+CARGO_EOF
+chmod +x "admin/cargo-test-${name}"
+
+# ---------------------------------------------------------------------------
+# .agents/bin/agent-sign-off  (executable; uses sed to avoid heredoc escaping)
+# ---------------------------------------------------------------------------
+
+if [ -e ".agents/bin/agent-sign-off" ]; then
+    echo "Warning: overwriting existing file '.agents/bin/agent-sign-off'" >&2
+fi
+sed "s/__STACK__/${name}/g" <<'SIGNOFF_EOF' > ".agents/bin/agent-sign-off"
+#!/usr/bin/env bash
+
+# Agent sign-off script for the '__STACK__' stack.
+# Shamelessly stolen from: <https://gist.github.com/dhh/c5051aae633ff91bc4ce30528e4f0b60>
+set -e
+SECONDS=0
+SHA=$(git rev-parse HEAD)
+
+GREEN=32; RED=31; BLUE=34
+announce() { echo -e "\033[0;$2m$1\033[0m"; }
+run() {
+  local SPLIT=$SECONDS
+  announce "\nRun $1" $BLUE
+  eval "$1"
+  local INTERVAL=$((SECONDS-SPLIT))
+  announce "Completed $1 in $INTERVAL seconds" $GREEN
+}
+
+announce "Attempting agent sign-off on indielinks $SHA." $GREEN
+
+run "admin/run-linters"
+run "admin/cargo-test-__STACK__"
+
+announce "Signed off on indielinks $SHA in $SECONDS seconds" $GREEN
+SIGNOFF_EOF
+chmod +x ".agents/bin/agent-sign-off"
+
+echo "Done. Stack '${name}' created successfully."
+echo ""
+echo "Next steps:"
+echo "  1. Start ScyllaDB:   cd infra && ./scylla-up ${name}.env"
+echo "  2. Run tests:        admin/cargo-test-${name}"

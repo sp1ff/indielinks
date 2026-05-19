@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Pre-build all the tests; that way, integration test scripts won't hang-up
+# waiting for services to come up.
+time limitcpu /home/mgh/.cargo/bin/cargo -f -l 800 -- test --no-run
+INDIELINKS_CACHE_CLUSTER_TESTS_CONFIG=conf/cache-cluster-tests-pre-alpha.toml \
+INDIELINKS_CACHE_TESTS_CONFIG=conf/cache-tests-pre-alpha.toml \
+INDIELINKS_SMOKE_TESTS_CONFIG=conf/smoke-tests-pre-alpha.toml \
+INDIELINKS_BACKGROUND_TASK_TESTS_CONFIG=conf/background-task-tests-pre-alpha.toml \
+time limitcpu /home/mgh/.cargo/bin/cargo -f -l 800 -- test
