@@ -25,19 +25,29 @@
 use std::{collections::HashSet, result::Result as StdResult, sync::Arc};
 
 use chrono::{DateTime, Utc};
-use snafu::{ResultExt, Snafu};
-use tracing::debug;
-use url::Url;
-
+use indielinks_cache::types::NodeId;
 use indielinks_shared::{
-    entities::{PostId, Tagname},
+    api::{
+        TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp,
+        TimelineReq, TimelineSincePage, TimelineSinceRsp,
+    },
+    entities::{PostId, Tagname, UserId, Username},
     nonempty_string::NonEmptyString,
 };
+use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
+use serde::{Deserialize, Serialize};
+use snafu::{ResultExt, Snafu};
+use tap::Pipe;
+use tracing::debug;
+use url::Url;
 
 use crate::{
     activity_pub::SendCreate,
     background_tasks::{BackgroundTasks, Sender},
     entities::User,
+    home_timeline::{FirstPage, PostKey, Timeline},
+    indielinks::Indielinks,
+    signing_keys,
     storage::Backend as StorageBackend,
 };
 
@@ -53,6 +63,36 @@ pub enum Error {
     Federation {
         source: crate::background_tasks::Error,
     },
+    #[snafu(display("While computing the home timeline for {username}, {source}"))]
+    HomeTimeline {
+        username: Username,
+        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
+        source: Box<crate::home_timeline::Error>,
+    },
+    #[snafu(display("Failed to hash UserId {userid}: {source}"))]
+    NodeHash {
+        userid: UserId,
+        source: indielinks_cache::raft::Error,
+    },
+    #[snafu(display("No signing keys available: {source}"))]
+    NoSigningKeys { source: signing_keys::Error },
+    #[snafu(display("While packing the pagination token, {source}"))]
+    PackPaginationToken {
+        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
+        source: Box<crate::home_timeline::Error>,
+    },
+    #[snafu(display("While retrieving the address of node {node_id}, {source}"))]
+    SocketAddr {
+        node_id: NodeId,
+        source: indielinks_cache::raft::Error,
+    },
+    #[snafu(display("While forwarding timeline request via gRPC: {source}"))]
+    TimelineForward { source: crate::cache::Error },
+    #[snafu(display("While unpacking the pagination token, {source}"))]
+    UnpackPaginationToken {
+        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
+        source: Box<crate::home_timeline::Error>,
+    },
     #[snafu(display("While updating post times, {source}"))]
     UpdatePostTimes { source: crate::storage::Error },
 }
@@ -61,6 +101,165 @@ pub type Result<T> = StdResult<T, Error>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           public API                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         home timeline                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Internal discriminant for routing timeline responses in the HTTP handler
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum TimelineRsp {
+    Initial(TimelineInitialRsp),
+    Since(TimelineSinceRsp),
+    Before(TimelineBeforeRsp),
+}
+
+async fn this_node_is_responsible(state: Arc<Indielinks>, user: &User) -> Result<Option<NodeId>> {
+    let responsible_node = state
+        .cache_node
+        .node_for_key(user.id())
+        .await
+        .context(NodeHashSnafu { userid: *user.id() })?;
+
+    Ok((state.cache_node.id().await != responsible_node).then_some(responsible_node))
+}
+
+/// Execute a home timeline request on this node
+pub async fn handle_timeline(
+    state: Arc<Indielinks>,
+    user: &User,
+    request: TimelineReq,
+) -> Result<TimelineRsp> {
+    let (_, key) = state.signing_keys.current().context(NoSigningKeysSnafu)?;
+
+    let mut timelines = state.home_timelines.lock().await;
+
+    if !timelines.contains(user.id()) {
+        let timeline = Timeline::new(
+            user,
+            &state.origin,
+            state.storage.as_ref(),
+            &state.ap_client,
+            state.ap_resolver.clone(),
+        )
+        .await
+        .context(HomeTimelineSnafu {
+            username: user.username(),
+        })?;
+        timelines.put(*user.id(), timeline);
+    }
+
+    let timeline = timelines.get_mut(user.id()).unwrap(/* known good */);
+
+    match request {
+        TimelineReq::Initial { max_posts } => {
+            match timeline.begin(max_posts).await.context(HomeTimelineSnafu {
+                username: user.username().clone(),
+            })? {
+                Some(FirstPage {
+                    items,
+                    since,
+                    before,
+                }) => TimelineRsp::Initial(Some(TimelineInitialPage {
+                    posts: items
+                        .into_nonempty_iter()
+                        .map(|item| item.into())
+                        .collect::<NEVec<_>>(),
+                    since: since
+                        .to_pagination_token(&key)
+                        .context(PackPaginationTokenSnafu)?,
+                    before: before
+                        .to_pagination_token(&key)
+                        .context(PackPaginationTokenSnafu)?,
+                })),
+                None => TimelineRsp::Initial(None),
+            }
+        }
+        TimelineReq::Since { since, max_posts } => {
+            match timeline
+                .since(
+                    PostKey::from_pagination_token(&since, &key)
+                        .context(UnpackPaginationTokenSnafu)?,
+                    max_posts,
+                )
+                .await
+            {
+                Some((items, since)) => TimelineRsp::Since(Some(TimelineSincePage {
+                    posts: items
+                        .into_nonempty_iter()
+                        .map(|item| item.into())
+                        .collect::<NEVec<_>>(),
+                    since: since
+                        .to_pagination_token(&key)
+                        .context(PackPaginationTokenSnafu)?,
+                })),
+                None => TimelineRsp::Since(None),
+            }
+        }
+        TimelineReq::Before { before, max_posts } => {
+            match timeline
+                .before(
+                    PostKey::from_pagination_token(&before, &key)
+                        .context(UnpackPaginationTokenSnafu)?,
+                    max_posts,
+                )
+                .await
+                .context(HomeTimelineSnafu {
+                    username: user.username().clone(),
+                })? {
+                Some((items, before)) => TimelineRsp::Before(Some(TimelineBeforePage {
+                    posts: items
+                        .into_nonempty_iter()
+                        .map(|item| item.into())
+                        .collect::<NEVec<_>>(),
+                    before: before
+                        .to_pagination_token(&key)
+                        .context(PackPaginationTokenSnafu)?,
+                })),
+                None => TimelineRsp::Before(None),
+            }
+        }
+    }
+    .pipe(Ok)
+}
+
+/// Forward a timeline request to the node responsible for this user's timeline via gRPC
+async fn redirect_timeline(
+    state: Arc<Indielinks>,
+    user: &User,
+    request: TimelineReq,
+    responsible_node: NodeId,
+) -> Result<TimelineRsp> {
+    let addr = state
+        .cache_node
+        .socket_addr_for_id(responsible_node)
+        .await
+        .context(SocketAddrSnafu {
+            node_id: responsible_node,
+        })?;
+    crate::cache::GrpcClient::new(responsible_node, addr)
+        .timeline_forward(user.id(), &request)
+        .await
+        .context(TimelineForwardSnafu)
+}
+
+/// Dispatch a home timeline request — execute locally or forward to the responsible node
+pub async fn handle_timeline_or_redirect(
+    state: Arc<Indielinks>,
+    user: &User,
+    request: TimelineReq,
+) -> Result<TimelineRsp> {
+    match this_node_is_responsible(state.clone(), user).await? {
+        None => handle_timeline(state, user, request).await,
+        Some(responsible_node) => {
+            redirect_timeline(state.clone(), user, request, responsible_node).await
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           bookmarks                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Add an indielinks [Post](indielinks_shared::entities::Post)

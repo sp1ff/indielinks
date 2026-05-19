@@ -79,6 +79,7 @@ pub struct GrpcService {
     cache_node: CacheNode<GrpcClientFactory>,
     actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
     notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
+    state: Arc<Indielinks>,
 }
 
 impl GrpcService {
@@ -86,11 +87,13 @@ impl GrpcService {
         cache_node: CacheNode<GrpcClientFactory>,
         actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
         notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
+        state: Arc<Indielinks>,
     ) -> GrpcService {
         GrpcService {
             cache_node,
             actors,
             notes,
+            state,
         }
     }
 }
@@ -230,6 +233,52 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
             value: rsp,
         }
         .into())
+    }
+    /// Forward a home timeline request to the responsible node
+    async fn timeline(
+        &self,
+        req: tonic::Request<protobuf::TimelineRequest>,
+    ) -> StdResult<tonic::Response<protobuf::TimelineResponse>, tonic::Status> {
+        use indielinks_shared::api::TimelineReq;
+        use indielinks_shared::entities::UserId;
+
+        let req = req.into_inner();
+        let user_id = rmp_serde::from_slice::<UserId>(&req.user_id).map_err(to_tonic)?;
+        let timeline_req = rmp_serde::from_slice::<TimelineReq>(&req.request).map_err(to_tonic)?;
+
+        let user = self
+            .state
+            .storage
+            .get_user_by_id(&user_id)
+            .await
+            .map_err(to_tonic)?
+            .ok_or_else(|| tonic::Status::not_found(format!("User {user_id} not found")))?;
+
+        let rsp = crate::app_logic::handle_timeline(self.state.clone(), &user, timeline_req)
+            .await
+            .map_err(to_tonic)?;
+
+        rmp_serde::to_vec(&rsp)
+            .map_err(to_tonic)
+            .map(|bytes| protobuf::TimelineResponse { response: bytes }.into())
+    }
+    /// Add an item to a user's home timeline (deferred; see plan 006)
+    async fn insert_timeline_item(
+        &self,
+        _req: tonic::Request<protobuf::InsertTimelineItemRequest>,
+    ) -> StdResult<tonic::Response<protobuf::InsertTimelineItemResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "insert_timeline_item is not yet implemented",
+        ))
+    }
+    /// Drop a user's home timeline (deferred; see plan 006)
+    async fn drop_timeline(
+        &self,
+        _req: tonic::Request<protobuf::DropTimelineRequest>,
+    ) -> StdResult<tonic::Response<protobuf::DropTimelineResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "drop_timeline is not yet implemented",
+        ))
     }
 }
 

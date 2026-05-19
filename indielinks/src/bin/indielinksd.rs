@@ -119,9 +119,7 @@ use indielinks::{
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
-    users::{
-        make_router as make_user_router, timeline_internal, Configuration as UsersConfiguration,
-    },
+    users::{make_router as make_user_router, Configuration as UsersConfiguration},
     util::Credentials,
     webfinger::webfinger,
 };
@@ -1009,7 +1007,6 @@ fn make_local_router(state: Arc<Indielinks>) -> Router {
         .route("/metrics", get(metrics))
         .nest("/ops/cache", make_cache_router(state.clone()))
         .nest("/ops/timelines", make_timelines_router(state.clone()))
-        .route("/ops/timeline", get(timeline_internal))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1270,7 +1267,7 @@ async fn serve(
 
         let mut grpc_server = std::pin::pin!(TonicServer::builder().serve_with_shutdown(
             cfg.raft_grpc_address,
-            GrpcServiceServer::new(GrpcService::new(cache_node, actors, notes)),
+            GrpcServiceServer::new(GrpcService::new(cache_node, actors, notes, state.clone())),
             grpc_nfy.notified()
         ));
 

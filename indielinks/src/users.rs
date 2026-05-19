@@ -93,17 +93,14 @@ use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Duration, Utc};
 use either::Either::{self, Left};
 use futures::{StreamExt, TryStreamExt};
-use http::{header::SET_COOKIE, HeaderMap, Method, Uri};
-use indielinks_cache::types::NodeId;
+use http::{header::SET_COOKIE, HeaderMap, Method};
 use itertools::Itertools;
-use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
 use tokio::sync::Mutex;
-use tower::{Service, ServiceExt};
 use tower_http::{
     cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
     set_header::SetResponseHeaderLayer,
@@ -114,12 +111,10 @@ use url::Url;
 use indielinks_shared::{
     api::{
         FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, ReplyRequest,
-        SignupReq, SignupRsp, ThreadContextRequest, ThreadContextResponse, TimelineBeforePage,
-        TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp, TimelineReq, TimelineSincePage,
-        TimelineSinceRsp, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
-        REFRESH_CSRF_HEADER_NAME_LC,
+        SignupReq, SignupRsp, ThreadContextRequest, ThreadContextResponse, TimelineReq,
+        REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
     },
-    entities::{UserId, Username},
+    entities::Username,
     origin::Origin,
 };
 
@@ -127,12 +122,12 @@ use crate::{
     activity_pub::{SendFollow, SendLike, SendReply},
     ap_entities::{ap_request, FirstField, Item, Note, NoteField, Replies, RepliesPage},
     ap_resolution::ApResolver,
+    app_logic::{handle_timeline_or_redirect, TimelineRsp},
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     background_tasks::{self, BackgroundTasks, Sender},
     client_types::ClientType,
     define_metric,
     entities::{self, FollowId, LikeId, User},
-    home_timeline::{FirstPage, PostKey, Timeline},
     http::{ErrorResponseBody, SameSite},
     indielinks::Indielinks,
     peppers::{self, Peppers},
@@ -169,16 +164,6 @@ pub enum Error {
         value: HeaderValue,
         backtrace: Backtrace,
     },
-    #[snafu(display("While serializing a /timeline response, {source}"))]
-    BadTimelineResponse {
-        source: serde_json::Error,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("User ID {user_id} is unknown, but was expected to be."))]
-    BadUserId {
-        user_id: UserId,
-        backtrace: Backtrace,
-    },
     #[snafu(display("{username} is not a valid username"))]
     BadUsername {
         username: String,
@@ -194,17 +179,6 @@ pub enum Error {
         header: String,
         backtrace: Backtrace,
     },
-    #[snafu(display("While forming an internal timeline request, {source}"))]
-    FormInternalTimelineReq {
-        source: http::Error,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("While computing the home timeline for {username}, {source}"))]
-    HomeTimeline {
-        username: Username,
-        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
-        source: Box<crate::home_timeline::Error>,
-    },
     #[snafu(display("Invalid API key: {source}"))]
     InvalidApiKey {
         #[snafu(source(from(authn::Error, Box::new)))]
@@ -219,11 +193,6 @@ pub enum Error {
     },
     #[snafu(display("Invalid credentials: {source}"))]
     InvalidCredentials { source: authn::Error },
-    #[snafu(display("The indielinks local client reports an error: {source}"))]
-    LocalClient {
-        source:
-            <crate::client_types::ClientType as tower::Service<http::Request<bytes::Bytes>>>::Error,
-    },
     #[snafu(display("Failed to find a colon in '{text}'"))]
     MissingColon { text: String, backtrace: Backtrace },
     #[snafu(display("A required authentication cookie was missing from the request"))]
@@ -236,11 +205,6 @@ pub enum Error {
     NoAuthToken { backtrace: Backtrace },
     #[snafu(display("No signing keys available: {source}"))]
     NoKeys { source: signing_keys::Error },
-    #[snafu(display("Failed to hash UserId {userid}: {source}"))]
-    NodeHash {
-        userid: UserId,
-        source: indielinks_cache::raft::Error,
-    },
     #[snafu(display("The authorization header was not UTF-8: {source}"))]
     NonUtf8Header {
         source: http::header::ToStrError,
@@ -248,11 +212,6 @@ pub enum Error {
     },
     #[snafu(display("{source}"))]
     NoPepper { source: peppers::Error },
-    #[snafu(display("While packing the pagination token, {source}"))]
-    PackPaginationToken {
-        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
-        source: Box<crate::home_timeline::Error>,
-    },
     #[snafu(display("Couldn't validate password for user {username}: {source}"))]
     Password {
         username: String,
@@ -294,21 +253,6 @@ pub enum Error {
         #[snafu(source(from(background_tasks::Error, Box::new)))]
         source: Box<background_tasks::Error>,
     },
-    #[snafu(display("While serializing an internal timeline request, {source}"))]
-    SerInternalTimelineReq {
-        source: serde_json::Error,
-        backtrace: Backtrace,
-    },
-    #[snafu(display("While retrieving the address of node {node_id}, {source}"))]
-    SocketAddr {
-        node_id: NodeId,
-        source: indielinks_cache::raft::Error,
-    },
-    #[snafu(display("Timeline redirect request received status {status}"))]
-    TimelineRedirect {
-        status: StatusCode,
-        backtrace: Backtrace,
-    },
     #[snafu(display("Failed to mint a token for user {username}: {source}"))]
     Token {
         username: Username,
@@ -317,11 +261,6 @@ pub enum Error {
     },
     #[snafu(display("Unknown username {username}"))]
     UnknownUser { username: String },
-    #[snafu(display("While unpacking the pagination token, {source}"))]
-    UnpackPaginationToken {
-        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
-        source: Box<crate::home_timeline::Error>,
-    },
     #[snafu(display("Authorization scheme {scheme} not supported"))]
     UnsupportedAuthScheme {
         scheme: String,
@@ -338,11 +277,6 @@ pub enum Error {
     User {
         username: String,
         source: crate::storage::Error,
-    },
-    #[snafu(display("When looking-up user ID {user_id}, {source}"))]
-    UserForId {
-        user_id: UserId,
-        source: storage::Error,
     },
     #[snafu(display("{username} is not a valid indielinks username"))]
     Username {
@@ -1167,223 +1101,6 @@ define_metric! { "user.timeline.successful", user_timeline_successful, Sort::Int
 define_metric! { "user.timeline.failures", user_timeline_failures, Sort::IntegralCounter }
 define_metric! { "user.timeline.redirects", user_timeline_redirects, Sort::IntegralCounter }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-enum TimelineRsp {
-    Initial(TimelineInitialRsp),
-    Since(TimelineSinceRsp),
-    Before(TimelineBeforeRsp),
-}
-
-async fn this_node_is_responsible(state: Arc<Indielinks>, user: &User) -> Result<Option<NodeId>> {
-    let responsible_node = state
-        .cache_node
-        .node_for_key(user.id())
-        .await
-        .context(NodeHashSnafu { userid: *user.id() })?;
-
-    Ok((state.cache_node.id().await != responsible_node).then_some(responsible_node))
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct InternalTimelineReq {
-    user_id: UserId,
-    inner: TimelineReq,
-}
-
-/// Handle an authenticated `timeline` request by redirecting to the responsible node in the cluster
-async fn redirect_timeline(
-    state: Arc<Indielinks>,
-    user: &User,
-    request: TimelineReq,
-    responsible_node: NodeId,
-) -> Result<TimelineRsp> {
-    let mut client = state.local_client.clone();
-
-    // `request` is a `TimelineReq`, and we need a request of type `http::request<Bytes>`.
-    let addr = state
-        .cache_node
-        .socket_addr_for_id(responsible_node)
-        .await
-        .context(SocketAddrSnafu {
-            node_id: responsible_node,
-        })?;
-    let uri = format!("http://{addr}/ops/timeline").parse::<Uri>().expect(
-        "Failed to form the URI for timeline redirect; this is a bug & should be reported.",
-    );
-    let request = http::Request::builder()
-        .uri(uri)
-        .body(
-            serde_json::to_vec(&InternalTimelineReq {
-                user_id: *user.id(),
-                inner: request,
-            })
-            .context(SerInternalTimelineReqSnafu)?
-            .into(),
-        )
-        .context(FormInternalTimelineReqSnafu)?;
-
-    let response = client
-        .ready()
-        .await
-        .context(LocalClientSnafu)?
-        .call(request)
-        .await
-        .context(LocalClientSnafu)?;
-
-    let (parts, body) = response.into_parts();
-    if !parts.status.is_success() {
-        return TimelineRedirectSnafu {
-            status: parts.status,
-        }
-        .fail();
-    }
-
-    serde_json::from_slice::<TimelineRsp>(&body).context(BadTimelineResponseSnafu)
-}
-
-/// Handle an authenticated `/timeline` request for a user whose home timeline is hosted on this
-/// node.
-async fn handle_timeline(
-    state: Arc<Indielinks>,
-    user: &User,
-    request: TimelineReq,
-) -> Result<TimelineRsp> {
-    debug!(
-        "Handling timeline request {request:?} for user {}",
-        user.username()
-    );
-
-    let (_, key) = state.signing_keys.current().context(NoKeysSnafu)?;
-
-    let mut timelines = state.home_timelines.lock().await;
-
-    // Can't use `get_or_insert_mut()` since `Timeline::new()` is async. We've got the mutex, so no
-    // one else is going to slip this user's timeline in, anyway.
-    if !timelines.contains(user.id()) {
-        debug!("Creating a new home timeline for user {}", user.username());
-        let timeline = Timeline::new(
-            user,
-            &state.origin,
-            state.storage.as_ref(),
-            &state.ap_client,
-            state.ap_resolver.clone(),
-        )
-        .await
-        .context(HomeTimelineSnafu {
-            username: user.username(),
-        })?;
-        timelines.put(*user.id(), timeline);
-    }
-
-    // This `unwrap()` is *really* irritating; it's increasingly looking like I'm going
-    // to have to find a replacement for `LruCache` that: - allows for finer-grained locking -
-    // allows for async-friendly "get_or_insert()" functionality
-    let timeline = timelines.get_mut(user.id()).unwrap(/* known good */);
-
-    debug!("Timeline for user {}: {timeline:?}", user.username());
-
-    match request {
-        TimelineReq::Initial { max_posts } => {
-            match timeline.begin(max_posts).await.context(HomeTimelineSnafu {
-                username: user.username().clone(),
-            })? {
-                Some(FirstPage {
-                    items,
-                    since,
-                    before,
-                }) => TimelineRsp::Initial(Some(TimelineInitialPage {
-                    posts: items
-                        .into_nonempty_iter()
-                        .map(|item| item.into())
-                        .collect::<NEVec<_>>(),
-                    since: since.to_pagination_token(&key).context(HomeTimelineSnafu {
-                        username: user.username().clone(),
-                    })?,
-                    before: before
-                        .to_pagination_token(&key)
-                        .context(HomeTimelineSnafu {
-                            username: user.username().clone(),
-                        })?,
-                })),
-                None => TimelineRsp::Initial(None),
-            }
-        }
-        TimelineReq::Since { since, max_posts } => {
-            match timeline
-                .since(
-                    PostKey::from_pagination_token(&since, &key)
-                        .context(UnpackPaginationTokenSnafu)?,
-                    max_posts,
-                )
-                .await
-            {
-                Some((items, since)) => TimelineRsp::Since(Some(TimelineSincePage {
-                    posts: items
-                        .into_nonempty_iter()
-                        .map(|item| item.into())
-                        .collect::<NEVec<_>>(),
-                    since: since
-                        .to_pagination_token(&key)
-                        .context(PackPaginationTokenSnafu)?,
-                })),
-                None => TimelineRsp::Since(None),
-            }
-        }
-        TimelineReq::Before { before, max_posts } => {
-            match timeline
-                .before(
-                    PostKey::from_pagination_token(&before, &key).context(HomeTimelineSnafu {
-                        username: user.username().clone(),
-                    })?,
-                    max_posts,
-                )
-                .await
-                .context(HomeTimelineSnafu {
-                    username: user.username().clone(),
-                })? {
-                Some((items, before)) => TimelineRsp::Before(Some(TimelineBeforePage {
-                    posts: items
-                        .into_nonempty_iter()
-                        .map(|item| item.into())
-                        .collect::<NEVec<_>>(),
-                    before: before
-                        .to_pagination_token(&key)
-                        .context(HomeTimelineSnafu {
-                            username: user.username().clone(),
-                        })?,
-                })),
-                None => TimelineRsp::Before(None),
-            }
-        }
-    }
-    .pipe(Ok)
-}
-
-/// Handle an authenticated `/timeline` request
-///
-/// I at first thought to cache user timelines, but feared that they might be a bit large for that
-/// (I admit I have no data to back that up). The knock-down argument against this, however, is that
-/// cached values have to be `Serialize`, which given that HomeTimeline instances contain live
-/// [Stream]s would be inconvenient.
-///
-/// So, for this operation, I'm going to try something different: I'm going to partition ownership
-/// of user home timelines-- I'll make each node in the cluster responsible for maintaining the home
-/// timelines for a certain subset of our users, and just forward this entire request appropriately.
-async fn handle_timeline_or_redirect(
-    state: Arc<Indielinks>,
-    user: &User,
-    request: TimelineReq,
-) -> Result<TimelineRsp> {
-    match this_node_is_responsible(state.clone(), user).await? {
-        None => handle_timeline(state, user, request).await,
-        Some(responsible_node) => {
-            user_timeline_redirects.add(1, &[KeyValue::new("username", user.username())]);
-            redirect_timeline(state.clone(), user, request, responsible_node).await
-        }
-    }
-}
-
 /// Public `/timeline` handler
 ///
 /// Retrieve a chunk of a given user's timeline.
@@ -1425,40 +1142,6 @@ async fn timeline(
             user_timeline_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()
         }
-    }
-}
-
-/// Internal `/timeline` handler
-pub async fn timeline_internal(
-    State(state): State<Arc<Indielinks>>,
-    Json(request): Json<InternalTimelineReq>,
-) -> axum::response::Response {
-    async fn timeline_internal1(
-        state: Arc<Indielinks>,
-        request: InternalTimelineReq,
-    ) -> Result<TimelineRsp> {
-        let user = state
-            .storage
-            .get_user_by_id(&request.user_id)
-            .await
-            .context(UserForIdSnafu {
-                user_id: request.user_id,
-            })?
-            .context(BadUserIdSnafu {
-                user_id: request.user_id,
-            })?;
-        handle_timeline(state.clone(), &user, request.inner).await
-    }
-
-    match timeline_internal1(state.clone(), request).await {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponseBody {
-                error: format!("{err:#?}"),
-            }),
-        )
-            .into_response(),
     }
 }
 
