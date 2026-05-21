@@ -18,7 +18,9 @@
 //! The [indielinks](crate) gRPC server. This module contains the top-level entities for _serving_
 //! gRPC (i.e. it sits at the top of the module hierarchy, imported only by indielinksd).
 
-use std::{collections::BTreeMap, fmt::Debug, net::SocketAddr, sync::Arc};
+use std::{
+    collections::BTreeMap, error::Error as StdError, fmt::Debug, net::SocketAddr, sync::Arc,
+};
 
 use axum::{
     extract::{Json, State},
@@ -43,6 +45,7 @@ use indielinks_cache::{
 use url::Url;
 
 use crate::{
+    acct::Account,
     ap_entities::{Actor, Item, Note},
     app_logic,
     cache::GrpcClientFactory,
@@ -81,6 +84,7 @@ pub struct GrpcService {
     cache_node: CacheNode<GrpcClientFactory>,
     actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
     notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
+    handles: Arc<Cache<GrpcClientFactory, Account, Actor>>,
     state: Arc<Indielinks>,
 }
 
@@ -89,12 +93,14 @@ impl GrpcService {
         cache_node: CacheNode<GrpcClientFactory>,
         actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
         notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
+        handles: Arc<Cache<GrpcClientFactory, Account, Actor>>,
         state: Arc<Indielinks>,
     ) -> GrpcService {
         GrpcService {
             cache_node,
             actors,
             notes,
+            handles,
             state,
         }
     }
@@ -102,8 +108,8 @@ impl GrpcService {
 
 // It seems a shame to lose the original error information, but there isn't a great way to map
 // internal errors to tonic errors.
-fn to_tonic<E: Debug>(err: E) -> tonic::Status {
-    tonic::Status::internal(format!("{err:?}"))
+fn to_tonic<E: StdError + Send + Sync + 'static>(err: E) -> tonic::Status {
+    tonic::Status::from_error(Box::new(err))
 }
 
 // Need to set this up more systematically, but for now:
@@ -179,6 +185,12 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                     rmp_serde::from_slice::<Note>(req.value.as_slice()).map_err(to_tonic)?;
                 self.notes.insert(key, value).await.map_err(to_tonic)?;
             }
+            ACCOUNT_TO_ACTOR => {
+                let key = rmp_serde::from_slice::<Account>(req.key.as_slice()).map_err(to_tonic)?;
+                let value =
+                    rmp_serde::from_slice::<Actor>(req.value.as_slice()).map_err(to_tonic)?;
+                self.handles.insert(key, value).await.map_err(to_tonic)?;
+            }
             _ => {
                 return Err(tonic::Status::invalid_argument(format!(
                     "Unknown cache {}",
@@ -216,6 +228,15 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
             NOTE_ID_TO_NOTE => {
                 let key = rmp_serde::from_slice::<Url>(req.key.as_slice()).map_err(to_tonic)?;
                 self.notes
+                    .get(&key)
+                    .await
+                    .map_err(to_tonic)?
+                    .map(|rsp| rmp_serde::to_vec(&rsp).map_err(to_tonic))
+                    .transpose()?
+            }
+            ACCOUNT_TO_ACTOR => {
+                let key = rmp_serde::from_slice::<Account>(req.key.as_slice()).map_err(to_tonic)?;
+                self.handles
                     .get(&key)
                     .await
                     .map_err(to_tonic)?

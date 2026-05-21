@@ -380,9 +380,11 @@ pub struct ScyllaHelper {
 }
 
 impl ScyllaHelper {
-    pub async fn new(indielinks: Url,
-                     nodes: impl Iterator<Item = (Url, Url, SocketAddr)>,
-                     cfg: &ScyllaConfig) -> Result<ScyllaHelper> {
+    pub async fn new(
+        indielinks: Url,
+        nodes: impl Iterator<Item = (Url, Url, SocketAddr)>,
+        cfg: &ScyllaConfig,
+    ) -> Result<ScyllaHelper> {
         let session = create_scylla_client(
             &cfg.hosts,
             cfg.credentials.as_ref(),
@@ -394,7 +396,11 @@ impl ScyllaHelper {
             .use_keyspace("indielinks", false)
             .await
             .context(KeyspaceSnafu)?;
-        Ok(ScyllaHelper { session, indielinks, nodes: nodes.collect()  })
+        Ok(ScyllaHelper {
+            session,
+            indielinks,
+            nodes: nodes.collect(),
+        })
     }
     pub fn get_client(&self) -> &scylla::client::session::Session {
         &self.session

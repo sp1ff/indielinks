@@ -58,7 +58,16 @@
 //! for logging, so eht `RUST_LOG` environment variable is also respected.
 
 use std::{
-    collections::HashMap, ffi::OsString, iter::once, net::SocketAddr, os::unix::ffi::OsStrExt, path::{Path, PathBuf}, process::ExitCode, result::Result as StdResult, str::FromStr, sync::Arc
+    collections::HashMap,
+    ffi::OsString,
+    iter::once,
+    net::SocketAddr,
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    result::Result as StdResult,
+    str::FromStr,
+    sync::Arc,
 };
 
 use async_trait::async_trait;
@@ -79,6 +88,7 @@ use tests_indielinks::{
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     helper::{DynamoConfig, DynamoDBHelper, Helper, ScyllaConfig, ScyllaHelper},
+    home_timeline::{timeline_before, timeline_empty, timeline_initial},
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
@@ -133,10 +143,7 @@ type Result<T> = std::result::Result<T, Error>;
 // successfully
 
 #[instrument(level = Level::DEBUG)]
-fn setup_alternator_single_node(
-    config: &SingleNode,
-    scylla_env_file: Option<&Path>,
-) -> Result<()> {
+fn setup_alternator_single_node(config: &SingleNode, scylla_env_file: Option<&Path>) -> Result<()> {
     teardown_single_node(&config.local_state_dir, scylla_env_file)?;
     run("../infra/scylla-up", scylla_env_file.into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
@@ -163,10 +170,7 @@ fn setup_alternator_single_node(
 }
 
 #[instrument(level = Level::DEBUG)]
-fn setup_scylla_single_node(
-    config: &SingleNode,
-    scylla_env_file: Option<&Path>,
-) -> Result<()> {
+fn setup_scylla_single_node(config: &SingleNode, scylla_env_file: Option<&Path>) -> Result<()> {
     teardown_single_node(&config.local_state_dir, scylla_env_file)?;
     run("../infra/scylla-up", scylla_env_file.into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
@@ -207,14 +211,9 @@ fn teardown_single_node(local_state_dir: &Path, scylla_env_file: Option<&Path>) 
 }
 
 #[instrument(level = Level::DEBUG)]
-fn setup_scylla_cluster(config: &Clustered,
-                        scylla_env_file: Option<&Path>) -> Result<()> {
+fn setup_scylla_cluster(config: &Clustered, scylla_env_file: Option<&Path>) -> Result<()> {
     teardown_cluster(config, scylla_env_file)?;
-    run(
-        "../infra/scylla-up",
-        scylla_env_file.as_deref().into_iter(),
-    )
-    .context(CommandSnafu {
+    run("../infra/scylla-up", scylla_env_file.as_deref().into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
     })?;
     let args: Vec<OsString> = vec![
@@ -238,14 +237,9 @@ fn setup_scylla_cluster(config: &Clustered,
 }
 
 #[instrument(level = Level::DEBUG)]
-fn setup_alternator_cluster(config: &Clustered,
-                            scylla_env_file: Option<&Path>) -> Result<()> {
+fn setup_alternator_cluster(config: &Clustered, scylla_env_file: Option<&Path>) -> Result<()> {
     teardown_cluster(config, scylla_env_file)?;
-    run(
-        "../infra/scylla-up",
-        scylla_env_file.as_deref().into_iter(),
-    )
-    .context(CommandSnafu {
+    run("../infra/scylla-up", scylla_env_file.as_deref().into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
     })?;
     let args: Vec<OsString> = vec![
@@ -269,8 +263,7 @@ fn setup_alternator_cluster(config: &Clustered,
 }
 
 #[instrument(level = Level::DEBUG)]
-fn teardown_cluster(config: &Clustered,
-                    scylla_env_file: Option<&Path>) -> Result<()> {
+fn teardown_cluster(config: &Clustered, scylla_env_file: Option<&Path>) -> Result<()> {
     let args: Vec<OsString> = vec![
         "-I".into(),
         format!("{}", config.haproxy_id).into(),
@@ -395,15 +388,21 @@ impl Default for Clustered {
             ),
             cluster_size: 3,
             nodes: vec![
-                ("http://indiemark.local:20679".parse::<Url>().unwrap(),
-                 "http://localhost:20680".parse::<Url>().unwrap(),
-                 "127.0.0.1:20681".parse::<SocketAddr>().unwrap()),
-                ("http://indiemark.local:20682".parse::<Url>().unwrap(),
-                 "http://localhost:20683".parse::<Url>().unwrap(),
-                 "127.0.0.1:20684".parse::<SocketAddr>().unwrap()),
-                ("http://indiemark.local:20685".parse::<Url>().unwrap(),
-                 "http://localhost:20686".parse::<Url>().unwrap(),
-                 "127.0.0.1:20687".parse::<SocketAddr>().unwrap()),
+                (
+                    "http://indiemark.local:20679".parse::<Url>().unwrap(),
+                    "http://localhost:20680".parse::<Url>().unwrap(),
+                    "127.0.0.1:20681".parse::<SocketAddr>().unwrap(),
+                ),
+                (
+                    "http://indiemark.local:20682".parse::<Url>().unwrap(),
+                    "http://localhost:20683".parse::<Url>().unwrap(),
+                    "127.0.0.1:20684".parse::<SocketAddr>().unwrap(),
+                ),
+                (
+                    "http://indiemark.local:20685".parse::<Url>().unwrap(),
+                    "http://localhost:20686".parse::<Url>().unwrap(),
+                    "127.0.0.1:20687".parse::<SocketAddr>().unwrap(),
+                ),
             ],
             haproxy_id: 0,
             haproxy_port: 20673,
@@ -568,58 +567,68 @@ impl tests_support::Fixture for Fixture {
         config: &Self::Configuration,
     ) -> StdResult<Self::Backend, Self::Error> {
         let backend = match self.id {
-            FixtureId::ScyllaSingleNode
-            | FixtureId::ScyllaSingleNodePreCharged => {
+            FixtureId::ScyllaSingleNode | FixtureId::ScyllaSingleNodePreCharged => {
                 // This is really kind of lame; it would be nicer to do this as part of `setup()`,
                 // but because `Fixture` instances are immutable, we have to do it here.
                 let backend = Arc::new(
-                    ScyllaHelper::new(config.single_node.indielinks.clone(),
-                                      once((config.single_node.indielinks.clone(), config.single_node.ops.clone(), config.single_node.grpc.clone())),
-                                      &config.scylla)
-                        .await
-                        .context(HelperSnafu)?,
+                    ScyllaHelper::new(
+                        config.single_node.indielinks.clone(),
+                        once((
+                            config.single_node.indielinks.clone(),
+                            config.single_node.ops.clone(),
+                            config.single_node.grpc.clone(),
+                        )),
+                        &config.scylla,
+                    )
+                    .await
+                    .context(HelperSnafu)?,
                 );
                 if self.id == FixtureId::ScyllaSingleNodePreCharged {
                     self.charge_tables_scylla(backend.get_client()).await?;
                 }
                 backend as Arc<dyn Helper + Send + Sync>
-            },
+            }
             FixtureId::ScyllaCluster => {
                 let backend = Arc::new(
-                    ScyllaHelper::new(Url::parse(&format!("http://localhost:{}", config.clustered.haproxy_port)).unwrap(/* TODO(sp1ff): error */),
+                    ScyllaHelper::new(Url::parse(&format!("http://localhost:{}", config.clustered.haproxy_port)).unwrap(/* known good */),
                                       config.clustered.nodes.iter().cloned(),
                                       &config.scylla)
                         .await
                         .context(HelperSnafu)?,
                 );
                 backend as Arc<dyn Helper + Send + Sync>
-            },
-            FixtureId::DynamoDBSingleNode
-            | FixtureId::DynamoDBSingleNodePreCharged => {
+            }
+            FixtureId::DynamoDBSingleNode | FixtureId::DynamoDBSingleNodePreCharged => {
                 // This is really kind of lame; it would be nicer to do this as part of `setup()`,
                 // but because `Fixture` instances are immutable, we have to do it here.
                 let backend = Arc::new(
-                    DynamoDBHelper::new(config.single_node.indielinks.clone(),
-                                        once((config.single_node.indielinks.clone(), config.single_node.ops.clone(), config.single_node.grpc.clone())),
-                                        &config.dynamo)
-                        .await
-                        .context(HelperSnafu)?,
+                    DynamoDBHelper::new(
+                        config.single_node.indielinks.clone(),
+                        once((
+                            config.single_node.indielinks.clone(),
+                            config.single_node.ops.clone(),
+                            config.single_node.grpc.clone(),
+                        )),
+                        &config.dynamo,
+                    )
+                    .await
+                    .context(HelperSnafu)?,
                 );
                 if self.id == FixtureId::DynamoDBSingleNodePreCharged {
                     self.charge_tables_dynamodb(backend.get_client()).await?;
                 }
                 backend as Arc<dyn Helper + Send + Sync>
-            },
+            }
             FixtureId::DynamoDBCluster => {
                 let backend = Arc::new(
-                    DynamoDBHelper::new(Url::parse(&format!("http://localhost:{}", config.clustered.haproxy_port)).unwrap(/* TODO(sp1ff): error */),
+                    DynamoDBHelper::new(Url::parse(&format!("http://localhost:{}", config.clustered.haproxy_port)).unwrap(/* known good */),
                                         config.clustered.nodes.iter().cloned(),
                                         &config.dynamo)
                         .await
                         .context(HelperSnafu)?,
                 );
                 backend as Arc<dyn Helper + Send + Sync>
-            },
+            }
         };
         Ok(backend)
     }
@@ -627,19 +636,17 @@ impl tests_support::Fixture for Fixture {
     async fn setup(&self, config: &Self::Configuration) -> StdResult<(), Self::Error> {
         match self.id {
             FixtureId::ScyllaSingleNode | FixtureId::ScyllaSingleNodePreCharged => {
-                setup_scylla_single_node(
-                    &config.single_node,
-                    config.scylla_env_file.as_deref(),
-                )
+                setup_scylla_single_node(&config.single_node, config.scylla_env_file.as_deref())
             }
             FixtureId::DynamoDBSingleNode | FixtureId::DynamoDBSingleNodePreCharged => {
-                setup_alternator_single_node(
-                    &config.single_node,
-                    config.scylla_env_file.as_deref(),
-                )
+                setup_alternator_single_node(&config.single_node, config.scylla_env_file.as_deref())
             }
-            FixtureId::ScyllaCluster => setup_scylla_cluster(&config.clustered, config.scylla_env_file.as_deref()),
-            FixtureId::DynamoDBCluster => setup_alternator_cluster(&config.clustered, config.scylla_env_file.as_deref()),
+            FixtureId::ScyllaCluster => {
+                setup_scylla_cluster(&config.clustered, config.scylla_env_file.as_deref())
+            }
+            FixtureId::DynamoDBCluster => {
+                setup_alternator_cluster(&config.clustered, config.scylla_env_file.as_deref())
+            }
         }
     }
 
@@ -648,10 +655,13 @@ impl tests_support::Fixture for Fixture {
             FixtureId::ScyllaSingleNode
             | FixtureId::DynamoDBSingleNode
             | FixtureId::ScyllaSingleNodePreCharged
-            | FixtureId::DynamoDBSingleNodePreCharged => {
-                teardown_single_node(&config.single_node.local_state_dir, config.scylla_env_file.as_deref())
+            | FixtureId::DynamoDBSingleNodePreCharged => teardown_single_node(
+                &config.single_node.local_state_dir,
+                config.scylla_env_file.as_deref(),
+            ),
+            FixtureId::ScyllaCluster | FixtureId::DynamoDBCluster => {
+                teardown_cluster(&config.clustered, config.scylla_env_file.as_deref())
             }
-            FixtureId::ScyllaCluster | FixtureId::DynamoDBCluster => teardown_cluster(&config.clustered, config.scylla_env_file.as_deref()),
         }
     }
 }
@@ -732,8 +742,9 @@ inventory::collect!(Test);
 inventory::submit!(Test {
     name: "000test_healthcheck",
     test_fn: |_cfg, helper| { Box::pin(test_healthcheck(helper.indielinks())) },
-    // I don't think there's much point in running this in more than one fixture
-    fixtures: Some(&[FixtureId::DynamoDBSingleNode])
+    // There's probably not much point in running this in more than one fixture, but I'm in the
+    // process of getting them all up & running...
+    fixtures: None,
 });
 
 inventory::submit!(Test {
@@ -884,6 +895,43 @@ inventory::submit!(Test {
             pepper,
             helper,
         ))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+});
+
+inventory::submit!(Test {
+    name: "100timeline_initial",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(timeline_initial(
+            helper.indielinks(),
+            version,
+            pepper,
+            helper,
+        ))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+});
+
+inventory::submit!(Test {
+    name: "101timeline_before",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(timeline_before(
+            helper.indielinks(),
+            version,
+            pepper,
+            helper,
+        ))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+});
+
+inventory::submit!(Test {
+    name: "102timeline_empty",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(timeline_empty(helper.indielinks(), version, pepper, helper))
     },
     fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
 });

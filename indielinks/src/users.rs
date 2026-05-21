@@ -1099,7 +1099,6 @@ async fn mint_key(
 
 define_metric! { "user.timeline.successful", user_timeline_successful, Sort::IntegralCounter }
 define_metric! { "user.timeline.failures", user_timeline_failures, Sort::IntegralCounter }
-define_metric! { "user.timeline.redirects", user_timeline_redirects, Sort::IntegralCounter }
 
 /// Public `/timeline` handler
 ///

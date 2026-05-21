@@ -26,6 +26,7 @@ use std::{collections::HashSet, result::Result as StdResult, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
+use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
@@ -47,6 +48,7 @@ use crate::{
     ap_entities::Item,
     background_tasks::{BackgroundTasks, Sender},
     cache::GrpcClient,
+    define_metric,
     entities::User,
     home_timeline::{FirstPage, PostKey, Timeline},
     indielinks::Indielinks,
@@ -272,6 +274,8 @@ async fn redirect_timeline(
     rmp_serde::from_slice(&response.response).context(MessagePackDeSnafu)
 }
 
+define_metric! { "user.timeline.redirects", user_timeline_redirects, Sort::IntegralCounter }
+
 /// Dispatch a home timeline request — execute locally or forward to the responsible node
 pub async fn handle_timeline_or_redirect(
     state: Arc<Indielinks>,
@@ -281,17 +285,17 @@ pub async fn handle_timeline_or_redirect(
     match this_node_is_responsible(state.clone(), user).await? {
         None => handle_timeline(state, user, request).await,
         Some(responsible_node) => {
+            user_timeline_redirects.add(1, &[KeyValue::new("username", user.username())]);
             redirect_timeline(state.clone(), user, request, responsible_node).await
         }
     }
 }
 
 pub async fn handle_timeline_insert(state: Arc<Indielinks>, user: &User, item: &Item) {
-    match state.home_timelines.lock().await.get_mut(user.id()) {
-        Some(timeline) => timeline.add(item.clone()),
-        // I suppose we *could* proactively start a timeline for `user`, even though they've never
-        // asked for it, but better, I think, to just let it go.
-        None => (),
+    // I suppose we *could* proactively start a timeline for `user`, even though they've never
+    // asked for it, but better, I think, to just let it go.
+    if let Some(timeline) = state.home_timelines.lock().await.get_mut(user.id()) {
+        timeline.add(item.clone())
     }
 }
 
@@ -372,7 +376,10 @@ pub async fn handle_timeline_drop_or_redirect(state: Arc<Indielinks>, user: &Use
         Some(responsible_node) => {
             redirect_timeline_drop(state.clone(), user, responsible_node).await
         }
-        None => handle_timeline_drop(state.clone(), user).await.pipe(Ok),
+        None => {
+            handle_timeline_drop(state.clone(), user).await;
+            Ok(())
+        }
     }
 }
 

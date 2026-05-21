@@ -1267,7 +1267,13 @@ async fn serve(
 
         let mut grpc_server = std::pin::pin!(TonicServer::builder().serve_with_shutdown(
             cfg.raft_grpc_address,
-            GrpcServiceServer::new(GrpcService::new(cache_node, actors, notes, state.clone())),
+            GrpcServiceServer::new(GrpcService::new(
+                cache_node,
+                actors,
+                notes,
+                handles,
+                state.clone()
+            )),
             grpc_nfy.notified()
         ));
 
