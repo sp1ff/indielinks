@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+args="--user -p CPUQuota=800% --pipe --pty --same-dir"
 # Pre-build all the tests; that way, integration test scripts won't hang-up
 # waiting for services to come up.
-time limitcpu /home/mgh/.cargo/bin/cargo -f -l 800 -- test --no-run
+time systemd-run ${args} -- cargo test --no-run
 INDIELINKS_CACHE_CLUSTER_TESTS_CONFIG=conf/cache-cluster-tests-bugfix.toml \
 INDIELINKS_CACHE_TESTS_CONFIG=conf/cache-tests-bugfix.toml \
 INDIELINKS_SMOKE_TESTS_CONFIG=conf/smoke-tests-bugfix.toml \
 INDIELINKS_BACKGROUND_TASK_TESTS_CONFIG=conf/background-task-tests-bugfix.toml \
-time limitcpu /home/mgh/.cargo/bin/cargo -f -l 800 -- test
+time systemd-run ${args} -- cargo test

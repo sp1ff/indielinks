@@ -58,7 +58,7 @@
 //! for logging, so eht `RUST_LOG` environment variable is also respected.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ffi::OsString,
     iter::once,
     net::SocketAddr,
@@ -73,8 +73,11 @@ use std::{
 use async_trait::async_trait;
 use aws_sdk_dynamodb::{error::SdkError, operation::put_item::PutItemError, types::AttributeValue};
 use futures::future::BoxFuture;
+use indielinks_cache::types::ClusterNode;
 use indielinks_shared::entities::Username;
 use libtest_mimic::Failed;
+use nonempty_collections::{nev, NEVec};
+use reqwest::Client;
 use serde::Deserialize;
 use snafu::{Backtrace, ResultExt, Snafu};
 use tests_support::{async_integration_test, TestConfiguration};
@@ -128,6 +131,11 @@ pub enum Error {
     IntegrationTest {
         #[snafu(source(from(tests_support::Error<Fixture>, Box::new)))]
         source: Box<tests_support::Error<Fixture>>,
+    },
+    #[snafu(display("While sending an HTTP request, {source}"))]
+    Request {
+        source: reqwest::Error,
+        backtrace: Backtrace,
     },
     #[snafu(display("ScyllaDB error {source}"))]
     Scylla { source: indielinks::scylla::Error },
@@ -211,7 +219,7 @@ fn teardown_single_node(local_state_dir: &Path, scylla_env_file: Option<&Path>) 
 }
 
 #[instrument(level = Level::DEBUG)]
-fn setup_scylla_cluster(config: &Clustered, scylla_env_file: Option<&Path>) -> Result<()> {
+async fn setup_scylla_cluster(config: &Clustered, scylla_env_file: Option<&Path>) -> Result<()> {
     teardown_cluster(config, scylla_env_file)?;
     run("../infra/scylla-up", scylla_env_file.as_deref().into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
@@ -233,11 +241,15 @@ fn setup_scylla_cluster(config: &Clustered, scylla_env_file: Option<&Path>) -> R
     ];
     run("../infra/indielinks-cluster-up", args).context(CommandSnafu {
         cmd: "indielinks-cluster-up".to_string(),
-    })
+    })?;
+    init_raft_cluster(&config.nodes.first().1, config.nodes.iter().map(|x| x.2)).await
 }
 
 #[instrument(level = Level::DEBUG)]
-fn setup_alternator_cluster(config: &Clustered, scylla_env_file: Option<&Path>) -> Result<()> {
+async fn setup_alternator_cluster(
+    config: &Clustered,
+    scylla_env_file: Option<&Path>,
+) -> Result<()> {
     teardown_cluster(config, scylla_env_file)?;
     run("../infra/scylla-up", scylla_env_file.as_deref().into_iter()).context(CommandSnafu {
         cmd: "scylla-up".to_string(),
@@ -259,7 +271,8 @@ fn setup_alternator_cluster(config: &Clustered, scylla_env_file: Option<&Path>) 
     ];
     run("../infra/indielinks-cluster-up", args).context(CommandSnafu {
         cmd: "indielinks-cluster-up".to_string(),
-    })
+    })?;
+    init_raft_cluster(&config.nodes.first().1, config.nodes.iter().map(|x| x.2)).await
 }
 
 #[instrument(level = Level::DEBUG)]
@@ -280,6 +293,30 @@ fn teardown_cluster(config: &Clustered, scylla_env_file: Option<&Path>) -> Resul
     .context(CommandSnafu {
         cmd: "scylla-down".to_string(),
     })
+}
+
+async fn init_raft_cluster(ops: &Url, nodes: impl Iterator<Item = SocketAddr>) -> Result<()> {
+    let nodes = BTreeMap::<u64, ClusterNode>::from_iter(
+        (0u64..3u64)
+            .zip(nodes)
+            .map(|(id, addr)| (id, ClusterNode { addr })),
+    );
+
+    let client = Client::builder()
+        .user_agent("indielinks-test/raft-ops 0.0.1 (+sp1ff@pobox.com)")
+        .build()
+        .context(RequestSnafu)?;
+
+    let _ = client
+        .post(ops.join("ops/cache/init-cluster").expect("Bad URL"))
+        .json(&nodes)
+        .send()
+        .await
+        .context(RequestSnafu)?
+        .error_for_status()
+        .context(RequestSnafu)?;
+
+    Ok(())
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -367,7 +404,7 @@ pub struct Clustered {
     #[serde(rename = "cluster-size")]
     pub cluster_size: u8,
     /// Individual nodes; each node is (public HTTP API, local ops HTTP API, intracluster gRPC API)
-    pub nodes: Vec<(Url, Url, SocketAddr)>,
+    pub nodes: NEVec<(Url, Url, SocketAddr)>,
     /// Disambiguates concurrent haproxy instances; passed as `-I` to indielinks-cluster-{up,down}
     #[serde(rename = "haproxy-id")]
     pub haproxy_id: u32,
@@ -387,7 +424,7 @@ impl Default for Clustered {
                 "../conf/indielinksd-alternator-",
             ),
             cluster_size: 3,
-            nodes: vec![
+            nodes: nev![
                 (
                     "http://indiemark.local:20679".parse::<Url>().unwrap(),
                     "http://localhost:20680".parse::<Url>().unwrap(),
@@ -642,10 +679,10 @@ impl tests_support::Fixture for Fixture {
                 setup_alternator_single_node(&config.single_node, config.scylla_env_file.as_deref())
             }
             FixtureId::ScyllaCluster => {
-                setup_scylla_cluster(&config.clustered, config.scylla_env_file.as_deref())
+                setup_scylla_cluster(&config.clustered, config.scylla_env_file.as_deref()).await
             }
             FixtureId::DynamoDBCluster => {
-                setup_alternator_cluster(&config.clustered, config.scylla_env_file.as_deref())
+                setup_alternator_cluster(&config.clustered, config.scylla_env_file.as_deref()).await
             }
         }
     }
@@ -858,7 +895,7 @@ inventory::submit!(Test {
             helper,
         ))
     },
-    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode,]),
 });
 
 inventory::submit!(Test {
@@ -867,7 +904,7 @@ inventory::submit!(Test {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(send_follow(helper.indielinks(), version, pepper, helper))
     },
-    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode,]),
 });
 
 inventory::submit!(Test {
@@ -876,7 +913,7 @@ inventory::submit!(Test {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(as_follower(helper.indielinks(), version, pepper, helper))
     },
-    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode,]),
 });
 
 inventory::submit!(Test {
@@ -896,7 +933,12 @@ inventory::submit!(Test {
             helper,
         ))
     },
-    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+    fixtures: Some(&[
+        FixtureId::ScyllaSingleNode,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBCluster
+    ]),
 });
 
 inventory::submit!(Test {
@@ -910,7 +952,12 @@ inventory::submit!(Test {
             helper,
         ))
     },
-    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+    fixtures: Some(&[
+        FixtureId::ScyllaSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::DynamoDBCluster
+    ]),
 });
 
 inventory::submit!(Test {
@@ -924,7 +971,12 @@ inventory::submit!(Test {
             helper,
         ))
     },
-    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+    fixtures: Some(&[
+        FixtureId::ScyllaSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::DynamoDBCluster
+    ]),
 });
 
 inventory::submit!(Test {
@@ -933,7 +985,12 @@ inventory::submit!(Test {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(timeline_empty(helper.indielinks(), version, pepper, helper))
     },
-    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+    fixtures: Some(&[
+        FixtureId::ScyllaSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::DynamoDBCluster
+    ]),
 });
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
