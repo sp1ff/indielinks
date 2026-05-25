@@ -30,7 +30,7 @@ RUN set -ex && \
     rm -rf /tmp/* /var/tmp/* && \
     # In the year 2026, merely installing TailwindCSS in such a way as \
     # to have the build process find it has been a constant source of \
-    # pain. Trying \ installing the "standalone binary", now. \
+    # pain. Trying installing the "standalone binary", now. \
     curl -sL https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-linux-x64 -o /usr/local/bin/tailwindcss && \
     chmod +x /usr/local/bin/tailwindcss && \
     # set the timezone to civilization (i.e. the Pacific) \

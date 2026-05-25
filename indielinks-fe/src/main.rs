@@ -124,7 +124,17 @@ fn App() -> impl IntoView {
     provide_context(Base(
         option_env!("INDIELINKS_BASE").unwrap_or("").to_owned(),
     ));
+
     let base = expect_context::<Base>().0;
+    // These don't need to be reactive, but signals are `Copy`, so we don't have to do all the work
+    // of cloning these things multiple times. `StoredValue` seems to be the thing to use to get a
+    // `Copy` handle to a non-reactive thing, but I never figured-out how to get it working.
+    let (a, _) = signal(format!("{base}/a"));
+    let (p, _) = signal(format!("{base}/"));
+    let (h, _) = signal(format!("{base}/h"));
+    // Weirdly, these two get moved into a subsidiary view, so they do need to be cloned into it.
+    let s = format!("{base}/s");
+    let u = format!("{base}/u");
 
     // OK-- we store the access token here, but I'm probably going to revisit, since it needs to be
     // refreshed periodically. Something else to consider at that time: should this be a
@@ -137,6 +147,7 @@ fn App() -> impl IntoView {
     // If I don't use a `LocalResource`; if I, say, just call `refresh_token()` directly in an
     // `Await` below, I get pages of warnings about the future not being Send (?)
     let try_token_refresh = LocalResource::new(|| async move { refresh_token().await.is_ok() });
+    // So... `try_token_refresh.get()` will return an `Option<bool>`.
 
     let on_sign_out = Action::new_unsync(move |_: &()| {
         wasm_cookies::delete(REFRESH_CSRF_COOKIE);
@@ -167,87 +178,101 @@ fn App() -> impl IntoView {
                 // returned by `refresh_token()` is not. Not sure what I want to use for a fallback,
                 // however.
                 <Suspense fallback=move || view! { <p>"Attempting a token refresh"</p> }>
-                    {move || try_token_refresh.get().map(|_| { view! {
-                        <Router base=base.clone()>
-                            { move || {
-                                selected_value.set(if use_location().pathname.get() == "/h" {
-                                    "home"
-                                } else {
-                                    "popular"
-                                }.to_owned());
-
-                            } }
-                            <LayoutHeader class="w-full text-sky-100 flex bg-sky-600 items-baseline">
-
-                                <div class="text-sky-100 font-header font-bold text-6xl pt-[6px] pb-[6px] pl-[12px] pr-[28px]">indielinks</div>
-
-                                // Tab list running across the top when logged in:
-                                <Show when=move || token.get().is_some() >
-                                    <TabList selected_value>
-                                        <Tab value="popular" >
-                                            // Regrettably, we have to style the text here, because Thaw
-                                            // sets these properties (the `ConfigProvider` component,
-                                            // specifically).
-                                            <A href="/"  attr:class="font-header font-medium text-2xl text-sky-100">"popular"</A>
-                                        </Tab>
-                                        <Tab value="home" >
-                                            <A href="/h" attr:class="font-header font-medium text-2xl text-sky-100">"home"</A>
-                                        </Tab>
-                                    </TabList>
-                                </Show>
-
-                                // Links on the top RHS; what's shown depends on whether or not the user
-                                // is logged-in
-                                <Show when=move || use_location().pathname.get() != "/s">
-                                    <Show when=move || token.get().is_some()
-                                          // Worth it to factor this out into its own component?
-                                          fallback=|| view!{
-                                            <div class="mr-[8px] ml-auto font-header font-medium text-lg self-center">
-                                                <ul class="list-none">
-                                                <li class="leading-tight"><A href="/s">"sign-in"</A></li>
-                                                <li class="leading-tight"><A href="/u">"sign-up"</A></li>
-                                                </ul>
-                                            </div>
-                                          }>
-                                        // Same here-- make this its own component?
-                                        <div class="mr-[8px] ml-auto font-header font-medium text-lg self-center">
-                                            <ul class="list-none">
-                                                // Should these be <buttons>?
-                                                <li class="leading-tight"><A href="/a">"add link"</A></li>
-                                                <li class="leading-tight"><a href="#" on:click=move |_| { on_sign_out.dispatch(()); }>
-                                                    "sign-out"</a>
-                                                </li>
-                                            </ul>
-                                        </div>
-                                    </Show>
-                                </Show>
-                            </LayoutHeader>
-                            <Layout>
-                                <Routes fallback=Instance>
-                                    <Route path=path!("/") view=Instance />
-                                    <Route path=path!("/s") view=SignIn />
-                                    <ProtectedRoute
-                                        path=path!("/h")
-                                        // Some(true) means display, Some(false) means do *not* display, and
-                                        // None means that this information is still loading
-                                        condition = move || Some(token.get().is_some())
-                                        redirect_path = || "/"
-                                        view=Personal
-                                    />
-                                    <ProtectedRoute
-                                        path=path!("/a")
-                                        // Some(true) means display, Some(false) means do *not* display, and
-                                        // None means that this information is still loading
-                                        condition = move || {
-                                            Some(token.get().is_some())
+                    {
+                        // This closure returns an `Option<impl IntoView>`, but because we're inside
+                        // a `<Suspense>` component, the `None` case will never be returned.
+                        move || try_token_refresh.get().map(|_| {
+                            let s = s.clone();
+                            let u = u.clone();
+                            view! {
+                                <Router base=base.clone()>
+                                    {
+                                        move || {
+                                            selected_value.set(if use_location().pathname.get() == "/h" {
+                                                "home"
+                                            } else {
+                                                "popular"
+                                            }.to_owned());
                                         }
-                                        redirect_path = || "/"
-                                        view=AddLink
-                                    />
-                                </Routes>
-                            </Layout>
-                        </Router>
-                    }})}
+                                    }
+                                    <LayoutHeader class="w-full text-sky-100 flex bg-sky-600 items-baseline">
+
+                                        <div class="text-sky-100 font-header font-bold text-6xl pt-[6px] pb-[6px] pl-[12px] pr-[28px]">indielinks</div>
+
+                                        // Tab list running across the top when logged in:
+                                        <Show when=move || token.get().is_some() >
+                                            <TabList selected_value>
+                                                <Tab value="popular" >
+                                                    // Regrettably, we have to style the text here, because Thaw
+                                                    // sets these properties (the `ConfigProvider` component,
+                                                    // specifically).
+                                                    <A href=p.get()  attr:class="font-header font-medium text-2xl text-sky-100">"popular"</A>
+                                                </Tab>
+                                                <Tab value="home" >
+                                                    <A href=h.get() attr:class="font-header font-medium text-2xl text-sky-100">"home"</A>
+                                                </Tab>
+                                            </TabList>
+                                        </Show>
+
+                                        // Links on the top RHS; what's shown depends on whether or not the user
+                                        // is logged-in
+                                        <Show when=move || use_location().pathname.get() != "/s">
+                                            <Show when=move || token.get().is_some()
+                                                  // Worth it to factor this out into its own component?
+                                                  fallback={
+                                                      let s = s.clone();
+                                                      let u = u.clone();
+                                                      move || {
+                                                          view! {
+                                                              <div class="mr-[8px] ml-auto font-header font-medium text-lg self-center">
+                                                                  <ul class="list-none">
+                                                                    <li class="leading-tight"><A href=s.clone()>"sign-in"</A></li>
+                                                                    <li class="leading-tight"><A href=u.clone()>"sign-up"</A></li>
+                                                                  </ul>
+                                                              </div>
+                                                          }
+                                                      }
+                                                  } >
+                                                // Same here-- make this its own component?
+                                                <div class="mr-[8px] ml-auto font-header font-medium text-lg self-center">
+                                                    <ul class="list-none">
+                                                        // Should these be <buttons>?
+                                                        <li class="leading-tight"><A href=a.get()>"add link"</A></li>
+                                                        <li class="leading-tight"><a href="#" on:click=move |_| { on_sign_out.dispatch(()); }>
+                                                            "sign-out"</a>
+                                                        </li>
+                                                    </ul>
+                                                </div>
+                                            </Show>
+                                        </Show>
+                                    </LayoutHeader>
+                                    <Layout>
+                                        <Routes fallback=Instance>
+                                            <Route path=path!("/") view=Instance />
+                                            <Route path=path!("/s") view=SignIn />
+                                            <ProtectedRoute
+                                                path=path!("/h")
+                                                // Some(true) means display, Some(false) means do *not* display, and
+                                                // None means that this information is still loading
+                                                condition = move || Some(token.get().is_some())
+                                                redirect_path = || "/"
+                                                view=Personal
+                                            />
+                                            <ProtectedRoute
+                                                path=path!("/a")
+                                                // Some(true) means display, Some(false) means do *not* display, and
+                                                // None means that this information is still loading
+                                                condition = move || {
+                                                    Some(token.get().is_some())
+                                                }
+                                                redirect_path = || "/"
+                                                view=AddLink
+                                            />
+                                        </Routes>
+                                    </Layout>
+                                </Router>
+                        }})
+                    }
                 </Suspense>
             </ToasterProvider>
         </ConfigProvider>
