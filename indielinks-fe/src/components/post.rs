@@ -24,6 +24,7 @@
 
 use std::{cmp::PartialEq, result::Result as StdResult, sync::Arc};
 
+use chrono::Local;
 use gloo_net::http::Request;
 use leptos::{either::Either, html, prelude::*};
 use snafu::{ResultExt, Snafu};
@@ -343,17 +344,37 @@ fn ViewPost(
         cls += " cursor-pointer";
     }
 
+    fn truncate_actor(url: &Url) -> String {
+        let chars = url.as_str().chars();
+        let count = chars.clone().count();
+        if count <= 48 {
+            chars.collect::<String>()
+        } else {
+            format!("...{}", chars.skip(count - 48 + 3).collect::<String>())
+        }
+    }
+    let actor = truncate_actor(&post.actor);
+    let timestamp = post
+        .published
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
     view! {
         <div class="mx-auto flex flex-col m-2 p-2 border border-solid border-sky-100">
             <div
                 class={cls}
-                inner_html=post.content
                 on:click=move |_| {
                     if let Some(cb) = on_click {
                         cb.run(());
                     }
                 }
-            >
+                >
+                <div class="flex justify-between">
+                    <span>{ actor }</span>
+                    <span>{ timestamp }</span>
+                </div>
+                <div inner_html=post.content></div>
             </div>
             // I should really be using `<Show>` here, but it's not clear to me
             // how to handle cloning `post_id` and `actor_id` in such a way as to still
