@@ -16,23 +16,20 @@
 use std::{path::PathBuf, sync::Arc};
 
 use chrono::Duration;
-use lru::LruCache;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use secrecy::SecretString;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use indielinks_shared::{entities::UserId, instance_state::InstanceStateV0, origin::Origin};
+use indielinks_shared::{instance_state::InstanceStateV0, origin::Origin};
 
 use indielinks_cache::raft::CacheNode;
 
 use crate::{
-    ap_resolution::ApResolver, background_tasks::BackgroundTasks, home_timeline::Timeline,
+    ap_resolution::ApResolver, background_tasks::BackgroundTasks, home_timeline::HomeTimelines,
     http::SameSite, peppers::Peppers, signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
 };
-
-pub type HomeTimelines = LruCache<UserId, Timeline>;
 
 /// Application state available to all handlers
 pub struct Indielinks {

@@ -1,0 +1,165 @@
+#!/usr/bin/env guile
+!#
+
+(use-modules (ice-9 rdelim)
+             (srfi srfi-1))
+
+;;; Strip surrounding double-quotes from a string
+(define (strip-quotes s)
+  (if (and (>= (string-length s) 2)
+           (char=? (string-ref s 0) #\")
+           (char=? (string-ref s (- (string-length s) 1)) #\"))
+      (substring s 1 (- (string-length s) 1))
+      s))
+
+;;; Strip namespace qualification: "foo::bar::baz" -> "baz"
+(define (strip-namespace s)
+  (let loop ((i (- (string-length s) 1)))
+    (cond
+      ((< i 0) s)
+      ((and (> i 0)
+            (char=? (string-ref s i) #\:)
+            (char=? (string-ref s (- i 1)) #\:))
+       (substring s (+ i 1) (string-length s)))
+      (else (loop (- i 1))))))
+
+;;; Parse a neato/dot edge line:
+;;;   "A" -> "B" [label=...]; // ...
+;;; Returns (from . to) with quotes and namespaces stripped, or #f
+(define (parse-line line)
+  (let ((tokens (filter (lambda (s) (not (string=? s "")))
+                        (string-split line #\space))))
+    (if (and (>= (length tokens) 3)
+             (string=? (cadr tokens) "->"))
+        (let* ((raw-from (car tokens))
+               (raw-to   (caddr tokens))
+               ;; raw-to may have trailing " [..." — take only up to first space (already split)
+               ;; but it may include a trailing semicolon or bracket; strip those
+               (clean-to (let ((s (strip-quotes raw-to)))
+                           (let trim ((s s))
+                             (if (and (> (string-length s) 0)
+                                      (member (string-ref s (- (string-length s) 1))
+                                              (list #\; #\[ #\,)))
+                                 (trim (substring s 0 (- (string-length s) 1)))
+                                 s))))
+               (from (strip-namespace (strip-quotes raw-from)))
+               (to   (strip-namespace clean-to)))
+          (if (string=? from to)
+              #f  ; skip self-loops
+              (cons from to)))
+        #f)))
+
+;;; Read all edges from a file, return list of (from . to) pairs
+(define (read-edges filename)
+  (call-with-input-file filename
+    (lambda (port)
+      (let loop ((line (read-line port)) (edges '()))
+        (if (eof-object? line)
+            (reverse edges)
+            (let ((edge (parse-line line)))
+              (loop (read-line port)
+                    (if edge (cons edge edges) edges))))))))
+
+;;; Collect all unique nodes from edge list
+(define (all-nodes edges)
+  (let ((nodes '()))
+    (for-each (lambda (edge)
+                (when (not (member (car edge) nodes))
+                  (set! nodes (cons (car edge) nodes)))
+                (when (not (member (cdr edge) nodes))
+                  (set! nodes (cons (cdr edge) nodes))))
+              edges)
+    nodes))
+
+;;; Build adjacency list: node -> list of successors
+(define (build-graph nodes edges)
+  (map (lambda (node)
+         (cons node
+               (filter-map (lambda (edge)
+                             (and (string=? (car edge) node) (cdr edge)))
+                           edges)))
+       nodes))
+
+;;; Compute in-degree for each node
+(define (compute-in-degrees nodes edges)
+  (map (lambda (node)
+         (cons node
+               (length (filter (lambda (edge) (string=? (cdr edge) node)) edges))))
+       nodes))
+
+;;; Kahn's algorithm extended to produce layers
+;;; Returns a list of layers, each layer a list of nodes, or #f if cycle detected
+(define (topological-layers nodes edges)
+  (let* ((graph (build-graph nodes edges))
+         (in-deg (compute-in-degrees nodes edges))
+         (total (length nodes)))
+
+    (let loop ((in-deg in-deg) (layers '()) (emitted 0))
+      (let ((queue (filter-map (lambda (entry)
+                                 (and (= (cdr entry) 0) (car entry)))
+                               in-deg)))
+        (if (null? queue)
+            (if (= emitted total)
+                (reverse layers)
+                #f)  ; cycle detected
+            ;; Decrement in-degrees for all neighbors of nodes in queue
+            (let* ((new-in-deg
+                    (map (lambda (entry)
+                           (let ((node (car entry))
+                                 (deg  (cdr entry)))
+                             ;; How many nodes in queue point to this node?
+                             (let ((dec (length (filter (lambda (q)
+                                                          (member node (cdr (assoc q graph))))
+                                                        queue))))
+                               (cons node (- deg dec)))))
+                         ;; Remove queued nodes from in-deg
+                         (filter (lambda (entry) (not (member (car entry) queue)))
+                                 in-deg))))
+              (loop new-in-deg
+                    (cons queue layers)
+                    (+ emitted (length queue)))))))))
+
+;;; Entry point
+(define (main args)
+  (when (< (length args) 2)
+    (display "Usage: topsort.scm <input-file>\n")
+    (exit 1))
+
+  (let* ((filename (cadr args))
+         (edges    (read-edges filename))
+         (nodes    (all-nodes edges))
+         (layers   (topological-layers nodes edges)))
+
+    (if (not layers)
+        (begin
+          (display "Error: cycle detected in dependency graph!\n")
+          (let* ((in-deg (compute-in-degrees nodes edges))
+                 (graph  (build-graph nodes edges)))
+            (let loop ((in-deg in-deg) (emitted '()))
+              (let ((queue (filter-map (lambda (e) (and (= (cdr e) 0) (car e))) in-deg)))
+                (if (null? queue)
+                    (let ((stuck (map car in-deg)))
+                      (format #t "Stuck nodes: ~a\n" stuck)
+                      ;; Show which stuck nodes point to other stuck nodes
+                      (for-each (lambda (node)
+                                  (let ((succs (filter (lambda (s) (member s stuck))
+                                                       (cdr (assoc node graph)))))
+                                    (when (not (null? succs))
+                                      (format #t "  ~a -> ~a\n" node succs))))
+                                stuck))
+                    (let ((new-in-deg (filter (lambda (e) (not (member (car e) queue))) in-deg)))
+                      (loop (map (lambda (e)
+                                   (cons (car e)
+                                         (- (cdr e)
+                                            (length (filter (lambda (q) (member (car e) (cdr (assoc q graph)))) queue)))))
+                                 new-in-deg)
+                            (append emitted queue)))))))
+          (exit 1))
+        (begin
+          (display "Topological order (layered):\n")
+          (let loop ((layers layers) (i 0))
+            (when (not (null? layers))
+              (format #t "Layer ~a: ~a\n" i (car layers))
+              (loop (cdr layers) (+ i 1))))))))
+
+(main (command-line))

@@ -77,6 +77,7 @@ use either::Either::Left;
 use futures::{stream::iter, Stream, StreamExt, TryStreamExt};
 use hkdf::Hkdf;
 use http::Method;
+use lru::LruCache;
 use nonempty_collections::NEVec;
 use nonzero::nonzero;
 use rand::{rngs::OsRng, RngCore};
@@ -91,7 +92,7 @@ use url::Url;
 
 use indielinks_shared::{
     api::TimelineToken,
-    entities::{StorUrl, Username},
+    entities::{StorUrl, UserId, Username},
     origin::Origin,
 };
 
@@ -839,3 +840,5 @@ impl Timeline {
         Ok(())
     }
 }
+
+pub type HomeTimelines = LruCache<UserId, Timeline>;

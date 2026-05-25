@@ -119,10 +119,10 @@ use indielinks_shared::{
 };
 
 use crate::{
-    activity_pub::{SendFollow, SendLike, SendReply},
+    activity_pub::{SendLike, SendReply},
     ap_entities::{ap_request, FirstField, Item, Note, NoteField, Replies, RepliesPage},
     ap_resolution::ApResolver,
-    app_logic::{handle_timeline_or_redirect, TimelineRsp},
+    app_logic::{handle_timeline_or_redirect, SendFollow, TimelineRsp},
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     background_tasks::{self, BackgroundTasks, Sender},
     client_types::ClientType,

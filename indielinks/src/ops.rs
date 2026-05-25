@@ -24,10 +24,7 @@ use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error};
 
-use crate::{
-    http::ErrorResponseBody,
-    indielinks::{HomeTimelines, Indielinks},
-};
+use crate::{home_timeline::HomeTimelines, http::ErrorResponseBody, indielinks::Indielinks};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 

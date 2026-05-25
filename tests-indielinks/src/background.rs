@@ -48,6 +48,7 @@ use indielinks::{
     },
     cache::GrpcClientFactory,
     client::make_client,
+    home_timeline::HomeTimelines,
     http::HostExtractor,
     storage::Backend as StorageBackend,
 };
@@ -194,7 +195,7 @@ pub async fn first_background(
         .unwrap();
     let actor_cache: Cache<GrpcClientFactory, Url, Actor> = Cache::new(0, cache_node.clone());
     let note_cache: Cache<GrpcClientFactory, Url, Note> = Cache::new(1, cache_node.clone());
-    let handle_cache: Cache<GrpcClientFactory, Account, Actor> = Cache::new(2, cache_node);
+    let handle_cache: Cache<GrpcClientFactory, Account, Actor> = Cache::new(2, cache_node.clone());
 
     let ap_resolver = Arc::new(Mutex::new(ApResolver::new(
         origin.clone(),
@@ -214,7 +215,9 @@ pub async fn first_background(
             ap_client,
             local_client: make_client("user-agent", false, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(32u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
             general_purpose_client: make_client("user-agent", false, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(4u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
-            ap_resolver
+            cache_node,
+            ap_resolver,
+            home_timelines: Arc::new(Mutex::new(HomeTimelines::new(nonzero!(256usize)))),
         },
         Some(Config {
             shutdown_timeout: Duration::from_secs(30),

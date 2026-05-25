@@ -61,8 +61,9 @@ use crate::{
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     define_metric,
     entities::{Follower, Following, InReply, IncomingLike, IncomingReply, LikeReplyShare, User},
+    home_timeline::HomeTimelines,
     http::ErrorResponseBody,
-    indielinks::{HomeTimelines, Indielinks},
+    indielinks::Indielinks,
     storage::{self, Backend as StorageBackend},
 };
 

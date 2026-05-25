@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euxo pipefail
+here=$(dirname "$(realpath "$0")")
+cd ${here}/../indielinks
+cargo modules dependencies --package indielinks --lib \
+      --no-externs \
+      --no-fns     \
+      --no-owns    \
+      --no-sysroot \
+      --no-traits  \
+      --no-types   \
+      --layout=neato > indielinks-deps.neato
+neato -G"mode=hier" -Tpng indielinks-deps.neato -o indielinks-deps.png
+../admin/topsort indielinks-deps.neato
+

@@ -110,8 +110,9 @@ use indielinks::{
         make_router as make_cache_router, GrpcService, ACCOUNT_TO_ACTOR, ACTOR_ID_TO_ACTOR,
         NOTE_ID_TO_NOTE,
     },
+    home_timeline::HomeTimelines,
     http::HostKey,
-    indielinks::{HomeTimelines, Indielinks},
+    indielinks::Indielinks,
     metrics::check_metric_names,
     metrics_task::produce_metrics,
     ops::make_router as make_timelines_router,
@@ -1178,6 +1179,8 @@ async fn serve(
             handles.clone(),
         )));
 
+        let home_timelines = Arc::new(TokioMutex::new(HomeTimelines::new(nonzero!(256usize))));
+
         // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`
         // is a task processing implementation backed by our datastore.
         let nosql_tasks = Arc::new(BackgroundTasks::new(tasks));
@@ -1190,7 +1193,9 @@ async fn serve(
             local_client: local_client.clone(),
             general_purpose_client: general_purpose_client.clone(),
             storage: storage.clone(),
+            cache_node: cache_node.clone(),
             ap_resolver: ap_resolver.clone(),
+            home_timelines: home_timelines.clone(),
         };
         // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
         // processing in an orderly manner:
@@ -1228,7 +1233,7 @@ async fn serve(
             task_sender,
             cache_node: cache_node.clone(),
             ap_resolver,
-            home_timelines: Arc::new(TokioMutex::new(HomeTimelines::new(nonzero!(256usize)))),
+            home_timelines,
         });
 
         let world_nfy = Arc::new(Notify::new());

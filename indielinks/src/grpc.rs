@@ -325,7 +325,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
             .map_err(to_tonic)?
             .ok_or_else(|| tonic::Status::not_found(format!("User {user_id} not found")))?;
 
-        app_logic::handle_timeline_drop(self.state.clone(), &user).await;
+        app_logic::handle_timeline_drop(self.state.home_timelines.clone(), &user).await;
 
         Ok(().into())
     }

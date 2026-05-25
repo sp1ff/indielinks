@@ -49,15 +49,15 @@ use url::Url;
 use uuid::Uuid;
 
 use indielinks_shared::{
-    entities::{PostId, StorUrl, UserId, Username},
+    entities::{PostId, UserId, Username},
     origin::Origin,
 };
 
 use crate::{
     ap_entities::{
-        ap_request, ap_request_no_response, make_follow_id, make_like_id, make_user_followers,
-        make_user_id, make_user_reply_id, Actor, ActorField, Create, CreateObject, Follow, Like,
-        Note, Recipient, Replies, ToJld, Type,
+        ap_request_no_response, make_like_id, make_user_followers, make_user_id,
+        make_user_reply_id, ActorField, Create, CreateObject, Like, Note, Recipient, Replies,
+        ToJld, Type,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
     entities::{FollowId, LikeId, OutgoingLike, OutgoingReply, ReplyId, User, Visibility},
@@ -625,143 +625,6 @@ inventory::submit! {
     BackgroundTask {
         id: SEND_CREATE,
         de: |buf| { Ok(Box::new(rmp_serde::from_slice::<SendCreate>(buf).unwrap())) }
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                           SendFollow                                           //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// A UUID identifying the background task [SendFollow]
-// 256046f6-1afe-414d-a48a-fb19edd970e6
-const SEND_FOLLOW: Uuid = Uuid::from_fields(
-    0x256046f6,
-    0x1afe,
-    0x414d,
-    &[0xa4, 0x8a, 0xfb, 0x19, 0xed, 0xd9, 0x70, 0xe6],
-);
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SendFollow {
-    user: User,
-    actorid: Url,
-    id: FollowId,
-}
-
-impl SendFollow {
-    pub fn new(user: User, actorid: Url, id: FollowId) -> SendFollow {
-        SendFollow { user, actorid, id }
-    }
-}
-
-#[async_trait]
-impl Task<Context> for SendFollow {
-    async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
-        debug!(
-            "Sending a Follow request to {} for {}",
-            AsRef::<str>::as_ref(&self.actorid), // Ugh
-            self.user.username()
-        );
-
-        async fn exec1(this: Box<SendFollow>, context: Context) -> Result<()> {
-            let mut client = context.ap_client.clone();
-
-            // It's possible that `actorid` may not be the ActivityPub ID of the actor we wish to
-            // follow. For instance, when testing against Mastodon locally,
-            // `http://localhost:3001/users/admin` might have an ID of
-            // `http://localhost:3001/ap/users/116133685929577914`. Since that's what will come back
-            // in the Accept message, we need them to match.
-            let actor: Actor = ap_request(
-                &mut client,
-                &context.origin,
-                Left(&this.user),
-                &this.actorid,
-                Method::GET,
-                None,
-                &(),
-            )
-            .await
-            .context(ApSnafu)?;
-            let actorid = actor.id().clone();
-
-            debug!("Resolved the ActorID to {actorid}");
-
-            let inbox = context
-                .ap_resolver
-                .lock()
-                .await
-                .actor_id_to_inbox(Left(&this.user), &actorid)
-                .await
-                .context(ApResolverSnafu)?;
-
-            debug!("Resolved the actor inbox to {inbox}");
-
-            // Let's write the new follow to the database,
-            let userurl = StorUrl::from(&actorid);
-            context
-                .storage
-                .add_following(&this.user, &userurl, &this.id)
-                .await
-                .context(AddFollowingSnafu {
-                    username: this.user.username().clone(),
-                    actorid: Box::new(actorid.clone()),
-                })?;
-
-            debug!("Wrote {actorid} into the \"following\" table.\"");
-
-            // then send the `Follow`
-            let follow = Follow::new(
-                actorid.clone(),
-                make_follow_id(this.user.username(), &this.id, &context.origin).context(
-                    FollowIdSnafu {
-                        username: this.user.username().clone(),
-                        id: this.id,
-                    },
-                )?,
-                make_user_id(this.user.username(), &context.origin).context(UserIdSnafu {
-                    username: this.user.username().clone(),
-                })?,
-            );
-
-            debug!("Sending {follow:?}");
-
-            let res = ap_request_no_response(
-                &mut client,
-                &context.origin,
-                Left(&this.user),
-                &inbox,
-                Method::POST,
-                None,
-                &follow,
-            )
-            .await
-            .context(ApSnafu);
-
-            debug!("SendFollow :=> {res:?}");
-
-            res
-        }
-
-        exec1(self, context)
-            .await
-            .map_err(background_tasks::Error::new)
-    }
-    fn timeout(&self) -> Option<Duration> {
-        Some(Duration::from_secs(60))
-    }
-}
-
-impl TaggedTask<Context> for SendFollow {
-    type Tag = Uuid;
-    fn get_tag() -> Self::Tag {
-        SEND_FOLLOW
-    }
-}
-
-inventory::submit! {
-    BackgroundTask {
-        id: SEND_FOLLOW,
-        de: |buf| { Ok(Box::new(rmp_serde::from_slice::<SendFollow>(buf).unwrap())) }
     }
 }
 

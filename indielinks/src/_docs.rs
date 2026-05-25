@@ -349,27 +349,22 @@
 //! ### Module Dependencies
 //!
 //! I try to maintain a layered structure to the modules making-up [indielinks]. In particular, if
-//! we visualize their dependencies as a graph, it should be acyclic. I'd love to find some tooling
-//! to analyze this & even make part of the CI pipeline, but at the time of this writing, here it is
-//! (constructed manually):
+//! we visualize their dependencies as a graph, it should be acyclic. Here are the layers as of the
+//! time of this writing:
 //!
-//! 1) actor, webfinger, users, delicious, webfinger, grpc, ops, bookmarklets
-//!    - all the public endpoints
-//! 2) app-logic
-//!    - nascent application logic module
-//! 3) indielinks, activity-pub, dynamodb, scylla, client
-//!    - implementations of lower-level abstractions
-//! 4) home-timeline
-//! 5) ap-resolution, metrics-task
-//! 6) ap-entities, background_tasks
-//!    - internal subsystems
-//! 7) client-types (authn, http)
-//! 8) authn
-//! 9) storage
-//! 10) token, entities, acct
-//! 11) peppers, signing-keys, http
-//! 12) util, metrics, cache
-//!    - depend on nothing
+//! 0: webfinger users scylla ops metrics_task grpc serde_hash_string dynamodb delicious client bookmarklets actor
+//! 1: app_logic
+//! 2: indielinks activity_pub
+//! 3: background_tasks
+//! 4: home_timeline
+//! 5: client_types ap_resolution
+//! 6: cache http authn ap_entities
+//! 7: protobuf protobuf_interop token storage sanitized_html
+//! 8: signing_keys entities acct
+//! 9: peppers
+//! 10: util
+//!
+//! You can re-generate this with the `check-dependencies` script in the `admin` folder.
 //!
 //! ## Continuous Integration
 //!

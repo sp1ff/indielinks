@@ -22,35 +22,42 @@
 //! I've refactored the common logic here, and I hope this module will grow into a general-purpose
 //! "application logic" repository.
 
-use std::{collections::HashSet, result::Result as StdResult, sync::Arc};
+use std::{collections::HashSet, result::Result as StdResult, sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use either::Either::Left;
+use http::Method;
 use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
 use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
+use tokio::sync::Mutex;
 use tracing::debug;
 use url::Url;
 
-use indielinks_cache::types::NodeId;
+use indielinks_cache::{raft::CacheNode, types::NodeId};
 use indielinks_shared::{
     api::{
         TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp,
         TimelineReq, TimelineSincePage, TimelineSinceRsp,
     },
-    entities::{PostId, Tagname, UserId, Username},
+    entities::{PostId, StorUrl, Tagname, UserId, Username},
     nonempty_string::NonEmptyString,
 };
+use uuid::Uuid;
 
 use crate::{
     activity_pub::SendCreate,
-    ap_entities::Item,
-    background_tasks::{BackgroundTasks, Sender},
-    cache::GrpcClient,
+    ap_entities::{
+        ap_request, ap_request_no_response, make_follow_id, make_user_id, Actor, Follow, Item,
+    },
+    background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
+    cache::{GrpcClient, GrpcClientFactory},
     define_metric,
-    entities::User,
-    home_timeline::{FirstPage, PostKey, Timeline},
+    entities::{FollowId, User},
+    home_timeline::{FirstPage, HomeTimelines, PostKey, Timeline},
     indielinks::Indielinks,
     protobuf_interop::protobuf::{DropTimelineRequest, InsertTimelineItemRequest, TimelineRequest},
     signing_keys,
@@ -63,13 +70,36 @@ use crate::{
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Failed to write a follow for {username} of {actorid}: {source}"))]
+    AddFollowing {
+        username: Username,
+        actorid: Box<Url>,
+        source: crate::storage::Error,
+    },
     #[snafu(display("While adding the post internally, {source}"))]
     AddPost { source: crate::storage::Error },
+    #[snafu(display("ActivityPub entities error: {source}"))]
+    Ap {
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
+    },
+    #[snafu(display("ActivityPub entity resolver error: {source}"))]
+    ApResolver {
+        #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
+        source: Box<crate::ap_resolution::Error>,
+    },
     #[snafu(display("While connecting a gRPC client, {source}"))]
     Connection { source: crate::cache::Error },
     #[snafu(display("While federating this post, {source}"))]
     Federation {
         source: crate::background_tasks::Error,
+    },
+    #[snafu(display("Failed to form an URL for follow of {id} for {username}"))]
+    FollowId {
+        username: Username,
+        id: FollowId,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("While computing the home timeline for {username}, {source}"))]
     HomeTimeline {
@@ -121,6 +151,12 @@ pub enum Error {
     },
     #[snafu(display("While updating post times, {source}"))]
     UpdatePostTimes { source: crate::storage::Error },
+    #[snafu(display("Failed to form an URL for user {username}: {source}"))]
+    UserId {
+        username: Username,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
+    },
 }
 
 pub type Result<T> = StdResult<T, Error>;
@@ -137,14 +173,16 @@ pub enum TimelineRsp {
     Before(TimelineBeforeRsp),
 }
 
-async fn this_node_is_responsible(state: Arc<Indielinks>, user: &User) -> Result<Option<NodeId>> {
-    let responsible_node = state
-        .cache_node
+async fn this_node_is_responsible(
+    cache_node: CacheNode<GrpcClientFactory>,
+    user: &User,
+) -> Result<Option<NodeId>> {
+    let responsible_node = cache_node
         .node_for_key(user.id())
         .await
         .context(NodeHashSnafu { userid: *user.id() })?;
 
-    Ok((state.cache_node.id().await != responsible_node).then_some(responsible_node))
+    Ok((cache_node.id().await != responsible_node).then_some(responsible_node))
 }
 
 /// Execute a home timeline request on this node
@@ -282,7 +320,7 @@ pub async fn handle_timeline_or_redirect(
     user: &User,
     request: TimelineReq,
 ) -> Result<TimelineRsp> {
-    match this_node_is_responsible(state.clone(), user).await? {
+    match this_node_is_responsible(state.cache_node.clone(), user).await? {
         None => handle_timeline(state, user, request).await,
         Some(responsible_node) => {
             user_timeline_redirects.add(1, &[KeyValue::new("username", user.username())]);
@@ -331,7 +369,7 @@ pub async fn handle_timeline_insert_or_redirect(
     user: &User,
     item: &Item,
 ) -> Result<()> {
-    match this_node_is_responsible(state.clone(), user).await? {
+    match this_node_is_responsible(state.cache_node.clone(), user).await? {
         Some(responsible_node) => {
             redirect_timeline_insert(state.clone(), user, item, responsible_node).await
         }
@@ -342,17 +380,16 @@ pub async fn handle_timeline_insert_or_redirect(
     }
 }
 
-pub async fn handle_timeline_drop(state: Arc<Indielinks>, user: &User) {
-    let _ = state.home_timelines.lock().await.pop(user.id());
+pub async fn handle_timeline_drop(home_timelines: Arc<Mutex<HomeTimelines>>, user: &User) {
+    home_timelines.lock().await.pop(user.id());
 }
 
 async fn redirect_timeline_drop(
-    state: Arc<Indielinks>,
+    cache_node: CacheNode<GrpcClientFactory>,
     user: &User,
     responsible_node: NodeId,
 ) -> Result<()> {
-    let addr = state
-        .cache_node
+    let addr = cache_node
         .socket_addr_for_id(responsible_node)
         .await
         .context(SocketAddrSnafu {
@@ -371,13 +408,15 @@ async fn redirect_timeline_drop(
 }
 
 /// Drop a timeline
-pub async fn handle_timeline_drop_or_redirect(state: Arc<Indielinks>, user: &User) -> Result<()> {
-    match this_node_is_responsible(state.clone(), user).await? {
-        Some(responsible_node) => {
-            redirect_timeline_drop(state.clone(), user, responsible_node).await
-        }
+pub async fn handle_timeline_drop_or_redirect(
+    cache_node: CacheNode<GrpcClientFactory>,
+    home_timelines: Arc<Mutex<HomeTimelines>>,
+    user: &User,
+) -> Result<()> {
+    match this_node_is_responsible(cache_node.clone(), user).await? {
+        Some(responsible_node) => redirect_timeline_drop(cache_node, user, responsible_node).await,
         None => {
-            handle_timeline_drop(state.clone(), user).await;
+            handle_timeline_drop(home_timelines, user).await;
             Ok(())
         }
     }
@@ -431,4 +470,151 @@ pub async fn add_post(
         }
     }
     Ok(added)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           SendFollow                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A UUID identifying the background task [SendFollow]
+// 256046f6-1afe-414d-a48a-fb19edd970e6
+const SEND_FOLLOW: Uuid = Uuid::from_fields(
+    0x256046f6,
+    0x1afe,
+    0x414d,
+    &[0xa4, 0x8a, 0xfb, 0x19, 0xed, 0xd9, 0x70, 0xe6],
+);
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SendFollow {
+    user: User,
+    actorid: Url,
+    id: FollowId,
+}
+
+impl SendFollow {
+    pub fn new(user: User, actorid: Url, id: FollowId) -> SendFollow {
+        SendFollow { user, actorid, id }
+    }
+}
+
+#[async_trait]
+impl Task<Context> for SendFollow {
+    async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
+        debug!(
+            "Sending a Follow request to {} for {}",
+            AsRef::<str>::as_ref(&self.actorid), // Ugh
+            self.user.username()
+        );
+
+        async fn exec1(this: Box<SendFollow>, context: Context) -> Result<()> {
+            let mut client = context.ap_client.clone();
+
+            // It's possible that `actorid` may not be the ActivityPub ID of the actor we wish to
+            // follow. For instance, when testing against Mastodon locally,
+            // `http://localhost:3001/users/admin` might have an ID of
+            // `http://localhost:3001/ap/users/116133685929577914`. Since that's what will come back
+            // in the Accept message, we need them to match.
+            let actor: Actor = ap_request(
+                &mut client,
+                &context.origin,
+                Left(&this.user),
+                &this.actorid,
+                Method::GET,
+                None,
+                &(),
+            )
+            .await
+            .context(ApSnafu)?;
+            let actorid = actor.id().clone();
+
+            debug!("Resolved the ActorID to {actorid}");
+
+            let inbox = context
+                .ap_resolver
+                .lock()
+                .await
+                .actor_id_to_inbox(Left(&this.user), &actorid)
+                .await
+                .context(ApResolverSnafu)?;
+
+            debug!("Resolved the actor inbox to {inbox}");
+
+            // Let's write the new follow to the database,
+            let userurl = StorUrl::from(&actorid);
+            context
+                .storage
+                .add_following(&this.user, &userurl, &this.id)
+                .await
+                .context(AddFollowingSnafu {
+                    username: this.user.username().clone(),
+                    actorid: Box::new(actorid.clone()),
+                })?;
+
+            debug!("Wrote {actorid} into the \"following\" table.\"");
+
+            // then send the `Follow`
+            let follow = Follow::new(
+                actorid.clone(),
+                make_follow_id(this.user.username(), &this.id, &context.origin).context(
+                    FollowIdSnafu {
+                        username: this.user.username().clone(),
+                        id: this.id,
+                    },
+                )?,
+                make_user_id(this.user.username(), &context.origin).context(UserIdSnafu {
+                    username: this.user.username().clone(),
+                })?,
+            );
+
+            debug!("Sending {follow:?}");
+
+            let res = ap_request_no_response(
+                &mut client,
+                &context.origin,
+                Left(&this.user),
+                &inbox,
+                Method::POST,
+                None,
+                &follow,
+            )
+            .await
+            .context(ApSnafu);
+
+            debug!("SendFollow :=> {res:?}");
+
+            // Finally, and assuming this follow request is accepted, this user's home timline is
+            // now incorrect. We *could* fetch enough of this new follow's outbox to repair it (we'd
+            // need to fetch everything for the timespan for which we've materialized this user's
+            // timeline in-memory) and insert the new items in the correct places, but for now we'll
+            // take the more expedient course: drop the user's timeline & re-build it on demand.
+            handle_timeline_drop_or_redirect(
+                context.cache_node,
+                context.home_timelines.clone(),
+                &this.user,
+            )
+            .await
+        }
+
+        exec1(self, context)
+            .await
+            .map_err(background_tasks::Error::new)
+    }
+    fn timeout(&self) -> Option<Duration> {
+        Some(Duration::from_secs(60))
+    }
+}
+
+impl TaggedTask<Context> for SendFollow {
+    type Tag = Uuid;
+    fn get_tag() -> Self::Tag {
+        SEND_FOLLOW
+    }
+}
+
+inventory::submit! {
+    BackgroundTask {
+        id: SEND_FOLLOW,
+        de: |buf| { Ok(Box::new(rmp_serde::from_slice::<SendFollow>(buf).unwrap())) }
+    }
 }
