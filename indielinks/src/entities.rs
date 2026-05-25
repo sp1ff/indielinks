@@ -1021,7 +1021,7 @@ impl Serialize for LikeReplyShareRef<'_> {
                 state.serialize_field("user_id", &like.user_id)?;
                 state.serialize_field("posted_and_id", &sk)?;
                 state.serialize_field("posted", &like.posted)?;
-                state.serialize_field("likeid", &like.likeid)?;
+                state.serialize_field("id", &like.likeid)?;
                 state.serialize_field("in_reply_to", &like.in_reply_to)?;
                 state.serialize_field("visibility", &Option::<Visibility>::None)?;
                 state.serialize_field("content", &Option::<String>::None)?;
@@ -1038,7 +1038,7 @@ impl Serialize for LikeReplyShareRef<'_> {
                 state.serialize_field("user_id", &reply.user_id)?;
                 state.serialize_field("posted_and_id", &sk)?;
                 state.serialize_field("posted", &reply.posted)?;
-                state.serialize_field("replyid", &reply.replyid)?;
+                state.serialize_field("id", &reply.replyid)?;
                 state.serialize_field("in_reply_to", &reply.in_reply_to)?;
                 state.serialize_field("visibility", &Some(reply.visibility))?;
                 state.serialize_field("content", &Some(&reply.content))?;
@@ -1055,7 +1055,7 @@ impl Serialize for LikeReplyShareRef<'_> {
                 state.serialize_field("user_id", &share.user_id)?;
                 state.serialize_field("posted_and_id", &sk)?;
                 state.serialize_field("posted", &share.posted)?;
-                state.serialize_field("shareid", &share.shareid)?;
+                state.serialize_field("id", &share.shareid)?;
                 state.serialize_field("in_reply_to", &share.in_reply_to)?;
                 state.serialize_field("visibility", &Some(share.visibility))?;
                 state.serialize_field("content", &Some(&share.content))?;
@@ -1082,9 +1082,7 @@ impl<'de> serde::de::Visitor<'de> for LikeReplyShareVisitor {
         let mut kind: Option<i8> = None;
         let mut user_id: Option<UserId> = None;
         let mut posted: Option<DateTime<Utc>> = None;
-        let mut like_id: Option<LikeId> = None;
-        let mut reply_id: Option<ReplyId> = None;
-        let mut share_id: Option<ShareId> = None;
+        let mut id: Option<Uuid> = None;
         let mut in_reply_to: Option<StorUrl> = None;
         let mut visibility: Option<Visibility> = None;
         let mut content: Option<String> = None;
@@ -1094,9 +1092,7 @@ impl<'de> serde::de::Visitor<'de> for LikeReplyShareVisitor {
                 "kind" => kind = Some(map.next_value()?),
                 "user_id" => user_id = Some(map.next_value()?),
                 "posted" => posted = Some(map.next_value()?),
-                "like_id" => like_id = Some(map.next_value()?),
-                "reply_id" => reply_id = Some(map.next_value()?),
-                "share_id" => share_id = Some(map.next_value()?),
+                "id" => id = Some(map.next_value()?),
                 "in_reply_to" => in_reply_to = Some(map.next_value()?),
                 "visibility" => visibility = map.next_value()?,
                 "content" => content = map.next_value()?,
@@ -1112,13 +1108,13 @@ impl<'de> serde::de::Visitor<'de> for LikeReplyShareVisitor {
             0 => Ok(LikeReplyShare::Like(OutgoingLike {
                 user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
                 posted: posted.ok_or(DeError::missing_field("posted"))?,
-                likeid: like_id.ok_or(DeError::missing_field("id"))?,
+                likeid: LikeId::from_uuid(id.ok_or(DeError::missing_field("id"))?),
                 in_reply_to: in_reply_to.ok_or(DeError::missing_field("in_reply_to"))?,
             })),
             1 => Ok(LikeReplyShare::Reply(OutgoingReply {
                 user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
                 posted: posted.ok_or(DeError::missing_field("posted"))?,
-                replyid: reply_id.ok_or(DeError::missing_field("id"))?,
+                replyid: ReplyId::from_uuid(id.ok_or(DeError::missing_field("id"))?),
                 in_reply_to: in_reply_to.ok_or(DeError::missing_field("in_reply_to"))?,
                 visibility: visibility.ok_or(DeError::missing_field("visibility"))?,
                 content: content.ok_or(DeError::missing_field("content"))?,
@@ -1126,7 +1122,7 @@ impl<'de> serde::de::Visitor<'de> for LikeReplyShareVisitor {
             2 => Ok(LikeReplyShare::Share(OutgoingShare {
                 user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
                 posted: posted.ok_or(DeError::missing_field("posted"))?,
-                shareid: share_id.ok_or(DeError::missing_field("id"))?,
+                shareid: ShareId::from_uuid(id.ok_or(DeError::missing_field("id"))?),
                 in_reply_to: in_reply_to.ok_or(DeError::missing_field("in_reply_to"))?,
                 visibility: visibility.ok_or(DeError::missing_field("visibility"))?,
                 content: content.ok_or(DeError::missing_field("content"))?,
