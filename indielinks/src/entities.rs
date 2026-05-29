@@ -887,6 +887,12 @@ impl OutgoingLike {
             in_reply_to: ap_id.into(),
         }
     }
+    pub fn id(&self) -> LikeId {
+        self.likeid
+    }
+    pub fn posted(&self) -> DateTime<Utc> {
+        self.posted
+    }
 }
 
 /// The [indielinks] internal representation of a "reply" generated on this instance

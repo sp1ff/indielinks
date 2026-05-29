@@ -15,8 +15,8 @@
 
 //! # indielinks
 //!
-//! Right now, the library crate has the same name as the binary, meaning that `rustdoc` will
-//! ignore the binary crate. You can find general documentation [here].
+//! This is the documentation for the indielinks library package. Docs for the binary are
+//! [here](../indielinksd/index.html). You can find general documentation on the crate [here].
 //!
 //! [here]: crate::_docs
 pub mod _docs;
@@ -52,6 +52,7 @@ pub mod metrics;
 #[path = "metrics-task.rs"]
 pub mod metrics_task;
 pub mod ops;
+pub mod outboxes;
 pub mod peppers;
 #[path = "protobuf-interop.rs"]
 pub mod protobuf_interop;

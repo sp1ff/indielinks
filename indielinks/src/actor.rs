@@ -22,13 +22,15 @@ use std::{ops::Deref, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
-    extract::{Path, State},
+    extract::{self, Path, State},
     http::{header::CONTENT_TYPE, StatusCode},
+    middleware,
     response::IntoResponse,
     routing::{get, post},
     Extension, Json, Router,
 };
 use axum_accept::AcceptExtractor;
+use axum_extra::extract::Query;
 use chrono::Utc;
 use either::Either::{self, Left, Right};
 use futures::{stream::iter, StreamExt};
@@ -45,6 +47,7 @@ use url::Url;
 use uuid::Uuid;
 
 use indielinks_shared::{
+    api::UserOutboxRequest,
     entities::{PostId, StorUrl, UserId, UserPrivateKey, Username},
     origin::Origin,
 };
@@ -57,6 +60,7 @@ use crate::{
         InboxPayload, InstanceActor, Item, Jld, Like, Note, Recipient, Share, ToJld, Undo,
     },
     ap_resolution::ApResolver,
+    app_logic::{handle_outbox_or_redirect, OutboxResponse},
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     define_metric,
@@ -200,6 +204,8 @@ pub enum Error {
     },
     #[snafu(display("Exactly one Signature header expected"))]
     OneSignature { backtrace: Backtrace },
+    #[snafu(display("While operating on a user outbox, {source}"))]
+    Outbox { source: crate::app_logic::Error },
     #[snafu(display("No post {postid} for user {requested_username}"))]
     PostUserMismatch {
         postid: PostId,
@@ -1448,6 +1454,58 @@ async fn following(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                               `/users/{username}/outbox` handler                               //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "outbox.pages", outbox_pages, Sort::IntegralCounter }
+define_metric! { "outbox.errors", outbox_errors, Sort::IntegralCounter }
+
+/// Retrieve a user's outbox ordered collection
+// It's kind of irritating that we're not reusing type `CollectionPage`, althought it's
+// not quite the correct shape for this case. Still. It would be an interesting exercise
+// to unify it with `OutboxRsp`.
+#[axum::debug_handler]
+async fn outbox(
+    State(state): State<Arc<Indielinks>>,
+    extract::Path(username): extract::Path<Username>,
+    Query(request): Query<UserOutboxRequest>,
+) -> axum::response::Response {
+    async fn outbox1(
+        state: Arc<Indielinks>,
+        username: &Username,
+        request: UserOutboxRequest,
+    ) -> Result<OutboxResponse> {
+        // Factor this out (shared by `followers()`, above, at the least):
+        let user = state
+            .storage
+            .user_for_name(username.as_ref())
+            .await
+            .map_err(|err| StorageSnafu.into_error(err))?
+            .ok_or(
+                NoUserSnafu {
+                    username: username.clone(),
+                }
+                .build(),
+            )?;
+
+        handle_outbox_or_redirect(state, &user, request)
+            .await
+            .context(OutboxSnafu)
+    }
+
+    match outbox1(state, &username, request)
+        .await
+        .and_then(|rsp| Jld::new(&rsp, None).context(JrdSnafu))
+    {
+        Ok(doc) => {
+            outbox_pages.add(1, &[KeyValue::new("username", username)]);
+            patch_content_type((StatusCode::OK, doc.to_string()).into_response())
+        }
+        Err(err) => handle_err(err, outbox_errors.deref()),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                             Posts                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1605,16 +1663,29 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/inbox",
             post(shared_inbox)
-                .route_layer(axum::middleware::from_fn(log_request))
-                .route_layer(axum::middleware::from_fn_with_state(
+                .route_layer(middleware::from_fn(log_request))
+                .route_layer(middleware::from_fn_with_state(
                     state.clone(),
                     verify_signature,
                 )),
         )
-        .route("/users/{username}", get(actor))
+        .route(
+            "/users/{username}",
+            get(actor).route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                verify_signature,
+            )),
+        )
         .route(
             "/users/{username}/inbox",
-            post(inbox).route_layer(axum::middleware::from_fn_with_state(
+            post(inbox).route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                verify_signature,
+            )),
+        )
+        .route(
+            "/users/{username}/outbox",
+            get(outbox).route_layer(middleware::from_fn_with_state(
                 state.clone(),
                 verify_signature,
             )),

@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, num::NonZero};
+use std::{
+    collections::HashMap,
+    fmt::{Display, Formatter},
+    num::NonZero,
+};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use nonempty_collections::NEVec;
@@ -242,7 +246,7 @@ pub struct MintKeyRsp {
     pub key_text: String,
 }
 
-/// Opaque type representing a pagination token
+/// Opaque type representing a timeline pagination token
 ///
 /// Callers cannot create instances of this type; they are returned in response to timeline requests
 /// and represent a particular post in a user's timeline. They are intended to be specified as as
@@ -378,4 +382,41 @@ pub struct ThreadContextResponse {
     pub parent: Option<FeedPost>,
     // In the case of no children, the `Vec` will just be empty
     pub children: Vec<FeedPost>,
+}
+
+/// Opaque type representing an outbox pagination token
+///
+/// Callers cannot create instances of this type; they are returned in response to paginated outbox
+/// requests and represent a particular post in a user's outbox. They are intended to be specified
+/// as an "after" parameter to subsequent outbox requests.
+// Very similar to `TimelineToken`; not sure if I want to generalize, yet
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct OutboxToken(String);
+
+impl Display for OutboxToken {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<[u8]> for OutboxToken {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl OutboxToken {
+    // Super-lame: I want this type to be visible to everyone, but only constructable from the API's
+    // implementation in a higher-level module, on the back-end only.
+    #[cfg(feature = "__internal")]
+    #[doc(hidden)]
+    pub fn new_internal(token: String) -> OutboxToken {
+        Self(token)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UserOutboxRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "page")]
+    pub pagination_token: Option<OutboxToken>,
 }

@@ -385,7 +385,7 @@ pub struct Outbox {
     client: ClientType,
     /// The total number of items, as reported by the remote server at the beginning of our
     /// pagination
-    _num_items: usize,
+    _num_items: Option<usize>,
     /// URL naming the next page of items
     next_page: Option<NextOutboxPage>,
     /// Shared cache for looking up ActivityPub entities

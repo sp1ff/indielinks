@@ -1447,9 +1447,11 @@ impl ToJld for Create {
 pub struct Outbox {
     // "id":"https://indieweb.social/users/sp1ff/outbox",
     pub id: Url,
-    pub total_items: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_items: Option<usize>,
     pub first: Url,
-    pub last: Url,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<Url>,
 }
 
 impl ToJld for Outbox {

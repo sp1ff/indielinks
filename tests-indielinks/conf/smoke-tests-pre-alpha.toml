@@ -15,7 +15,6 @@ domain.single-node.indielinks-alternator-config-file = "indielinksd-pre-alpha-al
 domain.single-node.indielinks-scylla-config-file = "indielinksd-pre-alpha-scylla.toml"
 
 # This needs to aggree with the `log-file` item in `indielinksd-{alternator,scylla}-{0,1,2,3,4}.toml`
-domain.clustered.cluster-local-state-base = "/tmp/indielinksd-pre-alpha-"
 domain.clustered.indielinks-scylla-cluster-config-base = "../conf/pre-alpha/indielinksd-scylla-"
 domain.clustered.indielinks-alternator-cluster-config-base = "../conf/pre-alpha/indielinksd-alternator-"
 domain.clustered.nodes = [["http://indiemark.local:20724", "http://127.0.0.1:20725", "127.0.0.1:20726"],
@@ -24,6 +23,8 @@ domain.clustered.nodes = [["http://indiemark.local:20724", "http://127.0.0.1:207
 domain.clustered.cluster-size = 3
 domain.clustered.haproxy-id = 3
 domain.clustered.haproxy-port = 20739
+# This needs to aggree with the `log-file` item in `indielinksd-{alternator,scylla}-{0,1,2,3,4}.toml`
+domain.clustered.cluster-local-state-base = "/tmp/indielinksd-pre-alpha-"
 
 domain.scylla-env-file = "pre-alpha.env"
 domain.username = "sp1ff"
@@ -35,7 +36,7 @@ domain.api-key = "v1:5eb56ceebb7425aafe36eabca8b923054b4907d9375acd0b9950c51b57b
 
 [domain.scylla]
 hosts = ["127.0.0.1:9052"]
-translations=[["172.14.0.3:9052", "127.0.0.1:9053"], ["172.14.0.4:9052", "127.0.0.1:9054"]]
+translations=[["172.14.0.2:9052", "127.0.0.1:9052"], ["172.14.0.3:9052", "127.0.0.1:9053"], ["172.14.0.4:9052", "127.0.0.1:9054"]]
 
 [domain.dynamo]
 location = ["http://127.0.0.1:8052", "http://127.0.0.1:8053", "http://127.0.0.1:8054"]

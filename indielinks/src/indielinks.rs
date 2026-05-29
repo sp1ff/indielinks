@@ -27,7 +27,7 @@ use indielinks_cache::raft::CacheNode;
 
 use crate::{
     ap_resolution::ApResolver, background_tasks::BackgroundTasks, home_timeline::HomeTimelines,
-    http::SameSite, peppers::Peppers, signing_keys::SigningKeys,
+    http::SameSite, outboxes::UserOutboxes, peppers::Peppers, signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
 };
 
@@ -62,4 +62,6 @@ pub struct Indielinks {
     pub ap_resolver: Arc<Mutex<ApResolver>>,
     // Similarly here.
     pub home_timelines: Arc<Mutex<HomeTimelines>>,
+    // and here
+    pub user_outboxes: Arc<Mutex<UserOutboxes>>,
 }

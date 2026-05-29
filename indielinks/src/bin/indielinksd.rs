@@ -115,7 +115,8 @@ use indielinks::{
     indielinks::Indielinks,
     metrics::check_metric_names,
     metrics_task::produce_metrics,
-    ops::make_router as make_timelines_router,
+    ops::make_router as make_ops_router,
+    outboxes::UserOutboxes,
     peppers::Peppers,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
     signing_keys::SigningKeys,
@@ -1007,7 +1008,7 @@ fn make_local_router(state: Arc<Indielinks>) -> Router {
     Router::new()
         .route("/metrics", get(metrics))
         .nest("/ops/cache", make_cache_router(state.clone()))
-        .nest("/ops/timelines", make_timelines_router(state.clone()))
+        .nest("/ops", make_ops_router(state.clone()))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1180,6 +1181,7 @@ async fn serve(
         )));
 
         let home_timelines = Arc::new(TokioMutex::new(HomeTimelines::new(nonzero!(256usize))));
+        let user_outboxes = Arc::new(TokioMutex::new(UserOutboxes::new(nonzero!(256usize))));
 
         // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`
         // is a task processing implementation backed by our datastore.
@@ -1234,6 +1236,7 @@ async fn serve(
             cache_node: cache_node.clone(),
             ap_resolver,
             home_timelines,
+            user_outboxes,
         });
 
         let world_nfy = Arc::new(Notify::new());

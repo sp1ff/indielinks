@@ -1414,6 +1414,37 @@ impl storage::Backend for Client {
         ))
     }
 
+    async fn get_all_likes_replies_and_shares(
+        &self,
+        user: &User,
+    ) -> StdResult<BoxStream<'static, StdResult<LikeReplyShare, StorError>>, StorError> {
+        let count = count_range(
+            &self.client,
+            "likes_replies_shares",
+            "user_id",
+            &user.id().to_string(),
+            Some("likes_replies_shares_by_id".to_owned()),
+        )
+        .await
+        .map_err(StorError::new)?;
+
+        Ok(Box::pin(
+            PagedResultsStream::new(
+                &self.client,
+                "likes_replies_shares",
+                "user_id",
+                &user.id().to_string(),
+                count,
+                HashMap::new(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(StorError::new)?,
+        ))
+    }
     async fn get_followers<'a>(
         &'a self,
         user: &User,
@@ -1642,13 +1673,13 @@ impl storage::Backend for Client {
             .pipe(Ok)
     }
 
-    async fn get_all_posts<'a>(
-        &'a self,
+    async fn get_all_posts(
+        &self,
         user: &User,
         tags: &UpToThree<Tagname>,
         dates: &DateRange,
         unread: bool,
-    ) -> StdResult<BoxStream<'a, StdResult<Post, StorError>>, StorError> {
+    ) -> StdResult<BoxStream<'static, StdResult<Post, StorError>>, StorError> {
         let count = count_range(
             &self.client,
             "posts",

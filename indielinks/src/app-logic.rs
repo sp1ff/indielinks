@@ -40,18 +40,20 @@ use url::Url;
 use indielinks_cache::{raft::CacheNode, types::NodeId};
 use indielinks_shared::{
     api::{
-        TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp,
-        TimelineReq, TimelineSincePage, TimelineSinceRsp,
+        OutboxToken, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage,
+        TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp, UserOutboxRequest,
     },
     entities::{PostId, StorUrl, Tagname, UserId, Username},
     nonempty_string::NonEmptyString,
+    origin::Origin,
 };
 use uuid::Uuid;
 
 use crate::{
     activity_pub::SendCreate,
     ap_entities::{
-        ap_request, ap_request_no_response, make_follow_id, make_user_id, Actor, Follow, Item,
+        ap_request, ap_request_no_response, make_follow_id, make_user_id, make_user_outbox, Actor,
+        Follow, Item, Outbox, OutboxPage, ToJld,
     },
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     cache::{GrpcClient, GrpcClientFactory},
@@ -59,8 +61,9 @@ use crate::{
     entities::{FollowId, User},
     home_timeline::{FirstPage, HomeTimelines, PostKey, Timeline},
     indielinks::Indielinks,
+    outboxes::{ActivityKey, Outbox as UserOutbox, FIRST_ACTIVITY_KEY},
     protobuf_interop::protobuf::{DropTimelineRequest, InsertTimelineItemRequest, TimelineRequest},
-    signing_keys,
+    signing_keys::{self, SigningKey},
     storage::Backend as StorageBackend,
 };
 
@@ -124,6 +127,11 @@ pub enum Error {
     },
     #[snafu(display("No signing keys available: {source}"))]
     NoSigningKeys { source: signing_keys::Error },
+    #[snafu(display("Outbox error {source}"))]
+    Outbox {
+        #[snafu(source(from(crate::outboxes::Error, Box::new)))]
+        source: Box<crate::outboxes::Error>,
+    },
     #[snafu(display("While packing the pagination token, {source}"))]
     PackPaginationToken {
         #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
@@ -193,6 +201,10 @@ pub async fn handle_timeline(
 ) -> Result<TimelineRsp> {
     let (_, key) = state.signing_keys.current().context(NoSigningKeysSnafu)?;
 
+    // `LruCache::try_get_or_insert_mut()` would be preferrable, here, but creating a new `Timeline`
+    // is an asynchronous operation, and `LruCache` doesn't support that. I suppose I could add a
+    // method, either privately or in a PR, but I'm not sure I'm going to be sticking with
+    // `LruCache` long-term, yet.
     let mut timelines = state.home_timelines.lock().await;
 
     if !timelines.contains(user.id()) {
@@ -419,6 +431,133 @@ pub async fn handle_timeline_drop_or_redirect(
             handle_timeline_drop(home_timelines, user).await;
             Ok(())
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          user outbox                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum OutboxResponse {
+    Outbox(Outbox),
+    Paged(OutboxPage),
+}
+
+impl ToJld for OutboxResponse {
+    fn get_type(&self) -> crate::ap_entities::Type {
+        match self {
+            OutboxResponse::Outbox(outbox) => outbox.get_type(),
+            OutboxResponse::Paged(outbox_page) => outbox_page.get_type(),
+        }
+    }
+}
+
+fn make_outbox(user: &User, origin: &Origin, signing_key: &SigningKey) -> Result<Outbox> {
+    let id = make_user_outbox(user.username(), origin).context(ApSnafu)?;
+    let mut first = id.clone();
+
+    let token = FIRST_ACTIVITY_KEY
+        .to_pagination_token(signing_key)
+        .context(OutboxSnafu)?;
+
+    first.set_query(Some(&format!("page={token}")));
+
+    Ok(Outbox {
+        id,
+        // I think this may bite me...
+        total_items: None,
+        first,
+        last: None,
+    })
+}
+
+async fn make_outbox_page(
+    user: &User,
+    outbox: &mut UserOutbox,
+    origin: &Origin,
+    page_token: &OutboxToken,
+    signing_key: &SigningKey,
+) -> Result<OutboxPage> {
+    let id = make_user_outbox(user.username(), origin).context(ApSnafu)?;
+    let mut prev = id.clone();
+    prev.set_query(Some(&format!("page={page_token}")));
+
+    let token = ActivityKey::from_pagination_token(page_token, signing_key).context(OutboxSnafu)?;
+
+    match outbox.next(&token, None).await.context(OutboxSnafu)? {
+        None => Ok(OutboxPage {
+            part_of: id.clone(),
+            id,
+            next: None,
+            prev: Some(prev),
+            ordered_items: Vec::new(),
+        }),
+        Some(page) => {
+            let next_token = token
+                .to_pagination_token(signing_key)
+                .context(OutboxSnafu)?;
+            let mut next = id.clone();
+            next.set_query(Some(&format!("page={next_token}")));
+
+            Ok(OutboxPage {
+                part_of: id.clone(),
+                id,
+                next: Some(next),
+                prev: Some(prev),
+                ordered_items: page.items.into(),
+            })
+        }
+    }
+}
+
+async fn handle_outbox(
+    state: Arc<Indielinks>,
+    user: &User,
+    request: UserOutboxRequest,
+) -> Result<OutboxResponse> {
+    let (_, key) = state.signing_keys.current().context(NoSigningKeysSnafu)?;
+
+    // `LruCache::try_get_or_insert_mut()` would be preferrable, here, but creating a new `Outbox`
+    // is an asynchronous operation, and `LruCache` doesn't support that. I suppose I could add a
+    // method, either privately or in a PR, but I'm not sure I'm going to be sticking with
+    // `LruCache` long-term, yet.
+
+    let mut outboxes = state.user_outboxes.lock().await;
+
+    if !outboxes.contains(user.id()) {
+        let outbox = UserOutbox::new(state.origin.clone(), user, state.storage.as_ref())
+            .await
+            .context(OutboxSnafu)?;
+        outboxes.put(*user.id(), outbox);
+    }
+
+    match request.pagination_token {
+        Some(token) => {
+            let outbox = outboxes.get_mut(user.id()).unwrap(/* known good */);
+            Ok(OutboxResponse::Paged(
+                make_outbox_page(user, outbox, &state.origin, &token, &key).await?,
+            ))
+        }
+        None => Ok(OutboxResponse::Outbox(make_outbox(
+            user,
+            &state.origin,
+            &key,
+        )?)),
+    }
+}
+
+define_metric! { "user.outbox.redirects", user_outbox_redirects, Sort::IntegralCounter }
+
+/// Handle a user outbox request-- execute locally or forward to the responsible node in this cluster
+pub async fn handle_outbox_or_redirect(
+    state: Arc<Indielinks>,
+    user: &User,
+    request: UserOutboxRequest,
+) -> Result<OutboxResponse> {
+    match this_node_is_responsible(state.cache_node.clone(), user).await? {
+        None => handle_outbox(state, user, request).await,
+        Some(_) => unimplemented!(), // To be implemented
     }
 }
 

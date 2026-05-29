@@ -34,7 +34,7 @@ use indielinks_shared::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
-use snafu::{prelude::*, Backtrace};
+use snafu::{prelude::*, Backtrace, IntoError};
 use url::Url;
 use uuid::Uuid;
 
@@ -43,6 +43,12 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum Error {
+    #[snafu(display("While yielding the next row in a Stream over a paged result, {source}"))]
+    NextRow {
+        #[snafu(source(from(scylla::errors::NextRowError, Box::new)))]
+        source: Box<scylla::errors::NextRowError>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Schema validation error"))]
     Schema { backtrace: Backtrace },
     #[snafu(display("{source}"))]
@@ -63,6 +69,14 @@ impl Error {
             source: Box::new(err),
             backtrace: Backtrace::capture(),
         }
+    }
+}
+
+// This impl allows us to use the `TryStreamExt::err_into()` combinator in the scylla module for
+// building `Stream`s on the paginated results of queries.
+impl From<scylla::errors::NextRowError> for Error {
+    fn from(value: scylla::errors::NextRowError) -> Self {
+        NextRowSnafu.into_error(value)
     }
 }
 
@@ -137,6 +151,11 @@ pub trait Backend {
         &'a self,
         actor_id: &StorUrl,
     ) -> Result<BoxStream<'a, Result<Following, Error>>, Error>;
+    /// Return a stream yielding all of a [User]'s likes, replies & shares
+    async fn get_all_likes_replies_and_shares(
+        &self,
+        user: &User,
+    ) -> Result<BoxStream<'static, Result<LikeReplyShare, Error>>, Error>;
     // I considered using `TryStream`, but not sure I see the advantage, yet. Also, there's no handy
     // type alias `BoxTryStream` (tho of course I could define it)
     async fn get_followers<'a>(
@@ -165,13 +184,13 @@ pub trait Backend {
     ) -> Result<Vec<(PostDay, usize)>, Error>;
     /// Retrieve all of a user's posts, optionally filtering by time & tags. The implementation shall
     /// return the [Post]s in reverse chronological order.
-    async fn get_all_posts<'a>(
-        &'a self,
+    async fn get_all_posts(
+        &self,
         user: &User,
         tags: &UpToThree<Tagname>,
         dates: &DateRange,
         unread: bool,
-    ) -> Result<BoxStream<'a, Result<Post, Error>>, Error>;
+    ) -> Result<BoxStream<'static, Result<Post, Error>>, Error>;
     /// Retrieve recent posts
     async fn get_recent_posts(
         &self,

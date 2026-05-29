@@ -32,11 +32,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use enum_map::{Enum, EnumMap};
 use futures::stream::iter;
-use futures::StreamExt;
 use futures::{
     stream::{self, BoxStream},
     Stream,
 };
+use futures::{StreamExt, TryStreamExt};
 use indielinks_cache::types::{NodeId, TypeConfig};
 use indielinks_shared::instance_state::InstanceStateV0;
 use indielinks_shared::nonempty_string::NonEmptyString;
@@ -203,6 +203,12 @@ pub enum Error {
         source: Box<scylla::errors::NewSessionError>,
         backtrace: Backtrace,
     },
+    #[snafu(display("While paging a query, {source}"))]
+    Pager {
+        #[snafu(source(from(scylla::errors::PagerExecutionError, Box::new)))]
+        source: Box<scylla::errors::PagerExecutionError>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to deserialize a post count: {source}"))]
     PostCountDe {
         source: scylla::deserialize::DeserializationError,
@@ -234,6 +240,11 @@ pub enum Error {
     ResultNotRows {
         #[snafu(source(from(scylla::response::query_result::IntoRowsResultError, Box::new)))]
         source: Box<scylla::response::query_result::IntoRowsResultError>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("While converting to typed rows, {source}"))]
+    RowType {
+        source: scylla::deserialize::TypeCheckError,
         backtrace: Backtrace,
     },
     #[snafu(display("Deserialization error while validating schema: {source}"))]
@@ -524,6 +535,26 @@ pub async fn get_posts_count(
         .0 as usize)
 }
 
+// re-factor with some of the above, `get_posts_count()`, at the least!
+pub async fn get_likes_replies_shares_count(
+    session: &InnerSession,
+    stmt: &PreparedStatement,
+    user: &User,
+) -> Result<usize> {
+    Ok(session
+        .execute_unpaged(stmt, (user.id(),))
+        .await
+        .context(ExecutionSnafu)?
+        .into_rows_result()
+        .context(IntoRowsResultSnafu)?
+        .rows::<(i64,)>()
+        .context(TypedRowsSnafu)?
+        .exactly_one()
+        .unwrap(/* known good */)
+        .context(CountDeSnafu)?
+        .0 as usize)
+}
+
 /// A [Stream] for enumerating a results from a paged ScyllaDB response
 ///
 /// This is a utility type I whipped-up to make paged results out of ScyllaDB generic.
@@ -658,21 +689,48 @@ where
     }
 }
 
+/// Create a [Stream] yielding rows in response to a [PreparedStatement]
+///
+/// For some queries, the number of rows in the response may be large. Prepare such queries with
+/// pagination enabled in the [Session] constructor, and use this function to build a [Stream]
+/// implementation yielding a `Result<T, StorError>` (where `T` is the row type). The choice of
+/// `Err` variant is convenient in terms of implementing [Backend] trait methods.
+///
+/// Note that the resulting [Stream] implementation will have `'static` lifetime, meaning that
+/// callers can hold on to instances that are in the process of yielding their results.
+async fn make_streaming_response<T, P>(
+    session: &InnerSession,
+    statement: PreparedStatement,
+    params: P,
+) -> Result<impl Stream<Item = StdResult<T, StorError>>>
+where
+    P: scylla::serialize::row::SerializeRow,
+    T: for<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metadata>,
+{
+    session
+        .execute_iter(statement, params)
+        .await
+        .context(PagerSnafu)?
+        .rows_stream::<T>()
+        .context(RowTypeSnafu)?
+        .err_into::<StorError>()
+        .pipe(Ok)
+}
+
 // This is an internal macro that I'm using to reduce boilerplate in one method only:
 // `get_all_posts()`.
 #[macro_export]
 macro_rules! all_posts_case {
-    ($self:expr, $idx:expr, $params:expr, $posts_count: expr) => {
-        Ok(Box::pin(
-            PagedResultsStream::new(
-                &$self.session,
-                &$self.get_all_posts_statements[$idx],
-                $params,
-                $posts_count,
-            )
-            .await
-            .map_err(StorError::new)?,
-        ))
+    ($self:expr, $idx:expr, $params:expr) => {
+        make_streaming_response(
+            &$self.session,
+            $self.get_all_posts_statements[$idx].clone(),
+            $params,
+        )
+        .await
+        .map_err(StorError::new)?
+        .boxed()
+        .pipe(Ok)
     };
 }
 
@@ -996,6 +1054,7 @@ enum PreparedStatements {
     AddIncomingLikeReplyShare,
     OutgoingLikeReplyShare,
     CountPosts,
+    CountLikesRepliesShares,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -1015,6 +1074,7 @@ pub struct Session {
     followers_statement: PreparedStatement,
     following_by_actor_statement: PreparedStatement,
     get_all_posts_statements: Vec<PreparedStatement>, // 32
+    get_all_likes_replies_shares_statement: PreparedStatement,
     // Raft node ID
     node_id: NodeId,
 }
@@ -1149,6 +1209,7 @@ impl Session {
             "insert into incoming_likes_replies_shares (sort, user_id, received, ap_id, in_reply_to_sort, in_reply_to, visibility, content) values (?, ?, ?, ?, ?, ?, ?, ?) if not exists", // AddIncomingLikeReplyShare,
             "select * from likes_replies_shares where id = ?", // OutgoingLikeReplyShare
             "select count(*) from posts where user_id = ?", // CountPosts
+            "select count(*) from likes_replies_shares where user_id = ?", // CountLikesRepliesShares
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -1165,7 +1226,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 92] = prepared_statements
+        let prepared_statements: [PreparedStatement; 93] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -1241,6 +1302,14 @@ impl Session {
             .into_iter()
             .collect::<StdResult<Vec<PreparedStatement>, _>>()?;
 
+        let get_all_likes_replies_shares_statement =
+            "select * from likes_replies_shares where user_id = ?";
+        let get_all_likes_replies_shares_statement = scylla
+            .prepare(Statement::new(get_all_likes_replies_shares_statement).with_page_size(512))
+            .await
+            .context(PrepareSnafu {
+                stmt: get_all_likes_replies_shares_statement.to_owned(),
+            })?;
         Ok(Session {
             session: scylla,
             prepared_statements: EnumMap::from_array(prepared_statements),
@@ -1248,6 +1317,7 @@ impl Session {
             following_statement,
             following_by_actor_statement,
             get_all_posts_statements,
+            get_all_likes_replies_shares_statement,
             node_id,
         })
     }
@@ -1584,6 +1654,21 @@ impl storage::Backend for Session {
         ))
     }
 
+    async fn get_all_likes_replies_and_shares(
+        &self,
+        user: &User,
+    ) -> StdResult<BoxStream<'static, StdResult<LikeReplyShare, StorError>>, StorError> {
+        make_streaming_response(
+            &self.session,
+            self.get_all_likes_replies_shares_statement.clone(),
+            (*user.id(),),
+        )
+        .await
+        .map_err(StorError::new)?
+        .boxed()
+        .pipe(Ok)
+    }
+
     async fn get_followers<'a>(
         &'a self,
         user: &User,
@@ -1784,327 +1869,142 @@ impl storage::Backend for Session {
         .pipe(Ok)
     }
 
-    async fn get_all_posts<'a>(
-        &'a self,
+    async fn get_all_posts(
+        &self,
         user: &User,
         tags: &UpToThree<Tagname>,
         dates: &DateRange,
         unread: bool,
-    ) -> StdResult<BoxStream<'a, StdResult<Post, StorError>>, StorError> {
-        let pc: usize = get_posts_count(
-            &self.session,
-            &self.prepared_statements[PreparedStatements::CountPosts],
-            user,
-        )
-        .await
-        .map_err(StorError::new)?;
+    ) -> StdResult<BoxStream<'static, StdResult<Post, StorError>>, StorError> {
         match (tags, dates, unread) {
             (UpToThree::None, DateRange::None, false) => {
-                all_posts_case!(self, 0, (*user.id(),), pc)
+                all_posts_case!(self, 0, (*user.id(),))
             }
             (UpToThree::None, DateRange::Begins(dt), false) => {
-                all_posts_case!(self, 1, (*user.id(), *dt), pc)
+                all_posts_case!(self, 1, (*user.id(), *dt))
             }
-            (UpToThree::None, DateRange::Ends(dt), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts2],
-                    (*user.id(), *dt),
-                    pc,
+            (UpToThree::None, DateRange::Ends(dt), false) => {
+                all_posts_case!(self, 2, (*user.id(), *dt))
+            }
+            (UpToThree::None, DateRange::Both(b, e), false) => {
+                all_posts_case!(self, 3, (*user.id(), *b, *e))
+            }
+            (UpToThree::One(tag), DateRange::None, false) => {
+                all_posts_case!(self, 4, (*user.id(), tag.clone()))
+            }
+            (UpToThree::One(tag), DateRange::Begins(dt), false) => {
+                all_posts_case!(self, 5, (*user.id(), *dt, tag.clone()))
+            }
+            (UpToThree::One(tag), DateRange::Ends(dt), false) => {
+                all_posts_case!(self, 6, (*user.id(), *dt, tag.clone()))
+            }
+            (UpToThree::One(tag), DateRange::Both(b, e), false) => {
+                all_posts_case!(self, 7, (*user.id(), *b, *e, tag.clone()))
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::None, false) => {
+                all_posts_case!(self, 8, (*user.id(), tag0.clone(), tag1.clone()))
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Begins(dt), false) => {
+                all_posts_case!(self, 9, (*user.id(), *dt, tag0.clone(), tag1.clone()))
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Ends(dt), false) => {
+                all_posts_case!(self, 10, (*user.id(), *dt, tag0.clone(), tag1.clone()))
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Both(b, e), false) => {
+                all_posts_case!(self, 11, (*user.id(), *b, *e, tag0.clone(), tag1.clone()))
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::None, false) => {
+                all_posts_case!(
+                    self,
+                    12,
+                    (*user.id(), tag0.clone(), tag1.clone(), tag2.clone())
                 )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::None, DateRange::Both(b, e), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts3],
-                    (*user.id(), *b, *e),
-                    pc,
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(dt), false) => {
+                all_posts_case!(
+                    self,
+                    13,
+                    (*user.id(), *dt, tag0.clone(), tag1.clone(), tag2.clone())
                 )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::One(tag), DateRange::None, false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts4],
-                    (*user.id(), tag.clone()),
-                    pc,
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(dt), false) => {
+                all_posts_case!(
+                    self,
+                    14,
+                    (*user.id(), *dt, tag0.clone(), tag1.clone(), tag2.clone())
                 )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::One(tag), DateRange::Begins(dt), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts5],
-                    (*user.id(), *dt, tag.clone()),
-                    pc,
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e), false) => {
+                all_posts_case!(
+                    self,
+                    15,
+                    (*user.id(), *b, *e, tag0.clone(), tag1.clone(), tag2.clone())
                 )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::One(tag), DateRange::Ends(dt), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts6],
-                    (*user.id(), *dt, tag.clone()),
-                    pc,
+            }
+            (UpToThree::None, DateRange::None, true) => {
+                all_posts_case!(self, 16, (*user.id(),))
+            }
+            (UpToThree::None, DateRange::Begins(dt), true) => {
+                all_posts_case!(self, 17, (*user.id(), *dt))
+            }
+            (UpToThree::None, DateRange::Ends(dt), true) => {
+                all_posts_case!(self, 18, (*user.id(), *dt))
+            }
+            (UpToThree::None, DateRange::Both(b, e), true) => {
+                all_posts_case!(self, 19, (*user.id(), *b, *e))
+            }
+            (UpToThree::One(tag), DateRange::None, true) => {
+                all_posts_case!(self, 20, (*user.id(), tag.clone()))
+            }
+            (UpToThree::One(tag), DateRange::Begins(dt), true) => {
+                all_posts_case!(self, 21, (*user.id(), *dt, tag.clone()))
+            }
+            (UpToThree::One(tag), DateRange::Ends(dt), true) => {
+                all_posts_case!(self, 22, (*user.id(), *dt, tag.clone()))
+            }
+            (UpToThree::One(tag), DateRange::Both(b, e), true) => {
+                all_posts_case!(self, 23, (*user.id(), *b, *e, tag.clone()))
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::None, true) => {
+                all_posts_case!(self, 24, (*user.id(), tag0.clone(), tag1.clone()))
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Begins(dt), true) => {
+                all_posts_case!(self, 25, (*user.id(), *dt, tag0.clone(), tag1.clone()))
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Ends(dt), true) => {
+                all_posts_case!(self, 26, (*user.id(), *dt, tag0.clone(), tag1.clone()))
+            }
+            (UpToThree::Two(tag0, tag1), DateRange::Both(b, e), true) => {
+                all_posts_case!(self, 27, (*user.id(), *b, *e, tag0.clone(), tag1.clone()))
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::None, true) => {
+                all_posts_case!(
+                    self,
+                    28,
+                    (*user.id(), tag0.clone(), tag1.clone(), tag2.clone())
                 )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::One(tag), DateRange::Both(b, e), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts7],
-                    (*user.id(), *b, *e, tag.clone()),
-                    pc,
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(dt), true) => {
+                all_posts_case!(
+                    self,
+                    29,
+                    (*user.id(), *dt, tag0.clone(), tag1.clone(), tag2.clone())
                 )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Two(tag0, tag1), DateRange::None, false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts8],
-                    (*user.id(), tag0.clone(), tag1.clone()),
-                    pc,
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(dt), true) => {
+                all_posts_case!(
+                    self,
+                    30,
+                    (*user.id(), *dt, tag0.clone(), tag1.clone(), tag2.clone())
                 )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Two(tag0, tag1), DateRange::Begins(dt), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts9],
-                    (*user.id(), *dt, tag0.clone(), tag1.clone()),
-                    pc,
+            }
+            (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e), true) => {
+                all_posts_case!(
+                    self,
+                    31,
+                    (*user.id(), *b, *e, tag0.clone(), tag1.clone(), tag2.clone())
                 )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Two(tag0, tag1), DateRange::Ends(dt), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts10],
-                    (*user.id(), *dt, tag0.clone(), tag1.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Two(tag0, tag1), DateRange::Both(b, e), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts11],
-                    (*user.id(), *b, *e, tag0.clone(), tag1.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::None, false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts12],
-                    (*user.id(), tag0.clone(), tag1.clone(), tag2.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(dt), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts13],
-                    (*user.id(), *dt, tag0.clone(), tag1.clone(), tag2.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(dt), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts14],
-                    (*user.id(), *dt, tag0.clone(), tag1.clone(), tag2.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e), false) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts15],
-                    (*user.id(), *b, *e, tag0.clone(), tag1.clone(), tag2.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::None, DateRange::None, true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts16],
-                    (*user.id(),),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::None, DateRange::Begins(dt), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts17],
-                    (*user.id(), *dt),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::None, DateRange::Ends(dt), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts18],
-                    (*user.id(), *dt),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::None, DateRange::Both(b, e), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts19],
-                    (*user.id(), *b, *e),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::One(tag), DateRange::None, true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts20],
-                    (*user.id(), tag.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::One(tag), DateRange::Begins(dt), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts21],
-                    (*user.id(), *dt, tag.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::One(tag), DateRange::Ends(dt), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts22],
-                    (*user.id(), *dt, tag.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::One(tag), DateRange::Both(b, e), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts23],
-                    (*user.id(), *b, *e, tag.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Two(tag0, tag1), DateRange::None, true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts24],
-                    (*user.id(), tag0.clone(), tag1.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Two(tag0, tag1), DateRange::Begins(dt), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts25],
-                    (*user.id(), *dt, tag0.clone(), tag1.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Two(tag0, tag1), DateRange::Ends(dt), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts26],
-                    (*user.id(), *dt, tag0.clone(), tag1.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Two(tag0, tag1), DateRange::Both(b, e), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts27],
-                    (*user.id(), *b, *e, tag0.clone(), tag1.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::None, true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts28],
-                    (*user.id(), tag0.clone(), tag1.clone(), tag2.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::Begins(dt), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts29],
-                    (*user.id(), *dt, tag0.clone(), tag1.clone(), tag2.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::Ends(dt), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts30],
-                    (*user.id(), *dt, tag0.clone(), tag1.clone(), tag2.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
-            (UpToThree::Three(tag0, tag1, tag2), DateRange::Both(b, e), true) => Ok(Box::pin(
-                PagedResultsStream::new(
-                    &self.session,
-                    &self.prepared_statements[PreparedStatements::GetAllPosts31],
-                    (*user.id(), *b, *e, tag0.clone(), tag1.clone(), tag2.clone()),
-                    pc,
-                )
-                .await
-                .map_err(StorError::new)?,
-            )),
+            }
         }
     }
 

@@ -21,15 +21,24 @@ use http::{header::CONTENT_TYPE, HeaderValue};
 use indielinks_shared::entities::Username;
 use serde::{ser::SerializeStruct, Deserialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
+use tap::Pipe;
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error};
 
-use crate::{home_timeline::HomeTimelines, http::ErrorResponseBody, indielinks::Indielinks};
+use crate::{
+    home_timeline::HomeTimelines, http::ErrorResponseBody, indielinks::Indielinks,
+    outboxes::UserOutboxes,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("User {username} currently has no outbox"))]
+    NoOutbox {
+        username: Username,
+        backtrace: Backtrace,
+    },
     #[snafu(display("User {username} currently has no timeline"))]
     NoTimeline {
         username: Username,
@@ -42,7 +51,7 @@ pub enum Error {
     },
     #[snafu(display("There is no user named {username}"))]
     User {
-        username: String,
+        username: Username,
         backtrace: Backtrace,
     },
     #[snafu(display("While looking up user {username}, {source}"))]
@@ -58,10 +67,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 //                                       Operator interface                                       //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// General-purpose request to dump a datastructure that is maintained on a per-user basis; if the
+// username is omitted, dump everything.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DumpRequest {
-    user: Option<String>,
+    user: Option<Username>,
 }
 
 struct HomeTimelinesJsonRepr<'a>(&'a HomeTimelines);
@@ -106,36 +117,39 @@ async fn dump_timelines(
         dump_req: DumpRequest,
     ) -> Result<axum::response::Response> {
         match dump_req.user {
-            Some(user) => {
+            Some(username) => {
                 let user = state
                     .storage
-                    .user_for_name(&user)
+                    .user_for_name(username.as_ref())
                     .await
                     .context(UserLookupSnafu {
-                        username: user.clone(),
+                        username: username.clone(),
                     })?
                     .context(UserSnafu {
-                        username: user.clone(),
+                        username: username.clone(),
                     })?;
-                Ok(axum::Json(
+                axum::Json(
                     serde_json::to_value(crate::home_timeline::JsonRepr(
-                        state.home_timelines.lock().await.get(user.id()).context(
-                            NoTimelineSnafu {
-                                username: user.username().clone(),
-                            },
-                        )?,
+                        state
+                            .home_timelines
+                            .lock()
+                            .await
+                            .get(user.id())
+                            .context(NoTimelineSnafu { username })?,
                     ))
                     .context(SerSnafu)?,
                 )
-                .into_response())
+                .into_response()
+                .pipe(Ok)
             }
-            None => Ok(axum::Json(
+            None => axum::Json(
                 serde_json::to_value(HomeTimelinesJsonRepr(
                     state.home_timelines.lock().await.deref(),
                 ))
                 .context(SerSnafu)?,
             )
-            .into_response()),
+            .into_response()
+            .pipe(Ok),
         }
     }
 
@@ -154,7 +168,7 @@ async fn dump_timelines(
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DropRequest {
-    user: Option<String>,
+    user: Option<Username>,
 }
 
 /// Drop the home timelines, or just the timeline for a particular user
@@ -162,18 +176,18 @@ async fn drop_timelines(
     State(state): State<Arc<Indielinks>>,
     Query(drop_req): Query<DropRequest>,
 ) -> axum::response::Response {
-    async fn drop_timelines1(state: Arc<Indielinks>, name: Option<&str>) -> Result<()> {
+    async fn drop_timelines1(state: Arc<Indielinks>, name: Option<Username>) -> Result<()> {
         match name {
-            Some(name) => {
+            Some(username) => {
                 let user = state
                     .storage
-                    .user_for_name(name)
+                    .user_for_name(username.as_ref())
                     .await
                     .context(UserLookupSnafu {
-                        username: name.to_owned(),
+                        username: username.clone(),
                     })?
                     .context(UserSnafu {
-                        username: name.to_owned(),
+                        username: username.clone(),
                     })?;
                 let _ = state
                     .home_timelines
@@ -181,7 +195,7 @@ async fn drop_timelines(
                     .await
                     .pop(user.id())
                     .or_else(|| {
-                        debug!("User {} had no timeline, anyway.", user.username());
+                        debug!("User {} had no timeline, anyway.", username);
                         None
                     });
             }
@@ -192,7 +206,7 @@ async fn drop_timelines(
         Ok(())
     }
 
-    match drop_timelines1(state, drop_req.user.as_deref()).await {
+    match drop_timelines1(state, drop_req.user).await {
         Ok(_) => http::StatusCode::ACCEPTED.into_response(),
         Err(err) => {
             error!("{err:#?}");
@@ -204,10 +218,105 @@ async fn drop_timelines(
     }
 }
 
+struct UserOutboxesJsonRepr<'a>(&'a UserOutboxes);
+
+impl<'a> serde::ser::Serialize for UserOutboxesJsonRepr<'a> {
+    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let t = self.0;
+        let mut st = serializer.serialize_struct("UserOutboxes", 4)?;
+
+        struct AsPairs<'a>(&'a UserOutboxes);
+
+        impl<'a> serde::ser::Serialize for AsPairs<'a> {
+            fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                serializer.collect_seq(
+                    self.0
+                        .into_iter()
+                        .map(|(k, v)| (*k, crate::outboxes::JsonRepr(v))),
+                )
+            }
+        }
+
+        st.serialize_field("items", &AsPairs(t))?;
+        st.serialize_field("num_items", &t.len())?;
+        st.serialize_field("capacity", &t.cap())?;
+        st.end()
+    }
+}
+
+/// Dump the user outboxes, perhaps filtering by user
+async fn dump_outboxes(
+    State(state): State<Arc<Indielinks>>,
+    Query(dump_req): Query<DumpRequest>,
+) -> axum::response::Response {
+    async fn dump_outboxes1(
+        state: Arc<Indielinks>,
+        dump_req: DumpRequest,
+    ) -> Result<axum::response::Response> {
+        match dump_req.user {
+            Some(user) => {
+                let user = state
+                    .storage
+                    .user_for_name(user.as_ref())
+                    .await
+                    .context(UserLookupSnafu {
+                        username: user.clone(),
+                    })?
+                    .context(UserSnafu {
+                        username: user.clone(),
+                    })?;
+                axum::Json(
+                    serde_json::to_value(crate::outboxes::JsonRepr(
+                        state
+                            .user_outboxes
+                            .lock()
+                            .await
+                            .get(user.id())
+                            .context(NoOutboxSnafu {
+                                username: user.username().clone(),
+                            })?,
+                    ))
+                    .context(SerSnafu)?,
+                )
+                .into_response()
+                .pipe(Ok)
+            }
+            None => axum::Json(
+                serde_json::to_value(UserOutboxesJsonRepr(
+                    state.user_outboxes.lock().await.deref(),
+                ))
+                .context(SerSnafu)?,
+            )
+            .into_response()
+            .pipe(Ok),
+        }
+    }
+
+    match dump_outboxes1(state.clone(), dump_req).await {
+        Ok(response) => response,
+        Err(err) => {
+            error!("{err:#?}");
+            axum::Json(ErrorResponseBody {
+                error: format!("{err}"),
+            })
+            .into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
     Router::new()
-        .route("/dump", get(dump_timelines))
-        .route("/drop", get(drop_timelines))
+        .route("/timelines/dump", get(dump_timelines))
+        .route("/timelines/drop", get(drop_timelines))
+        .route("/outboxes/dump", get(dump_outboxes))
         .layer(SetResponseHeaderLayer::if_not_present(
             CONTENT_TYPE,
             HeaderValue::from_static("text/json; charset=utf-8"),

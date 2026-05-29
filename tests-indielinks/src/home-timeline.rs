@@ -114,9 +114,9 @@ fn peer_outbox(
 
     let outbox = Outbox {
         id: outbox_url.clone(),
-        total_items: num_items,
+        total_items: Some(num_items),
         first: page_url.clone(),
-        last: page_url,
+        last: Some(page_url),
     };
     let outbox_jld = Jld::new(&outbox, None)?.to_string();
 
