@@ -672,7 +672,7 @@ impl Task<Context> for SendLike {
         );
 
         async fn exec1(this: Box<SendLike>, context: Context) -> Result<()> {
-            let outgoing = OutgoingLike::new(&this.user, &this.apid);
+            let outgoing = OutgoingLike::new(*this.user.id(), &this.apid);
             context
                 .storage
                 .add_outgoing_like(&outgoing)

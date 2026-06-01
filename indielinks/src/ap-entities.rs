@@ -608,6 +608,7 @@ pub trait ToJld: Serialize {
 }
 
 /// Newtype "proving" that the caller produced JSON-LD
+#[derive(Clone, Debug)]
 pub struct Jld(String);
 
 impl Jld {
@@ -743,8 +744,8 @@ pub struct Actor {
     preferred_username: String,
     inbox: Url,
     outbox: Url,
-    following: Url,
-    followers: Url,
+    following: Option<Url>,
+    followers: Option<Url>,
     endpoints: Option<Endpoints>,
     public_key: PublicKey,
 }
@@ -757,8 +758,8 @@ impl Actor {
             preferred_username: user.username().to_string(),
             inbox: make_user_inbox(user.username(), origin)?,
             outbox: make_user_outbox(user.username(), origin)?,
-            following: make_user_following(user.username(), origin)?,
-            followers: make_user_followers(user.username(), origin)?,
+            following: Some(make_user_following(user.username(), origin)?),
+            followers: Some(make_user_followers(user.username(), origin)?),
             endpoints: Some(Endpoints::new(origin)?),
             public_key: PublicKey::new(user, origin)?,
         })
@@ -787,8 +788,8 @@ impl Actor {
             preferred_username: username.to_string(),
             inbox: make_user_inbox(username, origin)?,
             outbox: make_user_outbox(username, origin)?,
-            following: make_user_following(username, origin)?,
-            followers: make_user_followers(username, origin)?,
+            following: Some(make_user_following(username, origin)?),
+            followers: Some(make_user_followers(username, origin)?),
             endpoints: Some(Endpoints::new(origin)?),
             public_key: PublicKey::from_username_and_key(username, origin, pub_key)?,
         })

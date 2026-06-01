@@ -170,8 +170,6 @@ pub enum Error {
         request: String,
         backtrace: Backtrace,
     },
-    #[snafu(display("The signature does not cover the Digest with a non-trivial request body"))]
-    MissingContentDigest,
     #[snafu(display("An in-reply-to field was expected, but not found"))]
     NoInReplyTo { backtrace: Backtrace },
     #[snafu(display("User {username} has no post, reply or share with ID {id}"))]
@@ -279,7 +277,6 @@ impl Error {
             Error::Jrd { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
             Error::KeyId { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
             Error::MismatchedActorId { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
-            Error::MissingContentDigest => (StatusCode::UNAUTHORIZED, format!("{self}")),
             Error::NoUser { username, .. } => {
                 (StatusCode::NOT_FOUND, format!("Unknown user {username}"))
             }
@@ -443,19 +440,12 @@ async fn verify_signature(
             .await
             .context(ToBytesSnafu)?;
 
-        // If it's not part of the signature, I'm going to deny the
-        // request. To be fair, I haven't seen this mandated anywhere, but I'm not sure what the
-        // point of signing a message and not covering the body (unless the body's empty):
-        if !bytes.is_empty()
-            && !parsed_http_signature
-                .headers
-                .iter()
-                .any(|hdr| hdr == &picky::http::http_signature::Header::Name("digest".to_owned()))
-        {
-            return Err(Error::MissingContentDigest);
+        // If there's a request body, and the content digest is not part of the signature, I'm going
+        // to deny the request. To be fair, I haven't seen this mandated anywhere, but I'm not sure
+        // what the point of signing a message and not covering the body (unless the body's empty).
+        if !bytes.is_empty() {
+            check_sha_256_content_digest(&parts, &bytes).context(ContentDigestSnafu)?;
         }
-
-        check_sha_256_content_digest(&parts, &bytes).context(ContentDigestSnafu)?;
 
         // With all that done, we can finally verify the signature:
         parsed_http_signature
@@ -894,7 +884,7 @@ async fn actor(
             )?;
         let actor = Actor::new(&user, origin).context(ActorSnafu)?;
 
-        warn!("Serving Actor: {actor:#?}");
+        debug!("Serving Actor: {actor:?}");
 
         Ok(actor)
     }
@@ -1498,6 +1488,7 @@ async fn outbox(
         .and_then(|rsp| Jld::new(&rsp, None).context(JrdSnafu))
     {
         Ok(doc) => {
+            debug!("Serving outbox: {doc:#?}");
             outbox_pages.add(1, &[KeyValue::new("username", username)]);
             patch_content_type((StatusCode::OK, doc.to_string()).into_response())
         }

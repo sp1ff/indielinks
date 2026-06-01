@@ -92,6 +92,7 @@ use tests_indielinks::{
     follow::accept_follow_smoke,
     helper::{DynamoConfig, DynamoDBHelper, Helper, ScyllaConfig, ScyllaHelper},
     home_timeline::{timeline_before, timeline_empty, timeline_initial},
+    outbox::outbox_smoke_test,
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
@@ -991,6 +992,20 @@ inventory::submit!(Test {
         FixtureId::DynamoDBSingleNode,
         FixtureId::DynamoDBCluster
     ]),
+});
+
+inventory::submit!(Test {
+    name: "110outbox_smoke_test",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(outbox_smoke_test(
+            helper.indielinks(),
+            version,
+            pepper,
+            helper,
+        ))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
 });
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -61,7 +61,7 @@ use crate::{
     entities::{FollowId, User},
     home_timeline::{FirstPage, HomeTimelines, PostKey, Timeline},
     indielinks::Indielinks,
-    outboxes::{ActivityKey, Outbox as UserOutbox, FIRST_ACTIVITY_KEY},
+    outboxes::{ActivityKey, Outbox as UserOutbox, Page, FIRST_ACTIVITY_KEY},
     protobuf_interop::protobuf::{DropTimelineRequest, InsertTimelineItemRequest, TimelineRequest},
     signing_keys::{self, SigningKey},
     storage::Backend as StorageBackend,
@@ -439,6 +439,7 @@ pub async fn handle_timeline_drop_or_redirect(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
 pub enum OutboxResponse {
     Outbox(Outbox),
     Paged(OutboxPage),
@@ -485,6 +486,8 @@ async fn make_outbox_page(
 
     let token = ActivityKey::from_pagination_token(page_token, signing_key).context(OutboxSnafu)?;
 
+    debug!("Deserialized the pagination token to {token:#?}");
+
     match outbox.next(&token, None).await.context(OutboxSnafu)? {
         None => Ok(OutboxPage {
             part_of: id.clone(),
@@ -493,19 +496,23 @@ async fn make_outbox_page(
             prev: Some(prev),
             ordered_items: Vec::new(),
         }),
-        Some(page) => {
-            let next_token = token
-                .to_pagination_token(signing_key)
-                .context(OutboxSnafu)?;
-            let mut next = id.clone();
-            next.set_query(Some(&format!("page={next_token}")));
+        Some(Page { items, next }) => {
+            let next = next
+                .map(|token| token.to_pagination_token(signing_key))
+                .transpose()
+                .context(OutboxSnafu)?
+                .map(|token| {
+                    let mut next = id.clone();
+                    next.set_query(Some(&format!("page={token}")));
+                    next
+                });
 
             Ok(OutboxPage {
                 part_of: id.clone(),
                 id,
-                next: Some(next),
+                next,
                 prev: Some(prev),
-                ordered_items: page.items.into(),
+                ordered_items: items.into(),
             })
         }
     }
@@ -535,15 +542,22 @@ async fn handle_outbox(
     match request.pagination_token {
         Some(token) => {
             let outbox = outboxes.get_mut(user.id()).unwrap(/* known good */);
+            debug!(
+                "Serving an outbox page for user {}, token {token}",
+                user.username()
+            );
             Ok(OutboxResponse::Paged(
                 make_outbox_page(user, outbox, &state.origin, &token, &key).await?,
             ))
         }
-        None => Ok(OutboxResponse::Outbox(make_outbox(
-            user,
-            &state.origin,
-            &key,
-        )?)),
+        None => {
+            debug!("Serving the outbox for {}.", user.username());
+            Ok(OutboxResponse::Outbox(make_outbox(
+                user,
+                &state.origin,
+                &key,
+            )?))
+        }
     }
 }
 

@@ -20,7 +20,7 @@
 use crate::{
     entities::{
         ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingReply, IncomingShare,
-        LikeReplyShare, OutgoingLike, OutgoingReply, User,
+        LikeReplyShare, OutgoingLike, OutgoingReply, OutgoingShare, User,
     },
     util::UpToThree,
 };
@@ -113,6 +113,8 @@ pub trait Backend {
     async fn add_outgoing_like(&self, like: &OutgoingLike) -> Result<(), Error>;
     /// Add a reply that originated on this intance
     async fn add_outgoing_reply(&self, reply: &OutgoingReply) -> Result<(), Error>;
+    /// Add a share that originated on this instance
+    async fn add_outgoing_share(&self, share: &OutgoingShare) -> Result<(), Error>;
     /// Add a like for a post that originated on this instance
     async fn add_post_like(&self, reply: &IncomingLike) -> Result<(), Error>;
     /// Add a Post for `user`; return true if a new post was actually created, false if the post

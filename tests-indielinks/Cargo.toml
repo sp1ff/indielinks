@@ -41,7 +41,7 @@ serde_toml = "0.0.1"
 sha2 = "0.10.9"
 snafu = { version = "0.8.5", features = ["backtrace"] }
 tap = "1.0.1"
-tokio = { version = "1.43.0", features = ["rt"] }
+tokio = { version = "1.43.0", features = ["rt", "time"] }
 toml = "0.8.19"
 tower-gcra = { git = "https://github.com/sp1ff/tower-gcra.git", version = "0.0.1" }
 tracing = "0.1.41"

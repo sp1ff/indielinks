@@ -22,7 +22,7 @@ use itertools::Itertools;
 use libtest_mimic::Failed;
 use secrecy::SecretString;
 use serde::Deserialize;
-use serde_dynamo::aws_sdk_dynamodb_1::from_items;
+use serde_dynamo::aws_sdk_dynamodb_1::{from_items, to_item};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use url::Url;
@@ -34,11 +34,15 @@ use indielinks::{
         add_followers as add_ddb_followers, add_following as add_ddb_following,
         add_user as add_ddb_user, create_client as create_ddb_client, Location,
     },
-    entities::{FollowId, User},
+    entities::{
+        FollowId, LikeReplyShareRef, OutgoingLike, OutgoingReply, OutgoingShare, ReplyId, User,
+        Visibility,
+    },
     peppers::{Pepper, Version as PepperVersion},
     scylla::{
         add_followers as add_scylla_followers, add_following as add_scylla_following,
-        add_user as add_scylla_user, create_client as create_scylla_client,
+        add_outgoing_like_reply_share as add_scylla_outgoing_lrs, add_user as add_scylla_user,
+        create_client as create_scylla_client,
     },
     util::Credentials,
 };
@@ -195,6 +199,17 @@ pub trait Helper {
         followers: &HashSet<StorUrl>,
         following: &HashSet<(StorUrl, FollowId)>,
     ) -> StdResult<String, Failed>;
+    /// Insert an outgoing like directly into storage (bypasses background tasks)
+    async fn add_outgoing_like(&self, username: &Username, url: &Url) -> StdResult<(), Failed>;
+    /// Insert an outgoing reply directly into storage (bypasses background tasks)
+    async fn add_outgoing_reply(
+        &self,
+        username: &Username,
+        url: &Url,
+        text: &str,
+    ) -> StdResult<(), Failed>;
+    /// Insert an outgoing share directly into storage (bypasses background tasks)
+    async fn add_outgoing_share(&self, username: &Username, url: &Url) -> StdResult<(), Failed>;
     /// Remove a user
     async fn remove_user(&self, username: &Username) -> StdResult<(), Failed>;
     /// Retrieve the public address at which tests can reach indielinks, whether it's clustered or
@@ -347,6 +362,65 @@ impl Helper for DynamoDBHelper {
 
         Ok(textual_api_key)
     }
+    async fn add_outgoing_like(&self, username: &Username, url: &Url) -> StdResult<(), Failed> {
+        let user_id = self
+            .id_for_username(username)
+            .await?
+            .context(NoSuchUserSnafu {
+                username: username.clone(),
+            })?;
+        let like = OutgoingLike::new(user_id, url);
+        self.client
+            .put_item()
+            .table_name("likes_replies_shares")
+            .set_item(Some(to_item(LikeReplyShareRef::Like(&like))?))
+            .send()
+            .await?;
+        Ok(())
+    }
+    async fn add_outgoing_reply(
+        &self,
+        username: &Username,
+        url: &Url,
+        text: &str,
+    ) -> StdResult<(), Failed> {
+        let user_id = self
+            .id_for_username(username)
+            .await?
+            .context(NoSuchUserSnafu {
+                username: username.clone(),
+            })?;
+        let reply = OutgoingReply::new(
+            user_id,
+            ReplyId::default(),
+            url.clone(),
+            Visibility::Public,
+            text.to_owned(),
+        );
+        self.client
+            .put_item()
+            .table_name("likes_replies_shares")
+            .set_item(Some(to_item(LikeReplyShareRef::Reply(&reply))?))
+            .send()
+            .await?;
+        Ok(())
+    }
+    async fn add_outgoing_share(&self, username: &Username, url: &Url) -> StdResult<(), Failed> {
+        let user_id = self
+            .id_for_username(username)
+            .await?
+            .context(NoSuchUserSnafu {
+                username: username.clone(),
+            })?;
+        let share = OutgoingShare::new(user_id, url, Visibility::Public, String::new());
+        self.client
+            .put_item()
+            .table_name("likes_replies_shares")
+            .set_item(Some(to_item(LikeReplyShareRef::Share(&share))?))
+            .send()
+            .await?;
+        Ok(())
+    }
     async fn remove_user(&self, username: &Username) -> std::result::Result<(), Failed> {
         let user_id = self.id_for_username(username).await?;
         if let Some(user_id) = user_id {
@@ -476,6 +550,50 @@ impl Helper for ScyllaHelper {
         add_scylla_following(&self.session, None, &user, following, true).await?;
 
         Ok(textual_api_key)
+    }
+    async fn add_outgoing_like(&self, username: &Username, url: &Url) -> StdResult<(), Failed> {
+        let user_id = self
+            .id_for_username(username)
+            .await?
+            .context(NoSuchUserSnafu {
+                username: username.clone(),
+            })?;
+        let like = OutgoingLike::new(user_id, url);
+        add_scylla_outgoing_lrs(&self.session, None, &LikeReplyShareRef::Like(&like)).await?;
+        Ok(())
+    }
+    async fn add_outgoing_reply(
+        &self,
+        username: &Username,
+        url: &Url,
+        text: &str,
+    ) -> StdResult<(), Failed> {
+        let user_id = self
+            .id_for_username(username)
+            .await?
+            .context(NoSuchUserSnafu {
+                username: username.clone(),
+            })?;
+        let reply = OutgoingReply::new(
+            user_id,
+            ReplyId::default(),
+            url.clone(),
+            Visibility::Public,
+            text.to_owned(),
+        );
+        add_scylla_outgoing_lrs(&self.session, None, &LikeReplyShareRef::Reply(&reply)).await?;
+        Ok(())
+    }
+    async fn add_outgoing_share(&self, username: &Username, url: &Url) -> StdResult<(), Failed> {
+        let user_id = self
+            .id_for_username(username)
+            .await?
+            .context(NoSuchUserSnafu {
+                username: username.clone(),
+            })?;
+        let share = OutgoingShare::new(user_id, url, Visibility::Public, String::new());
+        add_scylla_outgoing_lrs(&self.session, None, &LikeReplyShareRef::Share(&share)).await?;
+        Ok(())
     }
     async fn remove_user(&self, username: &Username) -> std::result::Result<(), Failed> {
         let user_id = self.id_for_username(username).await?;

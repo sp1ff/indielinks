@@ -69,7 +69,7 @@ use indielinks_shared::entities::{Post, PostDay, PostId, StorUrl, Tagname, UserI
 
 use crate::entities::{
     ApiKeys, IncomingLike, IncomingLikeReplyShareRef, IncomingReply, IncomingShare, LikeReplyShare,
-    LikeReplyShareRef, OutgoingLike, OutgoingReply,
+    LikeReplyShareRef, OutgoingLike, OutgoingReply, OutgoingShare,
 };
 use crate::storage::SchemaSnafu;
 use crate::util::Credentials;
@@ -422,6 +422,19 @@ pub async fn add_followers(
         .await
         .context(ExecutionSnafu)?;
     Ok(())
+}
+
+pub async fn add_outgoing_like_reply_share(
+    session: &InnerSession,
+    prep: Option<&PreparedStatement>,
+    lrs: &LikeReplyShareRef<'_>,
+) -> Result<()> {
+    match prep {
+        Some(prepped) => session.execute_unpaged(prepped, lrs).await,
+        None => session.query_unpaged("insert into likes_replies_shares (user_id, posted, id, content, in_reply_to, sort, visibility) values (?, ?, ?, ?, ?, ?, ?) if not exists", lrs).await,
+    }
+    .map(|_| ())
+    .context(ExecutionSnafu)
 }
 
 /// Retrieve the number of actors following a given [User]
@@ -1205,7 +1218,7 @@ impl Session {
             "select * from raft_log where node_id = ? and log_id < ?",
             "select * from raft_log where node_id = ?",
             "update users set api_keys=? where id=?",
-            "insert into likes_replies_shares (sort, user_id, posted, id, in_reply_to, visibility, content) values (?, ?, ?, ?, ?, ?, ?) if not exists", // AddOutgoingLikeReplyShare
+            "insert into likes_replies_shares (user_id, posted, id, content, in_reply_to, sort, visibility) values (?, ?, ?, ?, ?, ?, ?) if not exists", // AddOutgoingLikeReplyShare
             "insert into incoming_likes_replies_shares (sort, user_id, received, ap_id, in_reply_to_sort, in_reply_to, visibility, content) values (?, ?, ?, ?, ?, ?, ?, ?) if not exists", // AddIncomingLikeReplyShare,
             "select * from likes_replies_shares where id = ?", // OutgoingLikeReplyShare
             "select count(*) from posts where user_id = ?", // CountPosts
@@ -1419,42 +1432,33 @@ impl storage::Backend for Session {
     }
 
     async fn add_outgoing_like(&self, like: &OutgoingLike) -> StdResult<(), StorError> {
-        self.session
-            .execute_unpaged(
-                &self.prepared_statements[PreparedStatements::AddOutgoingLikeReplyShare],
-                &LikeReplyShareRef::Like(like),
-            )
-            .await?;
-        // Unfortunately, this implementation gives us no way of knowing whether the statement had
-        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
-        // that.
-        Ok(())
+        add_outgoing_like_reply_share(
+            &self.session,
+            Some(&self.prepared_statements[PreparedStatements::AddOutgoingLikeReplyShare]),
+            &LikeReplyShareRef::Like(like),
+        )
+        .await
+        .map_err(StorError::new)
     }
 
     async fn add_outgoing_reply(&self, reply: &OutgoingReply) -> StdResult<(), StorError> {
-        self.session
-            .execute_unpaged(
-                &self.prepared_statements[PreparedStatements::AddOutgoingLikeReplyShare],
-                &LikeReplyShareRef::Reply(reply),
-            )
-            .await?;
-        // Unfortunately, this implementation gives us no way of knowing whether the statement had
-        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
-        // that.
-        Ok(())
+        add_outgoing_like_reply_share(
+            &self.session,
+            Some(&self.prepared_statements[PreparedStatements::AddOutgoingLikeReplyShare]),
+            &LikeReplyShareRef::Reply(reply),
+        )
+        .await
+        .map_err(StorError::new)
     }
 
-    async fn add_post_like(&self, like: &IncomingLike) -> StdResult<(), StorError> {
-        self.session
-            .execute_unpaged(
-                &self.prepared_statements[PreparedStatements::AddIncomingLikeReplyShare],
-                &IncomingLikeReplyShareRef::Like(like),
-            )
-            .await?;
-        // Unfortunately, this implementation gives us no way of knowing whether the statement had
-        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
-        // that.
-        Ok(())
+    async fn add_outgoing_share(&self, share: &OutgoingShare) -> StdResult<(), StorError> {
+        add_outgoing_like_reply_share(
+            &self.session,
+            Some(&self.prepared_statements[PreparedStatements::AddOutgoingLikeReplyShare]),
+            &LikeReplyShareRef::Share(share),
+        )
+        .await
+        .map_err(StorError::new)
     }
 
     async fn add_post(
@@ -1500,6 +1504,19 @@ impl storage::Backend for Session {
             .await?;
         // If the insert happened, the resulting `QueryResult` will have no rows (if it did not, it will):
         Ok(!result.is_rows())
+    }
+
+    async fn add_post_like(&self, like: &IncomingLike) -> StdResult<(), StorError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::AddIncomingLikeReplyShare],
+                &IncomingLikeReplyShareRef::Like(like),
+            )
+            .await?;
+        // Unfortunately, this implementation gives us no way of knowing whether the statement had
+        // any effect. See the comments in `delete_post()` for more on this, and how I plan to fix
+        // that.
+        Ok(())
     }
 
     async fn add_post_reply(&self, reply: &IncomingReply) -> StdResult<(), StorError> {

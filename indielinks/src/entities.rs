@@ -879,9 +879,9 @@ pub struct OutgoingLike {
 }
 
 impl OutgoingLike {
-    pub fn new(user: &User, ap_id: &Url) -> Self {
+    pub fn new(user_id: UserId, ap_id: &Url) -> Self {
         Self {
-            user_id: *user.id(),
+            user_id,
             posted: Utc::now(),
             likeid: Default::default(),
             in_reply_to: ap_id.into(),
@@ -889,6 +889,9 @@ impl OutgoingLike {
     }
     pub fn id(&self) -> LikeId {
         self.likeid
+    }
+    pub fn in_reply_to(&self) -> &StorUrl {
+        &self.in_reply_to
     }
     pub fn posted(&self) -> DateTime<Utc> {
         self.posted
@@ -935,11 +938,17 @@ impl OutgoingReply {
     pub fn id(&self) -> ReplyId {
         self.replyid
     }
+    pub fn in_reply_to(&self) -> &StorUrl {
+        &self.in_reply_to
+    }
     pub fn posted(&self) -> DateTime<Utc> {
         self.posted
     }
     pub fn user_id(&self) -> UserId {
         self.user_id
+    }
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
     }
 }
 
@@ -961,9 +970,9 @@ pub struct OutgoingShare {
 }
 
 impl OutgoingShare {
-    pub fn new(user: &User, ap_id: &Url, visibility: Visibility, content: String) -> Self {
+    pub fn new(user_id: UserId, ap_id: &Url, visibility: Visibility, content: String) -> Self {
         Self {
-            user_id: *user.id(),
+            user_id,
             posted: Utc::now(),
             shareid: Default::default(),
             in_reply_to: ap_id.into(),
@@ -977,11 +986,17 @@ impl OutgoingShare {
     pub fn id(&self) -> ShareId {
         self.shareid
     }
+    pub fn in_reply_to(&self) -> &StorUrl {
+        &self.in_reply_to
+    }
     pub fn posted(&self) -> DateTime<Utc> {
         self.posted
     }
     pub fn user_id(&self) -> UserId {
         self.user_id
+    }
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
     }
 }
 
@@ -1158,31 +1173,31 @@ impl scylla::serialize::row::SerializeRow for LikeReplyShareRef<'_> {
     ) -> std::result::Result<(), SerializationError> {
         let tuple = match self {
             LikeReplyShareRef::Like(like) => (
-                0i8,
                 &like.user_id,
                 &like.posted,
                 &like.likeid.as_ref(),
-                &like.in_reply_to,
-                &Option::<Visibility>::None,
                 &Option::<&String>::None,
+                &like.in_reply_to,
+                0i8,
+                &Option::<Visibility>::None,
             ),
             LikeReplyShareRef::Reply(reply) => (
-                1i8,
                 &reply.user_id,
                 &reply.posted,
                 &reply.replyid.as_ref(),
-                &reply.in_reply_to,
-                &Some(reply.visibility),
                 &Some(&reply.content),
+                &reply.in_reply_to,
+                1i8,
+                &Some(reply.visibility),
             ),
             LikeReplyShareRef::Share(share) => (
-                2i8,
                 &share.user_id,
                 &share.posted,
                 &share.shareid.as_ref(),
-                &share.in_reply_to,
-                &Some(share.visibility),
                 &Some(&share.content),
+                &share.in_reply_to,
+                2i8,
+                &Some(share.visibility),
             ),
         };
         scylla::serialize::row::SerializeRow::serialize(&tuple, ctx, writer)
@@ -1199,13 +1214,13 @@ impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metada
     fn type_check(specs: &[ColumnSpec]) -> StdResult<(), TypeCheckError> {
         use scylla::deserialize::row::DeserializeRow;
         <(
-            i8,
             UserId,
             DateTime<Utc>,
             Uuid,
-            StorUrl,
-            Option<Visibility>,
             Option<String>,
+            StorUrl,
+            i8,
+            Option<Visibility>,
         ) as DeserializeRow>::type_check(specs)
     }
 
@@ -1213,15 +1228,15 @@ impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metada
         row: ColumnIterator<'frame, 'metadata>,
     ) -> StdResult<Self, DeserializationError> {
         use scylla::deserialize::row::DeserializeRow;
-        let (sort, user_id, posted, id, in_reply_to, visibility, content) =
+        let (user_id, posted, id, content, in_reply_to, sort, visibility) =
             <(
-                i8,
                 UserId,
                 DateTime<Utc>,
                 Uuid,
-                StorUrl,
-                Option<Visibility>,
                 Option<String>,
+                StorUrl,
+                i8,
+                Option<Visibility>,
             ) as DeserializeRow>::deserialize(row)?;
         match sort {
             0 => Ok(LikeReplyShare::Like(OutgoingLike {

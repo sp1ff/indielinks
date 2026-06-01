@@ -27,7 +27,7 @@ use crate::{
     entities::{
         ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShareRef,
         IncomingReply, IncomingShare, LikeReplyShare, LikeReplyShareRef, OutgoingLike,
-        OutgoingReply, User,
+        OutgoingReply, OutgoingShare, User,
     },
     storage::{self, DateRange, UsernameClaimedSnafu},
     util::{Credentials, UpToThree},
@@ -1196,6 +1196,18 @@ impl storage::Backend for Client {
         Ok(())
     }
 
+    async fn add_outgoing_share(&self, share: &OutgoingShare) -> StdResult<(), StorError> {
+        self.client
+            .put_item()
+            .table_name("likes_replies_shares")
+            .set_item(Some(serde_dynamo::to_item(LikeReplyShareRef::Share(
+                share,
+            ))?))
+            .send()
+            .await?;
+        Ok(())
+    }
+
     async fn add_post_like(&self, like: &IncomingLike) -> StdResult<(), StorError> {
         self.client
             .put_item()
@@ -1423,7 +1435,7 @@ impl storage::Backend for Client {
             "likes_replies_shares",
             "user_id",
             &user.id().to_string(),
-            Some("likes_replies_shares_by_id".to_owned()),
+            None,
         )
         .await
         .map_err(StorError::new)?;

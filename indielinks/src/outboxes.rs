@@ -107,6 +107,7 @@ use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use sha2::Sha256;
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
@@ -370,7 +371,7 @@ pub struct Outbox {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Page {
     pub items: NEVec<AnnounceOrCreate>,
-    pub next: ActivityKey,
+    pub next: Option<ActivityKey>,
 }
 
 // Avaialbe on nightly, but I don't feel like changing my entire toolchain just to save a few lines
@@ -462,7 +463,7 @@ impl Outbox {
         // enough laying around, but it may be that some of those items in one of the two sources
         // are older than as-yet-unseen items in the other. Just call `grow()` no matter what to
         // keep the timeline accurate.
-        self.grow(num_elem).await?;
+        let exhausted = self.grow(num_elem).await?;
 
         let range = RangeAbove { start: before };
 
@@ -477,6 +478,7 @@ impl Outbox {
         }
 
         let after = items.last().unwrap(/* known good */).0.clone();
+        debug!("after is {after:#?}");
         let head = items.first().unwrap(/* known good */).1.clone();
         let tail = items
             .into_iter()
@@ -486,20 +488,26 @@ impl Outbox {
 
         Ok(Some(Page {
             items: (head, tail).into(),
-            next: after,
+            next: if exhausted { None } else { Some(after) },
         }))
     }
+
     /// Grow our list of items into the past
-    async fn grow(&mut self, num_elem: NonZero<usize>) -> Result<()> {
+    async fn grow(&mut self, num_elem: NonZero<usize>) -> Result<bool> {
         // Grab `num_elem` `Post`s, convert them to (ActivityKey, Create) pairs, and insert 'em:
-        self.posts
+        let posts = self
+            .posts
             .by_ref()
             .take(num_elem.get())
             .collect::<Vec<StdResult<Post, _>>>()
             .await
             .into_iter()
             .collect::<StdResult<Vec<Post>, _>>()
-            .context(FetchPostsSnafu)?
+            .context(FetchPostsSnafu)?;
+
+        let posts_exhausted = posts.len() < num_elem.get();
+
+        posts
             .into_iter()
             // Creating a `Note` from a `Post` is fallible (since we sanitize the HTML), as
             // is going from a `Note` to a `Create`
@@ -514,16 +522,21 @@ impl Outbox {
             .for_each(|(key, create)| {
                 self.items.insert(key, AnnounceOrCreate::Create(create));
             });
+
         // Now, do the same for replies & shares.
-        self.lrs
+        let lrs = self
+            .lrs
             .by_ref()
             .take(num_elem.get())
             .collect::<Vec<StdResult<LikeReplyShare, _>>>()
             .await
             .into_iter()
             .collect::<StdResult<Vec<LikeReplyShare>, _>>()
-            .context(FetchLikesRepliesSharesSnafu)?
-            .into_iter()
+            .context(FetchLikesRepliesSharesSnafu)?;
+
+        let lrs_exhausted = lrs.len() < num_elem.get();
+
+        lrs.into_iter()
             // I guess, for now, I'll render `Reply`s & `Share`s as `Create`s, though Mastodon seems
             // to render them as `Announce`s. This is a fallible operation, so we'll need another collect.
             .map(|lrs| {
@@ -546,7 +559,8 @@ impl Outbox {
             .for_each(|(key, create)| {
                 self.items.insert(key, AnnounceOrCreate::Create(create));
             });
-        Ok(())
+
+        Ok(posts_exhausted && lrs_exhausted)
     }
 }
 

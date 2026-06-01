@@ -58,6 +58,7 @@ pub mod follow;
 pub mod helper;
 #[path = "home-timeline.rs"]
 pub mod home_timeline;
+pub mod outbox;
 pub mod users;
 pub mod webfinger;
 
