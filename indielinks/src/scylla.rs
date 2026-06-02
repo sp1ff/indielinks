@@ -49,9 +49,9 @@ use pin_project::pin_project;
 use rmp_serde::{from_slice, to_vec};
 use scylla::errors::TranslationError;
 use scylla::policies::address_translator::UntranslatedPeer;
+use scylla::response::{PagingState, PagingStateResponse};
 use scylla::{
     client::{session::Session as InnerSession, session_builder::SessionBuilder},
-    response::{PagingState, PagingStateResponse},
     statement::{
         batch::{Batch, BatchStatement, BatchType},
         prepared::PreparedStatement,
@@ -1645,30 +1645,19 @@ impl storage::Backend for Session {
         Ok(())
     }
 
-    async fn followers_for_actor<'a>(
-        &'a self,
+    async fn followers_for_actor(
+        &self,
         actor_id: &StorUrl,
-    ) -> StdResult<BoxStream<'a, StdResult<Following, StorError>>, StorError> {
-        let count: usize = self
-            .session
-            .execute_unpaged(&self.prepared_statements[PreparedStatements::CountFollowingByActor], (actor_id,))
-            .await?
-            .into_rows_result()?
-            .rows::<(i64,)>()?
-            .exactly_one()
-            .unwrap(/* known good */)?
-            .0 as usize;
-
-        Ok(Box::pin(
-            PagedResultsStream::new(
-                &self.session,
-                &self.following_by_actor_statement,
-                (actor_id.clone(),),
-                count,
-            )
-            .await
-            .map_err(StorError::new)?,
-        ))
+    ) -> StdResult<BoxStream<'static, StdResult<Following, StorError>>, StorError> {
+        make_streaming_response(
+            &self.session,
+            self.following_by_actor_statement.clone(),
+            (actor_id.clone(),),
+        )
+        .await
+        .map_err(StorError::new)?
+        .boxed()
+        .pipe(Ok)
     }
 
     async fn get_all_likes_replies_and_shares(

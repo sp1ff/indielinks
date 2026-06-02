@@ -1394,10 +1394,10 @@ impl storage::Backend for Client {
         Ok(())
     }
 
-    async fn followers_for_actor<'a>(
-        &'a self,
+    async fn followers_for_actor(
+        &self,
         actor_id: &StorUrl,
-    ) -> StdResult<BoxStream<'a, StdResult<Following, StorError>>, StorError> {
+    ) -> StdResult<BoxStream<'static, StdResult<Following, StorError>>, StorError> {
         let count = count_range(
             &self.client,
             "following",

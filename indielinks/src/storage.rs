@@ -149,10 +149,10 @@ pub trait Backend {
     /// special logic here for rate-limiting.
     async fn delete_tag(&self, user: &User, tag: &Tagname) -> Result<(), Error>;
     /// Return a stream of all [User]s following a given AP actor
-    async fn followers_for_actor<'a>(
-        &'a self,
+    async fn followers_for_actor(
+        &self,
         actor_id: &StorUrl,
-    ) -> Result<BoxStream<'a, Result<Following, Error>>, Error>;
+    ) -> Result<BoxStream<'static, Result<Following, Error>>, Error>;
     /// Return a stream yielding all of a [User]'s likes, replies & shares
     async fn get_all_likes_replies_and_shares(
         &self,
