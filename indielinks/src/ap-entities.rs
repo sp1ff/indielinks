@@ -959,6 +959,45 @@ impl Announce {
     pub fn cc(&self) -> impl Iterator<Item = &Url> {
         self.cc.iter()
     }
+    pub fn from_outgoing_reply(
+        reply: &OutgoingReply,
+        username: &Username,
+        origin: &Origin,
+    ) -> Result<Self> {
+        let object = make_user_reply_id(username, &reply.id(), origin)?;
+        let mut id = object.clone();
+        id.path_segments_mut()
+            .map_err(|_| IdIsNotABaseSnafu.build())?
+            .push("activity");
+        Ok(Announce {
+            object,
+            id,
+            actor: ActorField::Iri(make_user_id(username, origin)?),
+            published: reply.posted(),
+            to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
+                .context(UrlParseSnafu)?],
+            cc: vec![make_user_followers(username, origin)?],
+        })
+    }
+    pub fn from_outgoing_share(
+        share: &OutgoingShare,
+        username: &Username,
+        origin: &Origin,
+    ) -> Result<Self> {
+        let mut id = make_user_share_id(username, &share.id(), origin)?;
+        id.path_segments_mut()
+            .map_err(|_| IdIsNotABaseSnafu.build())?
+            .push("activity");
+        Ok(Announce {
+            object: share.in_reply_to().clone().into(),
+            id,
+            actor: ActorField::Iri(make_user_id(username, origin)?),
+            published: share.posted(),
+            to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
+                .context(UrlParseSnafu)?],
+            cc: vec![make_user_followers(username, origin)?],
+        })
+    }
 }
 
 impl ToJld for Announce {
@@ -1407,6 +1446,9 @@ impl Create {
     pub fn cc(&self) -> impl Iterator<Item = &Url> {
         self.cc.iter()
     }
+    pub fn published(&self) -> &DateTime<Utc> {
+        &self.published
+    }
     pub fn object_id(&self) -> Result<Url> {
         match self.object {
             CreateObject::Note(ref note) => Ok(note.id.clone()),
@@ -1637,9 +1679,8 @@ mod test {
             &PostId::default(),
             &UserId::default(),
             &now.clone(),
-            &now.into(),
             "Example",
-            &None,
+            None,
             &HashSet::new(),
             true,
             true,

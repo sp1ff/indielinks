@@ -217,6 +217,12 @@ message DropTimelineRequest {
     bytes user_id = 1;  // msgpack-encoded UserId
 }
 
+// Insert an activity into a user's in-memory materialized outbox
+message InsertOutboxItemRequest {
+    bytes user_id = 1;   // msgpack-encoded UserId
+    bytes activity = 2;  // msgpack-named-encoded AnnounceOrCreate
+}
+
 service GrpcService {
     // Append log entries from the cluster lead to this node
     rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
@@ -237,4 +243,6 @@ service GrpcService {
     rpc InsertTimelineItem(InsertTimelineItemRequest) returns (google.protobuf.Empty) {}
     // Drop a user's home timeline (deferred)
     rpc DropTimeline(DropTimelineRequest) returns (google.protobuf.Empty) {}
+    // Insert an activity into a user's in-memory materialized outbox (deferred)
+    rpc InsertOutboxItem(InsertOutboxItemRequest) returns (google.protobuf.Empty) {}
 }

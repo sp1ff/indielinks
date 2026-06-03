@@ -788,16 +788,19 @@ inventory::submit!(Test {
 inventory::submit!(Test {
     name: "001delicious_smoke_test",
     test_fn: |cfg, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(delicious_smoke_test(
             helper.indielinks(),
-            cfg.username,
-            cfg.api_key,
+            version,
+            pepper,
             helper,
         ))
     },
     fixtures: Some(&[
-        FixtureId::ScyllaSingleNodePreCharged,
-        FixtureId::DynamoDBSingleNodePreCharged
+        FixtureId::ScyllaSingleNode,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBCluster
     ]),
 });
 

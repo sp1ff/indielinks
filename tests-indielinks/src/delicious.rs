@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -10,42 +10,63 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
 //! Integration tests for the del.icio.us API.
 //!
 //! Backend-agnostic test logic for the del.icio.us API goes here.
 
-use crate::helper::Helper;
+use std::{collections::HashSet, sync::Arc};
+
+use chrono::Utc;
+use lazy_static::lazy_static;
+use libtest_mimic::Failed;
+use reqwest::{
+    header::{HeaderMap, HeaderValue},
+    StatusCode, Url,
+};
+use secrecy::SecretString;
 
 use indielinks_shared::{
     api::{PostsAllRsp, PostsDatesRsp, PostsGetRsp, PostsRecentRsp, TagsGetRsp, UpdateRsp},
     entities::{Post, Tagname, Username},
 };
 
-use indielinks::delicious::GenericRsp;
-
-use chrono::Utc;
-use libtest_mimic::Failed;
-use reqwest::{
-    header::{HeaderMap, HeaderValue},
-    StatusCode, Url,
+use indielinks::{
+    delicious::GenericRsp,
+    peppers::{Pepper, Version as PepperVersion},
 };
 
-use std::sync::Arc;
+use crate::helper::Helper;
+
+lazy_static! {
+    static ref TEST_PASSWORD: SecretString = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d".to_owned().into();
+}
 
 /// Exercise the delicious API in a few simple ways (i.e. a "smoke test"); panic on failure.
 pub async fn delicious_smoke_test(
-    url: Url,
-    username: Username,
-    api_key: String,
+    indielinks: Url,
+    pepper_version: PepperVersion,
+    pepper_key: Pepper,
     utils: Arc<dyn Helper + Send + Sync>,
 ) -> Result<(), Failed> {
+    let username = Username::new("delicious-tester").unwrap(/* known good */);
+    let api_key = utils
+        .create_user(
+            &pepper_version,
+            &pepper_key,
+            &username,
+            &TEST_PASSWORD,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .await?;
+
     utils.clear_posts(&username).await?;
 
     // Hit `/posts/update` with no posts
-    let rsp = reqwest::get(url.join(&format!(
+    let rsp = reqwest::get(indielinks.join(&format!(
         "/api/v1/posts/update?auth_token={username}:{api_key}"
     ))?)
     .await?;
@@ -55,7 +76,10 @@ pub async fn delicious_smoke_test(
 
     // Now, hit `/posts/get` without an auth token; should be 401'd
     assert!(
-        StatusCode::UNAUTHORIZED == reqwest::get(url.join("/api/v1/posts/get")?).await?.status()
+        StatusCode::UNAUTHORIZED
+            == reqwest::get(indielinks.join("/api/v1/posts/get")?)
+                .await?
+                .status()
     );
 
     // From here in, we'll use the Authorization header, so let's set-up a proper client:
@@ -71,13 +95,16 @@ pub async fn delicious_smoke_test(
 
     // Hit it again-- should get a 200 OK, but an error message indicating that the test user has no
     // posts.
-    let rsp = client.get(url.join("/api/v1/posts/get")?).send().await?;
+    let rsp = client
+        .get(indielinks.join("/api/v1/posts/get")?)
+        .send()
+        .await?;
     assert!(StatusCode::OK == rsp.status());
     let body = rsp.json::<GenericRsp>().await?;
     assert!(body.result_code == format!("{username} has no posts, yet"));
 
     // Add our first post...
-    let rsp = client.get(url.join("/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&tags=blog,daily,glenn-reynolds")
+    let rsp = client.get(indielinks.join("/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&tags=blog,daily,glenn-reynolds")
                          ?)
         .send().await?;
     assert!(StatusCode::CREATED == rsp.status());
@@ -85,7 +112,7 @@ pub async fn delicious_smoke_test(
     assert!(body.result_code == "done");
 
     // add another...
-    let rsp = client.get(url.join("/api/v1/posts/add?url=https://thefp.com&description=The%20Free%20Press&tags=news,daily,bari-weiss")
+    let rsp = client.get(indielinks.join("/api/v1/posts/add?url=https://thefp.com&description=The%20Free%20Press&tags=news,daily,bari-weiss")
                          ?)
         .send().await?;
     assert!(StatusCode::CREATED == rsp.status());
@@ -93,7 +120,7 @@ pub async fn delicious_smoke_test(
     assert!(body.result_code == "done");
 
     // and add a third:
-    let rsp = client.get(url.join("/api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy")
+    let rsp = client.get(indielinks.join("/api/v1/posts/add?url=https://wsj.com&description=The%20Wall%20Street%20Journal&tags=news,daily,economy")
                          ?)
         .send().await?;
     assert!(StatusCode::CREATED == rsp.status());
@@ -115,14 +142,17 @@ pub async fn delicious_smoke_test(
     // - bari-weiss
 
     let rsp = client
-        .get(url.join("/api/v1/posts/delete?url=https://wsj.com")?)
+        .get(indielinks.join("/api/v1/posts/delete?url=https://wsj.com")?)
         .send()
         .await?;
     assert!(StatusCode::OK == rsp.status());
     let body = rsp.json::<GenericRsp>().await?;
     assert!(body.result_code == "done");
 
-    let rsp = client.get(url.join("/api/v1/tags/get")?).send().await?;
+    let rsp = client
+        .get(indielinks.join("/api/v1/tags/get")?)
+        .send()
+        .await?;
     assert!(StatusCode::OK == rsp.status());
     let body = rsp.json::<TagsGetRsp>().await?;
     let mut tags = body.map.into_iter().collect::<Vec<(Tagname, usize)>>();
@@ -138,21 +168,27 @@ pub async fn delicious_smoke_test(
     );
 
     // Hit `/posts/update` once more
-    let rsp = client.get(url.join("/api/v1/posts/update")?).send().await?;
+    let rsp = client
+        .get(indielinks.join("/api/v1/posts/update")?)
+        .send()
+        .await?;
     assert!(StatusCode::OK == rsp.status());
     let body = rsp.json::<UpdateRsp>().await?;
     let diff = Utc::now() - body.update_time;
     assert!(diff.num_seconds() < 1);
 
     // Finally, let's exercise `/posts/get` in a few ways:
-    let rsp = client.get(url.join("/api/v1/posts/get")?).send().await?;
+    let rsp = client
+        .get(indielinks.join("/api/v1/posts/get")?)
+        .send()
+        .await?;
     assert!(StatusCode::OK == rsp.status());
     let body = rsp.json::<PostsGetRsp>().await?;
     assert!(body.posts.is_empty());
 
     let day = body.date.format("%Y-%m-%d").to_string();
     let rsp = client
-        .get(url.join(&format!("/api/v1/posts/get?dt={day}"))?)
+        .get(indielinks.join(&format!("/api/v1/posts/get?dt={day}"))?)
         .send()
         .await?;
     assert!(StatusCode::OK == rsp.status());
@@ -162,7 +198,7 @@ pub async fn delicious_smoke_test(
 
     // Let's try filtering on the basis of a few tags
     let rsp = client
-        .get(url.join(&format!("/api/v1/posts/get?dt={day}&tag=news"))?)
+        .get(indielinks.join(&format!("/api/v1/posts/get?dt={day}&tag=news"))?)
         .send()
         .await?;
     assert!(StatusCode::OK == rsp.status());
@@ -171,7 +207,7 @@ pub async fn delicious_smoke_test(
     assert!(body.posts.len() == 1);
 
     let rsp = client
-        .get(url.join(&format!("/api/v1/posts/get?dt={day}&tag=news,daily"))?)
+        .get(indielinks.join(&format!("/api/v1/posts/get?dt={day}&tag=news,daily"))?)
         .send()
         .await?;
     assert!(StatusCode::OK == rsp.status());
@@ -180,7 +216,7 @@ pub async fn delicious_smoke_test(
     assert!(body.posts.len() == 1);
 
     let rsp = client
-        .get(url.join(&format!("/api/v1/posts/get?dt={day}&tag=news,daily,splat"))?)
+        .get(indielinks.join(&format!("/api/v1/posts/get?dt={day}&tag=news,daily,splat"))?)
         .send()
         .await?;
     assert!(StatusCode::OK == rsp.status());
@@ -189,7 +225,10 @@ pub async fn delicious_smoke_test(
     assert!(body.posts.is_empty());
 
     // Alright-- finally, get `/posts/dates`
-    let rsp = client.get(url.join("/api/v1/posts/dates")?).send().await?;
+    let rsp = client
+        .get(indielinks.join("/api/v1/posts/dates")?)
+        .send()
+        .await?;
     assert!(StatusCode::OK == rsp.status(), "status={}", rsp.status());
 
     let body = rsp.json::<PostsDatesRsp>().await?;

@@ -112,7 +112,7 @@ use uuid::Uuid;
 
 use crate::{
     ap_entities::{AnnounceOrCreate, Create, Note},
-    entities::{LikeReplyShare, User},
+    entities::{LikeReplyShare, OutgoingReply, OutgoingShare, User},
     signing_keys::SigningKey,
     storage::{Backend as StorageBackend, DateRange},
     util::UpToThree,
@@ -320,6 +320,18 @@ impl From<&LikeReplyShare> for ActivityKey {
     }
 }
 
+impl From<&OutgoingReply> for ActivityKey {
+    fn from(reply: &OutgoingReply) -> ActivityKey {
+        ActivityKey::new(reply.posted(), reply.id().into())
+    }
+}
+
+impl From<&OutgoingShare> for ActivityKey {
+    fn from(share: &OutgoingShare) -> ActivityKey {
+        ActivityKey::new(share.posted(), share.id().into())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -449,6 +461,11 @@ impl Outbox {
                     }),
             ),
         })
+    }
+
+    /// Insert an activity into this outbox
+    pub fn add(&mut self, key: ActivityKey, activity: AnnounceOrCreate) {
+        self.items.insert(key, activity);
     }
 
     /// Continue a pagination

@@ -1235,16 +1235,14 @@ impl storage::Backend for Client {
         to_read: bool,
         tags: &HashSet<Tagname>,
     ) -> std::result::Result<bool, StorError> {
-        let day: PostDay = dt.into();
         let post = Post::new(
             // I hate the clone, but AFAIK the alternative for &Url -> &StorUrl is unsafe code
             &uri.clone().into(),
             id,
             user.id(),
             dt,
-            &day,
             title,
-            &notes.cloned(),
+            notes,
             tags,
             shared,
             to_read,

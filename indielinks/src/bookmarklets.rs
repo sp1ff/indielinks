@@ -618,10 +618,11 @@ async fn add(
             // Ugh
         };
         let _ = add_post(
+            state.clone(),
             &user,
             &request.url,
             &request.title,
-            Some(&Utc::now()),
+            Some(Utc::now()),
             description.as_ref(),
             &tags,
             true,

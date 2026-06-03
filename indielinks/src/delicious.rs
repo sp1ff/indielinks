@@ -611,6 +611,7 @@ async fn add_post(
     Extension(user): Extension<User>,
 ) -> axum::response::Response {
     async fn add_post1(
+        state: Arc<Indielinks>,
         user: User,
         req: PostAddReq,
         storage: &(dyn StorageBackend + Send + Sync),
@@ -621,10 +622,11 @@ async fn add_post(
         let tags = parse_tag_parameter(&req.tags)?;
         let shared = req.shared.unwrap_or(false);
         inner_add_post(
+            state,
             &user,
             &req.url,
             &req.title,
-            req.dt.as_ref(),
+            req.dt,
             req.notes.as_ref(),
             &tags,
             req.replace.unwrap_or(true),
@@ -644,6 +646,7 @@ async fn add_post(
     // seems unfortunate, so for now at least, I'm going to break backwards compatibility & actually
     // return an HTTP status code suitable to the result.
     let (status_code, status) = match add_post1(
+        state.clone(),
         user,
         post_add_req,
         state.storage.as_ref(),

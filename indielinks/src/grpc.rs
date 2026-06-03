@@ -363,6 +363,39 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
 
         Ok(().into())
     }
+    /// Insert an activity into a user's in-memory materialized outbox (deferred; see plan 011)
+    async fn insert_outbox_item(
+        &self,
+        request: tonic::Request<protobuf::InsertOutboxItemRequest>,
+    ) -> StdResult<tonic::Response<()>, tonic::Status> {
+        use crate::ap_entities::AnnounceOrCreate;
+        use crate::outboxes::ActivityKey;
+        use uuid::Uuid;
+
+        let request = request.into_inner();
+        let user_id = rmp_serde::from_slice::<UserId>(&request.user_id).map_err(to_tonic)?;
+        let aoc = rmp_serde::from_slice::<AnnounceOrCreate>(&request.activity).map_err(to_tonic)?;
+
+        let key = ActivityKey::new(
+            match &aoc {
+                AnnounceOrCreate::Announce(a) => *a.published(),
+                AnnounceOrCreate::Create(c) => *c.published(),
+            },
+            Uuid::new_v4(),
+        );
+
+        let user = self
+            .state
+            .storage
+            .get_user_by_id(&user_id)
+            .await
+            .map_err(to_tonic)?
+            .ok_or_else(|| tonic::Status::not_found(format!("User {user_id} not found")))?;
+
+        app_logic::handle_outbox_insert(self.state.clone(), &user, key, aoc).await;
+
+        Ok(().into())
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

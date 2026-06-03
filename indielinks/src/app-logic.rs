@@ -43,7 +43,7 @@ use indielinks_shared::{
         OutboxToken, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage,
         TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp, UserOutboxRequest,
     },
-    entities::{PostId, StorUrl, Tagname, UserId, Username},
+    entities::{Post, PostId, StorUrl, Tagname, UserId, Username},
     nonempty_string::NonEmptyString,
     origin::Origin,
 };
@@ -53,17 +53,18 @@ use crate::{
     activity_pub::SendCreate,
     ap_entities::{
         ap_request, ap_request_no_response, make_follow_id, make_user_id, make_user_outbox, Actor,
-        Follow, Item, Outbox, OutboxPage, ToJld,
+        Announce, AnnounceOrCreate, Create, Follow, Item, Note, Outbox, OutboxPage, ToJld,
     },
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     cache::{GrpcClient, GrpcClientFactory},
     define_metric,
-    entities::{FollowId, User},
+    entities::{FollowId, OutgoingReply, OutgoingShare, User},
     home_timeline::{FirstPage, HomeTimelines, PostKey, Timeline},
     indielinks::Indielinks,
     outboxes::{ActivityKey, Outbox as UserOutbox, Page, FIRST_ACTIVITY_KEY},
     protobuf_interop::protobuf::{
-        DropTimelineRequest, InsertTimelineItemRequest, OutboxRequest, TimelineRequest,
+        DropTimelineRequest, InsertOutboxItemRequest, InsertTimelineItemRequest, OutboxRequest,
+        TimelineRequest,
     },
     signing_keys::{self, SigningKey},
     storage::Backend as StorageBackend,
@@ -608,17 +609,105 @@ pub async fn handle_outbox_or_redirect(
     }
 }
 
+/// A new activity to be inserted into a user's outbox
+pub enum PostReplyShare {
+    Post(Post),
+    Reply(OutgoingReply),
+    Share(OutgoingShare),
+}
+
+impl From<&PostReplyShare> for ActivityKey {
+    fn from(prs: &PostReplyShare) -> ActivityKey {
+        match prs {
+            PostReplyShare::Post(p) => ActivityKey::from(p),
+            PostReplyShare::Reply(r) => ActivityKey::from(r),
+            PostReplyShare::Share(s) => ActivityKey::from(s),
+        }
+    }
+}
+
+pub async fn handle_outbox_insert(
+    state: Arc<Indielinks>,
+    user: &User,
+    key: ActivityKey,
+    activity: AnnounceOrCreate,
+) {
+    if let Some(outbox) = state.user_outboxes.lock().await.get_mut(user.id()) {
+        outbox.add(key, activity);
+    }
+}
+
+async fn redirect_outbox_insert(
+    state: Arc<Indielinks>,
+    user: &User,
+    activity: &AnnounceOrCreate,
+    responsible_node: NodeId,
+) -> Result<()> {
+    let addr = state
+        .cache_node
+        .socket_addr_for_id(responsible_node)
+        .await
+        .context(SocketAddrSnafu {
+            node_id: responsible_node,
+        })?;
+    GrpcClient::new(responsible_node, addr)
+        .ensure_connected()
+        .await
+        .context(ConnectionSnafu)?
+        .insert_outbox_item(InsertOutboxItemRequest {
+            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
+            activity: rmp_serde::to_vec_named(activity).context(MessagePackSerSnafu)?,
+        })
+        .await
+        .context(TonicSnafu)?;
+    Ok(())
+}
+
+/// Insert a new activity into a (possibly) extant user outbox
+pub async fn handle_outbox_insert_or_redirect(
+    state: Arc<Indielinks>,
+    user: &User,
+    activity: &PostReplyShare,
+) -> Result<()> {
+    let key = ActivityKey::from(activity);
+    let username = user.username();
+    let aoc = match activity {
+        PostReplyShare::Post(post) => Note::new(post, username, &state.origin)
+            .and_then(Create::try_from)
+            .map(AnnounceOrCreate::Create)
+            .context(ApSnafu)?,
+        PostReplyShare::Reply(reply) => {
+            Announce::from_outgoing_reply(reply, username, &state.origin)
+                .map(AnnounceOrCreate::Announce)
+                .context(ApSnafu)?
+        }
+        PostReplyShare::Share(share) => {
+            Announce::from_outgoing_share(share, username, &state.origin)
+                .map(AnnounceOrCreate::Announce)
+                .context(ApSnafu)?
+        }
+    };
+    match this_node_is_responsible(state.cache_node.clone(), user).await? {
+        Some(responsible_node) => redirect_outbox_insert(state, user, &aoc, responsible_node).await,
+        None => {
+            handle_outbox_insert(state, user, key, aoc).await;
+            Ok(())
+        }
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           bookmarks                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Add an indielinks [Post](indielinks_shared::entities::Post)
+/// Add an indielinks [Post]
 #[allow(clippy::too_many_arguments)]
 pub async fn add_post(
+    state: Arc<Indielinks>,
     user: &User,
     url: &Url,
     title: &NonEmptyString,
-    dt: Option<&DateTime<Utc>>,
+    dt: Option<DateTime<Utc>>,
     notes: Option<&NonEmptyString>,
     tags: &HashSet<Tagname>,
     replace: bool,
@@ -628,20 +717,19 @@ pub async fn add_post(
     sender: Arc<BackgroundTasks>,
 ) -> Result<bool> {
     let postid = PostId::default();
-    let now = Utc::now();
-    let dt = dt.unwrap_or(&now);
+    let dt = dt.unwrap_or(Utc::now());
     let added = storage
         .add_post(
             user,
             // At one time, I wondered whether we should resolve defaults here, or in the storage
             // backend. It turns out to be better to handle it at the API level.
-            replace, url, &postid, title, dt, notes, shared, to_read, tags,
+            replace, url, &postid, title, &dt, notes, shared, to_read, tags,
         )
         .await
         .context(AddPostSnafu)?;
     if added {
         storage
-            .update_user_post_times(user, dt)
+            .update_user_post_times(user, &dt)
             .await
             .context(UpdatePostTimesSnafu)?;
         if shared {
@@ -650,9 +738,26 @@ pub async fn add_post(
                 postid
             );
             sender
-                .send(SendCreate::new(&postid, dt))
+                .send(SendCreate::new(&postid, &dt))
                 .await
                 .context(FederationSnafu)?;
+            debug!("Adding this post to the user outbox (if present).");
+            handle_outbox_insert_or_redirect(
+                state,
+                user,
+                &PostReplyShare::Post(Post::new(
+                    &url.into(),
+                    &postid,
+                    user.id(),
+                    &dt,
+                    title,
+                    notes,
+                    tags,
+                    true,
+                    to_read,
+                )),
+            )
+            .await?
         }
     }
     Ok(added)
