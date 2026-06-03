@@ -257,6 +257,40 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         }
         .into())
     }
+    /// Forward a user outbox request to the responsible node
+    async fn outbox(
+        &self,
+        req: tonic::Request<protobuf::OutboxRequest>,
+    ) -> StdResult<tonic::Response<protobuf::OutboxResponse>, tonic::Status> {
+        use indielinks_shared::api::UserOutboxRequest;
+        use indielinks_shared::entities::UserId;
+
+        let req = req.into_inner();
+        let user_id = rmp_serde::from_slice::<UserId>(&req.user_id).map_err(to_tonic)?;
+        let outbox_req =
+            rmp_serde::from_slice::<UserOutboxRequest>(&req.request).map_err(to_tonic)?;
+
+        let user = self
+            .state
+            .storage
+            .get_user_by_id(&user_id)
+            .await
+            .map_err(to_tonic)?
+            .ok_or_else(|| tonic::Status::not_found(format!("User {user_id} not found")))?;
+
+        let rsp = crate::app_logic::handle_outbox(self.state.clone(), &user, outbox_req)
+            .await
+            .map_err(to_tonic)?;
+
+        // This is important. By default (i.e. when `rmp_serde::to_vec()` is used), structs will be
+        // serialized to a messagepack array containing *just* the field values. Since
+        // `OutboxResponse` is, perforce, an untagged enum, this format will confuse the code on the
+        // receiver side. `to_vec_named()` will serialize it as a map containing field names, which
+        // will enable the deserialization probing on the receive side to work.
+        rmp_serde::to_vec_named(&rsp)
+            .map_err(to_tonic)
+            .map(|bytes| protobuf::OutboxResponse { response: bytes }.into())
+    }
     /// Forward a home timeline request to the responsible node
     async fn timeline(
         &self,

@@ -35,7 +35,7 @@ lazy_static! {
 }
 
 pub async fn outbox_smoke_test(
-    url: Url,
+    indielinks: Url,
     pepper_version: PepperVersion,
     pepper_key: Pepper,
     helper: Arc<dyn Helper + Send + Sync>,
@@ -69,7 +69,7 @@ pub async fn outbox_smoke_test(
         client
             .get(format!(
                 "{}api/v1/posts/add?url=https://example.com/post1&description=Post1&dt={}&shared=true",
-                url,
+                indielinks,
                 dt(30)
             ))
             .header(
@@ -87,7 +87,7 @@ pub async fn outbox_smoke_test(
         client
             .get(format!(
                 "{}api/v1/posts/add?url=https://example.com/post2&description=Post2&dt={}&shared=true",
-                url,
+                indielinks,
                 dt(20)
             ))
             .header(
@@ -105,7 +105,7 @@ pub async fn outbox_smoke_test(
         client
             .get(format!(
                 "{}api/v1/posts/add?url=https://example.com/private&description=Private&dt={}&shared=false",
-                url,
+                indielinks,
                 dt(15)
             ))
             .header(
@@ -136,14 +136,12 @@ pub async fn outbox_smoke_test(
         .add_outgoing_share(&username, &"https://peer/note3".parse()?)
         .await?;
 
-    // Fetch the outbox
-
     // Step 1: get the OrderedCollection summary (no pagination token)
     let rsp = client
         .execute(
             make_signed_request(
                 Method::GET,
-                url.join(&format!("/users/{username}/outbox"))?,
+                indielinks.join(&format!("/users/{username}/outbox"))?,
                 reqwest::Body::default(),
                 &mock_origin,
                 peer_user.priv_key(),

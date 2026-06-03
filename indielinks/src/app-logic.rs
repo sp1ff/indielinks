@@ -62,7 +62,9 @@ use crate::{
     home_timeline::{FirstPage, HomeTimelines, PostKey, Timeline},
     indielinks::Indielinks,
     outboxes::{ActivityKey, Outbox as UserOutbox, Page, FIRST_ACTIVITY_KEY},
-    protobuf_interop::protobuf::{DropTimelineRequest, InsertTimelineItemRequest, TimelineRequest},
+    protobuf_interop::protobuf::{
+        DropTimelineRequest, InsertTimelineItemRequest, OutboxRequest, TimelineRequest,
+    },
     signing_keys::{self, SigningKey},
     storage::Backend as StorageBackend,
 };
@@ -518,7 +520,7 @@ async fn make_outbox_page(
     }
 }
 
-async fn handle_outbox(
+pub async fn handle_outbox(
     state: Arc<Indielinks>,
     user: &User,
     request: UserOutboxRequest,
@@ -561,6 +563,34 @@ async fn handle_outbox(
     }
 }
 
+/// Forward a user outbox request to the node responsible for this user's outbox via gRPC
+async fn redirect_outbox(
+    state: Arc<Indielinks>,
+    user: &User,
+    request: UserOutboxRequest,
+    responsible_node: NodeId,
+) -> Result<OutboxResponse> {
+    let addr = state
+        .cache_node
+        .socket_addr_for_id(responsible_node)
+        .await
+        .context(SocketAddrSnafu {
+            node_id: responsible_node,
+        })?;
+    let response = GrpcClient::new(responsible_node, addr)
+        .ensure_connected()
+        .await
+        .context(ConnectionSnafu)?
+        .outbox(OutboxRequest {
+            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
+            request: rmp_serde::to_vec(&request).context(MessagePackSerSnafu)?,
+        })
+        .await
+        .context(TonicSnafu)?
+        .into_inner();
+    rmp_serde::from_slice(&response.response).context(MessagePackDeSnafu)
+}
+
 define_metric! { "user.outbox.redirects", user_outbox_redirects, Sort::IntegralCounter }
 
 /// Handle a user outbox request-- execute locally or forward to the responsible node in this cluster
@@ -571,7 +601,10 @@ pub async fn handle_outbox_or_redirect(
 ) -> Result<OutboxResponse> {
     match this_node_is_responsible(state.cache_node.clone(), user).await? {
         None => handle_outbox(state, user, request).await,
-        Some(_) => unimplemented!(), // To be implemented
+        Some(responsible_node) => {
+            user_outbox_redirects.add(1, &[KeyValue::new("username", user.username())]);
+            redirect_outbox(state, user, request, responsible_node).await
+        }
     }
 }
 

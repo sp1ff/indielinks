@@ -186,6 +186,16 @@ message VoteResponse {
     LogId last_log_id = 3;
 }
 
+// Forward a user outbox request to the node responsible for that user's outbox
+message OutboxRequest {
+    bytes user_id = 1;  // msgpack-encoded UserId
+    bytes request = 2;  // msgpack-encoded UserOutboxRequest
+}
+
+message OutboxResponse {
+    bytes response = 1;  // msgpack-encoded OutboxResponse
+}
+
 // Forward a home timeline request to the node responsible for that user's timeline
 message TimelineRequest {
     bytes user_id = 1;  // msgpack-encoded UserId
@@ -219,6 +229,8 @@ service GrpcService {
     rpc CacheInsert(CacheInsertRequest) returns (CacheInsertResponse) {}
     // Lookup a value given a key
     rpc CacheLookup(CacheLookupRequest) returns (CacheLookupResponse) {}
+    // Forward a user outbox request to the responsible node
+    rpc Outbox(OutboxRequest) returns (OutboxResponse) {}
     // Forward a home timeline request to the responsible node
     rpc Timeline(TimelineRequest) returns (TimelineResponse) {}
     // Add an item to a user's home timeline (deferred)

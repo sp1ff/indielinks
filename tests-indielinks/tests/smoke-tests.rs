@@ -92,7 +92,7 @@ use tests_indielinks::{
     follow::accept_follow_smoke,
     helper::{DynamoConfig, DynamoDBHelper, Helper, ScyllaConfig, ScyllaHelper},
     home_timeline::{timeline_before, timeline_empty, timeline_initial},
-    outbox::outbox_smoke_test,
+    outboxes::outbox_smoke_test,
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
@@ -1005,7 +1005,12 @@ inventory::submit!(Test {
             helper,
         ))
     },
-    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode]),
+    fixtures: Some(&[
+        FixtureId::ScyllaSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::DynamoDBCluster
+    ]),
 });
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
