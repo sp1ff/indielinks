@@ -60,6 +60,8 @@ message HashRingInit {
     NodeIdSet nodes = 1;
     // Cannot be zero!
     uint64 num_virtual = 2;
+    // First "slot" settings
+    map<uint32, uint64> slots = 3;
 }
 
 message HashRingInsert {
@@ -70,12 +72,22 @@ message HashRingRemove {
     NodeIdSet nodes = 1;
 }
 
+message SlotAssignment {
+    uint32 index = 1;
+    optional uint64 node = 2;
+}
+
+message SetSlots {
+    repeated SlotAssignment slots = 1;
+}
+
 // This only exists because you can't nest `oneof` fields in protobufs
 message HashRingRequest {
     oneof payload {
 	HashRingInit init = 1;
 	HashRingInsert insert = 2;
 	HashRingRemove remove = 3;
+	SetSlots slots = 4;
     }
 }
 

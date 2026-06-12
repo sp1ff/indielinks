@@ -211,7 +211,7 @@ mod test {
         .await
         .unwrap();
         cache_node
-            .initialize([(0, Default::default())].into())
+            .initialize([(0, Default::default())], vec![])
             .await
             .unwrap();
         let cache: Cache<NullClientFactory, String, usize> = Cache::new(0, cache_node);

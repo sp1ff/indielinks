@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -15,51 +15,10 @@
 
 //! # indielinks-cache
 //!
-//! ## Raft Cluster Membership & Configuration
-//!
-//! As soon as each node's [Raft] instance is instantiated, that node is an unattached node in the
-//! "learner" state. When it is included in some node's invocation of [initialize()], it then becomes
-//! a member of that cluster as a "voter" from where it will transition to either a "leader" or a
-//! "follower". Note that [initialize()] may be invoked on more than one (uninitialized) node in the
-//! cluster, so long as it's invoked with the *same* membership.
-//!
-//! [Raft]: openraft::Raft
-//! [initialize()]: openraft::raft::Raft::initialize
-//!
-//! It's important to realize that cluster membership never changes automaticaly; members may go
-//! offline or otherwis become unreachable without being removed from the cluster. In that case, so
-//! long as a quorum of nodes are still available, the cluster as a whole will make progress. The
-//! missing node(s), on restoration and if they've persisted their state, will then "catch-up" to
-//! the rest of the cluster.
-//!
-//! Nodes can be removed from the cluster through the [change_membership()] method, invoked *on the
-//! leader*. Attempting to invoke this method on the [Raft] instance for a non-leader node will
-//! result in a [ForwardToLeader] error. Nodes can be added to the cluster by first adding them as
-//! learners via [add_learner()], then promoting them to voters, again via [change_membership()].
-//! Again, [add_learner()] may only be invoked on a leader.
-//!
-//! [ForwardToLeader]: openraft::error::ForwardToLeader
-//! [change_membership()]: openraft::raft::Raft::change_membership
-//! [add_learner()]: openraft::raft::Raft::add_learner
-//!
-//! One could, of course, build-out one's application to accept requests for these operations and,
-//! upon discovering that a given instance is not the cluster leader, forward the request to
-//! whatever instance _is_ the leader. This, however, is application-specific logic and outside the
-//! purview of the [openraft] crate.
-//!
-//! Finally, one should note that changes to the *Raft* cluster membership are separate & distinct
-//! from changes to the *state* maintained by said cluster; namely the [hash ring]. For information
-//! on how [indielinks-cache] updates the hash ring in response to cluster membership changes, see
-//! the link.
-//!
-//! [hash ring]: crate::cache
-//! [indielinks-cache]: crate
-//!
-//!
 //! ## Some First Thoughts
 //!
 //! The Raft consensus protocol (see [In Search of an Understandable Consensus Algorithm])
-//! synchronises (a typically small amount of) state across a cluster of nodes. It doesn't guarantee
+//! synchronizes (a typically small amount of) state across a cluster of nodes. It doesn't guarantee
 //! that the state is exactly the same across all nodes at all times; rather it guarantees that a
 //! message log is *seen* by all the nodes in the same order. A given node may be behind it's peers
 //! at any given time, in terms of the log messages it's committed, but given enough time, it will
@@ -112,7 +71,7 @@
 //! it's a challenging design problem. I'm working off of two use cases:
 //!
 //! 1. the application starts by wanting to use JSON over HTTP (simple, easy to trouble-shoot)
-//! 2. once things are working the application wants to mvoe to gRPC for performance reasons
+//! 2. once things are working the application wants to move to gRPC for performance reasons
 //!
 //! I'd _like_ the application to be able to shift from 1. to 2. with no change to the library code.
 //! I believe this implies that the library is going to have to:
@@ -132,6 +91,47 @@
 //! application could assemble the provided routing piece with their own transport choices. The
 //! downside here is that if the app wants _another_ RPC mechanism, the library would have to
 //! implement it.
+//!
+//! ## Raft Cluster Membership & Configuration
+//!
+//! As soon as each node's [Raft] instance is instantiated, that node is an unattached node in the
+//! "learner" state. When it is included in some node's invocation of [initialize()], it then becomes
+//! a member of that cluster as a "voter" from where it will transition to either a "leader" or a
+//! "follower". Note that [initialize()] may be invoked on more than one (uninitialized) node in the
+//! cluster, so long as it's invoked with the *same* membership.
+//!
+//! [Raft]: openraft::Raft
+//! [initialize()]: openraft::raft::Raft::initialize
+//!
+//! It's important to realize that cluster membership never changes automatically; members may go
+//! offline or otherwis become unreachable without being removed from the cluster. In that case, so
+//! long as a quorum of nodes are still available, the cluster as a whole will make progress. The
+//! missing node(s), on restoration and if they've persisted their state, will then "catch-up" to
+//! the rest of the cluster.
+//!
+//! Nodes can be removed from the cluster through the [change_membership()] method, invoked *on the
+//! leader*. Attempting to invoke this method on the [Raft] instance for a non-leader node will
+//! result in a [ForwardToLeader] error. Nodes can be added to the cluster by first adding them as
+//! learners via [add_learner()], then promoting them to voters, again via [change_membership()].
+//! Again, [add_learner()] may only be invoked on a leader.
+//!
+//! [ForwardToLeader]: openraft::error::ForwardToLeader
+//! [change_membership()]: openraft::raft::Raft::change_membership
+//! [add_learner()]: openraft::raft::Raft::add_learner
+//!
+//! One could, of course, build-out one's application to accept requests for these operations and,
+//! upon discovering that a given instance is not the cluster leader, forward the request to
+//! whatever instance _is_ the leader. This, however, is application-specific logic and outside the
+//! purview of the [openraft] crate.
+//!
+//! Finally, one should note that changes to the *Raft* cluster membership are separate & distinct
+//! from changes to the *state* maintained by said cluster; namely the [hash ring]. For information
+//! on how [indielinks-cache] updates the hash ring in response to cluster membership changes, see
+//! the link.
+//!
+//! [hash ring]: crate::cache
+//! [indielinks-cache]: crate
+//!
 //!
 //! ## Why Am I Not Using Redis?
 //!

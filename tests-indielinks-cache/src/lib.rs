@@ -19,10 +19,19 @@ pub mod healthcheck;
 pub mod invalid_cache_id;
 pub mod multi_key;
 pub mod overwrite;
+pub mod slots;
 pub mod smoke;
 
-use indielinks_cache::types::CacheId;
+use std::net::SocketAddr;
+
+use indielinks_cache::types::{CacheId, NodeId, SlotIndex};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InitClusterRequest {
+    pub nodes: Vec<(NodeId, SocketAddr)>,
+    pub slots: Vec<(SlotIndex, NodeId)>,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CacheInsertRequest {
@@ -40,6 +49,21 @@ pub struct CacheLookupRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CacheLookupResponse {
     pub value: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SetSlotsRequest {
+    pub slots: Vec<(SlotIndex, Option<NodeId>)>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GetSlotRequest {
+    pub slot: SlotIndex,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct GetSlotResponse {
+    pub slot: Option<NodeId>,
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

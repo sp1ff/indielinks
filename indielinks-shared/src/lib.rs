@@ -15,6 +15,7 @@
 
 pub mod api;
 pub mod entities;
+pub mod fin;
 #[path = "instance-state.rs"]
 pub mod instance_state;
 #[path = "nonempty-string.rs"]

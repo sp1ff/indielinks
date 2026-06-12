@@ -58,7 +58,7 @@
 //! for logging, so eht `RUST_LOG` environment variable is also respected.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     ffi::OsString,
     iter::once,
     net::SocketAddr,
@@ -84,7 +84,7 @@ use tests_support::{async_integration_test, TestConfiguration};
 use tracing::{instrument, Level};
 use url::Url;
 
-use indielinks::{peppers::Peppers, scylla::execute_cql};
+use indielinks::{grpc::InitClusterRequest, peppers::Peppers, scylla::execute_cql};
 
 use tests_indielinks::{
     activity_pub::{as_follower, context_with_mastodon, posting_creates_note, send_follow},
@@ -297,11 +297,10 @@ fn teardown_cluster(config: &Clustered, scylla_env_file: Option<&Path>) -> Resul
 }
 
 async fn init_raft_cluster(ops: &Url, nodes: impl Iterator<Item = SocketAddr>) -> Result<()> {
-    let nodes = BTreeMap::<u64, ClusterNode>::from_iter(
-        (0u64..3u64)
-            .zip(nodes)
-            .map(|(id, addr)| (id, ClusterNode { addr })),
-    );
+    let nodes: Vec<(u64, ClusterNode)> = (0u64..3u64)
+        .zip(nodes)
+        .map(|(id, addr)| (id, ClusterNode { addr }))
+        .collect();
 
     let client = Client::builder()
         .user_agent("indielinks-test/raft-ops 0.0.1 (+sp1ff@pobox.com)")
@@ -310,7 +309,10 @@ async fn init_raft_cluster(ops: &Url, nodes: impl Iterator<Item = SocketAddr>) -
 
     let _ = client
         .post(ops.join("ops/cache/init-cluster").expect("Bad URL"))
-        .json(&nodes)
+        .json(&InitClusterRequest {
+            nodes,
+            slots: Default::default(),
+        })
         .send()
         .await
         .context(RequestSnafu)?

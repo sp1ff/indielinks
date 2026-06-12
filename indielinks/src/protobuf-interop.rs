@@ -28,8 +28,9 @@ use std::{
 
 use indielinks_cache::{
     network::{AppendEntriesRequest, AppendEntriesResponse},
-    types::{CacheId, ClusterNode, NodeId, Request, TypeConfig},
+    types::{CacheId, ClusterNode, NodeId, Request, SlotIndex, TypeConfig},
 };
+use nonempty_collections::NEVec;
 use openraft::{Entry, LogId, Vote};
 use serde::Serialize;
 use snafu::*;
@@ -62,6 +63,8 @@ pub enum Error {
         source: rmp_serde::encode::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Missing Slots"))]
+    Slots { backtrace: Backtrace },
     #[snafu(display("Failed to parse {text} to a  SocketAddr: {source}"))]
     SocketAddr {
         text: String,
@@ -147,6 +150,14 @@ impl From<Vec<NodeId>> for protobuf::NodeIdSet {
     }
 }
 
+impl From<NEVec<NodeId>> for protobuf::NodeIdSet {
+    fn from(value: NEVec<NodeId>) -> protobuf::NodeIdSet {
+        protobuf::NodeIdSet {
+            node_ids: HashMap::from_iter(value.into_iter().map(|n| (n, ()))),
+        }
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                             NodeId                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -154,6 +165,19 @@ impl From<Vec<NodeId>> for protobuf::NodeIdSet {
 impl From<protobuf::NodeIdSet> for Vec<NodeId> {
     fn from(value: protobuf::NodeIdSet) -> Vec<NodeId> {
         value.node_ids.into_keys().collect()
+    }
+}
+
+impl TryFrom<protobuf::NodeIdSet> for NEVec<NodeId> {
+    type Error = Error;
+    fn try_from(value: protobuf::NodeIdSet) -> Result<NEVec<NodeId>> {
+        let mut i = value.node_ids.into_iter();
+        let v: NEVec<u64> = i
+            .next()
+            .map(|(head, _)| (head, i.map(|(node, _)| node).collect::<Vec<u64>>()))
+            .ok_or(NodesSnafu.build())?
+            .into();
+        Ok(v)
     }
 }
 
@@ -254,16 +278,23 @@ impl From<openraft::EntryPayload<TypeConfig>> for protobuf::entry::Payload {
         use openraft::EntryPayload;
         match value {
             EntryPayload::Blank => protobuf::entry::Payload::Empty(()),
-            EntryPayload::Normal(Request::Init { nodes, num_virtual }) => {
-                protobuf::entry::Payload::Normal(protobuf::HashRingRequest {
-                    payload: Some(protobuf::hash_ring_request::Payload::Init(
-                        protobuf::HashRingInit {
-                            nodes: Some(nodes.into()),
-                            num_virtual: num_virtual.get() as u64,
-                        },
-                    )),
-                })
-            }
+            EntryPayload::Normal(Request::Init {
+                nodes,
+                num_virtual,
+                slots,
+            }) => protobuf::entry::Payload::Normal(protobuf::HashRingRequest {
+                payload: Some(protobuf::hash_ring_request::Payload::Init(
+                    protobuf::HashRingInit {
+                        // Nb. message fields are always optional
+                        nodes: Some(nodes.into()),
+                        num_virtual: num_virtual.get() as u64,
+                        slots: slots
+                            .into_iter()
+                            .map(|(fin, node_id)| (fin.get() as u32, node_id))
+                            .collect(),
+                    },
+                )),
+            }),
             EntryPayload::Normal(Request::InsertNodes { nodes }) => {
                 protobuf::entry::Payload::Normal(protobuf::HashRingRequest {
                     payload: Some(protobuf::hash_ring_request::Payload::Insert(
@@ -278,6 +309,21 @@ impl From<openraft::EntryPayload<TypeConfig>> for protobuf::entry::Payload {
                     payload: Some(protobuf::hash_ring_request::Payload::Remove(
                         protobuf::HashRingRemove {
                             nodes: Some(nodes.into()),
+                        },
+                    )),
+                })
+            }
+            EntryPayload::Normal(Request::SetSlots { slots }) => {
+                protobuf::entry::Payload::Normal(protobuf::HashRingRequest {
+                    payload: Some(protobuf::hash_ring_request::Payload::Slots(
+                        protobuf::SetSlots {
+                            slots: slots
+                                .into_iter()
+                                .map(|(fin, node_id)| protobuf::SlotAssignment {
+                                    index: fin.get() as u32,
+                                    node: node_id,
+                                })
+                                .collect(),
                         },
                     )),
                 })
@@ -299,9 +345,18 @@ impl TryFrom<protobuf::entry::Payload> for openraft::EntryPayload<TypeConfig> {
                     match req.payload.ok_or(PayloadSnafu.build())? {
                         protobuf::hash_ring_request::Payload::Init(hash_ring_init) => {
                             Request::Init {
-                                nodes: hash_ring_init.nodes.ok_or(NodesSnafu.build())?.into(),
+                                nodes: hash_ring_init
+                                    .nodes
+                                    .ok_or(NodesSnafu.build())?
+                                    .try_into()?,
                                 num_virtual: NonZero::new(hash_ring_init.num_virtual as usize)
                                     .context(ZeroVirtualSnafu)?,
+                                slots: hash_ring_init
+                                    .slots
+                                    .into_iter()
+                                    .map(|(k, v)| SlotIndex::new(k as usize).map(|fin| (fin, v)))
+                                    .collect::<Option<Vec<(SlotIndex, NodeId)>>>()
+                                    .ok_or(SlotsSnafu.build())?,
                             }
                         }
                         protobuf::hash_ring_request::Payload::Insert(hash_ring_insert) => {
@@ -314,6 +369,16 @@ impl TryFrom<protobuf::entry::Payload> for openraft::EntryPayload<TypeConfig> {
                                 nodes: hash_ring_remove.nodes.ok_or(NodesSnafu.build())?.into(),
                             }
                         }
+                        protobuf::hash_ring_request::Payload::Slots(slots) => Request::SetSlots {
+                            slots: slots
+                                .slots
+                                .into_iter()
+                                .map(|protobuf::SlotAssignment { index, node }| {
+                                    SlotIndex::new(index as usize).map(|fin| (fin, node))
+                                })
+                                .collect::<Option<Vec<(SlotIndex, Option<NodeId>)>>>()
+                                .ok_or(SlotsSnafu.build())?,
+                        },
                     },
                 )
             }

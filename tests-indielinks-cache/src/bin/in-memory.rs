@@ -41,7 +41,7 @@ use http::StatusCode;
 use openraft::error::{NetworkError, RemoteError, Unreachable};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{from_value, to_value};
-use snafu::{Backtrace, IntoError, ResultExt, Snafu};
+use snafu::{Backtrace, ResultExt, Snafu};
 use tap::{Pipe, Tap};
 use tokio::{
     net::TcpListener,
@@ -59,10 +59,13 @@ use indielinks_cache::{
         InstallSnapshotResponse, RPCError, RPCOption, RaftError, VoteRequest, VoteResponse,
     },
     raft::{CacheNode, Configuration},
-    types::{CacheId, ClusterNode, InMemoryLogStore, NodeId, TypeConfig},
+    types::{CacheId, ClusterNode, InMemoryLogStore, NodeId, SlotIndex, TypeConfig},
 };
 
-use tests_indielinks_cache::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
+use tests_indielinks_cache::{
+    CacheInsertRequest, CacheLookupRequest, CacheLookupResponse, GetSlotRequest, GetSlotResponse,
+    InitClusterRequest, SetSlotsRequest,
+};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -432,24 +435,24 @@ async fn cache_lookup(
 /// a multi-node cluster.
 async fn admin_init(
     State(state): State<AppState>,
-    // Refine this request type-- this is awful
-    Json(req): Json<Vec<(NodeId, String /* SockAddrV4 */)>>,
+    Json(InitClusterRequest { nodes, slots }): Json<InitClusterRequest>,
 ) -> impl axum::response::IntoResponse {
-    async fn admin_init1(state: AppState, mut req: Vec<(u64, String)>) -> Result<()> {
-        if req.is_empty() {
-            req.push((state.id, state.addr.to_string()));
+    async fn admin_init1(
+        state: AppState,
+        mut nodes: Vec<(u64, SocketAddr)>,
+        slots: Vec<(SlotIndex, NodeId)>,
+    ) -> Result<()> {
+        if nodes.is_empty() {
+            nodes.push((state.id, SocketAddr::V4(state.addr)));
         }
 
-        let req = req
+        let nodes = nodes
             .into_iter()
-            .map(|(id, addr)| match SocketAddr::from_str(&addr) {
-                Ok(addr) => Ok((id, ClusterNode { addr })),
-                Err(err) => Err(SocketAddrSnafu { addr }.into_error(err)),
-            })
-            .collect::<Result<Vec<(NodeId, ClusterNode)>>>()?;
+            .map(|(node_id, addr)| (node_id, ClusterNode { addr }));
+
         state
             .node
-            .initialize(BTreeMap::from_iter(req))
+            .initialize(BTreeMap::from_iter(nodes), slots)
             .await
             .tap(|result| info!("Initialization of the Raft yielded: {:?}", result))
             .context(RaftSnafu)?;
@@ -459,7 +462,7 @@ async fn admin_init(
 
     // Unlike the raft & cache handlers above, this endpoint is user-facing, so let's try to return
     // something a bit more ergonomic for a human
-    match admin_init1(state, req).await {
+    match admin_init1(state, nodes, slots).await {
         Ok(_) => StatusCode::CREATED,
         err @ Err(Error::SocketAddr { .. }) => {
             error!("{err:?}");
@@ -507,6 +510,33 @@ async fn admin_change_membership(
         Ok(rsp) => Json(rsp).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#?}")).into_response(),
     }
+}
+
+async fn get_slot(
+    State(state): State<AppState>,
+    Json(GetSlotRequest { slot }): Json<GetSlotRequest>,
+) -> axum::response::Response {
+    (
+        StatusCode::OK,
+        Json(GetSlotResponse {
+            slot: state.node.node_for_slot(slot).await,
+        }),
+    )
+        .into_response()
+}
+
+async fn set_slots(
+    State(state): State<AppState>,
+    Json(SetSlotsRequest { slots }): Json<SetSlotsRequest>,
+) -> axum::response::Response {
+    match state.node.set_slots(slots).await {
+        Ok(_) => StatusCode::ACCEPTED,
+        Err(err) => {
+            error!("{err:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+    .into_response()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -595,6 +625,8 @@ async fn main() {
             .route("/raft/vote", post(raft_vote))
             .route("/cache/lookup", get(cache_lookup))
             .route("/cache/insert", post(cache_insert))
+            .route("/slots/set", post(set_slots))
+            .route("/slots/get", get(get_slot))
             .route("/admin/init", post(admin_init))
             .route("/admin/metrics", get(admin_metrics))
             .route("/admin/add-learner", post(admin_add_learner))

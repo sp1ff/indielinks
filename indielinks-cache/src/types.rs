@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -15,9 +15,15 @@
 
 //! # Basic types used throughout [indielinks-cache]
 //!
+//! ## Introduction
+//!
 //! While I generally loathe these sorts of "types" or "entities" modules, the [openraft] crate is
 //! parameterized by types throughout; I thought it might make sense to collect them in one place
 //! where we could define our [TypeConfig].
+//!
+//! This module declares the types required to invoke `declare_raft_types!`: our raft's messages and
+//! `Node` type. It also defines an in-memory implementation of the [RaftLogReader] &
+//! [RaftLogStorage] interfaces, both as a proof-of-concept and a testing aid.
 
 use std::{
     collections::BTreeMap,
@@ -30,6 +36,8 @@ use std::{
     sync::Arc,
 };
 
+use indielinks_shared::fin::Fin;
+use nonempty_collections::NEVec;
 use openraft::{
     Entry, LogId, LogState, OptionalSend, RaftLogId, RaftLogReader, StorageError, Vote,
     storage::{LogFlushed, RaftLogStorage},
@@ -50,6 +58,12 @@ pub type NodeId = u64;
 /// shards. [CacheId] serves as a way of naming caches.
 pub type CacheId = u64;
 
+/// The number of `NodeId` "slots" we'll maintain as part of our Raft
+#[allow(non_camel_case_types)] // We're representing a numberic value at the type level
+pub type NUMBER_OF_CACHE_SLOTS = typenum::consts::U16;
+
+pub type SlotIndex = Fin<NUMBER_OF_CACHE_SLOTS>;
+
 /// [Raft] log messages for [indielinks-cache](crate)
 ///
 /// [Raft]: https://raft.github.io/raft.pdf
@@ -61,14 +75,18 @@ pub type CacheId = u64;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Request {
     Init {
-        nodes: Vec<NodeId>,
+        nodes: NEVec<NodeId>,
         num_virtual: NonZero<usize>,
+        slots: Vec<(SlotIndex, NodeId)>,
     },
     InsertNodes {
         nodes: Vec<NodeId>,
     },
     RemoveNodes {
         nodes: Vec<NodeId>,
+    },
+    SetSlots {
+        slots: Vec<(SlotIndex, Option<NodeId>)>,
     },
 }
 
@@ -123,6 +141,8 @@ openraft::declare_raft_types! (
     Node = ClusterNode,
 );
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        InMemoryLogStore                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// An in-memory log store; primarily intended for testing.

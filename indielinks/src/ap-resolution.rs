@@ -361,7 +361,7 @@ mod test {
         .await
         .unwrap();
         cache_node
-            .initialize([(0, Default::default())].into())
+            .initialize([(0, Default::default())], vec![])
             .await
             .unwrap();
         let actors = Arc::new(Cache::new(0, cache_node.clone()));

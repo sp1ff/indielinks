@@ -1,6 +1,6 @@
 #+TITLE: HACKING
 #+DESCRIPTION: How to hack on indielinks
-#+DATE: <2026-05-14 Thu 11:28>
+#+DATE: <2026-06-11 Thu 19:48>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -80,7 +80,8 @@ This will start the server, in the foreground, talking to the ScyllaDB cluster o
 In a different shell:
 
 #+BEGIN_SRC bash
-  curl -v -H 'Content-Type: application/json' http://localhost:20680/ops/cache/init-cluster --data '{"0":{"addr":"127.0.0.1:20681"}}' && \
+  curl -v -H 'Content-Type: application/json' http://localhost:20680/ops/cache/init-cluster \
+      --data "{\"nodes\": [[0, {\"addr\": \"127.0.0.1:20681\"}]], \"slots\": []}" && \
   curl -v http://localhost:20679/healthcheck
 #+END_SRC
 

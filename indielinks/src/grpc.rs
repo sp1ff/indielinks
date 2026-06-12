@@ -18,9 +18,7 @@
 //! The [indielinks](crate) gRPC server. This module contains the top-level entities for _serving_
 //! gRPC (i.e. it sits at the top of the module hierarchy, imported only by indielinksd).
 
-use std::{
-    collections::BTreeMap, error::Error as StdError, fmt::Debug, net::SocketAddr, sync::Arc,
-};
+use std::{error::Error as StdError, fmt::Debug, net::SocketAddr, sync::Arc};
 
 use axum::{
     extract::{Json, State},
@@ -40,7 +38,7 @@ use indielinks_cache::{
     cache::Cache,
     network::{AppendEntriesRequest, InstallSnapshotRequest, RaftError, VoteRequest},
     raft::CacheNode,
-    types::{CacheId, ClusterNode, NodeId, TypeConfig},
+    types::{ClusterNode, NodeId, SlotIndex, TypeConfig},
 };
 use url::Url;
 
@@ -402,17 +400,24 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
 //                                     Cluster Admin Service                                      //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// Not sure this belongs here, but for now...
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InitClusterRequest {
+    pub nodes: Vec<(NodeId, ClusterNode)>,
+    pub slots: Vec<(SlotIndex, NodeId)>,
+}
+
 async fn init_cluster(
     State(state): State<Arc<Indielinks>>,
-    Json(req): Json<BTreeMap<NodeId, ClusterNode>>,
+    Json(InitClusterRequest { nodes, slots }): Json<InitClusterRequest>,
 ) -> axum::response::Response {
     info!(
-        "Initializing a Raft cluster with members: {:?}",
-        req.iter().collect::<Vec<(&NodeId, &ClusterNode)>>()
+        "Initializing a Raft cluster with members: {:?} & slots {:?}",
+        nodes, slots
     );
     // This implementation seems awfully chatty, but I need to drill down into the `Err` variant in
     // case we just failed because the cluster is already initialized.
-    match state.cache_node.initialize(req).await {
+    match state.cache_node.initialize(nodes, slots).await {
         Ok(_) => {
             info!("Successfully initialized your Raft cluster");
             (StatusCode::OK).into_response()
@@ -490,17 +495,22 @@ async fn change_membership(
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CacheInsertRequest {
-    pub cache: CacheId,
-    pub key: serde_json::Value,
-    pub value: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CacheLookupRequest {
-    pub cache: CacheId,
-    pub key: serde_json::Value,
+async fn set_slots(
+    State(state): State<Arc<Indielinks>>,
+    Json(request): Json<Vec<(SlotIndex, Option<NodeId>)>>,
+) -> axum::response::Response {
+    info!("Updating Raft slot information with: {request:?}");
+    match state.cache_node.set_slots(request).await {
+        Ok(_) => {
+            info!("Successfully updated the Raft slots.");
+            StatusCode::OK.into_response()
+        }
+        Err(err) => {
+            error!("While updating the Raft slot information: {err:?}");
+            // I'm not sure what else could be the problem, so just cover everything with a 500.
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response()
+        }
+    }
 }
 
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
@@ -510,6 +520,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route("/metrics", get(metrics))
         .route("/add-learner", post(add_learner))
         .route("/membership", post(change_membership))
+        .route("/slots", post(set_slots))
         .layer(SetResponseHeaderLayer::if_not_present(
             CONTENT_TYPE,
             HeaderValue::from_static("text/json; charset=utf-8"),

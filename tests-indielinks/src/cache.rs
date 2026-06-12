@@ -21,7 +21,7 @@
 //!
 //! [IntegrationTest]: ../tests_support/trait.IntegrationTest.html
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use libtest_mimic::Failed;
 use reqwest::{blocking::Client, Url};
@@ -32,7 +32,10 @@ use indielinks_cache::{
     types::{ClusterNode, NodeId},
 };
 
-use indielinks::cache::{Backend, LogStore};
+use indielinks::{
+    cache::{Backend, LogStore},
+    grpc::InitClusterRequest,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                           Scaffolding for the `openraft` test suite                            //
@@ -112,17 +115,23 @@ pub fn raft_ops(
 
     let mut all_nodes = nodes.into_iter().collect::<Vec<(NodeId, ClusterNode)>>();
     all_nodes.sort_by_key(|lhs| lhs.0);
+
     let first_three = all_nodes
         .iter()
         .take(3)
         .cloned()
-        .collect::<BTreeMap<NodeId, ClusterNode>>();
+        .collect::<Vec<(NodeId, ClusterNode)>>();
+
+    let request = InitClusterRequest {
+        nodes: first_three,
+        slots: Default::default(),
+    };
 
     // Let's start by initializing a three-node cluster:
     assert_eq!(
         client
             .post(ops_endpoint.join("ops/cache/init-cluster")?)
-            .json(&first_three)
+            .json(&request)
             .send()
             .expect("Failed to send first init-cluster request")
             .error_for_status()
@@ -135,7 +144,7 @@ pub fn raft_ops(
     assert_eq!(
         client
             .post(ops_endpoint.join("ops/cache/init-cluster")?)
-            .json(&first_three)
+            .json(&request)
             .send()?
             .error_for_status()?
             .content_length(),

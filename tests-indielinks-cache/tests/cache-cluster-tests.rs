@@ -25,7 +25,7 @@ use libtest_mimic::Failed;
 use serde::Deserialize;
 use snafu::{ResultExt, Snafu};
 use tests_indielinks_cache::{
-    admin, eviction, healthcheck, invalid_cache_id, multi_key, overwrite, smoke,
+    admin, eviction, healthcheck, invalid_cache_id, multi_key, overwrite, slots, smoke,
 };
 use tests_support::{
     Fixture, IntegrationTest, SyncIntegrationTest, TestConfiguration, sync_integration_test,
@@ -313,10 +313,16 @@ inventory::submit!(CacheClusterTest::new(
     Some(&[CacheClusterId::SingleNode]),
 ));
 
+inventory::submit!(CacheClusterTest::new(
+    "04_slots",
+    |config| slots::test(config.base_port),
+    Some(&[CacheClusterId::InMemory, CacheClusterId::OnDisk]),
+));
+
 // ---- 04: cluster membership shrink ----
 
 inventory::submit!(CacheClusterTest::new(
-    "04_remove_member",
+    "100_remove_member",
     |config| admin::remove_member(config.base_port),
     Some(&[CacheClusterId::InMemory, CacheClusterId::OnDisk]),
 ));

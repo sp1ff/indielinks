@@ -274,6 +274,6 @@ echo "done."
 
 echo -n "Initializing the indielinks instance as a single-node Raft cluster..."
 curl -s -H 'Content-Type: application/json' http://localhost:${local_port}/ops/cache/init-cluster \
-     --data "{\"0\":{\"addr\":\"127.0.0.1:${grpc_port}\"}}"
+    --data "{\"nodes\": [[0, {\"addr\": \"127.0.0.1:${grpc_port}\"}]], \"slots\": []}"
 echo "done."
 

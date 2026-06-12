@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -15,7 +15,10 @@
 
 //! # indielinks-cache Raft implementation
 //!
-//! This module contains the core [Raft] implementation for [indielinks-cache].
+//! ## Introduction
+//!
+//! This module contains the core [Raft] implementation for [indielinks-cache]: the raft state
+//! machine, wrapped in the [CacheNode] abstraction.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -27,6 +30,9 @@ use std::{
     time::Duration,
 };
 
+use itertools::iproduct;
+use non_zero::non_zero;
+use nonzero::nonzero;
 use openraft::{
     Entry, LogId, OptionalSend, Raft, RaftMetrics, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
     StorageIOError, StoredMembership,
@@ -42,11 +48,15 @@ use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument};
+use typenum::Unsigned;
 use xxhash_rust::xxh64::Xxh64Builder;
 
 use crate::{
     network::{Client, ClientFactory, Network},
-    types::{CacheId, ClusterNode, NodeId, Request, Response, TypeConfig},
+    types::{
+        CacheId, ClusterNode, NUMBER_OF_CACHE_SLOTS, NodeId, Request, Response, SlotIndex,
+        TypeConfig,
+    },
 };
 
 pub use openraft::{ChangeMembers, StorageError, raft::ClientWriteResponse};
@@ -56,7 +66,7 @@ use std::error::Error as StdError;
 pub type StdResult<T, E> = std::result::Result<T, E>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                       module error type                                        //
+//                                       module error types                                       //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
@@ -85,6 +95,8 @@ pub enum Error {
         node_id: NodeId,
         backtrace: Backtrace,
     },
+    #[snafu(display("No nodes in membership change"))]
+    NoNodes { backtrace: Backtrace },
     #[snafu(display("Failed to create the Raft: {source}"))]
     Raft {
         #[snafu(source(from(openraft::error::Fatal<NodeId>, Box::new)))]
@@ -155,8 +167,12 @@ where
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             hashing                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// A thing that can hash virtual nodes and hash keys via the xxhash64 algorithm.
-#[derive(Clone, Default)]
+#[derive(Clone, Default)] // `Xxh64Builder` doesn't implement `Debug`
 struct Hasher {
     hash: Xxh64Builder,
 }
@@ -179,6 +195,10 @@ impl Hasher {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       the state machine                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// The [indielinks-cache] shared ([Raft]) state machine
 ///
 /// [Raft] doesn't directly synchronize state: it rather synchronizes an append-only log that is
@@ -200,7 +220,7 @@ impl Hasher {
 // I'm struggling to get my head around the required behavior, here, but so far it seems we
 // need to maintain:
 //
-//     - the state machine itself (in our case, the hash ring)
+//     - the state machine itself (in our case, the hash ring & slot array)
 //     - the most recently installed "snapshot" (if any; we may not have seen one)
 //     - I gather we also need to *build* snapshots off of our current state
 #[derive(Clone, Default)]
@@ -281,7 +301,7 @@ pub mod test {
 /// The core state machine implementation
 ///
 /// Each node will have precisely one instance of this type, but can hand-out many copies of the
-/// [stateMachine] wrapper.
+/// [StateMachine] wrapper.
 // Now, what the heck *is* a `Snapshot`, anyway? Well, we have:
 //
 //     pub struct Snapshot<C: RaftTypeConfig>
@@ -307,14 +327,31 @@ pub mod test {
 //
 // `SnapshotData` is just a `Box<C::SnapshotData>`, which by default & in our case, is a
 // `Cursor<Vec<u8>>`. What sort of `Cursor`, I can't tell. I guess `std::io::Cursor`.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct StateMachineInner {
     last_applied_log: Option<LogId<NodeId>>,
     last_membership: StoredMembership<NodeId, ClusterNode>,
     current_snapshot: Option<Snapshot<TypeConfig>>,
     hasher: Hasher,
+    num_virtual: NonZero<usize>,
     // The hash ring for our distributed KV store
     ring: Vec<(u64, (NodeId, usize))>,
+    // An array of `NodeId`s; handy for designating a single node as being responsible for something
+    slots: [Option<NodeId>; NUMBER_OF_CACHE_SLOTS::USIZE],
+}
+
+impl Default for StateMachineInner {
+    fn default() -> Self {
+        Self {
+            last_applied_log: Default::default(),
+            last_membership: Default::default(),
+            current_snapshot: Default::default(),
+            hasher: Default::default(),
+            num_virtual: nonzero!(5usize),
+            ring: Default::default(),
+            slots: Default::default(),
+        }
+    }
 }
 
 // Again, no constructor: just construct via [Default]
@@ -337,6 +374,24 @@ impl StateMachineInner {
         );
         Ok(self.ring[idx].1.0)
     }
+    /// Given a slot index, retrieve the `NodeId` stored therein, if any
+    pub fn node_for_slot(&self, fin: SlotIndex) -> Option<NodeId> {
+        self.slots[fin.get()]
+    }
+}
+
+/// State machine state that actually gets persisted as a snapshot
+// The duplication seems inelegant, but I'm going to wait a bit before I refactor.
+#[derive(Clone, Debug, Deserialize)]
+struct SnapshotState {
+    ring: Vec<(u64, (NodeId, usize))>,
+    slots: [Option<NodeId>; NUMBER_OF_CACHE_SLOTS::USIZE],
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SnapshotStateRef<'a> {
+    ring: &'a Vec<(u64, (NodeId, usize))>,
+    slots: [Option<NodeId>; NUMBER_OF_CACHE_SLOTS::USIZE],
 }
 
 impl RaftSnapshotBuilder<TypeConfig> for StateMachine {
@@ -358,8 +413,11 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachine {
     /// 3. return the snapshot
     async fn build_snapshot(&mut self) -> StdResult<Snapshot<TypeConfig>, StorageError<NodeId>> {
         let sm = self.inner.read().await;
-        let data =
-            serde_json::to_vec(&sm.ring).map_err(|e| StorageIOError::read_state_machine(&e))?;
+        let data = serde_json::to_vec(&SnapshotStateRef {
+            ring: &sm.ring,
+            slots: sm.slots,
+        })
+        .map_err(|e| StorageIOError::read_state_machine(&e))?;
 
         let snap = Snapshot::<TypeConfig> {
             meta: SnapshotMeta::<NodeId, ClusterNode> {
@@ -419,47 +477,95 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
-        let mut res = Vec::new();
-        let mut sm = self.inner.write().await;
-        for entry in entries {
+        // Clippy complains that `StorageError` is large, but I have no control over that.
+        #[allow(clippy::result_large_err)]
+        fn process_request(
+            sm: &mut StateMachineInner,
+            request: Request,
+        ) -> StdResult<Response, StorageError<NodeId>> {
+            debug!(
+                "I am applying the following log message to my local state machine: {request:#?}"
+            );
+            match request {
+                Request::Init {
+                    nodes,
+                    num_virtual,
+                    slots,
+                } => {
+                    sm.ring = iproduct!(nodes.iter(), 0..num_virtual.get())
+                        .map(|(node_id, m)| (sm.hasher.hash_node(node_id, m), (*node_id, m)))
+                        .collect();
+                    sm.ring.sort();
+                    sm.num_virtual = num_virtual;
+
+                    slots
+                        .iter()
+                        .for_each(|(idx, val)| sm.slots[idx.get()] = Some(*val));
+
+                    Ok(Response(()))
+                }
+                Request::InsertNodes { nodes } => {
+                    sm.ring.extend(
+                        iproduct!(nodes.iter(), 0..sm.num_virtual.get())
+                            .map(|(node_id, m)| (sm.hasher.hash_node(node_id, m), (*node_id, m))),
+                    );
+                    sm.ring.sort();
+                    Ok(Response(()))
+                }
+                Request::RemoveNodes { nodes } => {
+                    let remove = BTreeSet::from_iter(
+                        iproduct!(nodes.iter(), 0..sm.num_virtual.get())
+                            .map(|(node_id, m)| (sm.hasher.hash_node(node_id, m), (*node_id, m))),
+                    );
+                    sm.ring.retain(|x| remove.contains(x));
+                    Ok(Response(()))
+                }
+                Request::SetSlots { slots } => {
+                    slots
+                        .into_iter()
+                        .for_each(|(slot, value)| sm.slots[slot.get()] = value);
+                    debug!("My local slots are now: {:#?}", sm.slots);
+                    Ok(Response(()))
+                }
+            }
+        }
+
+        // Clippy complains that `StorageError` is large, but I have no control over that.
+        #[allow(clippy::result_large_err)]
+        fn process_entry(
+            sm: &mut StateMachineInner,
+            entry: Entry<TypeConfig>,
+        ) -> StdResult<Response, StorageError<NodeId>> {
             info!(
                 "Replicating {} to this State Machine: {:?}",
                 entry.log_id, entry
             );
+
+            // Store the log id as last applied log id
             sm.last_applied_log = Some(entry.log_id);
+
+            // Procss the payload:
             match entry.payload {
-                openraft::EntryPayload::Blank => res.push(Response(())),
-                openraft::EntryPayload::Normal(request) => {
-                    let mut ring = BTreeSet::new();
-                    match request {
-                        Request::Init { nodes, num_virtual } => {
-                            nodes.iter().for_each(|node_id| {
-                                (0..num_virtual.get()).for_each(|m| {
-                                    let shard = sm.hasher.hash_node(node_id, m);
-                                    ring.insert((shard, (*node_id, m)));
-                                })
-                            });
-                            sm.ring = Vec::from_iter(ring.into_iter());
-                            debug!("I now have a hash ring of {:#?}", sm.ring);
-                        }
-                        Request::InsertNodes { .. } => {
-                            unimplemented!()
-                        }
-                        Request::RemoveNodes { .. } => {
-                            unimplemented!()
-                        }
-                    };
-                    res.push(Response(()));
-                }
+                openraft::EntryPayload::Blank => Ok(Response(())),
+                openraft::EntryPayload::Normal(request) => process_request(sm, request),
                 openraft::EntryPayload::Membership(membership) => {
                     // Cluster membership has changed-- I should probably record this
                     sm.last_membership =
                         StoredMembership::new(Some(entry.log_id), membership.clone());
-                    res.push(Response(()));
+                    Ok(Response(()))
                 }
-            };
+            }
         }
-        Ok(res)
+
+        // Not sure about holding this lock while processing all entries...
+        let mut sm = self.inner.write().await;
+        entries
+            .into_iter()
+            .map(
+                #[allow(clippy::result_large_err)]
+                |item| process_entry(&mut sm, item),
+            )
+            .collect::<StdResult<Vec<Response>, _>>()
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
@@ -492,7 +598,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         meta: &SnapshotMeta<NodeId, ClusterNode>,
         snapshot: Box<Cursor<Vec<u8>>>,
     ) -> StdResult<(), StorageError<NodeId>> {
-        let ring: Vec<(u64, (NodeId, usize))> = serde_json::from_slice(snapshot.get_ref())
+        let SnapshotState { ring, slots } = serde_json::from_slice(snapshot.get_ref())
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
 
         let mut sm = self.inner.write().await;
@@ -503,6 +609,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
             snapshot,
         });
         sm.ring = ring;
+        sm.slots = slots;
 
         Ok(())
     }
@@ -627,7 +734,7 @@ pub struct Metrics {
 
 // I originally couldn't see a case where you'd want more than one "cluster node" in a process, and
 // setup an `AtomicBool` that would record the first instance creation, and had the `CacheNode` ctor
-// checkit & fail on the second invocation. Since then, however, I realized there _is_ a quite
+// check it & fail on the second invocation. Since then, however, I realized there _is_ a quite
 // important use case for this: testing! I've removed that logic & now let the application author
 // do what they want in this regard.
 
@@ -760,11 +867,15 @@ where
             .membership_config
             .nodes()
             .map(|(nid, _)| *nid)
-            .collect::<Vec<NodeId>>();
+            .collect::<Vec<NodeId>>()
+            .try_into()
+            .map_err(|_| NoNodesSnafu.build())?;
+
         self.raft
             .client_write(Request::Init {
                 nodes: node_ids,
-                num_virtual: NonZero::new(1).unwrap(/* known good */),
+                num_virtual: nonzero!(1usize),
+                slots: Default::default(),
             })
             .await
             .context(RaftWriteSnafu)?;
@@ -824,9 +935,10 @@ where
     /// Initialize the Raft cluster
     ///
     /// This should only be invoked once the entire cluster healthchecks
-    pub async fn initialize<T>(&self, nodes: T) -> Result<()>
+    pub async fn initialize<T, U>(&self, nodes: T, slots: U) -> Result<()>
     where
         T: IntoIterator<Item = (NodeId, ClusterNode)>,
+        U: IntoIterator<Item = (SlotIndex, CacheId)>,
     {
         let nodes = BTreeMap::from_iter(nodes);
         let node_ids = nodes.keys().cloned().collect::<Vec<NodeId>>();
@@ -852,8 +964,9 @@ where
         let rsp = self
             .raft
             .client_write(Request::Init {
-                nodes: node_ids,
-                num_virtual: NonZero::new(1).unwrap(/* known good */),
+                nodes: node_ids.try_into().map_err(|_| NoNodesSnafu.build())?,
+                num_virtual: non_zero!(1usize),
+                slots: slots.into_iter().collect(),
             })
             .await
             .context(RaftWriteSnafu)?;
@@ -867,6 +980,21 @@ where
         key: &K,
     ) -> Result<NodeId> {
         self.state.inner.read().await.node_for_key(key)
+    }
+    pub async fn node_for_slot(&self, fin: SlotIndex) -> Option<NodeId> {
+        self.state.inner.read().await.node_for_slot(fin)
+    }
+    pub async fn set_slots<T>(&self, slots: T) -> Result<()>
+    where
+        T: IntoIterator<Item = (SlotIndex, Option<CacheId>)>,
+    {
+        self.raft
+            .client_write(Request::SetSlots {
+                slots: slots.into_iter().collect(),
+            })
+            .await
+            .context(RaftWriteSnafu)
+            .map(|_| ())
     }
 }
 
@@ -941,6 +1069,9 @@ where
     ) -> Result<NodeId> {
         self.inner.read().await.node_for_key(key).await
     }
+    pub async fn node_for_slot(&self, fin: SlotIndex) -> Option<NodeId> {
+        self.inner.read().await.node_for_slot(fin).await
+    }
     pub async fn cache_insert<K: Serialize + Send + Sync, V: Serialize + Send + Sync>(
         &self,
         node_id: NodeId,
@@ -981,8 +1112,12 @@ where
     ) -> StdResult<VoteResponse<NodeId>, RaftError<NodeId>> {
         self.inner.read().await.vote(rpc).await
     }
-    pub async fn initialize(&self, nodes: BTreeMap<NodeId, ClusterNode>) -> Result<()> {
-        self.inner.write().await.initialize(nodes).await
+    pub async fn initialize<T, U>(&self, nodes: T, slots: U) -> Result<()>
+    where
+        T: IntoIterator<Item = (NodeId, ClusterNode)>,
+        U: IntoIterator<Item = (SlotIndex, NodeId)>,
+    {
+        self.inner.write().await.initialize(nodes, slots).await
     }
     /// Return a [SocketAddr](std::net::SocketAddr) given a [NodeId]
     pub async fn socket_addr_for_id(&self, id: NodeId) -> Result<std::net::SocketAddr> {
@@ -991,5 +1126,11 @@ where
             .await
             .node_for_id(id)
             .map(|node| node.addr)
+    }
+    pub async fn set_slots<T>(&self, slots: T) -> Result<()>
+    where
+        T: IntoIterator<Item = (SlotIndex, Option<CacheId>)>,
+    {
+        self.inner.write().await.set_slots(slots).await
     }
 }

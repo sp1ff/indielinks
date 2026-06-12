@@ -13,15 +13,17 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use std::{thread::sleep, time::Duration};
+use std::{net::SocketAddr, thread::sleep, time::Duration};
 
 use http::{StatusCode, header::CONTENT_TYPE};
-use indielinks_cache::raft::Metrics;
+use indielinks_shared::known_good;
 use libtest_mimic::Failed;
 use reqwest::blocking::{Client, ClientBuilder};
 use tracing::debug;
 
-use crate::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse};
+use indielinks_cache::raft::Metrics;
+
+use crate::{CacheInsertRequest, CacheLookupRequest, CacheLookupResponse, InitClusterRequest};
 
 pub fn get_metrics(client: &Client, port: u16) -> Result<Metrics, Failed> {
     Ok(client
@@ -32,25 +34,41 @@ pub fn get_metrics(client: &Client, port: u16) -> Result<Metrics, Failed> {
 }
 
 pub fn test(base_port: u16) -> Result<(), Failed> {
+    debug!("indielinks-cache smoke test...");
+
     // We expect a five-node cluster to be up & ready to take traffic on localhost, port `base_port`
     // through `base_port` + 4.
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent("tests-indielinks-cache/0.0.1")
         .build()?;
     let metrics = get_metrics(&client, base_port)?;
     assert_eq!(metrics.raft.id, 0); // sanity check
+
     // Raft cluster not initialized => no leader.
     assert_eq!(metrics.raft.current_leader, None);
 
     debug!("Initializing a three-node cluster");
+
     client
         .post(format!("http://127.0.0.1:{base_port}/admin/init"))
         .header(CONTENT_TYPE, "application/json")
-        .json::<Vec<(u64, String)>>(&vec![
-            (0, format!("127.0.0.1:{}", base_port)),
-            (1, format!("127.0.0.1:{}", base_port + 1)),
-            (2, format!("127.0.0.1:{}", base_port + 2)),
-        ])
+        .json(&InitClusterRequest {
+            nodes: vec![
+                (
+                    0,
+                    known_good!(format!("127.0.0.1:{}", base_port).parse::<SocketAddr>()),
+                ),
+                (
+                    1,
+                    known_good!(format!("127.0.0.1:{}", base_port + 1).parse::<SocketAddr>()),
+                ),
+                (
+                    2,
+                    known_good!(format!("127.0.0.1:{}", base_port + 2).parse::<SocketAddr>()),
+                ),
+            ],
+            slots: vec![],
+        })
         .send()?
         .error_for_status()?;
 
@@ -179,7 +197,13 @@ pub fn single_node(port: u16) -> Result<(), Failed> {
     client
         .post(format!("http://127.0.0.1:{port}/admin/init"))
         .header(CONTENT_TYPE, "application/json")
-        .json::<Vec<(u64, String)>>(&vec![(0, format!("127.0.0.1:{}", port))])
+        .json(&InitClusterRequest {
+            nodes: vec![(
+                0,
+                known_good!(format!("127.0.0.1:{}", port).parse::<SocketAddr>()),
+            )],
+            slots: vec![],
+        })
         .send()?
         .error_for_status()?;
 

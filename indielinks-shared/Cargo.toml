@@ -35,6 +35,7 @@ snafu = { version = "0.8.6", features = ["backtrace"] }
 tap = "1.0.1"
 time = ">=0.3.47" # RUSTSEC-2026-0009
 tower = { version = "0.5.2", features = ["retry"] }
+typenum = "1.20.1"
 unicode-segmentation = "1.12.0"
 url = { version = "2.5.4", features = ["serde"] }
 uuid = { version = "1.17.0", features = ["serde", "v4"] }
