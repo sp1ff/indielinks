@@ -59,6 +59,8 @@ pub mod helper;
 #[path = "home-timeline.rs"]
 pub mod home_timeline;
 pub mod outboxes;
+#[path = "recent-posts.rs"]
+pub mod recent_posts;
 pub mod users;
 pub mod webfinger;
 

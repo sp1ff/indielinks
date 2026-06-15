@@ -18,7 +18,7 @@
 //! The [indielinks](crate) gRPC server. This module contains the top-level entities for _serving_
 //! gRPC (i.e. it sits at the top of the module hierarchy, imported only by indielinksd).
 
-use std::{error::Error as StdError, fmt::Debug, net::SocketAddr, sync::Arc};
+use std::{error::Error as StdError, fmt::Debug, net::SocketAddr, num::NonZero, sync::Arc};
 
 use axum::{
     extract::{Json, State},
@@ -27,7 +27,7 @@ use axum::{
     Router,
 };
 use http::{header::CONTENT_TYPE, HeaderValue, StatusCode};
-use indielinks_shared::entities::UserId;
+use indielinks_shared::entities::{Post, UserId};
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, Snafu};
 use tap::{Conv, Pipe, TryConv};
@@ -49,6 +49,7 @@ use crate::{
     cache::GrpcClientFactory,
     indielinks::Indielinks,
     protobuf_interop::*,
+    recent_posts_lists::PostKey as RecentPostsKey,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -393,6 +394,77 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         app_logic::handle_outbox_insert(self.state.clone(), &user, key, aoc).await;
 
         Ok(().into())
+    }
+
+    /// Add a public `Post` to the cluster's Recent Posts List
+    async fn add_recent_post(
+        &self,
+        request: tonic::Request<protobuf::AddRecentPostRequest>,
+    ) -> StdResult<tonic::Response<()>, tonic::Status> {
+        let request = request.into_inner();
+        let post = rmp_serde::from_slice::<Post>(&request.post).map_err(to_tonic)?;
+        self.state
+            .recent_posts_list
+            .write()
+            .await
+            .add_post(post)
+            .await
+            .map_err(to_tonic)?;
+        Ok(().into())
+    }
+    /// Request a page's worth of the cluster's Recent Posts List
+    async fn get_recent_posts(
+        &self,
+        request: tonic::Request<protobuf::GetRecentPostsRequest>,
+    ) -> StdResult<tonic::Response<protobuf::GetRecentPostsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let key = request
+            .key
+            .map(
+                // Clippy complains that the the `Err` variant returned by this lambda
+                // (`tonic::Status`) is too large, but I don't have a lot of choice. I mean, I
+                // *could* box it, but then I'd just need to unbox before returning from this
+                // method. The root of the problem (the large size of `tonic::Status` is out of my
+                // hands).
+                #[allow(clippy::result_large_err)]
+                |buf| rmp_serde::from_slice::<RecentPostsKey>(buf.as_ref()).map_err(to_tonic),
+            )
+            .transpose()?;
+        let page_size = request.page_size;
+        match self
+            .state
+            .recent_posts_list
+            .write()
+            .await
+            .get_recent_posts(
+                key.as_ref(),
+                page_size
+                    .map(
+                        // Ditto (see above).
+                        #[allow(clippy::result_large_err)]
+                        |x| {
+                            NonZero::<usize>::new(x as usize).ok_or(tonic::Status::new(
+                                tonic::Code::InvalidArgument,
+                                "page_size cannot be zero",
+                            ))
+                        },
+                    )
+                    .transpose()?,
+            )
+            .await
+            .map_err(to_tonic)?
+        {
+            Some((posts, key)) => Ok(protobuf::GetRecentPostsResponse {
+                posts: rmp_serde::to_vec(&posts).map_err(to_tonic)?,
+                key: Some(rmp_serde::to_vec(&key).map_err(to_tonic)?),
+            }
+            .into()),
+            None => Ok(protobuf::GetRecentPostsResponse {
+                posts: Vec::new(),
+                key: None,
+            }
+            .into()),
+        }
     }
 }
 

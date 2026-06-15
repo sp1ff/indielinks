@@ -3,7 +3,7 @@ VERSION=0.0.1
 
 set -euo pipefail
 
-grpc_endpoint="localhost:20681"
+grpc_endpoint="127.0.0.1:20681"
 help=
 local_state_dir="."
 nargs=0
@@ -172,4 +172,4 @@ while [ "${status}" != "GOOD" ]; do
 done
 
 # Initialize this instance as a single-node Raft cluster
-curl -v -H 'Content-Type: application/json' ${ops_endpoint}ops/cache/init-cluster --data "{\"nodes\": [[0, {\"addr\": \"${grpc_endpoint}\"}]], \"slots\": []}"
+curl -v -H 'Content-Type: application/json' ${ops_endpoint}ops/cache/init-cluster --data "{\"nodes\": [[0, {\"addr\": \"${grpc_endpoint}\"}]], \"slots\": [[0, 0]]}"

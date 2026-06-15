@@ -110,9 +110,10 @@ use url::Url;
 
 use indielinks_shared::{
     api::{
-        FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, ReplyRequest,
-        SignupReq, SignupRsp, ThreadContextRequest, ThreadContextResponse, TimelineReq,
-        REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
+        FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, RecentPostsRequest,
+        ReplyRequest, SignupReq, SignupRsp, ThreadContextRequest, ThreadContextResponse,
+        TimelineReq, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
+        REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::Username,
     origin::Origin,
@@ -122,7 +123,7 @@ use crate::{
     activity_pub::{SendLike, SendReply},
     ap_entities::{ap_request, FirstField, Item, Note, NoteField, Replies, RepliesPage},
     ap_resolution::ApResolver,
-    app_logic::{handle_timeline_or_redirect, SendFollow, TimelineRsp},
+    app_logic::{get_recent_posts, handle_timeline_or_redirect, SendFollow, TimelineRsp},
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     background_tasks::{self, BackgroundTasks, Sender},
     client_types::ClientType,
@@ -1389,6 +1390,47 @@ async fn context(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       Recent Posts List                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.recentposts.successful", user_recent_posts_successful, Sort::IntegralCounter }
+define_metric! { "user.recentposts.failures", user_recent_posts_failures, Sort::IntegralCounter }
+
+/// Retrieve the cluster "Recent Posts" list
+async fn recent_posts(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(request): Json<RecentPostsRequest>,
+) -> axum::response::Response {
+    // First up: did we authenticate this caller?
+    match user {
+        Ok(Extension(user)) => match get_recent_posts(state, request).await {
+            Ok(response) => {
+                user_recent_posts_successful.add(1, &[KeyValue::new("username", user.username())]);
+                (StatusCode::OK, Json(response)).into_response()
+            }
+            Err(err) => {
+                user_recent_posts_failures.add(1, &[KeyValue::new("username", user.username())]);
+                error!("{err:?}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponseBody {
+                        error: format!("{err}"),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Err(err) => {
+            // We did _not_: produce a log & metric noting this and return 400 Unauthorized.
+            warn!("Failed to authorize this request: {err:?}");
+            user_recent_posts_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1529,6 +1571,15 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/users/context",
             get(context).merge(post(context)).layer(mk_cors(
+                false,
+                allow_headers.clone(),
+                [http::Method::GET, http::Method::POST],
+                AllowOrigin::any(),
+            )),
+        )
+        .route(
+            "/usrs/recent-posts",
+            get(recent_posts).merge(post(recent_posts)).layer(mk_cors(
                 false,
                 allow_headers.clone(),
                 [http::Method::GET, http::Method::POST],

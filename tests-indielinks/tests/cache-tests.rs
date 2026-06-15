@@ -41,6 +41,7 @@ use indielinks::cache::Backend as CacheBackend;
 use tests_indielinks::{
     cache::{openraft_test_suite, raft_ops},
     helper::{DynamoConfig, ScyllaConfig},
+    recent_posts::recent_posts,
 };
 
 use tests_support::{
@@ -96,6 +97,7 @@ fn setup_indielinks_cluster_alternator(
     run(
         "../infra/indielinks-cluster-up",
         [
+            "-R",
             "-L",
             local_state_dir_base,
             "-C",
@@ -389,6 +391,12 @@ inventory::submit!(CacheTest {
 inventory::submit!(CacheTest {
     name: "002raft_ops",
     test_fn: |cfg, _| raft_ops(cfg.ops, cfg.raft_nodes),
+    fixtures: Some(&[FixtureId::SycllaCluster, FixtureId::DynamoDBCluster])
+});
+
+inventory::submit!(CacheTest {
+    name: "003recent_posts",
+    test_fn: |cfg, _| recent_posts(cfg.ops, cfg.raft_nodes),
     fixtures: Some(&[FixtureId::SycllaCluster, FixtureId::DynamoDBCluster])
 });
 

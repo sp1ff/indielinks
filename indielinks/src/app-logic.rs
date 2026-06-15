@@ -31,7 +31,7 @@ use http::Method;
 use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
 use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, ResultExt, Snafu};
+use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -40,8 +40,9 @@ use url::Url;
 use indielinks_cache::{raft::CacheNode, types::NodeId};
 use indielinks_shared::{
     api::{
-        OutboxToken, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage,
-        TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp, UserOutboxRequest,
+        OutboxToken, RecentPostsPage, RecentPostsRequest, RecentPostsResponse, TimelineBeforePage,
+        TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp, TimelineReq, TimelineSincePage,
+        TimelineSinceRsp, UserOutboxRequest,
     },
     entities::{Post, PostId, StorUrl, Tagname, UserId, Username},
     nonempty_string::NonEmptyString,
@@ -59,13 +60,14 @@ use crate::{
     cache::{GrpcClient, GrpcClientFactory},
     define_metric,
     entities::{FollowId, OutgoingReply, OutgoingShare, User},
-    home_timeline::{FirstPage, HomeTimelines, PostKey, Timeline},
+    home_timeline::{FirstPage, HomeTimelines, PostKey as HomeTimelineKey, Timeline},
     indielinks::Indielinks,
     outboxes::{ActivityKey, Outbox as UserOutbox, Page, FIRST_ACTIVITY_KEY},
     protobuf_interop::protobuf::{
         DropTimelineRequest, InsertOutboxItemRequest, InsertTimelineItemRequest, OutboxRequest,
         TimelineRequest,
     },
+    recent_posts_lists::PostKey as RecentPostsKey,
     signing_keys::{self, SigningKey},
     storage::Backend as StorageBackend,
 };
@@ -139,6 +141,10 @@ pub enum Error {
     PackPaginationToken {
         #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
         source: Box<crate::home_timeline::Error>,
+    },
+    #[snafu(display("Recent Posts: {source}"))]
+    RecentPosts {
+        source: crate::recent_posts_lists::Error,
     },
     #[snafu(display("While retrieving the address of node {node_id}, {source}"))]
     SocketAddr {
@@ -254,7 +260,7 @@ pub async fn handle_timeline(
         TimelineReq::Since { since, max_posts } => {
             match timeline
                 .since(
-                    PostKey::from_pagination_token(&since, &key)
+                    HomeTimelineKey::from_pagination_token(&since, &key)
                         .context(UnpackPaginationTokenSnafu)?,
                     max_posts,
                 )
@@ -275,7 +281,7 @@ pub async fn handle_timeline(
         TimelineReq::Before { before, max_posts } => {
             match timeline
                 .before(
-                    PostKey::from_pagination_token(&before, &key)
+                    HomeTimelineKey::from_pagination_token(&before, &key)
                         .context(UnpackPaginationTokenSnafu)?,
                     max_posts,
                 )
@@ -697,6 +703,40 @@ pub async fn handle_outbox_insert_or_redirect(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         "Recent Posts"                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+pub async fn get_recent_posts(
+    state: Arc<Indielinks>,
+    request: RecentPostsRequest,
+) -> Result<RecentPostsResponse> {
+    let (_, signing_key) = state.signing_keys.current().context(NoSigningKeysSnafu)?;
+
+    state
+        .recent_posts_list
+        .write()
+        .await
+        .get_recent_posts(
+            request
+                .token
+                .map(|token| {
+                    RecentPostsKey::from_pagination_token(&token, &signing_key)
+                        .context(RecentPostsSnafu)
+                })
+                .transpose()?
+                .as_ref(),
+            request.page_size,
+        )
+        .await
+        .context(RecentPostsSnafu)?
+        .map(|(page, key)| match key.to_pagination_token(&signing_key) {
+            Ok(token) => Ok(RecentPostsPage { page, token }),
+            Err(err) => Err(RecentPostsSnafu.into_error(err)),
+        })
+        .transpose()
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           bookmarks                                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -733,6 +773,26 @@ pub async fn add_post(
             .await
             .context(UpdatePostTimesSnafu)?;
         if shared {
+            let post = Post::new(
+                &url.into(),
+                &postid,
+                user.id(),
+                &dt,
+                title,
+                notes,
+                tags,
+                true,
+                to_read,
+            );
+
+            state
+                .recent_posts_list
+                .write()
+                .await
+                .add_post(post.clone())
+                .await
+                .context(RecentPostsSnafu)?;
+
             debug!(
                 "Scheduling Post {} for communication to all federated servers",
                 postid
@@ -742,22 +802,7 @@ pub async fn add_post(
                 .await
                 .context(FederationSnafu)?;
             debug!("Adding this post to the user outbox (if present).");
-            handle_outbox_insert_or_redirect(
-                state,
-                user,
-                &PostReplyShare::Post(Post::new(
-                    &url.into(),
-                    &postid,
-                    user.id(),
-                    &dt,
-                    title,
-                    notes,
-                    tags,
-                    true,
-                    to_read,
-                )),
-            )
-            .await?
+            handle_outbox_insert_or_redirect(state, user, &PostReplyShare::Post(post)).await?
         }
     }
     Ok(added)

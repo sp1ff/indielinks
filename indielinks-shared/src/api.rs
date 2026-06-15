@@ -420,3 +420,52 @@ pub struct UserOutboxRequest {
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "page")]
     pub pagination_token: Option<OutboxToken>,
 }
+
+/// Opaque type representing an "recent posts" pagination token
+///
+/// Callers cannot create instances of this type; they are returned in response to paginated "recent
+/// posts" requests and represent a particular post in the list.
+// Very similar to `TimelineToken` & `OutboxToken`; not sure if I want to generalize, yet
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RecentPostsToken(String);
+
+impl Display for RecentPostsToken {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<[u8]> for RecentPostsToken {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl RecentPostsToken {
+    // Super-lame: I want this type to be visible to everyone, but only constructable from the API's
+    // implementation in a higher-level module, on the back-end only.
+    #[cfg(feature = "__internal")]
+    #[doc(hidden)]
+    pub fn new_internal(token: String) -> RecentPostsToken {
+        Self(token)
+    }
+}
+
+/// A "recent posts" request
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecentPostsRequest {
+    /// Optional pagination token-- if `None`, begin a pagination
+    pub token: Option<RecentPostsToken>,
+    /// Page size
+    pub page_size: Option<NonZero<usize>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RecentPostsPage {
+    pub page: NEVec<Post>,
+    pub token: RecentPostsToken,
+}
+
+/// A "recent posts" response-- `None` means the pagination has completed
+pub type RecentPostsResponse = Option<RecentPostsPage>;

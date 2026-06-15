@@ -63,7 +63,7 @@ use tap::Pipe;
 use tokio::{
     net::TcpListener,
     signal::unix::{signal, SignalKind},
-    sync::{mpsc, Mutex as TokioMutex, Notify},
+    sync::{mpsc, Mutex as TokioMutex, Notify, RwLock as TokioRwLock},
 };
 use tonic::transport::Server as TonicServer;
 use tower_http::{
@@ -119,6 +119,7 @@ use indielinks::{
     outboxes::UserOutboxes,
     peppers::Peppers,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
+    recent_posts_lists::RecentPostsList,
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
     users::{make_router as make_user_router, Configuration as UsersConfiguration},
@@ -1237,6 +1238,11 @@ async fn serve(
             ap_resolver,
             home_timelines,
             user_outboxes,
+            recent_posts_list: TokioRwLock::new(RecentPostsList::new(
+                cache_node.clone(),
+                nonzero!(256usize),
+                GrpcClientFactory,
+            )),
         });
 
         let world_nfy = Arc::new(Notify::new());

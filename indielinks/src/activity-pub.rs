@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -10,7 +10,7 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
 //! # ActivityPub Entities & Utilities

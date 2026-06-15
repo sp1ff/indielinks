@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-VERSION=0.0.1
+VERSION=0.0.2
 
 set -euo pipefail
 
@@ -9,6 +9,7 @@ haproxy_port=20673
 help=
 local_state_base="/tmp/indielinksd-cluster-"
 nargs=0
+no_raft_init=
 num_nodes=
 num_polls=120 # generous limit of two minutes
 prev_option=
@@ -63,6 +64,9 @@ do
         -N=* | --num-polls=* | --num-checks=*)
             nargs=$(($nargs+1));
             num_polls=$optarg;;
+        -R | --no-raft | --no-raft-init)
+            nargs=$(($nargs+1));
+            no_raft_init=yes;;
         -h | --he | --hel | --help)
             nargs=$(($nargs+1));
             help=yes;;
@@ -125,6 +129,7 @@ Options:
                     endpoint before determining the build didn't
                     come up. Default: 120 (it's long to account
                     for the possiblity of building the binary)
+    -R, --no-raft-init   Don't initialize the Raft cluster
 
 Argument:
 
@@ -169,6 +174,20 @@ function hc() {
 function parse_public_port() {
     local config_file=$1
     local port=$(sed -nE 's/public-address[[:space:]]*=[[:space:]]*"[.0-9]+:([0-9]+)"/\1/p' $config_file)
+    echo $port
+}
+
+# Parse the private port from an indielinks configuration file
+function parse_private_port() {
+    local config_file=$1
+    local port=$(sed -nE 's/private-address[[:space:]]*=[[:space:]]*"[.0-9]+:([0-9]+)"/\1/p' $config_file)
+    echo $port
+}
+
+# Parse the gRPC port from an indielinks configuration file
+function parse_grpc_port() {
+    local config_file=$1
+    local port=$(sed -nE 's/raft-grpc-address[[:space:]]*=[[:space:]]*"[.0-9]+:([0-9]+)"/\1/p' $config_file)
     echo $port
 }
 
@@ -272,5 +291,19 @@ fi
 (haproxy -f ${haproxy_config}) > /tmp/haproxy.${haproxy_id}.log 2>&1 < /dev/null &
 echo "$!" > /tmp/haproxy.${haproxy_id}.pid
 sleep 0.5
+
+if test -z "${no_raft_init}"; then
+    pport_0=$(parse_private_port "${config_base}0.toml")
+    grpc_p0=$(parse_grpc_port "${config_base}0.toml")
+    grpc_p1=$(parse_grpc_port "${config_base}1.toml")
+    grpc_p2=$(parse_grpc_port "${config_base}2.toml")
+    payload="{\"nodes\":[[0,{\"addr\":\"127.0.0.1:$grpc_p0\"}],[1,{\"addr\":\"127.0.0.1:$grpc_p1\"}],[2,{\"addr\":\"127.0.0.1:$grpc_p2\"}]],\"slots\":[[0,0]]}"
+    if [ "${num_nodes}" == "5" ]; then
+        grpc_p3=$(parse_grpc_port "${config_base}3.toml")
+        grpc_p4=$(parse_grpc_port "${config_base}4.toml")
+        payload="{\"nodes\":[[0,{\"addr\":\"127.0.0.1:$grpc_p0\"}],[1,{\"addr\":\"127.0.0.1:$grpc_p1\"}],[2,{\"addr\":\"127.0.0.1:$grpc_p2\"}],[3,{\"addr\":\"127.0.0.1:$grpc_p3\"}],[4,{\"addr\":\"127.0.0.1:$grpc_p4\"}]],\"slots\":[[0,0]]}"
+    fi
+    curl -v -H 'Content-Type: application/json' http://localhost:${pport_0}/ops/cache/init-cluster --data "${payload}"
+fi
 
 echo "indielinksd up & fronted by haproxy. The haproxy log file is at /tmp/haproxy.${haproxy_id}.log"

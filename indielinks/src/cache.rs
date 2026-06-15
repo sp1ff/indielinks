@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -24,6 +24,8 @@ use std::{
 };
 
 use async_trait::async_trait;
+use indielinks_shared::known_good;
+use lazy_static::lazy_static;
 use num_bigint::BigInt;
 use openraft::{
     error::NetworkError,
@@ -52,7 +54,7 @@ use indielinks_cache::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotError, InstallSnapshotRequest,
         InstallSnapshotResponse, RPCError, RPCOption, RaftError, VoteRequest, VoteResponse,
     },
-    types::{CacheId, ClusterNode, NodeId, TypeConfig},
+    types::{CacheId, ClusterNode, NodeId, SlotIndex, TypeConfig},
 };
 
 use crate::protobuf_interop::*;
@@ -62,6 +64,7 @@ use crate::protobuf_interop::*;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
+#[snafu(visibility(pub))]
 pub enum Error {
     #[snafu(display("Failed to connect to gRPC endpoint: {source}"))]
     Conn {
@@ -69,13 +72,12 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("Deserialization error: {source}"))]
-    De {
+    Decode {
         source: rmp_serde::decode::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("Serialization error for {kind}: {source}"))]
-    Ser {
-        kind: &'static str,
+    #[snafu(display("While encoding to messagepack: {source}"))]
+    Encode {
         source: rmp_serde::encode::Error,
         backtrace: Backtrace,
     },
@@ -87,6 +89,8 @@ pub enum Error {
         source: Box<crate::protobuf_interop::Error>,
         backtrace: Backtrace,
     },
+    #[snafu(display("The gRPC request succeeded, but the response was semantically invalid"))]
+    InvalidGrpc { backtrace: Backtrace },
     #[snafu(display("gRPC error: {source}"))]
     Tonic {
         #[snafu(source(from(tonic::Status, Box::new)))]
@@ -98,6 +102,12 @@ pub enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 type StdResult<T, E> = std::result::Result<T, E>;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+lazy_static! {
+    pub static ref SLOT_RECENT_POSTS: SlotIndex = known_good!(SlotIndex::new(0));
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                          Raft support                                          //
@@ -541,7 +551,7 @@ impl indielinks_cache::network::Client for GrpcClient {
             .into_inner()
             .pipe(|rsp| {
                 rsp.value
-                    .map(|val| rmp_serde::from_slice::<V>(val.as_slice()).context(DeSnafu))
+                    .map(|val| rmp_serde::from_slice::<V>(val.as_slice()).context(DecodeSnafu))
             })
             .transpose()
     }

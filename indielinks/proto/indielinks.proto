@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -235,6 +235,22 @@ message InsertOutboxItemRequest {
     bytes activity = 2;  // msgpack-named-encoded AnnounceOrCreate
 }
 
+// Add a public post to the cluster's Recent Posts List
+message AddRecentPostRequest {
+    bytes post = 1;   // msgpack-encoded `Post`
+}
+
+// Request a page worth of the cluster's Recent Posts
+message GetRecentPostsRequest {
+    optional bytes key = 1;
+    optional uint64 page_size = 2;
+}
+
+message GetRecentPostsResponse {
+    bytes posts = 1;           // msgpack-encoded `Vec<Post>`
+    optional bytes key = 2;    // msgpack-encoded `PostKey`
+}
+
 service GrpcService {
     // Append log entries from the cluster lead to this node
     rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
@@ -257,4 +273,8 @@ service GrpcService {
     rpc DropTimeline(DropTimelineRequest) returns (google.protobuf.Empty) {}
     // Insert an activity into a user's in-memory materialized outbox (deferred)
     rpc InsertOutboxItem(InsertOutboxItemRequest) returns (google.protobuf.Empty) {}
+    // Add a public `Post` to the cluster's Recent Posts List
+    rpc AddRecentPost(AddRecentPostRequest) returns (google.protobuf.Empty) {}
+    // Request a page's worth of the cluster's Recent Posts List
+    rpc GetRecentPosts(GetRecentPostsRequest) returns (GetRecentPostsResponse) {}
 }

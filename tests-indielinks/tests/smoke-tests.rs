@@ -55,7 +55,7 @@
 //!
 //! To select a non-default configuration, you'll need to place it in a TOML file and set the
 //! `INDIELINKS_TEST_CONFIG` environment variable. Finally, the [tracing-subscriber] crate is used
-//! for logging, so eht `RUST_LOG` environment variable is also respected.
+//! for logging, so the `RUST_LOG` environment variable is also respected.
 
 use std::{
     collections::HashMap,

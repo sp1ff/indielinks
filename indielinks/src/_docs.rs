@@ -355,7 +355,7 @@
 //! 0: webfinger users scylla ops metrics_task grpc serde_hash_string dynamodb delicious client bookmarklets actor
 //! 1: app_logic
 //! 2: indielinks activity_pub
-//! 3: background_tasks
+//! 3: recent_posts_lists outboxes background_tasks
 //! 4: home_timeline
 //! 5: client_types ap_resolution
 //! 6: cache http authn ap_entities

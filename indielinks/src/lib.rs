@@ -56,6 +56,8 @@ pub mod outboxes;
 pub mod peppers;
 #[path = "protobuf-interop.rs"]
 pub mod protobuf_interop;
+#[path = "recent-posts-lists.rs"]
+pub mod recent_posts_lists;
 #[path = "sanitized-html.rs"]
 pub mod sanitized_html;
 pub mod scylla;

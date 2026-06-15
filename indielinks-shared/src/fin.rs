@@ -66,7 +66,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use typenum::{Diff, Sum, U1, Unsigned};
 
 /// FINite Set: the set of naturals less than or equal to `N`
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Fin<N: Unsigned> {
     val: usize,
     _phantom: PhantomData<N>,

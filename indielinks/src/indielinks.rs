@@ -18,7 +18,7 @@ use std::{path::PathBuf, sync::Arc};
 use chrono::Duration;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use secrecy::SecretString;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use indielinks_shared::{instance_state::InstanceStateV0, origin::Origin};
@@ -26,8 +26,9 @@ use indielinks_shared::{instance_state::InstanceStateV0, origin::Origin};
 use indielinks_cache::raft::CacheNode;
 
 use crate::{
-    ap_resolution::ApResolver, background_tasks::BackgroundTasks, home_timeline::HomeTimelines,
-    http::SameSite, outboxes::UserOutboxes, peppers::Peppers, signing_keys::SigningKeys,
+    ap_resolution::ApResolver, background_tasks::BackgroundTasks, cache::GrpcClientFactory,
+    home_timeline::HomeTimelines, http::SameSite, outboxes::UserOutboxes, peppers::Peppers,
+    recent_posts_lists::RecentPostsList, signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
 };
 
@@ -64,4 +65,6 @@ pub struct Indielinks {
     pub home_timelines: Arc<Mutex<HomeTimelines>>,
     // and here
     pub user_outboxes: Arc<Mutex<UserOutboxes>>,
+    // No shared ownership needed for the Recent Posts List, but we do need to guard concurrent access
+    pub recent_posts_list: RwLock<RecentPostsList<GrpcClientFactory, GrpcClientFactory>>,
 }
