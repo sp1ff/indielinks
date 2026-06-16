@@ -75,13 +75,13 @@
 use gloo_net::http::Request;
 use leptos::prelude::*;
 use leptos_router::{
-    components::{A, ProtectedRoute, Route, Router, Routes},
+    components::{ProtectedRoute, Route, Router, Routes, A},
     hooks::use_location,
     path,
 };
 use secrecy::ExposeSecret;
 use thaw::{ConfigProvider, Layout, LayoutHeader, Tab, TabList, ToasterProvider};
-use tracing::{Level, info};
+use tracing::{info, Level};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 // use wasm_bindgen::JsValue;
@@ -168,6 +168,10 @@ fn App() -> impl IntoView {
             info!("Logged-out: {rsp:?}");
             token.set(None);
         }
+    });
+
+    Effect::new(move |_| {
+        document().set_title("Indielinks");
     });
 
     view! {
