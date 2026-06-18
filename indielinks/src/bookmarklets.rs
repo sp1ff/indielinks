@@ -291,6 +291,21 @@ struct SaveRequest {
     description: String,
 }
 
+// This implementation has a few drawbacks:
+//
+// - it will work in production only; the `/fe` prefix is, at this point, hard-coded so we're safe
+//   there, but if you're using `trunk` to serve a development build, this won't work. I suppose I
+//   could introduce some bit of state/configuration denoting whether we're serving the front end
+//   from the indielinks `/fe` endpoint or somewhere else, which both seems inelegant and inferior
+//   to the solution enabled by the next point...
+//
+// - since tailwind will never see these class names (under the current project configuration), we
+//   can _only_ use classes here that are already used in the front end & expect 'em to work. A
+//   better solution would be to move this HTML out to a template file (askama supports this) and
+//   arrange to have tailwind scan both that template *and* all the front end code to produce
+//   `style.css`
+//
+// Still, I don't anticipate changing this much going forward, so until I do this will have to do.
 /// This is an [askama] "template"-- a type-safe Jinja-like form.
 ///
 /// ```askama
@@ -298,36 +313,37 @@ struct SaveRequest {
 /// <head>
 ///     <meta charset="UTF-8">
 ///     <title>Save to indielinks</title>
+///     <link rel="stylesheet" href="/fe/style.css"/>
 /// </head>
-/// <body>
-///     <form method="POST" action="add">
+/// <body class="pt-[32px]">
+///     <form method="POST" action="add" class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center w-full max-w-lg min-w-64 mx-auto border border-solid border-sky-100 p-8 text-gray-600">
 ///         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-///         <div>
-///             <label for="url">URL</label>
-///             <input type="text" id="url" name="url" readonly value="{{ url }}">
-///         </div>
-///         <div>
-///             <label for="title">Title</label>
-///             <input type="text" id="title" name="title" value="{{ title }}">
-///         </div>
-///         <div>
-///             <label for="description">Description</label>
-///             <input type="text" id="description" name="description" value="{{ description }}">
-///         </div>
-///         <div>
-///             <label for="tags">Tags</label>
-///             <input type="text" id="tags" name="tags" value="{{ tags }}">
-///         </div>
-///         <div>
-///             <input type="checkbox" id="private" name="private" value="{{ private }}" {% if private %}checked{% endif %}>
-///             <label for="private">Private</label>
-///             <input type="checkbox" id="toread" name="toread" value="{{ to_read }}" {% if to_read %}checked{% endif %}>
-///             <label for="toread">Read Later</label>
+///
+///         <label for="url" class="">URL</label>
+///         <input type="text" id="url" name="url" readonly placeholder="URL to be saved" value="{{ url }}" class="bg-transparent border-0 border-b outline-none focus:border-sky-600">
+///
+///         <label for="title" class="">Title</label>
+///         <input type="text" id="title" name="title" placeholder="Page title" value="{{ title }}" class="bg-transparent border-0 border-b outline-none focus:border-sky-600">
+///
+///         <label for="description" class="">Description</label>
+///         <textarea rows="4" id="description" name="description" value="{{ description }}" placeholder="Optional free-form notes..." class="bg-transparent border-0 border-b border-r outline-none focus:border-sky-600">
+///         </textarea>
+///
+///         <label for="tags" class="">Tags</label>
+///         <input type="text" id="tags" name="tags" value="{{ tags }}" placeholder="Space-delimited tags..." class="bg-transparent border-0 border-b outline-none focus:border-sky-600">
+///
+///         <div class="col-span-full items-center flex gap-x-4">
+///             <label class="flex gap-x-1">
+///                 <input type="checkbox" id="private" name="private" value="{{ private }}" {% if private %}checked{% endif %}> private
+///             </label>
+///             <label class="flex gap-x-1">
+///                 <input type="checkbox" id="toread" name="toread" value="{{ to_read }}" {% if to_read %}checked{% endif %}> read later
+///             </label>
 ///
 ///         </div>
 ///         <div>
-///             <button type="submit">Save</button>
-///             <button type="button" onclick="window.close()">Cancel</button>
+///             <button type="submit" class="bg-transparent border px-4 py-2 hover:bg-sky-300 hover:text-gray-900 transition-colors cursor-pointer focus:bg-sky-300">Save</button>
+///             <button type="button" onclick="window.close()" class="bg-transparent border px-4 py-2 hover:bg-sky-300 hover:text-gray-900 transition-colors cursor-pointer focus:bg-sky-300">Cancel</button>
 ///         </div>
 ///     </form>
 /// </body>

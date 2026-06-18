@@ -75,13 +75,13 @@
 use gloo_net::http::Request;
 use leptos::prelude::*;
 use leptos_router::{
-    components::{ProtectedRoute, Route, Router, Routes, A},
+    components::{A, ProtectedRoute, Route, Router, Routes},
     hooks::use_location,
     path,
 };
 use secrecy::ExposeSecret;
 use thaw::{ConfigProvider, Layout, LayoutHeader, Tab, TabList, ToasterProvider};
-use tracing::{info, Level};
+use tracing::{Level, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 // use wasm_bindgen::JsValue;
