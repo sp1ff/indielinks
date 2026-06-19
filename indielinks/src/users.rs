@@ -95,6 +95,7 @@ use either::Either::{self, Left};
 use futures::{StreamExt, TryStreamExt};
 use http::{header::SET_COOKIE, HeaderMap, Method};
 use itertools::Itertools;
+use nonzero::nonzero;
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -112,8 +113,8 @@ use indielinks_shared::{
     api::{
         FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, RecentPostsRequest,
         ReplyRequest, SignupReq, SignupRsp, ThreadContextRequest, ThreadContextResponse,
-        TimelineReq, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
-        REFRESH_CSRF_HEADER_NAME_LC,
+        TimelineReq, TopKTagsRequest, TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
+        REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::Username,
     origin::Origin,
@@ -1431,6 +1432,57 @@ async fn recent_posts(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                           Top K Tags                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.toptags.successful", user_top_tags_successful, Sort::IntegralCounter }
+define_metric! { "user.toptags.failures", user_top_tags_failures, Sort::IntegralCounter }
+
+/// Retrieve the cluster "top k" tags list
+async fn top_k_tags(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(request): Json<TopKTagsRequest>,
+) -> axum::response::Response {
+    match user {
+        Ok(Extension(user)) => match state
+            .top_k_tags
+            .write()
+            .await
+            .get_top_k(request.num_items.unwrap_or(nonzero!(32usize)))
+            .await
+        {
+            Ok(tags) => (
+                StatusCode::OK,
+                Json(TopKTagsResponse {
+                    tags: tags
+                        .into_iter()
+                        .map(|(name, score)| (name, score.into_inner()))
+                        .collect(),
+                }),
+            )
+                .into_response(),
+            Err(err) => {
+                error!("Failed to retrieve the top k tags: {err:?}");
+                user_top_tags_failures.add(1, &[KeyValue::new("username", user.username())]);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponseBody {
+                        error: format!("{err}"),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Err(err) => {
+            warn!("Failed to authorize this request: {err:?}");
+            user_top_tags_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1580,6 +1632,15 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/usrs/recent-posts",
             get(recent_posts).merge(post(recent_posts)).layer(mk_cors(
+                false,
+                allow_headers.clone(),
+                [http::Method::GET, http::Method::POST],
+                AllowOrigin::any(),
+            )),
+        )
+        .route(
+            "/usrs/top-k-tags",
+            get(top_k_tags).merge(post(top_k_tags)).layer(mk_cors(
                 false,
                 allow_headers.clone(),
                 [http::Method::GET, http::Method::POST],

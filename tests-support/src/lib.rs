@@ -215,7 +215,10 @@ use std::{
     process::ExitCode,
     result::Result as StdResult,
     str::FromStr,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use async_trait::async_trait;
@@ -572,14 +575,17 @@ where
 //                                      public entry points                                       //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// If a given integration test has both sync & async tests, this method could be called twice. Use
+// an `AtomicBool` to make sure certain initialization code is only invoked once per process.
+
+static LIBRARY_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
 // Execute an integration test suite across one or more fixtures.
 //
 // The caller is responsible for obtaining configuration.
 //
-// This will exit with status zero on test success, 101 on test failure & 1 on error-- I don't
-// think this is stricly compliant with the cargo convention, but I like the distinction between
-// test failure & program error (Nb that if a test returns `Failed`, that will show-up as a test
-// failure).
+// This will exit with status zero on test success & 101 on test failure (Nb that if a test returns
+// `Failed`, that will show-up as a test failure).
 //
 // This is the core routine for this library; it can handle both synchronous & asynchronous tests.
 fn integration_test<IF, IT, R, S, F, T>(
@@ -615,26 +621,32 @@ where
     // the configured default level to `stdout`. The filter can be overridden via the (conventional)
     // `RUST_LOG` environment variable.
     if runner_config.logging {
-        let filter = EnvFilter::builder()
-            .with_default_directive(runner_config.log_level.into())
-            .from_env()
-            .context(FilterSnafu)?;
-        // This is a personal indulgence-- I often run compilations inside Emacs, and while
-        // libtest-mimic somehow figures-out that it's not running inside a full-on terminal,
-        // tracing-subscriber does not. Recall that `env::var()` will return
-        // `Err(VarError::NotPresent)` if the variable is not set.
-        let with_ansi = env::var("INSIDE_EMACS").is_err();
-        tracing::subscriber::set_global_default(
-            Registry::default()
-                .with(
-                    fmt::Layer::default()
-                        .compact()
-                        .with_ansi(with_ansi)
-                        .with_writer(io::stdout),
-                )
-                .with(filter),
-        )
-        .context(SetGlobalDefaultSnafu)?;
+        // But only do this once!
+        if LIBRARY_INITIALIZED
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let filter = EnvFilter::builder()
+                .with_default_directive(runner_config.log_level.into())
+                .from_env()
+                .context(FilterSnafu)?;
+            // This is a personal indulgence-- I often run compilations inside Emacs, and while
+            // libtest-mimic somehow figures-out that it's not running inside a full-on terminal,
+            // tracing-subscriber does not. Recall that `env::var()` will return
+            // `Err(VarError::NotPresent)` if the variable is not set.
+            let with_ansi = env::var("INSIDE_EMACS").is_err();
+            tracing::subscriber::set_global_default(
+                Registry::default()
+                    .with(
+                        fmt::Layer::default()
+                            .compact()
+                            .with_ansi(with_ansi)
+                            .with_writer(io::stdout),
+                    )
+                    .with(filter),
+            )
+            .context(SetGlobalDefaultSnafu)?;
+        }
     }
 
     debug!("Logging configured.");
@@ -698,10 +710,8 @@ where
 
 /// Execute a synchronous integration test
 ///
-/// This will exit with status zero on test success, 101 on test failure & 1 on error-- I don't
-/// think this is stricly compliant with the cargo convention, but I like the distinction between
-/// test failure & program error (Nb that if a test returns `Failed`, that will show-up as a test
-/// failure).
+/// This will exit with status zero on test success & 101 on test failure (Nb that if a test returns
+/// `Failed`, that will show-up as a test failure).
 pub fn sync_integration_test<IF, IT, F, T>(
     TestConfiguration { runner, domain }: TestConfiguration<F>,
     fixtures: IF,
@@ -720,10 +730,8 @@ where
 
 /// Execute an asynchronous integration test
 ///
-/// This will exit with status zero on test success, 101 on test failure & 1 on error-- I don't
-/// think this is stricly compliant with the cargo convention, but I like the distinction between
-/// test failure & program error (Nb that if a test returns `Failed`, that will show-up as a test
-/// failure).
+/// This will exit with status zero on test success & 101 on test failure (Nb that if a test returns
+/// `Failed`, that will show-up as a test failure).
 pub fn async_integration_test<IF, IT, F, T>(
     TestConfiguration { runner, domain }: TestConfiguration<F>,
     fixtures: IF,

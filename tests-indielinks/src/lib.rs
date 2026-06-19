@@ -61,6 +61,8 @@ pub mod home_timeline;
 pub mod outboxes;
 #[path = "recent-posts.rs"]
 pub mod recent_posts;
+#[path = "top-k-tags.rs"]
+pub mod top_k_tags;
 pub mod users;
 pub mod webfinger;
 

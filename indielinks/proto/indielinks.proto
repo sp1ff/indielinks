@@ -251,6 +251,22 @@ message GetRecentPostsResponse {
     optional bytes key = 2;    // msgpack-encoded `PostKey`
 }
 
+// Report a bunch of sightings for a top-k collection
+message AddSightingsRequest {
+    uint64 slot = 1;
+    bytes items = 2; // msgpack-encoded `Vec<Item>`
+}
+
+// Request the top-k of some item
+message GetTopKRequest {
+    uint64 slot = 1;
+    uint64 num_items = 2;
+}
+
+message GetTopKResponse {
+  bytes items = 1;  // msgpack-encoded `Vec<(Item, NotNan<f64>)>`
+}
+
 service GrpcService {
     // Append log entries from the cluster lead to this node
     rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
@@ -277,4 +293,8 @@ service GrpcService {
     rpc AddRecentPost(AddRecentPostRequest) returns (google.protobuf.Empty) {}
     // Request a page's worth of the cluster's Recent Posts List
     rpc GetRecentPosts(GetRecentPostsRequest) returns (GetRecentPostsResponse) {}
+    // Register multiple instances of an item for a streaming top-k list
+    rpc AddSightings(AddSightingsRequest) returns (google.protobuf.Empty) {}
+    // Request the top k most frequent items of some sort
+    rpc GetTopK(GetTopKRequest) returns (GetTopKResponse) {}
 }

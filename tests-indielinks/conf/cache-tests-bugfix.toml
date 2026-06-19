@@ -9,6 +9,7 @@ runner.no-setup = false
 runner.no-teardown = false
 runner.enforce-single-threaded=true
 
+domain.indielinks = "http://indiemark.local:20675"
 domain.ops = "http://localhost:20710"
 domain.scylla-env-file = "bugfix.env"
 domain.local-state-base = "/tmp/indielinksd-bugfix-"

@@ -21,14 +21,14 @@ use secrecy::SecretString;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-use indielinks_shared::{instance_state::InstanceStateV0, origin::Origin};
+use indielinks_shared::{entities::Tagname, instance_state::InstanceStateV0, origin::Origin};
 
 use indielinks_cache::raft::CacheNode;
 
 use crate::{
     ap_resolution::ApResolver, background_tasks::BackgroundTasks, cache::GrpcClientFactory,
     home_timeline::HomeTimelines, http::SameSite, outboxes::UserOutboxes, peppers::Peppers,
-    recent_posts_lists::RecentPostsList, signing_keys::SigningKeys,
+    popular_items::CachedTopK, recent_posts_lists::RecentPostsList, signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
 };
 
@@ -67,4 +67,6 @@ pub struct Indielinks {
     pub user_outboxes: Arc<Mutex<UserOutboxes>>,
     // No shared ownership needed for the Recent Posts List, but we do need to guard concurrent access
     pub recent_posts_list: RwLock<RecentPostsList<GrpcClientFactory, GrpcClientFactory>>,
+    // ditto here
+    pub top_k_tags: RwLock<CachedTopK<Tagname, GrpcClientFactory, GrpcClientFactory>>,
 }

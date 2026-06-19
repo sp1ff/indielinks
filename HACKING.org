@@ -1,6 +1,6 @@
 #+TITLE: HACKING
 #+DESCRIPTION: How to hack on indielinks
-#+DATE: <2026-06-11 Thu 19:48>
+#+DATE: <2026-06-24 Wed 11:51>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -81,7 +81,7 @@ In a different shell:
 
 #+BEGIN_SRC bash
   curl -v -H 'Content-Type: application/json' http://localhost:20680/ops/cache/init-cluster \
-      --data "{\"nodes\": [[0, {\"addr\": \"127.0.0.1:20681\"}]], \"slots\": []}" && \
+      --data "{\"nodes\": [[0, {\"addr\": \"127.0.0.1:20681\"}]], \"slots\": [[0,0],[1,0]]}" && \
   curl -v http://localhost:20679/healthcheck
 #+END_SRC
 

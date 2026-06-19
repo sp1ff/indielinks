@@ -172,4 +172,4 @@ while [ "${status}" != "GOOD" ]; do
 done
 
 # Initialize this instance as a single-node Raft cluster
-curl -v -H 'Content-Type: application/json' ${ops_endpoint}ops/cache/init-cluster --data "{\"nodes\": [[0, {\"addr\": \"${grpc_endpoint}\"}]], \"slots\": [[0, 0]]}"
+curl -v -H 'Content-Type: application/json' ${ops_endpoint}ops/cache/init-cluster --data "{\"nodes\": [[0, {\"addr\": \"${grpc_endpoint}\"}]], \"slots\": [[0, 0],[1,0]]}"

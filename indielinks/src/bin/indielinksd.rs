@@ -98,7 +98,7 @@ use indielinks::{
     ap_resolution::ApResolver,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
     bookmarklets::make_router as make_bookmarklets_router,
-    cache::{Backend as CacheBackend, GrpcClientFactory, LogStore},
+    cache::{Backend as CacheBackend, GrpcClientFactory, LogStore, SLOT_TOP_K_TAGS},
     client::make_client,
     define_metric,
     delicious::{
@@ -118,6 +118,7 @@ use indielinks::{
     ops::make_router as make_ops_router,
     outboxes::UserOutboxes,
     peppers::Peppers,
+    popular_items::CachedTopK,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
     recent_posts_lists::RecentPostsList,
     signing_keys::SigningKeys,
@@ -1242,6 +1243,12 @@ async fn serve(
                 cache_node.clone(),
                 nonzero!(256usize),
                 GrpcClientFactory,
+            )),
+            top_k_tags: TokioRwLock::new(CachedTopK::new(
+                *SLOT_TOP_K_TAGS,
+                GrpcClientFactory,
+                cache_node.clone(),
+                nonzero!(64usize),
             )),
         });
 

@@ -72,6 +72,12 @@ pub struct Fin<N: Unsigned> {
     _phantom: PhantomData<N>,
 }
 
+impl<N: Unsigned> PartialEq for Fin<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.val == other.val
+    }
+}
+
 // The derived `Serialize` & `Deserialize` implementations are not suitable.
 impl<N: Unsigned> Serialize for Fin<N> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

@@ -33,7 +33,7 @@ use indielinks_cache::{
 };
 
 use indielinks::{
-    cache::{Backend, LogStore, SLOT_RECENT_POSTS},
+    cache::{Backend, LogStore, SLOT_RECENT_POSTS, SLOT_TOP_K_TAGS},
     grpc::InitClusterRequest,
 };
 
@@ -125,7 +125,10 @@ pub fn raft_ops(
     // Make the lowest-id node (node 0, after the sort above) responsible for the cluster's "recent
     // posts" list, so the `003recent_posts` test that runs after us has a known owner.
     let request = InitClusterRequest {
-        slots: vec![(*SLOT_RECENT_POSTS, first_three[0].0)],
+        slots: vec![
+            (*SLOT_RECENT_POSTS, first_three[0].0),
+            (*SLOT_TOP_K_TAGS, first_three[1].0),
+        ],
         nodes: first_three,
     };
 

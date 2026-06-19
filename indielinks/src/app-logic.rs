@@ -161,6 +161,8 @@ pub enum Error {
         source: Box<tonic::Status>,
         backtrace: Backtrace,
     },
+    #[snafu(display("Top K Tags: {source}"))]
+    TopKTags { source: crate::popular_items::Error },
     #[snafu(display("While unpacking the pagination token, {source}"))]
     UnpackPaginationToken {
         #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
@@ -792,6 +794,19 @@ pub async fn add_post(
                 .add_post(post.clone())
                 .await
                 .context(RecentPostsSnafu)?;
+
+            debug!(
+                "Adding tags {:?} to the \"top k\" list.",
+                post.tags().collect::<Vec<&Tagname>>()
+            );
+
+            state
+                .top_k_tags
+                .write()
+                .await
+                .add_sightings(post.tags().cloned())
+                .await
+                .context(TopKTagsSnafu)?;
 
             debug!(
                 "Scheduling Post {} for communication to all federated servers",

@@ -54,6 +54,8 @@ pub mod metrics_task;
 pub mod ops;
 pub mod outboxes;
 pub mod peppers;
+#[path = "popular-items.rs"]
+pub mod popular_items;
 #[path = "protobuf-interop.rs"]
 pub mod protobuf_interop;
 #[path = "recent-posts-lists.rs"]

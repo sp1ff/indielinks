@@ -27,7 +27,7 @@ use axum::{
     Router,
 };
 use http::{header::CONTENT_TYPE, HeaderValue, StatusCode};
-use indielinks_shared::entities::{Post, UserId};
+use indielinks_shared::entities::{Post, Tagname, UserId};
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, Snafu};
 use tap::{Conv, Pipe, TryConv};
@@ -46,7 +46,7 @@ use crate::{
     acct::Account,
     ap_entities::{Actor, Item, Note},
     app_logic,
-    cache::GrpcClientFactory,
+    cache::{GrpcClientFactory, SLOT_TOP_K_TAGS},
     indielinks::Indielinks,
     protobuf_interop::*,
     recent_posts_lists::PostKey as RecentPostsKey,
@@ -464,6 +464,77 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                 key: None,
             }
             .into()),
+        }
+    }
+
+    /// Register multiple instances of an item for a streaming top-k list
+    async fn add_sightings(
+        &self,
+        request: tonic::Request<protobuf::AddSightingsRequest>,
+    ) -> StdResult<tonic::Response<()>, tonic::Status> {
+        let request = request.into_inner();
+
+        let slot = SlotIndex::new(request.slot as usize).ok_or(tonic::Status::invalid_argument(
+            format!("Unknown top k list {}", request.slot),
+        ))?;
+
+        if slot == *SLOT_TOP_K_TAGS {
+            self.state
+                .top_k_tags
+                .write()
+                .await
+                .add_sightings(
+                    rmp_serde::from_slice::<Vec<Tagname>>(&request.items)
+                        .map_err(to_tonic)?
+                        .into_iter(),
+                )
+                .await
+                .map_err(to_tonic)?;
+            Ok(().into())
+        } else {
+            return Err(tonic::Status::invalid_argument(format!(
+                "Unknown top k list {}",
+                request.slot
+            )));
+        }
+    }
+
+    /// Request the top k most frequent items of some sort
+    async fn get_top_k(
+        &self,
+        request: tonic::Request<protobuf::GetTopKRequest>,
+    ) -> StdResult<tonic::Response<protobuf::GetTopKResponse>, tonic::Status> {
+        let request = request.into_inner();
+
+        let slot = SlotIndex::new(request.slot as usize).ok_or(tonic::Status::invalid_argument(
+            format!("Unknown top k list {}", request.slot),
+        ))?;
+
+        if slot == *SLOT_TOP_K_TAGS {
+            self.state
+                .top_k_tags
+                .write()
+                .await
+                .get_top_k(NonZero::<usize>::new(request.num_items as usize).ok_or(
+                    tonic::Status::invalid_argument("The requested # of items shall be non-zero"),
+                )?)
+                .await
+                .map_err(to_tonic)
+                .and_then(
+                    // Clippy complains that the the `Err` variant returned by this lambda
+                    // (`tonic::Status`) is too large, but I don't have a lot of choice. I mean, I
+                    // *could* box it, but then I'd just need to unbox before returning from this
+                    // method. The root of the problem (the large size of `tonic::Status` is out of my
+                    // hands).
+                    #[allow(clippy::result_large_err)]
+                    |items| rmp_serde::to_vec(&items).map_err(to_tonic),
+                )
+                .map(|bytes| protobuf::GetTopKResponse { items: bytes }.into())
+        } else {
+            return Err(tonic::Status::invalid_argument(format!(
+                "Unknown top k list {}",
+                request.slot
+            )));
         }
     }
 }

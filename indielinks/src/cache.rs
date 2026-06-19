@@ -107,6 +107,7 @@ type StdResult<T, E> = std::result::Result<T, E>;
 
 lazy_static! {
     pub static ref SLOT_RECENT_POSTS: SlotIndex = known_good!(SlotIndex::new(0));
+    pub static ref SLOT_TOP_K_TAGS: SlotIndex = known_good!(SlotIndex::new(1));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

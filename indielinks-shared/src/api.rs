@@ -469,3 +469,17 @@ pub struct RecentPostsPage {
 
 /// A "recent posts" response-- `None` means the pagination has completed
 pub type RecentPostsResponse = Option<RecentPostsPage>;
+
+/// A "top k tags" rquest
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TopKTagsRequest {
+    /// Maximum number of items to return
+    pub num_items: Option<NonZero<usize>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TopKTagsResponse {
+    /// The top tags along with their scores
+    pub tags: Vec<(Tagname, f64)>,
+}

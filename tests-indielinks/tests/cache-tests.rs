@@ -15,8 +15,8 @@
 
 //! # [indielinks] as cache integration tests
 //!
-//! This (admittedly sparse) integration test exercises [indielinks] configured to run in a cluster
-//! as a distributed cache baed on [openraft].
+//! This (admittedly sparse, but growing!) integration test exercises [indielinks] configured to run
+//! in a cluster as a distributed cache baed on [openraft].
 
 use std::{
     collections::HashMap,
@@ -29,7 +29,9 @@ use std::{
 };
 
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use indielinks_cache::types::{ClusterNode, NodeId};
+use indielinks_shared::known_good;
 use libtest_mimic::Failed;
 use serde::Deserialize;
 use snafu::{IntoError, ResultExt, Snafu};
@@ -42,10 +44,12 @@ use tests_indielinks::{
     cache::{openraft_test_suite, raft_ops},
     helper::{DynamoConfig, ScyllaConfig},
     recent_posts::recent_posts,
+    top_k_tags::smoke_test_top_k_tags,
 };
 
 use tests_support::{
-    sync_integration_test, Fixture, IntegrationTest, SyncIntegrationTest, TestConfiguration,
+    async_integration_test, sync_integration_test, AsyncIntegrationTest, Fixture, IntegrationTest,
+    SyncIntegrationTest, TestConfiguration,
 };
 
 use common::run;
@@ -177,6 +181,8 @@ impl FromStr for FixtureId {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
+    /// A network location at which the indielinks API can be reached
+    pub indielinks: Url,
     /// The network location at which an operational interface can be reached
     pub ops: Url,
     /// .env file for ScyllaDB docker compose cluster
@@ -255,14 +261,15 @@ impl Default for Configuration {
     /// the configuration that will be used, so be sure the tests will pass with it.
     fn default() -> Self {
         Configuration {
-            ops: Url::parse("http://127.0.0.1:20680").unwrap(/* known good */),
+            indielinks: known_good!(Url::parse("http://indiemark.local:20673")),
+            ops: known_good!(Url::parse("http://127.0.0.1:20680")),
             scylla_env_file: None,
             local_state_base: "/tmp/indielinksd-cluster-".to_owned(),
             alternator_config_base: "../conf/indielinksd-alternator-".to_owned(),
             scylla_config_base: "../conf/indielinksd-scylla-".to_owned(),
             haproxy_id: "0".to_owned(),
             haproxy_port: 20673,
-            raft_nodes: HashMap::from([(0, "127.0.0.1:20681".parse().unwrap(/* known good */))]),
+            raft_nodes: HashMap::from([(0, known_good!("127.0.0.1:20681".parse()))]),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
         }
@@ -349,15 +356,62 @@ inventory::submit!(CacheFixture {
 //                                             tests                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct CacheTest {
+// The openraft test suite *must* not be run in an async context: the `run_fut()` method
+// (testing/suite.rs:1260) does:
+//
+//     let rt = tokio::runtime::Runtime::new().unwrap();
+//     rt.block_on(f)?;
+//
+// which will panic if we're already in an async context. However, insisting that all tests
+// go through `sync_integration_test()` would force tests that are naturally async to do the
+// awkward "spin-up a runtime, call `block_on()` and then drop the runtime" dance. So, for this
+// integration test, we'll do both:
+
+struct SyncTest {
     pub name: &'static str,
-    pub test_fn:
-        fn(Configuration, Arc<dyn CacheBackend + Send + Sync>) -> std::result::Result<(), Failed>,
+    // We need a layer of indirection between the API we present to [tests-support] (i.e. just
+    // getting the configuration & the test helper) and that exposed by our actual testing logic in
+    // the `/src` directory.
+    pub test_fn: fn(Configuration, Arc<dyn CacheBackend + Send + Sync>) -> StdResult<(), Failed>,
     // None => run this test in all fixtures; Some<vec![a, b]> => only run in fixtures a & b
     pub fixtures: Option<&'static [FixtureId]>,
 }
 
-impl IntegrationTest for CacheTest {
+impl IntegrationTest for SyncTest {
+    type F = CacheFixture;
+
+    fn germane(&self, fix: <Self::F as Fixture>::Id) -> bool {
+        self.fixtures.map(|f| f.contains(&fix)).unwrap_or(true)
+    }
+    fn name(&self) -> String {
+        self.name.to_owned()
+    }
+}
+
+impl SyncIntegrationTest for SyncTest {
+    fn run(
+        &self,
+        config: <Self::F as Fixture>::Configuration,
+        backend: <Self::F as Fixture>::Backend,
+    ) -> StdResult<(), Failed> {
+        (self.test_fn)(config, backend)
+    }
+}
+
+inventory::collect!(SyncTest);
+
+struct AsyncTest {
+    pub name: &'static str,
+    // See comments RE this field in `SyncTest`.
+    pub test_fn: fn(
+        Configuration,
+        Arc<dyn CacheBackend + Send + Sync>,
+    ) -> BoxFuture<'static, StdResult<(), Failed>>,
+    // None => run this test in all fixtures; Some<vec![a, b]> => only run in fixtures a & b
+    pub fixtures: Option<&'static [FixtureId]>,
+}
+
+impl IntegrationTest for AsyncTest {
     type F = CacheFixture;
 
     fn germane(&self, fix: <Self::F as Fixture>::Id) -> bool {
@@ -369,43 +423,71 @@ impl IntegrationTest for CacheTest {
 }
 
 #[async_trait]
-impl SyncIntegrationTest for CacheTest {
-    fn run(
+impl AsyncIntegrationTest for AsyncTest {
+    async fn run(
         &self,
         config: <Self::F as Fixture>::Configuration,
         backend: <Self::F as Fixture>::Backend,
     ) -> StdResult<(), Failed> {
-        (self.test_fn)(config, backend)
+        (self.test_fn)(config, backend).await
     }
 }
 
-inventory::collect!(CacheTest);
+inventory::collect!(AsyncTest);
 
-inventory::submit!(CacheTest {
+inventory::submit!(SyncTest {
     name: "001openraft_test_suite",
     test_fn: |_, backend| openraft_test_suite(backend),
     // Makes no sense to run this more than once
     fixtures: Some(&[FixtureId::DynamoDBCluster])
 });
 
-inventory::submit!(CacheTest {
-    name: "002raft_ops",
+inventory::submit!(SyncTest {
+    name: "010raft_ops",
     test_fn: |cfg, _| raft_ops(cfg.ops, cfg.raft_nodes),
     fixtures: Some(&[FixtureId::SycllaCluster, FixtureId::DynamoDBCluster])
 });
 
-inventory::submit!(CacheTest {
-    name: "003recent_posts",
-    test_fn: |cfg, _| recent_posts(cfg.ops, cfg.raft_nodes),
+inventory::submit!(AsyncTest {
+    name: "201recent_posts",
+    test_fn: |cfg, _| { Box::pin(recent_posts(cfg.ops, cfg.raft_nodes)) },
+    fixtures: Some(&[FixtureId::SycllaCluster, FixtureId::DynamoDBCluster])
+});
+
+inventory::submit!(AsyncTest {
+    name: "202top_k_tags",
+    test_fn: |cfg, _| {
+        Box::pin(smoke_test_top_k_tags(
+            cfg.indielinks,
+            cfg.ops,
+            cfg.raft_nodes,
+        ))
+    },
     fixtures: Some(&[FixtureId::SycllaCluster, FixtureId::DynamoDBCluster])
 });
 
 fn main() -> Result<ExitCode> {
-    sync_integration_test(
+    // Run the synchronous integration tests, first (at the time of this writing, they're simpler).
+    // If we `Err`-out, return the `Err`. Otherwise, keep going.
+    let sync_exit_code = sync_integration_test(
         TestConfiguration::<CacheFixture>::new_or_default("INDIELINKS_CACHE_TESTS_CONFIG")
             .context(IntegrationTestSnafu)?,
         inventory::iter::<CacheFixture>.into_iter(),
-        inventory::iter::<CacheTest>,
+        inventory::iter::<SyncTest>,
     )
-    .context(IntegrationTestSnafu)
+    .context(IntegrationTestSnafu)?;
+
+    let async_exit_code = async_integration_test(
+        TestConfiguration::<CacheFixture>::new_or_default("INDIELINKS_CACHE_TESTS_CONFIG")
+            .context(IntegrationTestSnafu)?,
+        inventory::iter::<CacheFixture>.into_iter(),
+        inventory::iter::<AsyncTest>,
+    )
+    .context(IntegrationTestSnafu)?;
+
+    match (sync_exit_code, async_exit_code) {
+        (ExitCode::SUCCESS, ExitCode::SUCCESS) => ExitCode::SUCCESS,
+        _ => ExitCode::from(101),
+    }
+    .pipe(Ok)
 }

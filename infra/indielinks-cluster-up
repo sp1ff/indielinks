@@ -297,11 +297,11 @@ if test -z "${no_raft_init}"; then
     grpc_p0=$(parse_grpc_port "${config_base}0.toml")
     grpc_p1=$(parse_grpc_port "${config_base}1.toml")
     grpc_p2=$(parse_grpc_port "${config_base}2.toml")
-    payload="{\"nodes\":[[0,{\"addr\":\"127.0.0.1:$grpc_p0\"}],[1,{\"addr\":\"127.0.0.1:$grpc_p1\"}],[2,{\"addr\":\"127.0.0.1:$grpc_p2\"}]],\"slots\":[[0,0]]}"
+    payload="{\"nodes\":[[0,{\"addr\":\"127.0.0.1:$grpc_p0\"}],[1,{\"addr\":\"127.0.0.1:$grpc_p1\"}],[2,{\"addr\":\"127.0.0.1:$grpc_p2\"}]],\"slots\":[[0,0],[1,1]]}"
     if [ "${num_nodes}" == "5" ]; then
         grpc_p3=$(parse_grpc_port "${config_base}3.toml")
         grpc_p4=$(parse_grpc_port "${config_base}4.toml")
-        payload="{\"nodes\":[[0,{\"addr\":\"127.0.0.1:$grpc_p0\"}],[1,{\"addr\":\"127.0.0.1:$grpc_p1\"}],[2,{\"addr\":\"127.0.0.1:$grpc_p2\"}],[3,{\"addr\":\"127.0.0.1:$grpc_p3\"}],[4,{\"addr\":\"127.0.0.1:$grpc_p4\"}]],\"slots\":[[0,0]]}"
+        payload="{\"nodes\":[[0,{\"addr\":\"127.0.0.1:$grpc_p0\"}],[1,{\"addr\":\"127.0.0.1:$grpc_p1\"}],[2,{\"addr\":\"127.0.0.1:$grpc_p2\"}],[3,{\"addr\":\"127.0.0.1:$grpc_p3\"}],[4,{\"addr\":\"127.0.0.1:$grpc_p4\"}]],\"slots\":[[0,0],[1,1]]}"
     fi
     curl -v -H 'Content-Type: application/json' http://localhost:${pport_0}/ops/cache/init-cluster --data "${payload}"
 fi
