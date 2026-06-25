@@ -1400,35 +1400,28 @@ define_metric! { "user.recentposts.successful", user_recent_posts_successful, So
 define_metric! { "user.recentposts.failures", user_recent_posts_failures, Sort::IntegralCounter }
 
 /// Retrieve the cluster "Recent Posts" list
+// I'm reluctant to serve this unauthenticated, but I want to keep the "popular" page on the the
+// front end functional, even when the user isn't logged-in (in fact, *especially* when the user
+// isn't logged-in).
 async fn recent_posts(
     State(state): State<Arc<Indielinks>>,
-    user: StdResult<Extension<User>, ExtensionRejection>,
     Json(request): Json<RecentPostsRequest>,
 ) -> axum::response::Response {
-    // First up: did we authenticate this caller?
-    match user {
-        Ok(Extension(user)) => match get_recent_posts(state, request).await {
-            Ok(response) => {
-                user_recent_posts_successful.add(1, &[KeyValue::new("username", user.username())]);
-                (StatusCode::OK, Json(response)).into_response()
-            }
-            Err(err) => {
-                user_recent_posts_failures.add(1, &[KeyValue::new("username", user.username())]);
-                error!("{err:?}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponseBody {
-                        error: format!("{err}"),
-                    }),
-                )
-                    .into_response()
-            }
-        },
+    match get_recent_posts(state, request).await {
+        Ok(response) => {
+            user_recent_posts_successful.add(1, &[]);
+            (StatusCode::OK, Json(response)).into_response()
+        }
         Err(err) => {
-            // We did _not_: produce a log & metric noting this and return 400 Unauthorized.
-            warn!("Failed to authorize this request: {err:?}");
             user_recent_posts_failures.add(1, &[]);
-            StatusCode::UNAUTHORIZED.into_response()
+            error!("{err:?}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponseBody {
+                    error: format!("{err}"),
+                }),
+            )
+                .into_response()
         }
     }
 }
@@ -1441,45 +1434,40 @@ define_metric! { "user.toptags.successful", user_top_tags_successful, Sort::Inte
 define_metric! { "user.toptags.failures", user_top_tags_failures, Sort::IntegralCounter }
 
 /// Retrieve the cluster "top k" tags list
+// I'm reluctant to serve this unauthenticated, but I want to keep the "popular" page on the the
+// front end functional, even when the user isn't logged-in (in fact, *especially* when the user
+// isn't logged-in).
 async fn top_k_tags(
     State(state): State<Arc<Indielinks>>,
-    user: StdResult<Extension<User>, ExtensionRejection>,
     Json(request): Json<TopKTagsRequest>,
 ) -> axum::response::Response {
-    match user {
-        Ok(Extension(user)) => match state
-            .top_k_tags
-            .write()
-            .await
-            .get_top_k(request.num_items.unwrap_or(nonzero!(32usize)))
-            .await
-        {
-            Ok(tags) => (
-                StatusCode::OK,
-                Json(TopKTagsResponse {
-                    tags: tags
-                        .into_iter()
-                        .map(|(name, score)| (name, score.into_inner()))
-                        .collect(),
+    match state
+        .top_k_tags
+        .write()
+        .await
+        .get_top_k(request.num_items.unwrap_or(nonzero!(32usize)))
+        .await
+    {
+        Ok(tags) => (
+            StatusCode::OK,
+            Json(TopKTagsResponse {
+                tags: tags
+                    .into_iter()
+                    .map(|(name, score)| (name, score.into_inner()))
+                    .collect(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            error!("Failed to retrieve the top k tags: {err:?}");
+            user_top_tags_failures.add(1, &[]);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponseBody {
+                    error: format!("{err}"),
                 }),
             )
-                .into_response(),
-            Err(err) => {
-                error!("Failed to retrieve the top k tags: {err:?}");
-                user_top_tags_failures.add(1, &[KeyValue::new("username", user.username())]);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponseBody {
-                        error: format!("{err}"),
-                    }),
-                )
-                    .into_response()
-            }
-        },
-        Err(err) => {
-            warn!("Failed to authorize this request: {err:?}");
-            user_top_tags_failures.add(1, &[]);
-            StatusCode::UNAUTHORIZED.into_response()
+                .into_response()
         }
     }
 }
@@ -1491,31 +1479,22 @@ async fn top_k_tags(
 define_metric! { "user.clusterstats.successful", user_cluster_stats_successful, Sort::IntegralCounter }
 define_metric! { "user.clusterstats.failures", user_cluster_stats_failures, Sort::IntegralCounter }
 
-async fn cluster_stats(
-    State(state): State<Arc<Indielinks>>,
-    // I don't know that I necessarily care about authenticating these requests, but it seems like
-    // good practice.
-    user: StdResult<Extension<User>, ExtensionRejection>,
-) -> axum::response::Response {
-    match user {
-        Ok(Extension(user)) => match get_cluster_stats(state).await {
-            Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
-            Err(err) => {
-                error!("Failed to retrieve cluster stats: {err:?}");
-                user_cluster_stats_failures.add(1, &[KeyValue::new("username", user.username())]);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponseBody {
-                        error: format!("{err}"),
-                    }),
-                )
-                    .into_response()
-            }
-        },
+// I'm reluctant to serve this unauthenticated, but I want to keep the "popular" page on the the
+// front end functional, even when the user isn't logged-in (in fact, *especially* when the user
+// isn't logged-in).
+async fn cluster_stats(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
+    match get_cluster_stats(state).await {
+        Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
         Err(err) => {
-            warn!("Failed to authorize this request: {err:?}");
+            error!("Failed to retrieve cluster stats: {err:?}");
             user_cluster_stats_failures.add(1, &[]);
-            StatusCode::UNAUTHORIZED.into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponseBody {
+                    error: format!("{err}"),
+                }),
+            )
+                .into_response()
         }
     }
 }

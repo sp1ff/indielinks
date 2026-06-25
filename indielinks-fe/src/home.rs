@@ -949,7 +949,7 @@ pub fn LinkFeed() -> impl IntoView {
                     // Our resource can yield no posts for two reasons that we want to distinguish
                     // visually:
                     //     - no posts because the user hasn't saved any, in which we just display a
-                    //       little messagse inviting them to start saving some.
+                    //       little message inviting them to start saving some.
                     //     - no posts because their filter ruled-out all their posts, in which case
                     //       we just show an empty list
                     let posts : Option<(Option<NEVec<Post>>, bool)> = posts.get().transpose()?;
@@ -976,7 +976,7 @@ pub fn LinkFeed() -> impl IntoView {
                             (None, true) => EitherOf3::C(view! {
                                 <div class="mx-auto max-w-md m-8 text-gray-600">
                                     <p>"You don't have any saved links, yet. Click "<a href="/a" class="text-blue-600 underline hover:text-blue-800 visited:text-purple-600">"here"</a>" to start adding some."</p>
-                                    </div>
+                                </div>
                             })
                         }
                     }))

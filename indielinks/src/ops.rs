@@ -15,9 +15,9 @@
 
 use std::{ops::Deref, result::Result as StdResult, sync::Arc};
 
-use axum::{extract::State, response::IntoResponse, routing::get, Router};
+use axum::{extract::State, response::IntoResponse, routing::get, Json, Router};
 use axum_extra::extract::Query;
-use http::{header::CONTENT_TYPE, HeaderValue};
+use http::{header::CONTENT_TYPE, HeaderValue, StatusCode};
 use indielinks_shared::entities::Username;
 use serde::{ser::SerializeStruct, Deserialize};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
@@ -26,8 +26,8 @@ use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error};
 
 use crate::{
-    home_timeline::HomeTimelines, http::ErrorResponseBody, indielinks::Indielinks,
-    outboxes::UserOutboxes,
+    app_logic::get_cluster_stats, home_timeline::HomeTimelines, http::ErrorResponseBody,
+    indielinks::Indielinks, outboxes::UserOutboxes,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -128,7 +128,7 @@ async fn dump_timelines(
                     .context(UserSnafu {
                         username: username.clone(),
                     })?;
-                axum::Json(
+                Json(
                     serde_json::to_value(crate::home_timeline::JsonRepr(
                         state
                             .home_timelines
@@ -142,7 +142,7 @@ async fn dump_timelines(
                 .into_response()
                 .pipe(Ok)
             }
-            None => axum::Json(
+            None => Json(
                 serde_json::to_value(HomeTimelinesJsonRepr(
                     state.home_timelines.lock().await.deref(),
                 ))
@@ -157,7 +157,7 @@ async fn dump_timelines(
         Ok(response) => response,
         Err(err) => {
             error!("{err:#?}");
-            axum::Json(ErrorResponseBody {
+            Json(ErrorResponseBody {
                 error: format!("{err}"),
             })
             .into_response()
@@ -210,7 +210,7 @@ async fn drop_timelines(
         Ok(_) => http::StatusCode::ACCEPTED.into_response(),
         Err(err) => {
             error!("{err:#?}");
-            axum::Json(ErrorResponseBody {
+            Json(ErrorResponseBody {
                 error: format!("{err}"),
             })
             .into_response()
@@ -271,7 +271,7 @@ async fn dump_outboxes(
                     .context(UserSnafu {
                         username: user.clone(),
                     })?;
-                axum::Json(
+                Json(
                     serde_json::to_value(crate::outboxes::JsonRepr(
                         state
                             .user_outboxes
@@ -287,7 +287,7 @@ async fn dump_outboxes(
                 .into_response()
                 .pipe(Ok)
             }
-            None => axum::Json(
+            None => Json(
                 serde_json::to_value(UserOutboxesJsonRepr(
                     state.user_outboxes.lock().await.deref(),
                 ))
@@ -302,7 +302,22 @@ async fn dump_outboxes(
         Ok(response) => response,
         Err(err) => {
             error!("{err:#?}");
-            axum::Json(ErrorResponseBody {
+            Json(ErrorResponseBody {
+                error: format!("{err}"),
+            })
+            .into_response()
+        }
+    }
+}
+
+/// Get cluster stats-- this is the same as the `/users/cluster-stats` endpoint, but unauthenticated
+/// (since we're presumably being hit from localhost)
+async fn cluster_stats(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
+    match get_cluster_stats(state).await {
+        Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
+        Err(err) => {
+            error!("{err:#?}");
+            Json(ErrorResponseBody {
                 error: format!("{err}"),
             })
             .into_response()
@@ -317,6 +332,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route("/timelines/dump", get(dump_timelines))
         .route("/timelines/drop", get(drop_timelines))
         .route("/outboxes/dump", get(dump_outboxes))
+        .route("/cluster-stats", get(cluster_stats))
         .layer(SetResponseHeaderLayer::if_not_present(
             CONTENT_TYPE,
             HeaderValue::from_static("text/json; charset=utf-8"),

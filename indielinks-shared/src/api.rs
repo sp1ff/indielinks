@@ -28,6 +28,7 @@ use url::Url;
 use crate::{
     entities::{Post, PostDay, StorUrl, Tagname, UserEmail, Username},
     nonempty_string::NonEmptyString,
+    origin::Origin,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -487,6 +488,7 @@ pub struct TopKTagsResponse {
 /// `/users/cluster-stats` response
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClusterStatsResponse {
+    pub origin: Origin,
     pub num_users: usize,
     pub num_posts: usize,
     #[serde(skip_serializing_if = "Option::is_none")]

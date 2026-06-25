@@ -82,6 +82,7 @@ pub async fn test_counts(
         .await?;
     assert!(StatusCode::OK == response.status());
     let ClusterStatsResponse {
+        origin: _,
         num_users,
         num_posts,
         raft_initialized,

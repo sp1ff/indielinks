@@ -837,6 +837,7 @@ pub async fn get_cluster_stats(state: Arc<Indielinks>) -> Result<ClusterStatsRes
     } = state.storage.as_ref().counts().await.context(CountsSnafu)?;
     let metrics = state.cache_node.metrics().await;
     Ok(ClusterStatsResponse {
+        origin: state.origin.clone(),
         num_users,
         num_posts,
         raft_initialized: state.cache_node.initialized().await,

@@ -32,3 +32,4 @@ send_wrapper = "0.6.0"
 secrecy = { version = "0.10.3", features = ["serde"] }
 gloo-timers = { version = "0.4.0", features = ["futures"] }
 icondata = "0.7.0"
+nonzero = "0.2.0"
