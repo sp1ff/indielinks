@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.88"
+chrono = "0.4.45"
 indielinks-shared = { path = "../indielinks-shared" }
 itertools = "0.14.0"
 lru = "0.14.0"

@@ -234,6 +234,9 @@ pub async fn delicious_smoke_test(
     let body = rsp.json::<PostsDatesRsp>().await?;
     assert!(body.dates.len() == 1);
 
+    utils.clear_posts(&username).await?;
+    utils.remove_user(&username).await?;
+
     Ok(())
 }
 

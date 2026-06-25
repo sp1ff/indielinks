@@ -88,6 +88,7 @@ use indielinks::{grpc::InitClusterRequest, peppers::Peppers, scylla::execute_cql
 
 use tests_indielinks::{
     activity_pub::{as_follower, context_with_mastodon, posting_creates_note, send_follow},
+    counts::test_counts,
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
     helper::{DynamoConfig, DynamoDBHelper, Helper, ScyllaConfig, ScyllaHelper},
@@ -797,6 +798,20 @@ inventory::submit!(Test {
             pepper,
             helper,
         ))
+    },
+    fixtures: Some(&[
+        FixtureId::ScyllaSingleNode,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBCluster
+    ]),
+});
+
+inventory::submit!(Test {
+    name: "002test_counts",
+    test_fn: |cfg, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(test_counts(helper.indielinks(), version, pepper, helper))
     },
     fixtures: Some(&[
         FixtureId::ScyllaSingleNode,

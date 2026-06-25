@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2024-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -71,7 +71,7 @@ use crate::entities::{
     ApiKeys, IncomingLike, IncomingLikeReplyShareRef, IncomingReply, IncomingShare, LikeReplyShare,
     LikeReplyShareRef, OutgoingLike, OutgoingReply, OutgoingShare,
 };
-use crate::storage::SchemaSnafu;
+use crate::storage::{Counts, SchemaSnafu};
 use crate::util::Credentials;
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
@@ -1068,6 +1068,8 @@ enum PreparedStatements {
     OutgoingLikeReplyShare,
     CountPosts,
     CountLikesRepliesShares,
+    CountAllUsers,
+    CountAllPosts,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -1223,6 +1225,8 @@ impl Session {
             "select * from likes_replies_shares where id = ?", // OutgoingLikeReplyShare
             "select count(*) from posts where user_id = ?", // CountPosts
             "select count(*) from likes_replies_shares where user_id = ?", // CountLikesRepliesShares
+            "select count(*) from users allow filtering",
+            "select count(*) from posts allow filtering",
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -1239,7 +1243,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 93] = prepared_statements
+        let prepared_statements: [PreparedStatement; 95] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -1579,6 +1583,33 @@ impl storage::Backend for Session {
         // This is unfortunate: "there is no way to know whether creation or update occurred."
         // <https://opensource.docs.scylladb.com/stable/cql/dml/update.html>
         Ok(true) // This seems like a bug.
+    }
+
+    // This implementation is bad, and I feel bad about it. The better solution would be to setup a
+    // proper `counts` table and keep it up-to-date. For now, however, I just want to get this up &
+    // running; if we ever get to a point where this is a performance bottleneck, well, that would
+    // be a nice problem to have.
+    async fn counts(&self) -> StdResult<Counts, StorError> {
+        let num_users = self.session
+            .execute_unpaged(&self.prepared_statements[PreparedStatements::CountAllUsers], ())
+            .await?
+            .into_rows_result()?
+            .rows::<(i64,)>()?
+            .exactly_one()
+            .unwrap(/* known good */)?
+            .0 as usize;
+        let num_posts = self.session
+            .execute_unpaged(&self.prepared_statements[PreparedStatements::CountAllPosts], ())
+            .await?
+            .into_rows_result()?
+            .rows::<(i64,)>()?
+            .exactly_one()
+            .unwrap(/* known good */)?
+            .0 as usize;
+        Ok(Counts {
+            num_users,
+            num_posts,
+        })
     }
 
     async fn delete_post(&self, user: &User, url: &StorUrl) -> StdResult<bool, StorError> {

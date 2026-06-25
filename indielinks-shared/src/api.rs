@@ -483,3 +483,15 @@ pub struct TopKTagsResponse {
     /// The top tags along with their scores
     pub tags: Vec<(Tagname, f64)>,
 }
+
+/// `/users/cluster-stats` response
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ClusterStatsResponse {
+    pub num_users: usize,
+    pub num_posts: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raft_initialized: Option<DateTime<Utc>>,
+    pub raft_term: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raft_leader: Option<u64>,
+}

@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -29,7 +29,7 @@ use crate::{
         IncomingReply, IncomingShare, LikeReplyShare, LikeReplyShareRef, OutgoingLike,
         OutgoingReply, OutgoingShare, User,
     },
-    storage::{self, DateRange, UsernameClaimedSnafu},
+    storage::{self, Counts, DateRange, UsernameClaimedSnafu},
     util::{Credentials, UpToThree},
 };
 
@@ -45,7 +45,7 @@ use aws_sdk_dynamodb::{
     config::Region as AwsSdkRegion,
     operation::{
         batch_write_item::BatchWriteItemError, get_item::GetItemError, put_item::PutItemError,
-        query::QueryOutput, update_item::UpdateItemError,
+        query::QueryOutput, scan::ScanOutput, update_item::UpdateItemError,
     },
     types::{AttributeValue, DeleteRequest, PutRequest, ReturnValue, Select, WriteRequest},
 };
@@ -1331,6 +1331,45 @@ impl storage::Backend for Client {
             .attributes()
             .is_some()
             .pipe(Ok)
+    }
+
+    // This implementation is bad, and I feel bad about it. The better solution would be to setup a
+    // proper `counts` table and keep it up-to-date. For now, however, I just want to get this up &
+    // running; if we ever get to a point where this is a performance bottleneck, well, that would
+    // be a nice problem to have.
+    async fn counts(&self) -> StdResult<Counts, StorError> {
+        let num_users = self
+            .client
+            .scan()
+            .table_name("users")
+            .select(Select::Count)
+            .into_paginator()
+            .send()
+            // This yields a `PaginationStream<Result<HashMap<String, AttributeValue>,
+            // SdkError<ScanError, HttpResponse>>>`. ` Despite the name, this isn't a
+            // `futures::Stream`, regrettably. We can, however, asynchronously collect
+            // it into a `Vec`, at least.
+            .try_collect()
+            .await?
+            .into_iter()
+            .map(|ScanOutput { count, .. }| count as usize)
+            .sum();
+        let num_posts = self
+            .client
+            .scan()
+            .table_name("posts")
+            .select(Select::Count)
+            .into_paginator()
+            .send()
+            .try_collect()
+            .await?
+            .into_iter()
+            .map(|ScanOutput { count, .. }| count as usize)
+            .sum();
+        Ok(Counts {
+            num_users,
+            num_posts,
+        })
     }
 
     async fn delete_post(&self, user: &User, url: &StorUrl) -> StdResult<bool, StorError> {

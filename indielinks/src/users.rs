@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -124,7 +124,9 @@ use crate::{
     activity_pub::{SendLike, SendReply},
     ap_entities::{ap_request, FirstField, Item, Note, NoteField, Replies, RepliesPage},
     ap_resolution::ApResolver,
-    app_logic::{get_recent_posts, handle_timeline_or_redirect, SendFollow, TimelineRsp},
+    app_logic::{
+        get_cluster_stats, get_recent_posts, handle_timeline_or_redirect, SendFollow, TimelineRsp,
+    },
     authn::{self, check_api_key, check_password, check_token, AuthnScheme},
     background_tasks::{self, BackgroundTasks, Sender},
     client_types::ClientType,
@@ -1483,6 +1485,42 @@ async fn top_k_tags(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       Cluster Statistics                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.clusterstats.successful", user_cluster_stats_successful, Sort::IntegralCounter }
+define_metric! { "user.clusterstats.failures", user_cluster_stats_failures, Sort::IntegralCounter }
+
+async fn cluster_stats(
+    State(state): State<Arc<Indielinks>>,
+    // I don't know that I necessarily care about authenticating these requests, but it seems like
+    // good practice.
+    user: StdResult<Extension<User>, ExtensionRejection>,
+) -> axum::response::Response {
+    match user {
+        Ok(Extension(user)) => match get_cluster_stats(state).await {
+            Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
+            Err(err) => {
+                error!("Failed to retrieve cluster stats: {err:?}");
+                user_cluster_stats_failures.add(1, &[KeyValue::new("username", user.username())]);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponseBody {
+                        error: format!("{err}"),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Err(err) => {
+            warn!("Failed to authorize this request: {err:?}");
+            user_cluster_stats_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1630,7 +1668,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             )),
         )
         .route(
-            "/usrs/recent-posts",
+            "/users/recent-posts",
             get(recent_posts).merge(post(recent_posts)).layer(mk_cors(
                 false,
                 allow_headers.clone(),
@@ -1639,11 +1677,20 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             )),
         )
         .route(
-            "/usrs/top-k-tags",
+            "/users/top-k-tags",
             get(top_k_tags).merge(post(top_k_tags)).layer(mk_cors(
                 false,
                 allow_headers.clone(),
                 [http::Method::GET, http::Method::POST],
+                AllowOrigin::any(),
+            )),
+        )
+        .route(
+            "/users/cluster-stats",
+            get(cluster_stats).layer(mk_cors(
+                false,
+                allow_headers.clone(),
+                [http::Method::GET],
                 AllowOrigin::any(),
             )),
         )

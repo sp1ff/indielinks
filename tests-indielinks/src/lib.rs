@@ -53,6 +53,7 @@ pub mod activity_pub;
 pub mod actor;
 pub mod background;
 pub mod cache;
+pub mod counts;
 pub mod delicious;
 pub mod follow;
 pub mod helper;

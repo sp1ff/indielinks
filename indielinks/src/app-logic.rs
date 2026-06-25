@@ -40,9 +40,9 @@ use url::Url;
 use indielinks_cache::{raft::CacheNode, types::NodeId};
 use indielinks_shared::{
     api::{
-        OutboxToken, RecentPostsPage, RecentPostsRequest, RecentPostsResponse, TimelineBeforePage,
-        TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp, TimelineReq, TimelineSincePage,
-        TimelineSinceRsp, UserOutboxRequest,
+        ClusterStatsResponse, OutboxToken, RecentPostsPage, RecentPostsRequest,
+        RecentPostsResponse, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage,
+        TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp, UserOutboxRequest,
     },
     entities::{Post, PostId, StorUrl, Tagname, UserId, Username},
     nonempty_string::NonEmptyString,
@@ -69,7 +69,7 @@ use crate::{
     },
     recent_posts_lists::PostKey as RecentPostsKey,
     signing_keys::{self, SigningKey},
-    storage::Backend as StorageBackend,
+    storage::{Backend as StorageBackend, Counts},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -98,6 +98,8 @@ pub enum Error {
     },
     #[snafu(display("While connecting a gRPC client, {source}"))]
     Connection { source: crate::cache::Error },
+    #[snafu(display("While retrieving entity counts, {source}"))]
+    Counts { source: crate::storage::Error },
     #[snafu(display("While federating this post, {source}"))]
     Federation {
         source: crate::background_tasks::Error,
@@ -821,6 +823,26 @@ pub async fn add_post(
         }
     }
     Ok(added)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       Cluster Statistics                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Retrieve some basic statistics about this indielinks cluster
+pub async fn get_cluster_stats(state: Arc<Indielinks>) -> Result<ClusterStatsResponse> {
+    let Counts {
+        num_users,
+        num_posts,
+    } = state.storage.as_ref().counts().await.context(CountsSnafu)?;
+    let metrics = state.cache_node.metrics().await;
+    Ok(ClusterStatsResponse {
+        num_users,
+        num_posts,
+        raft_initialized: state.cache_node.initialized().await,
+        raft_term: metrics.raft.current_term,
+        raft_leader: metrics.raft.current_leader,
+    })
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2024-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -98,6 +98,17 @@ impl DateRange {
     }
 }
 
+/// Assorted counts from the backend data store
+// This will hopefully grow in the future, and right now the implementations are detestable. The
+// right way to address this is to setup dedicated "counts" tables that are kept up-to-date by
+// application logic. For now, I'll just live with full table scans. In particular, tags can't be
+// counted, this way (at least, not without some fairly odios application logic).
+#[derive(Clone, Debug)]
+pub struct Counts {
+    pub num_users: usize,
+    pub num_posts: usize,
+}
+
 #[async_trait]
 pub trait Backend {
     /// Add a follower to a user's collection
@@ -142,6 +153,8 @@ pub trait Backend {
     async fn add_user(&self, user: &User) -> Result<(), Error>;
     /// Confirm a follow for a user
     async fn confirm_following(&self, user: &User, following: &StorUrl) -> Result<bool, Error>;
+    /// Retrieve counts of assorted entities
+    async fn counts(&self) -> Result<Counts, Error>;
     /// Remove a post-- return true if a [Post] was actually removed, false else
     async fn delete_post(&self, user: &User, url: &StorUrl) -> Result<bool, Error>;
     /// Delete a tag for a user; since we've denormalized the tags (i.e. we store them along with the

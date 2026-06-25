@@ -30,6 +30,7 @@ use std::{
     time::Duration,
 };
 
+use chrono::{DateTime, Utc};
 use itertools::iproduct;
 use non_zero::non_zero;
 use nonzero::nonzero;
@@ -338,6 +339,7 @@ struct StateMachineInner {
     ring: Vec<(u64, (NodeId, usize))>,
     // An array of `NodeId`s; handy for designating a single node as being responsible for something
     slots: [Option<NodeId>; NUMBER_OF_CACHE_SLOTS::USIZE],
+    initialized: Option<DateTime<Utc>>,
 }
 
 impl Default for StateMachineInner {
@@ -350,6 +352,7 @@ impl Default for StateMachineInner {
             num_virtual: nonzero!(5usize),
             ring: Default::default(),
             slots: Default::default(),
+            initialized: Default::default(),
         }
     }
 }
@@ -549,7 +552,11 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 openraft::EntryPayload::Blank => Ok(Response(())),
                 openraft::EntryPayload::Normal(request) => process_request(sm, request),
                 openraft::EntryPayload::Membership(membership) => {
-                    // Cluster membership has changed-- I should probably record this
+                    // Cluster membership has changed-- the first time this happens is when the
+                    // cluster is initialized-- record this:
+                    if sm.initialized.is_none() {
+                        sm.initialized = Some(Utc::now());
+                    }
                     sm.last_membership =
                         StoredMembership::new(Some(entry.log_id), membership.clone());
                     Ok(Response(()))
@@ -975,6 +982,9 @@ where
 
         Ok(())
     }
+    pub async fn initialized(&self) -> Option<DateTime<Utc>> {
+        self.state.inner.read().await.initialized
+    }
     pub async fn node_for_key<K: std::hash::Hash + std::fmt::Debug>(
         &self,
         key: &K,
@@ -1099,6 +1109,9 @@ where
         rpc: AppendEntriesRequest<TypeConfig>,
     ) -> StdResult<AppendEntriesResponse<NodeId>, RaftError<NodeId>> {
         self.inner.read().await.append_entries(rpc).await
+    }
+    pub async fn initialized(&self) -> Option<DateTime<Utc>> {
+        self.inner.read().await.initialized().await
     }
     pub async fn install_snapshot(
         &self,
