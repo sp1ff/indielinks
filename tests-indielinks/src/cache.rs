@@ -116,6 +116,11 @@ pub fn raft_ops(
     let mut all_nodes = nodes.into_iter().collect::<Vec<(NodeId, ClusterNode)>>();
     all_nodes.sort_by_key(|lhs| lhs.0);
 
+    assert!(
+        all_nodes.len() >= 3,
+        "raft_ops requires a cluster of at least three nodes"
+    );
+
     let first_three = all_nodes
         .iter()
         .take(3)

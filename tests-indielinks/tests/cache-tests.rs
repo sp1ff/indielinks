@@ -269,7 +269,13 @@ impl Default for Configuration {
             scylla_config_base: "../conf/indielinksd-scylla-".to_owned(),
             haproxy_id: "0".to_owned(),
             haproxy_port: 20673,
-            raft_nodes: HashMap::from([(0, known_good!("127.0.0.1:20681".parse()))]),
+            raft_nodes: HashMap::from([
+                (0, known_good!("127.0.0.1:20681".parse())),
+                (1, known_good!("127.0.0.1:20684".parse())),
+                (2, known_good!("127.0.0.1:20687".parse())),
+                (3, known_good!("127.0.0.1:20690".parse())),
+                (4, known_good!("127.0.0.1:20693".parse())),
+            ]),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
         }
