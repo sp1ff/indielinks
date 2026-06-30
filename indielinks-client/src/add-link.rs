@@ -70,8 +70,9 @@ pub enum Error {
     },
     #[snafu(display("While encoding {url} to a query string: {source}"))]
     UrlEncoding {
-        url: Url,
-        source: serde_urlencoded::ser::Error,
+        url: Box<Url>,
+        #[snafu(source(from(serde_urlencoded::ser::Error, Box::new)))]
+        source: Box<serde_urlencoded::ser::Error>,
         backtrace: Backtrace,
     },
 }

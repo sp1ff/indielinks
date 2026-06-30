@@ -53,9 +53,15 @@ pub enum Error {
     Client { source: indielinks::dynamodb::Error },
     #[snafu(display("DynamoDB query failed: {source}"))]
     DdbQuery {
-        source: aws_smithy_runtime_api::client::result::SdkError<
+        #[snafu(source(from(aws_smithy_runtime_api::client::result::SdkError<
             aws_sdk_dynamodb::operation::query::QueryError,
             aws_sdk_dynamodb::config::http::HttpResponse,
+        >, Box::new)))]
+        source: Box<
+            aws_smithy_runtime_api::client::result::SdkError<
+                aws_sdk_dynamodb::operation::query::QueryError,
+                aws_sdk_dynamodb::config::http::HttpResponse,
+            >,
         >,
         backtrace: Backtrace,
     },
@@ -76,7 +82,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to set keyspace: {source}"))]
     Keyspace {
-        source: scylla::errors::UseKeyspaceError,
+        #[snafu(source(from(scylla::errors::UseKeyspaceError, Box::new)))]
+        source: Box<scylla::errors::UseKeyspaceError>,
         backtrace: Backtrace,
     },
     #[snafu(display("User {username} appears more than once in the database"))]
@@ -85,10 +92,7 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to create a ScyllaDB session: {source}"))]
-    NewSession {
-        source: indielinks::scylla::Error,
-        backtrace: Backtrace,
-    },
+    NewSession { source: indielinks::scylla::Error },
     #[snafu(display("No user {username}"))]
     NoSuchUser {
         username: Username,
@@ -101,12 +105,14 @@ pub enum Error {
     },
     #[snafu(display("Failed to get a rows result: {source}"))]
     RowsResult {
-        source: scylla::response::query_result::IntoRowsResultError,
+        #[snafu(source(from(scylla::response::query_result::IntoRowsResultError, Box::new)))]
+        source: Box<scylla::response::query_result::IntoRowsResultError>,
         backtrace: Backtrace,
     },
     #[snafu(display("ScyllaDB query failed: {source}"))]
     ScyllaQuery {
-        source: scylla::errors::ExecutionError,
+        #[snafu(source(from(scylla::errors::ExecutionError, Box::new)))]
+        source: Box<scylla::errors::ExecutionError>,
         backtrace: Backtrace,
     },
 }

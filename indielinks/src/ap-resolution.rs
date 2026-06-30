@@ -57,14 +57,10 @@ where
     FC::ErrorType: std::error::Error + std::fmt::Debug + 'static,
 {
     #[snafu(display("While sending an ActivityPub request, {source}"))]
-    Ap {
-        source: crate::ap_entities::Error,
-        backtrace: Backtrace,
-    },
+    Ap { source: crate::ap_entities::Error },
     #[snafu(display("While making a Grpc call, {source}"))]
     Grpc {
         source: indielinks_cache::cache::Error<FC>,
-        backtrace: Backtrace,
     },
     #[snafu(display("No 'self' Link from a webfinger"))]
     NoSelf { backtrace: Backtrace },

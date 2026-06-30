@@ -168,7 +168,7 @@ impl Client {
         &self,
         req: &Req,
         path: impl AsRef<str>,
-    ) -> StdResult<Rsp, RPCError<NodeId, ClusterNode, Err>>
+    ) -> StdResult<Rsp, Box<RPCError<NodeId, ClusterNode, Err>>>
     where
         Req: Serialize,
         Rsp: DeserializeOwned,
@@ -179,16 +179,17 @@ impl Client {
         let resp = self.client.post(url).json(&req).send().await.map_err(|e| {
             // If the error is a connection error, we return `Unreachable` so that connection isn't
             // retried immediately:
-            if e.is_connect() {
-                return network::RPCError::Unreachable(Unreachable::new(&e));
-            }
-            network::RPCError::Network(NetworkError::new(&e))
+            Box::new(if e.is_connect() {
+                network::RPCError::Unreachable(Unreachable::new(&e))
+            } else {
+                network::RPCError::Network(NetworkError::new(&e))
+            })
         })?;
 
         resp.json::<StdResult<Rsp, Err>>()
             .await
-            .map_err(|e| network::RPCError::Network(NetworkError::new(&e)))?
-            .map_err(|e| network::RPCError::RemoteError(RemoteError::new(self.id, e)))
+            .map_err(|e| Box::new(network::RPCError::Network(NetworkError::new(&e))))?
+            .map_err(|e| Box::new(network::RPCError::RemoteError(RemoteError::new(self.id, e))))
     }
     pub async fn send_cache_rpc<Req, Rsp>(
         &self,
@@ -227,8 +228,10 @@ impl network::Client for Client {
         &mut self,
         req: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> StdResult<AppendEntriesResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>>
-    {
+    ) -> StdResult<
+        AppendEntriesResponse<NodeId>,
+        Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>,
+    > {
         self.send_raft_rpc(&req, "raft/append").await
     }
     /// Install a state snapshot on the target node
@@ -238,7 +241,7 @@ impl network::Client for Client {
         _option: RPCOption,
     ) -> StdResult<
         InstallSnapshotResponse<NodeId>,
-        RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>,
+        Box<RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>>,
     > {
         self.send_raft_rpc(&req, "raft/install").await
     }
@@ -247,7 +250,8 @@ impl network::Client for Client {
         &mut self,
         req: VoteRequest<NodeId>,
         _option: RPCOption,
-    ) -> StdResult<VoteResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>> {
+    ) -> StdResult<VoteResponse<NodeId>, Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>>
+    {
         self.send_raft_rpc(&req, "raft/vote").await
     }
     /// Ask the target node to insert a key/value pair into it's LRU cache

@@ -806,16 +806,19 @@ where
         blocking: bool,
     ) -> StdResult<
         ClientWriteResponse<TypeConfig>,
-        RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>,
+        Box<RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>>,
     > {
-        self.raft.add_learner(id, node, blocking).await
+        self.raft
+            .add_learner(id, node, blocking)
+            .await
+            .map_err(Box::new)
     }
 
     pub async fn append_entries(
         &self,
         rpc: AppendEntriesRequest<TypeConfig>,
-    ) -> StdResult<AppendEntriesResponse<NodeId>, RaftError<NodeId>> {
-        self.raft.append_entries(rpc).await
+    ) -> StdResult<AppendEntriesResponse<NodeId>, Box<RaftError<NodeId>>> {
+        self.raft.append_entries(rpc).await.map_err(Box::new)
     }
 
     /// Insert a value into the distributed cache
@@ -930,14 +933,15 @@ where
     pub async fn install_snapshot(
         &self,
         req: InstallSnapshotRequest<TypeConfig>,
-    ) -> StdResult<InstallSnapshotResponse<NodeId>, RaftError<NodeId, InstallSnapshotError>> {
-        self.raft.install_snapshot(req).await
+    ) -> StdResult<InstallSnapshotResponse<NodeId>, Box<RaftError<NodeId, InstallSnapshotError>>>
+    {
+        self.raft.install_snapshot(req).await.map_err(Box::new)
     }
     pub async fn vote(
         &self,
         rpc: VoteRequest<NodeId>,
-    ) -> StdResult<VoteResponse<NodeId>, RaftError<NodeId>> {
-        self.raft.vote(rpc).await
+    ) -> StdResult<VoteResponse<NodeId>, Box<RaftError<NodeId>>> {
+        self.raft.vote(rpc).await.map_err(Box::new)
     }
     /// Initialize the Raft cluster
     ///
@@ -1044,7 +1048,7 @@ where
         blocking: bool,
     ) -> StdResult<
         ClientWriteResponse<TypeConfig>,
-        RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>,
+        Box<RaftError<NodeId, ClientWriteError<NodeId, ClusterNode>>>,
     > {
         self.inner
             .read()
@@ -1107,7 +1111,7 @@ where
     pub async fn append_entries(
         &self,
         rpc: AppendEntriesRequest<TypeConfig>,
-    ) -> StdResult<AppendEntriesResponse<NodeId>, RaftError<NodeId>> {
+    ) -> StdResult<AppendEntriesResponse<NodeId>, Box<RaftError<NodeId>>> {
         self.inner.read().await.append_entries(rpc).await
     }
     pub async fn initialized(&self) -> Option<DateTime<Utc>> {
@@ -1116,13 +1120,14 @@ where
     pub async fn install_snapshot(
         &self,
         req: InstallSnapshotRequest<TypeConfig>,
-    ) -> StdResult<InstallSnapshotResponse<NodeId>, RaftError<NodeId, InstallSnapshotError>> {
+    ) -> StdResult<InstallSnapshotResponse<NodeId>, Box<RaftError<NodeId, InstallSnapshotError>>>
+    {
         self.inner.read().await.install_snapshot(req).await
     }
     pub async fn vote(
         &self,
         rpc: VoteRequest<NodeId>,
-    ) -> StdResult<VoteResponse<NodeId>, RaftError<NodeId>> {
+    ) -> StdResult<VoteResponse<NodeId>, Box<RaftError<NodeId>>> {
         self.inner.read().await.vote(rpc).await
     }
     pub async fn initialize<T, U>(&self, nodes: T, slots: U) -> Result<()>

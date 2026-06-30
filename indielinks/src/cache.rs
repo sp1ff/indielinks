@@ -446,25 +446,33 @@ impl GrpcClient {
     }
 }
 
-fn from_status<Err: std::error::Error>(err: tonic::Status) -> RPCError<NodeId, ClusterNode, Err> {
-    match err.code() {
+fn from_status<Err: std::error::Error>(
+    err: tonic::Status,
+) -> Box<RPCError<NodeId, ClusterNode, Err>> {
+    Box::new(match err.code() {
         Code::Unavailable => indielinks_cache::network::RPCError::Unreachable(
             openraft::error::Unreachable::new(&err),
         ),
         _ => indielinks_cache::network::RPCError::Network(NetworkError::new(&err)),
-    }
+    })
 }
 
 fn from_interop<Err: std::error::Error + 'static>(
     err: crate::protobuf_interop::Error,
-) -> RPCError<NodeId, ClusterNode, Err> {
+) -> Box<RPCError<NodeId, ClusterNode, Err>> {
     // This seems kinda lame, but then there really isn't a great match
-    indielinks_cache::network::RPCError::Network(NetworkError::new(&err))
+    Box::new(indielinks_cache::network::RPCError::Network(
+        NetworkError::new(&err),
+    ))
 }
 
-fn from_cache<Err: std::error::Error + 'static>(err: Error) -> RPCError<NodeId, ClusterNode, Err> {
+fn from_cache<Err: std::error::Error + 'static>(
+    err: Error,
+) -> Box<RPCError<NodeId, ClusterNode, Err>> {
     // This seems kinda lame, but then there really isn't a great match
-    indielinks_cache::network::RPCError::Network(NetworkError::new(&err))
+    Box::new(indielinks_cache::network::RPCError::Network(
+        NetworkError::new(&err),
+    ))
 }
 
 #[async_trait]
@@ -476,8 +484,10 @@ impl indielinks_cache::network::Client for GrpcClient {
         &mut self,
         req: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> StdResult<AppendEntriesResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>>
-    {
+    ) -> StdResult<
+        AppendEntriesResponse<NodeId>,
+        Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>,
+    > {
         self.ensure_connected()
             .await
             .map_err(from_cache)?
@@ -496,7 +506,7 @@ impl indielinks_cache::network::Client for GrpcClient {
         _option: RPCOption,
     ) -> StdResult<
         InstallSnapshotResponse<NodeId>,
-        RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>,
+        Box<RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>>,
     > {
         self.ensure_connected()
             .await
@@ -513,7 +523,8 @@ impl indielinks_cache::network::Client for GrpcClient {
         &mut self,
         req: VoteRequest<NodeId>,
         _option: RPCOption,
-    ) -> StdResult<VoteResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>> {
+    ) -> StdResult<VoteResponse<NodeId>, Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>>
+    {
         self.ensure_connected()
             .await
             .map_err(from_cache)?

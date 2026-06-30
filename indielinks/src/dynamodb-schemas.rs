@@ -65,7 +65,8 @@ pub enum Error {
     #[snafu(display("While deleting {table_name}: {source}"))]
     DeleteTable {
         table_name: String,
-        source: SdkError<DeleteTableError, HttpResponse>,
+        #[snafu(source(from(SdkError<DeleteTableError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<DeleteTableError, HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to build {name}: {source}"))]
@@ -76,7 +77,8 @@ pub enum Error {
     },
     #[snafu(display("While fetching instance state: {source}"))]
     GetInstanceState {
-        source: SdkError<GetItemError, HttpResponse>,
+        #[snafu(source(from(SdkError<GetItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<GetItemError, HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to create the instance state: {source}"))]

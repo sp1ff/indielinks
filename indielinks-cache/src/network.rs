@@ -66,7 +66,10 @@ pub trait Client {
         &mut self,
         req: AppendEntriesRequest<TypeConfig>,
         option: RPCOption,
-    ) -> StdResult<AppendEntriesResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>>;
+    ) -> StdResult<
+        AppendEntriesResponse<NodeId>,
+        Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>,
+    >;
     /// Install a state snapshot on the target node
     async fn install_snapshot(
         &mut self,
@@ -74,14 +77,14 @@ pub trait Client {
         option: RPCOption,
     ) -> StdResult<
         InstallSnapshotResponse<NodeId>,
-        RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>,
+        Box<RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>>,
     >;
     /// Request a leadership vote from the target node
     async fn vote(
         &mut self,
         req: VoteRequest<NodeId>,
         option: RPCOption,
-    ) -> StdResult<VoteResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>>;
+    ) -> StdResult<VoteResponse<NodeId>, Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>>;
     /// Ask the target node to insert a key/value pair into it's LRU cache
     async fn cache_insert<K: Serialize + Sync, V: Serialize + Sync>(
         &mut self,
@@ -127,7 +130,7 @@ impl<C: Client + Send + Sync + 'static> RaftNetwork<TypeConfig> for Connection<C
         option: RPCOption,
     ) -> StdResult<AppendEntriesResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>>
     {
-        self.inner.append_entries(rpc, option).await
+        self.inner.append_entries(rpc, option).await.map_err(|b| *b)
     }
 
     async fn install_snapshot(
@@ -138,7 +141,10 @@ impl<C: Client + Send + Sync + 'static> RaftNetwork<TypeConfig> for Connection<C
         InstallSnapshotResponse<NodeId>,
         RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>,
     > {
-        self.inner.install_snapshot(rpc, option).await
+        self.inner
+            .install_snapshot(rpc, option)
+            .await
+            .map_err(|b| *b)
     }
 
     async fn vote(
@@ -146,7 +152,7 @@ impl<C: Client + Send + Sync + 'static> RaftNetwork<TypeConfig> for Connection<C
         rpc: VoteRequest<NodeId>,
         option: RPCOption,
     ) -> StdResult<VoteResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>> {
-        self.inner.vote(rpc, option).await
+        self.inner.vote(rpc, option).await.map_err(|b| *b)
     }
 }
 
@@ -215,7 +221,7 @@ pub mod null_client {
             _option: RPCOption,
         ) -> StdResult<
             AppendEntriesResponse<NodeId>,
-            RPCError<NodeId, ClusterNode, RaftError<NodeId>>,
+            Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>,
         > {
             unimplemented!()
         }
@@ -226,7 +232,7 @@ pub mod null_client {
             _option: RPCOption,
         ) -> StdResult<
             InstallSnapshotResponse<NodeId>,
-            RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>,
+            Box<RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>>,
         > {
             unimplemented!()
         }
@@ -235,7 +241,7 @@ pub mod null_client {
             &mut self,
             _req: VoteRequest<NodeId>,
             _option: RPCOption,
-        ) -> StdResult<VoteResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>>
+        ) -> StdResult<VoteResponse<NodeId>, Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>>
         {
             unimplemented!()
         }

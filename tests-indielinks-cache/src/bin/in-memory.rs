@@ -155,7 +155,7 @@ impl Client {
         &self,
         req: &Req,
         path: impl AsRef<str>,
-    ) -> StdResult<Rsp, RPCError<NodeId, ClusterNode, Err>>
+    ) -> StdResult<Rsp, Box<RPCError<NodeId, ClusterNode, Err>>>
     where
         Req: Serialize,
         Rsp: DeserializeOwned,
@@ -174,9 +174,15 @@ impl Client {
 
         resp.json::<StdResult<Rsp, Err>>()
             .await
-            .map_err(|e| indielinks_cache::network::RPCError::Network(NetworkError::new(&e)))?
             .map_err(|e| {
-                indielinks_cache::network::RPCError::RemoteError(RemoteError::new(self.id, e))
+                Box::new(indielinks_cache::network::RPCError::Network(
+                    NetworkError::new(&e),
+                ))
+            })?
+            .map_err(|e| {
+                Box::new(indielinks_cache::network::RPCError::RemoteError(
+                    RemoteError::new(self.id, e),
+                ))
             })
     }
     pub async fn send_cache_rpc<Req, Rsp>(
@@ -216,8 +222,10 @@ impl indielinks_cache::network::Client for Client {
         &mut self,
         req: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> StdResult<AppendEntriesResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>>
-    {
+    ) -> StdResult<
+        AppendEntriesResponse<NodeId>,
+        Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>,
+    > {
         self.send_raft_rpc(&req, "raft/append").await
     }
     /// Install a state snapshot on the target node
@@ -227,7 +235,7 @@ impl indielinks_cache::network::Client for Client {
         _option: RPCOption,
     ) -> StdResult<
         InstallSnapshotResponse<NodeId>,
-        RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>,
+        Box<RPCError<NodeId, ClusterNode, RaftError<NodeId, InstallSnapshotError>>>,
     > {
         self.send_raft_rpc(&req, "raft/install").await
     }
@@ -236,7 +244,8 @@ impl indielinks_cache::network::Client for Client {
         &mut self,
         req: VoteRequest<NodeId>,
         _option: RPCOption,
-    ) -> StdResult<VoteResponse<NodeId>, RPCError<NodeId, ClusterNode, RaftError<NodeId>>> {
+    ) -> StdResult<VoteResponse<NodeId>, Box<RPCError<NodeId, ClusterNode, RaftError<NodeId>>>>
+    {
         self.send_raft_rpc(&req, "raft/vote").await
     }
     /// Ask the target node to insert a key/value pair into it's LRU cache

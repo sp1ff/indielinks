@@ -85,19 +85,13 @@ pub enum Error {
         source: url::ParseError,
     },
     #[snafu(display("While forming the response for the instance actor, {source}"))]
-    InstanceActor {
-        source: crate::ap_entities::Error,
-        backtrace: Backtrace,
-    },
+    InstanceActor { source: crate::ap_entities::Error },
     #[snafu(display("Mismatched hostname for webfinger"))]
     Hostname { backtrace: Backtrace },
     #[snafu(display("Unknown user for webfinger"))]
     NoSuchUser { backtrace: Backtrace },
     #[snafu(display("While forming the response, {source}"))]
-    Response {
-        source: crate::ap_entities::Error,
-        backtrace: Backtrace,
-    },
+    Response { source: crate::ap_entities::Error },
     #[snafu(display("Storage failure: {source}"))]
     Storage { source: storage::Error },
     #[snafu(display("Failed to form an URL: {source}"))]

@@ -35,6 +35,10 @@ use openraft::{Entry, LogId, Vote};
 use serde::Serialize;
 use snafu::*;
 
+// Regrettable, but nightly clippy is now complaining about the size of `tonic::Status`, which I
+// can't do much about. I suppose I could apply this each generated method, but that would be
+// *really* tedious.
+#[allow(clippy::result_large_err)]
 pub mod protobuf {
     tonic::include_proto!("indielinkspb");
 }
