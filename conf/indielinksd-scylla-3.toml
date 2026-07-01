@@ -9,7 +9,7 @@ collection-page-size = 64
 
 [public-origin]
 scheme = "http"
-port = 20682
+port = 20673
 
 [public-origin.host]
 RegName = "indiemark.local"
