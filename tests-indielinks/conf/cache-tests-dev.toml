@@ -1,0 +1,30 @@
+# "cache-tests" configuration for the default stack, with logging
+# enabled and no teardown of test fixture on completion.
+
+runner.log-level = "DEBUG"
+runner.logging = true
+runner.no-setup = false
+runner.no-teardown = true
+runner.enforce-single-threaded=true
+
+domain.indielinks = "http://indiemark.local:20673"
+domain.ops = "http://localhost:20680"
+domain.local-state-base = "/tmp/indielinksd-cluster-"
+domain.alternator-config-base = "../conf/indielinksd-alternator-"
+domain.scylla-config-base = "../conf/indielinksd-scylla-"
+domain.haproxy-id = "0"
+domain.haproxy-port = 20673
+
+[domain.raft-nodes]
+"0" = { addr = "127.0.0.1:20681" }
+"1" = { addr = "127.0.0.1:20684" }
+"2" = { addr = "127.0.0.1:20687" }
+"3" = { addr = "127.0.0.1:20690" }
+"4" = { addr = "127.0.0.1:20693" }
+
+[domain.scylla]
+hosts = ["127.0.0.1:9043"]
+translations=[["172.11.0.2:9043", "127.0.0.1:9043"], ["172.11.0.3:9043", "127.0.0.1:9044"], ["172.11.0.4:9043", "127.0.0.1:9045"]]
+
+[domain.dynamo]
+location = ["http://127.0.0.1:8043", "http://127.0.0.1:8044", "http://127.0.0.1:8045"]

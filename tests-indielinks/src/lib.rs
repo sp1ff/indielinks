@@ -60,6 +60,8 @@ pub mod helper;
 #[path = "home-timeline.rs"]
 pub mod home_timeline;
 pub mod outboxes;
+#[path = "post-reply-timeline.rs"]
+pub mod post_reply_timeline;
 #[path = "recent-posts.rs"]
 pub mod recent_posts;
 #[path = "top-k-tags.rs"]

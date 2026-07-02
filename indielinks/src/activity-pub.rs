@@ -60,7 +60,7 @@ use crate::{
         ToJld, Type,
     },
     background_tasks::{self, BackgroundTask, Context, TaggedTask, Task},
-    entities::{FollowId, LikeId, OutgoingLike, OutgoingReply, ReplyId, User, Visibility},
+    entities::{FollowId, LikeId, OutgoingLike, ReplyId, User, Visibility},
     sanitized_html::{parse, ParseResult},
     storage::Backend as StorageBackend,
 };
@@ -787,17 +787,6 @@ impl Task<Context> for SendReply {
 
         async fn exec1(this: Box<SendReply>, context: Context) -> Result<()> {
             // Let's start by writing the reply to the database.
-            context
-                .storage
-                .add_outgoing_reply(&OutgoingReply::new(
-                    *this.user.id(),
-                    this.id,
-                    this.apid.clone(),
-                    Visibility::Public,
-                    this.reply.clone(),
-                ))
-                .await
-                .context(StorageSnafu)?;
 
             debug!("Wrote the outgoing reply to ScyllaDB. Sanitizing the reply HTML");
 

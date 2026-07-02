@@ -41,8 +41,9 @@ use indielinks_cache::{raft::CacheNode, types::NodeId};
 use indielinks_shared::{
     api::{
         ClusterStatsResponse, OutboxToken, RecentPostsPage, RecentPostsRequest,
-        RecentPostsResponse, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage,
-        TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp, UserOutboxRequest,
+        RecentPostsResponse, ReplyRequest, TimelineBeforePage, TimelineBeforeRsp,
+        TimelineInitialPage, TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp,
+        UserOutboxRequest,
     },
     entities::{Post, PostId, StorUrl, Tagname, UserId, Username},
     nonempty_string::NonEmptyString,
@@ -51,7 +52,7 @@ use indielinks_shared::{
 use uuid::Uuid;
 
 use crate::{
-    activity_pub::SendCreate,
+    activity_pub::{SendCreate, SendReply},
     ap_entities::{
         ap_request, ap_request_no_response, make_follow_id, make_user_id, make_user_outbox, Actor,
         Announce, AnnounceOrCreate, Create, Follow, Item, Note, Outbox, OutboxPage, ToJld,
@@ -59,7 +60,7 @@ use crate::{
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     cache::{GrpcClient, GrpcClientFactory},
     define_metric,
-    entities::{FollowId, OutgoingReply, OutgoingShare, User},
+    entities::{FollowId, OutgoingReply, OutgoingShare, ReplyId, User, Visibility},
     home_timeline::{FirstPage, HomeTimelines, PostKey as HomeTimelineKey, Timeline},
     indielinks::Indielinks,
     outboxes::{ActivityKey, Outbox as UserOutbox, Page, FIRST_ACTIVITY_KEY},
@@ -86,6 +87,8 @@ pub enum Error {
     },
     #[snafu(display("While adding the post internally, {source}"))]
     AddPost { source: crate::storage::Error },
+    #[snafu(display("While adding the reply internally, {source}"))]
+    AddReply { source: crate::storage::Error },
     #[snafu(display("ActivityPub entities error: {source}"))]
     Ap {
         #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
@@ -818,8 +821,30 @@ pub async fn add_post(
                 .send(SendCreate::new(&postid, &dt))
                 .await
                 .context(FederationSnafu)?;
+            let post = Post::new(
+                &url.into(),
+                &postid,
+                user.id(),
+                &dt,
+                title,
+                notes,
+                tags,
+                true,
+                to_read,
+            );
             debug!("Adding this post to the user outbox (if present).");
-            handle_outbox_insert_or_redirect(state, user, &PostReplyShare::Post(post)).await?
+
+            handle_outbox_insert_or_redirect(
+                state.clone(),
+                user,
+                &PostReplyShare::Post(post.clone()),
+            )
+            .await?;
+            debug!("Adding this post to the user home timeline (if present).");
+            let item = Item::Note(Box::new(
+                Note::new(&post, user.username(), &state.origin).context(ApSnafu)?,
+            ));
+            handle_timeline_insert_or_redirect(state, user, &item).await?;
         }
     }
     Ok(added)
@@ -844,6 +869,63 @@ pub async fn get_cluster_stats(state: Arc<Indielinks>) -> Result<ClusterStatsRes
         raft_term: metrics.raft.current_term,
         raft_leader: metrics.raft.current_leader,
     })
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                     Send an outgoing reply                                     //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Reply to a post on behalf of `user`
+///
+/// Dispatch a [SendReply] background task to federate the reply, then insert the reply into the
+/// user's home timeline and outbox (each a no-op if not currently materialized). The `ReplyId` is
+/// generated once and shared so the federated reply, the outbox `Announce`, and the timeline `Note`
+/// all agree on the reply's URL.
+pub async fn reply(state: Arc<Indielinks>, user: &User, request: ReplyRequest) -> Result<()> {
+    // Let's write the reply down, first.
+    let reply_id = ReplyId::default();
+    state
+        .storage
+        .add_outgoing_reply(&OutgoingReply::new(
+            *user.id(),
+            reply_id,
+            request.id.clone(),
+            Visibility::Public,
+            request.text.clone(),
+        ))
+        .await
+        .context(AddReplySnafu)?;
+    // Now, create a background task to send AcrtivityPub messages to our correspondent, as well as
+    // our followers.
+    state
+        .task_sender
+        .send(SendReply::new(
+            state.origin.clone(),
+            user.clone(),
+            request.id.clone(),
+            reply_id,
+            request.actor,
+            request.text.clone(),
+        ))
+        .await
+        .context(FederationSnafu)?;
+    // Finally, add this to `user`'s materialized outbox and home timeline (if extant):
+    let outgoing = OutgoingReply::new(
+        *user.id(),
+        reply_id,
+        request.id,
+        Visibility::Public,
+        request.text,
+    );
+    handle_timeline_insert_or_redirect(
+        state.clone(),
+        user,
+        &Item::Note(Box::new(
+            Note::from_reply(&outgoing, user.username(), &state.origin).context(ApSnafu)?,
+        )),
+    )
+    .await?;
+    handle_outbox_insert_or_redirect(state, user, &PostReplyShare::Reply(outgoing)).await
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

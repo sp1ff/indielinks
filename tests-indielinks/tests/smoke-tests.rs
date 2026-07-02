@@ -94,6 +94,7 @@ use tests_indielinks::{
     helper::{DynamoConfig, DynamoDBHelper, Helper, ScyllaConfig, ScyllaHelper},
     home_timeline::{timeline_before, timeline_empty, timeline_initial},
     outboxes::outbox_smoke_test,
+    post_reply_timeline::post_reply_timeline,
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
@@ -1019,6 +1020,25 @@ inventory::submit!(Test {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(outbox_smoke_test(
+            helper.indielinks(),
+            version,
+            pepper,
+            helper,
+        ))
+    },
+    fixtures: Some(&[
+        FixtureId::ScyllaSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::DynamoDBCluster
+    ]),
+});
+
+inventory::submit!(Test {
+    name: "111post_reply_timeline",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(post_reply_timeline(
             helper.indielinks(),
             version,
             pepper,
