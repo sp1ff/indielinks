@@ -455,19 +455,19 @@ pub struct OtelExportConfig {
 
 /// Rate-limit settings for indielinksd _clients_.
 ///
-/// `per_second` is the permissible number of requests per second per network location (host +
+/// `per_hour` is the permissible number of requests per hour per network location (host +
 /// port). Non-default per-netloc quotas can be defined via `custom`.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ClientRateLimits {
-    #[serde(rename = "per-second")]
-    per_second: NonZeroU32,
+    #[serde(rename = "per-hour")]
+    per_hour: NonZeroU32,
     custom: Vec<(NetLoc, NonZeroU32)>,
 }
 
 impl Default for ClientRateLimits {
     fn default() -> Self {
         Self {
-            per_second: nonzero!(8u32),
+            per_hour: nonzero!(2880u32), // 8/sec
             custom: Default::default(),
         }
     }
@@ -1082,7 +1082,7 @@ async fn serve(
     // Loop forever, handling SIGHUPs, until asked to terminate:
     loop {
         let ap_rate_limiter =
-            governor::RateLimiter::keyed(Quota::per_second(cfg.client_rate_limits.per_second))
+            governor::RateLimiter::keyed(Quota::per_hour(cfg.client_rate_limits.per_hour))
                 .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
                     cfg.client_rate_limits.custom.iter().map(|(k, v)| {
                         (
@@ -1102,7 +1102,7 @@ async fn serve(
         .context(ClientSnafu)?;
 
         let local_rate_limiter =
-            governor::RateLimiter::keyed(Quota::per_second(cfg.local_rate_limits.per_second))
+            governor::RateLimiter::keyed(Quota::per_hour(cfg.local_rate_limits.per_hour))
                 .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
                     cfg.local_rate_limits.custom.iter().map(|(k, v)| {
                         (
@@ -1121,17 +1121,16 @@ async fn serve(
         )
         .context(ClientSnafu)?;
 
-        let general_purpose_rate_limiter = governor::RateLimiter::keyed(Quota::per_second(
-            cfg.general_purpose_rate_limits.per_second,
-        ))
-        .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
-            cfg.general_purpose_rate_limits.custom.iter().map(|(k, v)| {
-                (
-                    HostKey::Host(k.clone()),
-                    governor::gcra::Gcra::new(Quota::per_second(*v)),
-                )
-            }),
-        ));
+        let general_purpose_rate_limiter =
+            governor::RateLimiter::keyed(Quota::per_hour(cfg.general_purpose_rate_limits.per_hour))
+                .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
+                    cfg.general_purpose_rate_limits.custom.iter().map(|(k, v)| {
+                        (
+                            HostKey::Host(k.clone()),
+                            governor::gcra::Gcra::new(Quota::per_second(*v)),
+                        )
+                    }),
+                ));
 
         let general_purpose_client = make_client(
             &cfg.user_agent,
