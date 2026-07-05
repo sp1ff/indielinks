@@ -547,6 +547,7 @@ pub async fn schema_migration_2(client: Client) -> Result<()> {
         attr_defn = ("in_reply_to", S),
         pk = "user_id",
         sk = "received_and_ap_id",
+        // This is a misnomer-- we're not indexing by ActivityPub ID, but just Post ID
         gsi: (name = "incoming_likes_replies_shares_by_ap_id", pk = "in_reply_to")
     )
     .map(|_| ())

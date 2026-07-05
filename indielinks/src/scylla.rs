@@ -13,20 +13,29 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! # scylla
-//!
-//! [Storage] implementation for ScyallaDB, along with other ScyllaDB-related utilities.
+//! # scylla: [Storage] implementation for ScyallaDB, along with other ScyllaDB-related utilities.
 //!
 //! [Storage]: crate::storage
+//!
+//! ## Introduction
+//!
+//! This is one of the oldest pieces of [indielinks], and to be honest it's overdue for a refactor.
+//! This is the [Storage] [Backend] implementation for the Cassandra/native ScyllaDB interface.
+//!
+//! [indielinks]: ../indielinskd/index.html
+//! [Backend]: crate::storage::Backend
 
-use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::future::Future;
-use std::net::SocketAddr;
-use std::ops::{Bound, Deref};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::Poll;
+use std::{
+    borrow::Borrow,
+    collections::{HashMap, HashSet, VecDeque},
+    future::Future,
+    net::SocketAddr,
+    ops::{Bound, Deref},
+    pin::Pin,
+    result::Result as StdResult,
+    sync::Arc,
+    task::Poll,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -43,21 +52,11 @@ use indielinks_shared::nonempty_string::NonEmptyString;
 use itertools::Itertools;
 use num_bigint::BigInt;
 use openraft::{
-    Entry, ErrorSubject, ErrorVerb, LogId, LogState, RaftLogId, StorageError, StorageIOError, Vote,
+    Entry, ErrorSubject, ErrorVerb, LogId, LogState, RaftLogId, StorageError as RaftStorageError,
+    StorageIOError, Vote,
 };
 use pin_project::pin_project;
 use rmp_serde::{from_slice, to_vec};
-use scylla::errors::TranslationError;
-use scylla::policies::address_translator::UntranslatedPeer;
-use scylla::response::{PagingState, PagingStateResponse};
-use scylla::{
-    client::{session::Session as InnerSession, session_builder::SessionBuilder},
-    statement::{
-        batch::{Batch, BatchStatement, BatchType},
-        prepared::PreparedStatement,
-        Statement,
-    },
-};
 use secrecy::ExposeSecret;
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
@@ -65,22 +64,32 @@ use tracing::{debug, error, info};
 use url::Url;
 use uuid::Uuid;
 
+use scylla::{
+    client::{session::Session as InnerSession, session_builder::SessionBuilder},
+    errors::TranslationError,
+    policies::address_translator::UntranslatedPeer,
+    response::{PagingState, PagingStateResponse},
+    statement::{
+        batch::{Batch, BatchStatement, BatchType},
+        prepared::PreparedStatement,
+        Statement,
+    },
+};
+
 use indielinks_shared::entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
-use crate::entities::{
-    ApiKeys, IncomingLike, IncomingLikeReplyShareRef, IncomingReply, IncomingShare, LikeReplyShare,
-    LikeReplyShareRef, OutgoingLike, OutgoingReply, OutgoingShare,
-};
-use crate::storage::{Counts, SchemaSnafu};
-use crate::util::Credentials;
 use crate::{
-    background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
+    background_tasks::{Backend as TasksBackend, Error as BackgroundTaskError, FlatTask},
     cache::{
         to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
     },
-    entities::{FollowId, Follower, FollowerId, Following, User},
-    storage::{self, DateRange, UsernameClaimedSnafu},
-    util::UpToThree,
+    entities::{
+        ApiKeys, FollowId, Follower, FollowerId, Following, IncomingLike,
+        IncomingLikeReplyShareRef, IncomingReply, IncomingShare, LikeReplyShare, LikeReplyShareRef,
+        OutgoingLike, OutgoingReply, OutgoingShare, User,
+    },
+    storage::{self, Counts, DateRange, SchemaSnafu, UsernameClaimedSnafu},
+    util::{Credentials, UpToThree},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -306,9 +315,7 @@ pub enum Error {
     },
 }
 
-type Result<T> = std::result::Result<T, Error>;
-
-type StdResult<T, E> = std::result::Result<T, E>;
+type Result<T> = StdResult<T, Error>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                   ScyllaDB-related utilities                                   //
@@ -568,9 +575,32 @@ pub async fn get_likes_replies_shares_count(
         .0 as usize)
 }
 
+// This is an internal macro that I'm using to reduce boilerplate in one method only:
+// `get_all_posts()`.
+#[macro_export]
+macro_rules! all_posts_case {
+    ($self:expr, $idx:expr, $params:expr) => {
+        make_streaming_response(
+            &$self.session,
+            $self.get_all_posts_statements[$idx].clone(),
+            $params,
+        )
+        .await
+        .map_err(StorageError::new)?
+        .boxed()
+        .pipe(Ok)
+    };
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       PagedResultsStream                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// A [Stream] for enumerating a results from a paged ScyllaDB response
 ///
 /// This is a utility type I whipped-up to make paged results out of ScyllaDB generic.
+// I think I wrote this before I discovered `rows_stream()` (or maybe that was added later?) In any
+// event, I think this can be removed, and callers can just use `make_streaming_response()`, below.
 #[allow(clippy::type_complexity)]
 #[pin_project]
 pub struct PagedResultsStream<'a, T, P>
@@ -645,8 +675,7 @@ where
         + 'a,
     P: scylla::serialize::row::SerializeRow + Clone + Send + Sync,
 {
-    type Item = StdResult<T, StorError>;
-
+    type Item = StdResult<T, StorageError>;
     fn poll_next(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -687,7 +716,7 @@ where
                         Poll::Ready(Err(err)) => {
                             // Return the error this time, then drop our Future
                             self.fut = None;
-                            return Poll::Ready(Some(Err(StorError::new(err))));
+                            return Poll::Ready(Some(Err(StorageError::new(err))));
                         }
                         Poll::Pending => return Poll::Pending,
                     },
@@ -696,7 +725,6 @@ where
             }
         }
     }
-
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.count, Some(self.count))
     }
@@ -706,7 +734,7 @@ where
 ///
 /// For some queries, the number of rows in the response may be large. Prepare such queries with
 /// pagination enabled in the [Session] constructor, and use this function to build a [Stream]
-/// implementation yielding a `Result<T, StorError>` (where `T` is the row type). The choice of
+/// implementation yielding a `Result<T, StorageError>` (where `T` is the row type). The choice of
 /// `Err` variant is convenient in terms of implementing [Backend] trait methods.
 ///
 /// Note that the resulting [Stream] implementation will have `'static` lifetime, meaning that
@@ -715,7 +743,7 @@ async fn make_streaming_response<T, P>(
     session: &InnerSession,
     statement: PreparedStatement,
     params: P,
-) -> Result<impl Stream<Item = StdResult<T, StorError>>>
+) -> Result<impl Stream<Item = StdResult<T, StorageError>>>
 where
     P: scylla::serialize::row::SerializeRow,
     T: for<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metadata>,
@@ -726,29 +754,19 @@ where
         .context(PagerSnafu)?
         .rows_stream::<T>()
         .context(RowTypeSnafu)?
-        .err_into::<StorError>()
+        .err_into::<StorageError>()
         .pipe(Ok)
-}
-
-// This is an internal macro that I'm using to reduce boilerplate in one method only:
-// `get_all_posts()`.
-#[macro_export]
-macro_rules! all_posts_case {
-    ($self:expr, $idx:expr, $params:expr) => {
-        make_streaming_response(
-            &$self.session,
-            $self.get_all_posts_statements[$idx].clone(),
-            $params,
-        )
-        .await
-        .map_err(StorError::new)?
-        .boxed()
-        .pipe(Ok)
-    };
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          Translations                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// [Scylla] [AddressTranslator] implementation
+///
+/// Scylla allows for cluster members identify one another by different addresses than clients. I
+/// gather this is intended to allow clients to work with clusters that are behind NAT (or similar),
+/// but I find it handy for allowing integration tests to work with containerized clusters.
 struct Translations {
     addresses: HashMap<SocketAddr, SocketAddr>,
 }
@@ -775,6 +793,10 @@ impl scylla::policies::address_translator::AddressTranslator for Translations {
             .copied()
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                 the Indielinks ScyllaDB client                                 //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Create an instance of the native ScyllaDB SDK client
 pub async fn create_client(
@@ -1090,6 +1112,7 @@ pub struct Session {
     following_by_actor_statement: PreparedStatement,
     get_all_posts_statements: Vec<PreparedStatement>, // 32
     get_all_likes_replies_shares_statement: PreparedStatement,
+    get_likes_replies_shares_statement: PreparedStatement,
     // Raft node ID
     node_id: NodeId,
 }
@@ -1327,6 +1350,16 @@ impl Session {
             .context(PrepareSnafu {
                 stmt: get_all_likes_replies_shares_statement.to_owned(),
             })?;
+
+        let get_likes_replies_shares_statement =
+            "select * from incoming_likes_replies_shares where in_reply_to=?";
+        let get_likes_replies_shares_statement = scylla
+            .prepare(Statement::new(get_likes_replies_shares_statement).with_page_size(512))
+            .await
+            .context(PrepareSnafu {
+                stmt: get_likes_replies_shares_statement.to_owned(),
+            })?;
+
         Ok(Session {
             session: scylla,
             prepared_statements: EnumMap::from_array(prepared_statements),
@@ -1335,78 +1368,86 @@ impl Session {
             following_by_actor_statement,
             get_all_posts_statements,
             get_all_likes_replies_shares_statement,
+            get_likes_replies_shares_statement,
             node_id,
         })
     }
 }
 
-use storage::Error as StorError;
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                         The Big Tuna: storage::Backend implementation                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Due to a design decision I'm regretting, all our methods have to return a `storage::Error`.
+use storage::Error as StorageError;
 
 // Use these if you don't want to add any context to a failed query... should probably wrap this up
 // in a macro, but I'm not sure this is the way I want to go, just yet.
-impl std::convert::From<scylla::deserialize::DeserializationError> for StorError {
+impl std::convert::From<scylla::deserialize::DeserializationError> for StorageError {
     fn from(value: scylla::deserialize::DeserializationError) -> Self {
-        StorError::new(value)
+        StorageError::new(value)
     }
 }
 
-impl std::convert::From<scylla::errors::ExecutionError> for StorError {
+impl std::convert::From<scylla::errors::ExecutionError> for StorageError {
     fn from(value: scylla::errors::ExecutionError) -> Self {
-        StorError::new(value)
+        StorageError::new(value)
     }
 }
 
-impl std::convert::From<scylla::response::query_result::IntoRowsResultError> for StorError {
+impl std::convert::From<scylla::response::query_result::IntoRowsResultError> for StorageError {
     fn from(value: scylla::response::query_result::IntoRowsResultError) -> Self {
-        StorError::new(value)
+        StorageError::new(value)
     }
 }
 
-impl std::convert::From<scylla::response::query_result::RowsError> for StorError {
+impl std::convert::From<scylla::response::query_result::RowsError> for StorageError {
     fn from(value: scylla::response::query_result::RowsError) -> Self {
-        StorError::new(value)
+        StorageError::new(value)
     }
 }
 
-impl std::convert::From<scylla::response::query_result::FirstRowError> for StorError {
+impl std::convert::From<scylla::response::query_result::FirstRowError> for StorageError {
     fn from(value: scylla::response::query_result::FirstRowError) -> Self {
-        StorError::new(value)
+        StorageError::new(value)
     }
 }
 
-impl std::convert::From<scylla::deserialize::DeserializationError> for BckError {
+impl std::convert::From<scylla::deserialize::DeserializationError> for BackgroundTaskError {
     fn from(value: scylla::deserialize::DeserializationError) -> Self {
-        BckError::new(value)
+        BackgroundTaskError::new(value)
     }
 }
 
-impl std::convert::From<scylla::errors::ExecutionError> for BckError {
+impl std::convert::From<scylla::errors::ExecutionError> for BackgroundTaskError {
     fn from(value: scylla::errors::ExecutionError) -> Self {
-        BckError::new(value)
+        BackgroundTaskError::new(value)
     }
 }
 
-impl std::convert::From<scylla::response::query_result::RowsError> for BckError {
+impl std::convert::From<scylla::response::query_result::RowsError> for BackgroundTaskError {
     fn from(value: scylla::response::query_result::RowsError) -> Self {
-        BckError::new(value)
+        BackgroundTaskError::new(value)
     }
 }
 
-impl std::convert::From<scylla::response::query_result::IntoRowsResultError> for BckError {
+impl std::convert::From<scylla::response::query_result::IntoRowsResultError>
+    for BackgroundTaskError
+{
     fn from(value: scylla::response::query_result::IntoRowsResultError) -> Self {
-        BckError::new(value)
+        BackgroundTaskError::new(value)
     }
 }
 
-impl std::convert::From<scylla::response::query_result::SingleRowError> for BckError {
+impl std::convert::From<scylla::response::query_result::SingleRowError> for BackgroundTaskError {
     fn from(value: scylla::response::query_result::SingleRowError) -> Self {
-        BckError::new(value)
+        BackgroundTaskError::new(value)
     }
 }
 
 #[async_trait]
 impl storage::Backend for Session {
-    async fn add_follower(&self, user: &User, follower: &StorUrl) -> StdResult<(), StorError> {
+    async fn add_follower(&self, user: &User, follower: &StorUrl) -> StdResult<(), StorageError> {
         add_followers(
             &self.session,
             Some(&self.prepared_statements[PreparedStatements::AddFollowers]),
@@ -1415,7 +1456,7 @@ impl storage::Backend for Session {
             false,
         )
         .await
-        .map_err(StorError::new)
+        .map_err(StorageError::new)
     }
 
     async fn add_following(
@@ -1423,7 +1464,7 @@ impl storage::Backend for Session {
         user: &User,
         follow: &StorUrl,
         id: &FollowId,
-    ) -> StdResult<(), StorError> {
+    ) -> StdResult<(), StorageError> {
         add_following(
             &self.session,
             Some(&self.prepared_statements[PreparedStatements::AddFollows]),
@@ -1432,37 +1473,37 @@ impl storage::Backend for Session {
             false,
         )
         .await
-        .map_err(StorError::new)
+        .map_err(StorageError::new)
     }
 
-    async fn add_outgoing_like(&self, like: &OutgoingLike) -> StdResult<(), StorError> {
+    async fn add_outgoing_like(&self, like: &OutgoingLike) -> StdResult<(), StorageError> {
         add_outgoing_like_reply_share(
             &self.session,
             Some(&self.prepared_statements[PreparedStatements::AddOutgoingLikeReplyShare]),
             &LikeReplyShareRef::Like(like),
         )
         .await
-        .map_err(StorError::new)
+        .map_err(StorageError::new)
     }
 
-    async fn add_outgoing_reply(&self, reply: &OutgoingReply) -> StdResult<(), StorError> {
+    async fn add_outgoing_reply(&self, reply: &OutgoingReply) -> StdResult<(), StorageError> {
         add_outgoing_like_reply_share(
             &self.session,
             Some(&self.prepared_statements[PreparedStatements::AddOutgoingLikeReplyShare]),
             &LikeReplyShareRef::Reply(reply),
         )
         .await
-        .map_err(StorError::new)
+        .map_err(StorageError::new)
     }
 
-    async fn add_outgoing_share(&self, share: &OutgoingShare) -> StdResult<(), StorError> {
+    async fn add_outgoing_share(&self, share: &OutgoingShare) -> StdResult<(), StorageError> {
         add_outgoing_like_reply_share(
             &self.session,
             Some(&self.prepared_statements[PreparedStatements::AddOutgoingLikeReplyShare]),
             &LikeReplyShareRef::Share(share),
         )
         .await
-        .map_err(StorError::new)
+        .map_err(StorageError::new)
     }
 
     async fn add_post(
@@ -1477,7 +1518,7 @@ impl storage::Backend for Session {
         shared: bool,
         to_read: bool,
         tags: &HashSet<Tagname>,
-    ) -> StdResult<bool, StorError> {
+    ) -> StdResult<bool, StorageError> {
         // Unlike in SQL, INSERT INTO does not check the prior existence of the row by default: the
         // row is created if none existed before, and updated otherwise. This behavior can be
         // changed by using ScyllaDB’s Lightweight Transaction IF NOT EXISTS or IF EXISTS clauses.
@@ -1510,7 +1551,7 @@ impl storage::Backend for Session {
         Ok(!result.is_rows())
     }
 
-    async fn add_post_like(&self, like: &IncomingLike) -> StdResult<(), StorError> {
+    async fn add_post_like(&self, like: &IncomingLike) -> StdResult<(), StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::AddIncomingLikeReplyShare],
@@ -1523,7 +1564,7 @@ impl storage::Backend for Session {
         Ok(())
     }
 
-    async fn add_post_reply(&self, reply: &IncomingReply) -> StdResult<(), StorError> {
+    async fn add_post_reply(&self, reply: &IncomingReply) -> StdResult<(), StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::AddIncomingLikeReplyShare],
@@ -1536,7 +1577,7 @@ impl storage::Backend for Session {
         Ok(())
     }
 
-    async fn add_post_share(&self, share: &IncomingShare) -> StdResult<(), StorError> {
+    async fn add_post_share(&self, share: &IncomingShare) -> StdResult<(), StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::AddIncomingLikeReplyShare],
@@ -1549,7 +1590,7 @@ impl storage::Backend for Session {
         Ok(())
     }
 
-    async fn add_user(&self, user: &User) -> StdResult<(), StorError> {
+    async fn add_user(&self, user: &User) -> StdResult<(), StorageError> {
         if add_user(
             &self.session,
             Some(&self.prepared_statements[PreparedStatements::ClaimUsername]),
@@ -1557,7 +1598,7 @@ impl storage::Backend for Session {
             user,
         )
         .await
-        .map_err(StorError::new)?
+        .map_err(StorageError::new)?
         {
             Ok(())
         } else {
@@ -1572,14 +1613,14 @@ impl storage::Backend for Session {
         &self,
         user: &User,
         following: &StorUrl,
-    ) -> StdResult<bool, StorError> {
+    ) -> StdResult<bool, StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::ConfirmFollow],
                 (user.id(), following),
             )
             .await
-            .map_err(StorError::new)?;
+            .map_err(StorageError::new)?;
         // This is unfortunate: "there is no way to know whether creation or update occurred."
         // <https://opensource.docs.scylladb.com/stable/cql/dml/update.html>
         Ok(true) // This seems like a bug.
@@ -1589,7 +1630,7 @@ impl storage::Backend for Session {
     // proper `counts` table and keep it up-to-date. For now, however, I just want to get this up &
     // running; if we ever get to a point where this is a performance bottleneck, well, that would
     // be a nice problem to have.
-    async fn counts(&self) -> StdResult<Counts, StorError> {
+    async fn counts(&self) -> StdResult<Counts, StorageError> {
         let num_users = self.session
             .execute_unpaged(&self.prepared_statements[PreparedStatements::CountAllUsers], ())
             .await?
@@ -1612,7 +1653,7 @@ impl storage::Backend for Session {
         })
     }
 
-    async fn delete_post(&self, user: &User, url: &StorUrl) -> StdResult<bool, StorError> {
+    async fn delete_post(&self, user: &User, url: &StorUrl) -> StdResult<bool, StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::DeletePost],
@@ -1640,7 +1681,7 @@ impl storage::Backend for Session {
             .pipe(Ok)
     }
 
-    async fn delete_tag(&self, user: &User, tag: &Tagname) -> StdResult<(), StorError> {
+    async fn delete_tag(&self, user: &User, tag: &Tagname) -> StdResult<(), StorageError> {
         // OK: here's the plan. We whack-down the writes needed by first selecting only the posts
         // containing `from`. Using that we'll construct a `Batch` update. This of course leaves us
         // open to a `posts/add` for a `Post` with the tag being renamed "sneaking in" between our
@@ -1679,14 +1720,14 @@ impl storage::Backend for Session {
     async fn followers_for_actor(
         &self,
         actor_id: &StorUrl,
-    ) -> StdResult<BoxStream<'static, StdResult<Following, StorError>>, StorError> {
+    ) -> StdResult<BoxStream<'static, StdResult<Following, StorageError>>, StorageError> {
         make_streaming_response(
             &self.session,
             self.following_by_actor_statement.clone(),
             (actor_id.clone(),),
         )
         .await
-        .map_err(StorError::new)?
+        .map_err(StorageError::new)?
         .boxed()
         .pipe(Ok)
     }
@@ -1694,14 +1735,14 @@ impl storage::Backend for Session {
     async fn get_all_likes_replies_and_shares(
         &self,
         user: &User,
-    ) -> StdResult<BoxStream<'static, StdResult<LikeReplyShare, StorError>>, StorError> {
+    ) -> StdResult<BoxStream<'static, StdResult<LikeReplyShare, StorageError>>, StorageError> {
         make_streaming_response(
             &self.session,
             self.get_all_likes_replies_shares_statement.clone(),
             (*user.id(),),
         )
         .await
-        .map_err(StorError::new)?
+        .map_err(StorageError::new)?
         .boxed()
         .pipe(Ok)
     }
@@ -1709,14 +1750,14 @@ impl storage::Backend for Session {
     async fn get_followers<'a>(
         &'a self,
         user: &User,
-    ) -> StdResult<BoxStream<'a, StdResult<Follower, StorError>>, StorError> {
+    ) -> StdResult<BoxStream<'a, StdResult<Follower, StorageError>>, StorageError> {
         let count = get_followers_count(
             &self.session,
             Some(&self.prepared_statements[PreparedStatements::CountFollowers]),
             user,
         )
         .await
-        .map_err(StorError::new)?;
+        .map_err(StorageError::new)?;
         Ok(Box::pin(
             PagedResultsStream::new(
                 &self.session,
@@ -1725,21 +1766,21 @@ impl storage::Backend for Session {
                 count,
             )
             .await
-            .map_err(StorError::new)?,
+            .map_err(StorageError::new)?,
         ))
     }
 
     async fn get_following<'a>(
         &'a self,
         user: &User,
-    ) -> StdResult<BoxStream<'a, StdResult<Following, StorError>>, StorError> {
+    ) -> StdResult<BoxStream<'a, StdResult<Following, StorageError>>, StorageError> {
         let count = get_following_count(
             &self.session,
             Some(&self.prepared_statements[PreparedStatements::CountFollowing]),
             user,
         )
         .await
-        .map_err(StorError::new)?;
+        .map_err(StorageError::new)?;
         Ok(Box::pin(
             PagedResultsStream::new(
                 &self.session,
@@ -1748,7 +1789,7 @@ impl storage::Backend for Session {
                 count,
             )
             .await
-            .map_err(StorError::new)?,
+            .map_err(StorageError::new)?,
         ))
     }
 
@@ -1758,7 +1799,7 @@ impl storage::Backend for Session {
         tags: &UpToThree<Tagname>,
         day: &PostDay,
         uri: &Option<StorUrl>,
-    ) -> StdResult<Vec<Post>, StorError> {
+    ) -> StdResult<Vec<Post>, StorageError> {
         match (uri, tags) {
             (None, UpToThree::None) => {
                 self.session
@@ -1810,7 +1851,7 @@ impl storage::Backend for Session {
     async fn get_like_reply_share(
         &self,
         id: &Uuid,
-    ) -> StdResult<Option<LikeReplyShare>, StorError> {
+    ) -> StdResult<Option<LikeReplyShare>, StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::OutgoingLikeReplyShare],
@@ -1820,11 +1861,31 @@ impl storage::Backend for Session {
             .into_rows_result()?
             .rows::<LikeReplyShare>()?
             .at_most_one()
-            .map_err(|_| StorError::new(AtMostOneRowSnafu.build()))?
+            .map_err(|_| StorageError::new(AtMostOneRowSnafu.build()))?
             .transpose()?
             .pipe(Ok)
     }
-    async fn get_post(&self, userid: &UserId, uri: &StorUrl) -> StdResult<Option<Post>, StorError> {
+
+    async fn get_likes_replies_shares(
+        &self,
+        id: &PostId,
+    ) -> StdResult<BoxStream<'static, StdResult<LikeReplyShare, StorageError>>, StorageError> {
+        make_streaming_response(
+            &self.session,
+            self.get_likes_replies_shares_statement.clone(),
+            (*id,),
+        )
+        .await
+        .map_err(StorageError::new)?
+        .boxed()
+        .pipe(Ok)
+    }
+
+    async fn get_post(
+        &self,
+        userid: &UserId,
+        uri: &StorUrl,
+    ) -> StdResult<Option<Post>, StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::GetPosts1],
@@ -1834,12 +1895,12 @@ impl storage::Backend for Session {
             .into_rows_result()?
             .rows::<Post>()?
             .at_most_one()
-            .map_err(|_| StorError::new(AtMostOneRowSnafu.build()))?
+            .map_err(|_| StorageError::new(AtMostOneRowSnafu.build()))?
             .transpose()?
             .pipe(Ok)
     }
 
-    async fn get_post_by_id(&self, id: &PostId) -> StdResult<Option<Post>, StorError> {
+    async fn get_post_by_id(&self, id: &PostId) -> StdResult<Option<Post>, StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::GetPostById],
@@ -1849,7 +1910,7 @@ impl storage::Backend for Session {
             .into_rows_result()?
             .rows::<Post>()?
             .at_most_one()
-            .map_err(|_| StorError::new(AtMostOneRowSnafu.build()))?
+            .map_err(|_| StorageError::new(AtMostOneRowSnafu.build()))?
             .transpose()?
             .pipe(Ok)
     }
@@ -1858,7 +1919,7 @@ impl storage::Backend for Session {
         &self,
         user: &User,
         tags: &UpToThree<Tagname>,
-    ) -> StdResult<Vec<(PostDay, usize)>, StorError> {
+    ) -> StdResult<Vec<(PostDay, usize)>, StorageError> {
         // Use `execute_paged`?
         match tags {
             UpToThree::None => {
@@ -1912,7 +1973,7 @@ impl storage::Backend for Session {
         tags: &UpToThree<Tagname>,
         dates: &DateRange,
         unread: bool,
-    ) -> StdResult<BoxStream<'static, StdResult<Post, StorError>>, StorError> {
+    ) -> StdResult<BoxStream<'static, StdResult<Post, StorageError>>, StorageError> {
         match (tags, dates, unread) {
             (UpToThree::None, DateRange::None, false) => {
                 all_posts_case!(self, 0, (*user.id(),))
@@ -2050,7 +2111,7 @@ impl storage::Backend for Session {
         user: &User,
         tags: &UpToThree<Tagname>,
         count: usize,
-    ) -> StdResult<Vec<Post>, StorError> {
+    ) -> StdResult<Vec<Post>, StorageError> {
         match tags {
             UpToThree::None => {
                 self.session
@@ -2091,7 +2152,7 @@ impl storage::Backend for Session {
         .pipe(Ok)
     }
 
-    async fn get_tag_cloud(&self, user: &User) -> StdResult<HashMap<Tagname, usize>, StorError> {
+    async fn get_tag_cloud(&self, user: &User) -> StdResult<HashMap<Tagname, usize>, StorageError> {
         self.session
             // Use `execute_paged`?
             .execute_unpaged(
@@ -2109,7 +2170,7 @@ impl storage::Backend for Session {
             .pipe(Ok)
     }
 
-    async fn get_user_by_id(&self, id: &UserId) -> StdResult<Option<User>, StorError> {
+    async fn get_user_by_id(&self, id: &UserId) -> StdResult<Option<User>, StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::GetUserById],
@@ -2119,7 +2180,7 @@ impl storage::Backend for Session {
             .into_rows_result()?
             .rows::<User>()?
             .at_most_one()
-            .map_err(|_| StorError::new(AtMostOneRowSnafu.build()))?
+            .map_err(|_| StorageError::new(AtMostOneRowSnafu.build()))?
             .transpose()?
             .pipe(Ok)
     }
@@ -2129,7 +2190,7 @@ impl storage::Backend for Session {
         user: &User,
         from: &Tagname,
         to: &Tagname,
-    ) -> StdResult<(), StorError> {
+    ) -> StdResult<(), StorageError> {
         // OK: here's the plan. We whack-down the writes needed by first selecting only the posts
         // containing `from`. Using that we'll construct a `Batch` update. This of course leaves us
         // open to a `posts/add` for a `Post` with the tag being renamed "sneaking in" between our
@@ -2165,14 +2226,18 @@ impl storage::Backend for Session {
         Ok(())
     }
 
-    async fn update_user_api_keys(&self, user: &User, keys: &ApiKeys) -> StdResult<(), StorError> {
+    async fn update_user_api_keys(
+        &self,
+        user: &User,
+        keys: &ApiKeys,
+    ) -> StdResult<(), StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::UpdateApiKeys],
                 (keys, user.id()),
             )
             .await
-            .map_err(|err| StorError::new(ExecutionSnafu.into_error(err)))
+            .map_err(|err| StorageError::new(ExecutionSnafu.into_error(err)))
             .map(|_| ())
     }
 
@@ -2180,7 +2245,7 @@ impl storage::Backend for Session {
         &self,
         user: &User,
         dt: &DateTime<Utc>,
-    ) -> StdResult<(), StorError> {
+    ) -> StdResult<(), StorageError> {
         // This brings up an interesting question: should I update the `User` instance
         // to reflect the new state in the database?
         if user.first_update().is_none() {
@@ -2190,7 +2255,7 @@ impl storage::Backend for Session {
                     (dt, user.id()),
                 )
                 .await
-                .map_err(|err| StorError::new(ExecutionSnafu.into_error(err)))?;
+                .map_err(|err| StorageError::new(ExecutionSnafu.into_error(err)))?;
         }
         self.session
             .execute_unpaged(
@@ -2198,11 +2263,11 @@ impl storage::Backend for Session {
                 (dt, user.id()),
             )
             .await
-            .map_err(|err| StorError::new(ExecutionSnafu.into_error(err)))?;
+            .map_err(|err| StorageError::new(ExecutionSnafu.into_error(err)))?;
         Ok(())
     }
 
-    async fn user_for_name(&self, name: &str) -> StdResult<Option<User>, StorError> {
+    async fn user_for_name(&self, name: &str) -> StdResult<Option<User>, StorageError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::SelectUser],
@@ -2213,23 +2278,23 @@ impl storage::Backend for Session {
                 name.to_string()
                     .pipe(|s| UserQuerySnafu { username: s })
                     .pipe(|e| e.into_error(err))
-                    .pipe(StorError::new)
+                    .pipe(StorageError::new)
             })?
             .into_rows_result()
-            .map_err(|err| StorError::new(IntoRowsResultSnafu {}.into_error(err)))?
+            .map_err(|err| StorageError::new(IntoRowsResultSnafu {}.into_error(err)))?
             .rows::<User>()
-            .map_err(|err| StorError::new(TypedRowsSnafu {}.into_error(err)))?
+            .map_err(|err| StorageError::new(TypedRowsSnafu {}.into_error(err)))?
             .at_most_one()
-            .map_err(|_| StorError::new(AtMostOneRowSnafu.build()))?
+            .map_err(|_| StorageError::new(AtMostOneRowSnafu.build()))?
             .transpose()
-            .map_err(|err| StorError::new(UserDeSnafu {}.into_error(err)))?
+            .map_err(|err| StorageError::new(UserDeSnafu {}.into_error(err)))?
             .pipe(Ok)
     }
 
     async fn validate_schema_version(
         &self,
         expected_version: u32,
-    ) -> StdResult<InstanceStateV0, StorError> {
+    ) -> StdResult<InstanceStateV0, StorageError> {
         let state = self
             .session
             .query_unpaged(
@@ -2241,14 +2306,14 @@ impl storage::Backend for Session {
             .rows::<(InstanceStateV0,)>()?
             .exactly_one()
             .map_err(|_| SchemaSnafu.build())?
-            .map_err(|err| StorError::new(SchemaDeSnafu.into_error(err)))?;
+            .map_err(|err| StorageError::new(SchemaDeSnafu.into_error(err)))?;
         Ok(state.0)
     }
 }
 
 #[async_trait]
 impl TasksBackend for Session {
-    async fn write_task(&self, tag: &Uuid, buf: &[u8]) -> StdResult<(), BckError> {
+    async fn write_task(&self, tag: &Uuid, buf: &[u8]) -> StdResult<(), BackgroundTaskError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::InsertTask],
@@ -2265,7 +2330,7 @@ impl TasksBackend for Session {
         Ok(())
     }
     // type tag, task id, messagepack-- should probably intro a newtype
-    async fn lease_task(&self) -> StdResult<Option<(Uuid, Uuid, Vec<u8>)>, BckError> {
+    async fn lease_task(&self) -> StdResult<Option<(Uuid, Uuid, Vec<u8>)>, BackgroundTaskError> {
         // Start by grabbing all eligible tasks; those that are not done and that either don't have
         // leases at all, or expired leases.
         let mut tasks = self
@@ -2286,7 +2351,7 @@ impl TasksBackend for Session {
             session: &::scylla::client::session::Session,
             statement: &PreparedStatement,
             t: &FlatTask,
-        ) -> StdResult<bool, BckError> {
+        ) -> StdResult<bool, BackgroundTaskError> {
             session
                 .execute_unpaged(
                     statement,
@@ -2323,7 +2388,7 @@ impl TasksBackend for Session {
             Some(task) => Ok(Some((task.tag, task.id, task.task))),
         }
     }
-    async fn close_task(&self, uuid: &Uuid) -> StdResult<(), BckError> {
+    async fn close_task(&self, uuid: &Uuid) -> StdResult<(), BackgroundTaskError> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::FinishTask],
@@ -2346,8 +2411,11 @@ impl TasksBackend for Session {
 // perhaps better, if I wind-up keeping `CacheBackend` around, define it in terms of an error type
 // defined in the `cache` module.
 
-fn from_vec_error(log_id: LogId<NodeId>, err: rmp_serde::encode::Error) -> StorageError<NodeId> {
-    StorageError::<NodeId>::IO {
+fn from_vec_error(
+    log_id: LogId<NodeId>,
+    err: rmp_serde::encode::Error,
+) -> RaftStorageError<NodeId> {
+    RaftStorageError::<NodeId>::IO {
         source: StorageIOError::<NodeId>::new(
             ErrorSubject::<NodeId>::Apply(log_id),
             ErrorVerb::Write,
@@ -2361,7 +2429,10 @@ impl CacheBackend for Session {
     /// Append log entries
     #[tracing::instrument(skip(self))]
     #[allow(clippy::result_large_err)]
-    async fn append(&self, entries: Vec<Entry<TypeConfig>>) -> StdResult<(), StorageError<NodeId>> {
+    async fn append(
+        &self,
+        entries: Vec<Entry<TypeConfig>>,
+    ) -> StdResult<(), RaftStorageError<NodeId>> {
         // Make one pass; produce both a vector of `BatchStatement` and a vector of tuples
         let (batch, logs): (Vec<BatchStatement>, Vec<RaftLog>) = entries
             .into_iter()
@@ -2391,7 +2462,7 @@ impl CacheBackend for Session {
     }
     /// Truncate the `raft_log` & `raft_metadata` tables
     #[tracing::instrument(skip(self))]
-    async fn drop_all_rows(&self) -> StdResult<(), StorageError<NodeId>> {
+    async fn drop_all_rows(&self) -> StdResult<(), RaftStorageError<NodeId>> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::TruncateRaftLog],
@@ -2413,7 +2484,7 @@ impl CacheBackend for Session {
     }
     /// Returns the last deleted log id and the last log id
     #[tracing::instrument(skip(self))]
-    async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
+    async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, RaftStorageError<NodeId>> {
         async fn get_log_state1(
             session: &InnerSession,
             prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
@@ -2476,7 +2547,7 @@ impl CacheBackend for Session {
     }
     /// Purge logs upto log_id, inclusive
     #[tracing::instrument(skip(self))]
-    async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+    async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), RaftStorageError<NodeId>> {
         async fn purge1(
             session: &InnerSession,
             prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
@@ -2520,7 +2591,7 @@ impl CacheBackend for Session {
     }
     /// Return the last saved vote by [Self::save_vote] (if any)
     #[tracing::instrument(skip(self))]
-    async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
+    async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, RaftStorageError<NodeId>> {
         async fn read_vote1(
             session: &InnerSession,
             prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
@@ -2553,7 +2624,7 @@ impl CacheBackend for Session {
     }
     /// Save vote to storage
     #[tracing::instrument(skip(self))]
-    async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+    async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), RaftStorageError<NodeId>> {
         async fn save_vote1(
             session: &InnerSession,
             prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
@@ -2580,7 +2651,7 @@ impl CacheBackend for Session {
     }
     /// Truncate logs since log_id, inclusive
     #[tracing::instrument(skip(self))]
-    async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+    async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), RaftStorageError<NodeId>> {
         self.session
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::DeleteRaftLog2],
@@ -2599,7 +2670,7 @@ impl CacheBackend for Session {
         &self,
         lower_bound: Bound<&u64>,
         upper_bound: Bound<&u64>,
-    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>> {
+    ) -> StdResult<Vec<Entry<TypeConfig>>, RaftStorageError<NodeId>> {
         async fn try_get_log_entries1(
             session: &InnerSession,
             prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,

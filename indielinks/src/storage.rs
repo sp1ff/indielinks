@@ -13,9 +13,31 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! # storage
+//! # storage: Abstractions for the indielinks storage layer
 //!
-//! Abstractions for the indielinks storage layer.
+//! ## Introduction
+//!
+//! This is one of the oldest pieces of [indielinks]: the "storage" abstraction. The primary product
+//! of this module is the [Backend] trait: an object-safe trait meant to be implemented by multiple
+//! backends: the native Cassandra/CQL API for ScyllaDB and the DynamoDB/ScyllaDB Alternator APIs at
+//! least, if not more for testing purposes.
+//!
+//! [indielinks]: ../indielinskd/index.html
+
+use std::collections::{HashMap, HashSet};
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use futures::stream::BoxStream;
+use snafu::{prelude::*, Backtrace, IntoError};
+use url::Url;
+use uuid::Uuid;
+
+use indielinks_shared::{
+    entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
+    instance_state::InstanceStateV0,
+    nonempty_string::NonEmptyString,
+};
 
 use crate::{
     entities::{
@@ -25,20 +47,9 @@ use crate::{
     util::UpToThree,
 };
 
-use indielinks_shared::{
-    entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
-    instance_state::InstanceStateV0,
-    nonempty_string::NonEmptyString,
-};
-
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use futures::stream::BoxStream;
-use snafu::{prelude::*, Backtrace, IntoError};
-use url::Url;
-use uuid::Uuid;
-
-use std::collections::{HashMap, HashSet};
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module Error type                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
@@ -80,6 +91,7 @@ impl From<scylla::errors::NextRowError> for Error {
     }
 }
 
+// Not sure why I didn't use [Range] here (perhaps at the time I was unaware of its existence).
 pub enum DateRange {
     None,
     Begins(DateTime<Utc>),
@@ -109,6 +121,12 @@ pub struct Counts {
     pub num_posts: usize,
 }
 
+/// Storage backend
+///
+/// This (dyn compatible) trait must be implemented by each storage backend (ScyllaDB, DynamoDB &c).
+// Possibly poor design choice, here: having these methods return *this* module's `Error` type,
+// rather than allowing implementors to specify their own through an associated type. The trait (at
+// the time of this writing) has 33 methods... might be feasible to change? Maybe give it to an LLM?
 #[async_trait]
 pub trait Backend {
     /// Add a follower to a user's collection
@@ -182,6 +200,11 @@ pub trait Backend {
         user: &User,
     ) -> Result<BoxStream<'a, Result<Following, Error>>, Error>;
     async fn get_like_reply_share(&self, id: &Uuid) -> Result<Option<LikeReplyShare>, Error>;
+    /// Retrieve all incoming likes, replies, and/or shares for a given post
+    async fn get_likes_replies_shares(
+        &self,
+        id: &PostId,
+    ) -> Result<BoxStream<'static, Result<LikeReplyShare, Error>>, Error>;
     async fn get_post(&self, userid: &UserId, uri: &StorUrl) -> Result<Option<Post>, Error>;
     async fn get_post_by_id(&self, id: &PostId) -> Result<Option<Post>, Error>;
     /// Retrieve full posts with various filtering options

@@ -13,11 +13,64 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! # dynamodb
-//!
-//! [Storage] implementation for DynamoDB, along with assorted DDB-related utilities.
+//! # dynamodb: [Storage] implementation for DynamoDB, along with assorted DDB-related utilities.
 //!
 //! [Storage]: crate::storage
+//!
+//! ## Introduction
+//!
+//! This is one of the oldest pieces of [indielinks], and to be honest it's overdue for a refactor.
+//! This is the [Storage] [Backend] implementation for DynamoDB.
+//!
+//! [indielinks]: ../indielinskd/index.html
+//! [Backend]: crate::storage::Backend
+
+use std::{
+    borrow::Cow,
+    cmp::min,
+    collections::{HashMap, HashSet, VecDeque},
+    ops::Bound,
+    pin::Pin,
+    result::Result as StdResult,
+    task::Poll,
+};
+
+use async_trait::async_trait;
+use chrono::{DateTime, Duration, Utc};
+use either::Either;
+use futures::{stream::BoxStream, Stream};
+use indielinks_cache::types::{NodeId, TypeConfig};
+use itertools::Itertools;
+use openraft::{Entry, ErrorSubject, ErrorVerb, LogId, LogState, StorageError, Vote};
+use pin_project::pin_project;
+use rmp_serde::{from_slice, to_vec};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
+use tap::Pipe;
+use tracing::error;
+use url::Url;
+use uuid::Uuid;
+
+use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
+use aws_sdk_dynamodb::{
+    config::Region as AwsSdkRegion,
+    operation::{
+        batch_write_item::BatchWriteItemError, get_item::GetItemError, put_item::PutItemError,
+        query::QueryOutput, scan::ScanOutput, update_item::UpdateItemError,
+    },
+    types::{AttributeValue, DeleteRequest, PutRequest, ReturnValue, Select, WriteRequest},
+};
+use aws_smithy_async::future::pagination_stream::PaginationStream;
+use serde_dynamo::{
+    aws_sdk_dynamodb_1::{from_items, to_item},
+    from_item,
+};
+
+use indielinks_shared::{
+    entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
+    instance_state::InstanceStateV0,
+    nonempty_string::NonEmptyString,
+};
 
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
@@ -31,51 +84,6 @@ use crate::{
     },
     storage::{self, Counts, DateRange, UsernameClaimedSnafu},
     util::{Credentials, UpToThree},
-};
-
-use indielinks_shared::{
-    entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
-    instance_state::InstanceStateV0,
-    nonempty_string::NonEmptyString,
-};
-
-use async_trait::async_trait;
-use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
-use aws_sdk_dynamodb::{
-    config::Region as AwsSdkRegion,
-    operation::{
-        batch_write_item::BatchWriteItemError, get_item::GetItemError, put_item::PutItemError,
-        query::QueryOutput, scan::ScanOutput, update_item::UpdateItemError,
-    },
-    types::{AttributeValue, DeleteRequest, PutRequest, ReturnValue, Select, WriteRequest},
-};
-use aws_smithy_async::future::pagination_stream::PaginationStream;
-use chrono::{DateTime, Duration, Utc};
-use either::Either;
-use futures::{stream::BoxStream, Stream};
-use indielinks_cache::types::{NodeId, TypeConfig};
-use itertools::Itertools;
-use openraft::{Entry, ErrorSubject, ErrorVerb, LogId, LogState, StorageError, Vote};
-use pin_project::pin_project;
-use rmp_serde::{from_slice, to_vec};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_dynamo::{
-    aws_sdk_dynamodb_1::{from_items, to_item},
-    from_item,
-};
-use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
-use tap::Pipe;
-use tracing::error;
-use url::Url;
-use uuid::Uuid;
-
-use std::{
-    borrow::Cow,
-    cmp::min,
-    collections::{HashMap, HashSet, VecDeque},
-    ops::Bound,
-    pin::Pin,
-    task::Poll,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -413,30 +421,6 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-type StdResult<T, E> = std::result::Result<T, E>;
-
-use storage::Error as StorError;
-
-// Given an attribute value, produce an `Error`. This can be handy when manipulating `HashMap`s of
-// expression attribute values: when adding a pair, we wish to ensure we're not overwriting an
-// existing value. `HashMap::<K, V>::insert` returns an `Option<V>` to indicat this. To convert that
-// into a `Result<()>`, we can write:
-//
-//     values.insert(_, _).map_or(Ok(()), duplicate_value);
-fn duplicate_value(value: AttributeValue) -> Result<()> {
-    DuplicateAttributeValueSnafu { value }.fail()
-}
-
-// And here's a macro to make that cleaner:
-macro_rules! add_attr_value {
-    ($table: expr, $name: expr, $value: expr) => {
-        $table
-            .insert($name.to_string(), $value)
-            .map_or(Ok(()), duplicate_value)
-            .map_err(StorError::new)?
-    };
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                   DynamoDB-related utilities                                   //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -638,12 +622,20 @@ pub async fn add_following(
     Ok(())
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       PagedResultsStream                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// The AWS DynamoDB SDK QueryFluentBuilder offers a method `into_paginator()`, which will eventually
+// yield a `PaginationStream`: a type that will asynchornosuly yield elements in the query results.
+// It does not, regrettably, implement `futures::Stream`. Hence this type, which does:
+
 /// A [Stream] implementation on top of a DDB [PaginationStream]
 #[pin_project]
 pub struct PagedResultsStream<T> {
     #[pin]
     stream: Option<PaginationStream<StdResult<QueryOutput, SdkError<QueryError, HttpResponse>>>>,
-    count: usize,
+    count: Option<usize>,
     #[pin]
     curr: VecDeque<T>,
 }
@@ -658,7 +650,7 @@ where
         table_name: &str,
         pk_name: &str,
         pk_value: &str,
-        count: usize,
+        count: Option<usize>,
         mut expression_attribute_values: HashMap<String, AttributeValue>,
         index_name: Option<String>,
         filter_expression: Option<String>,
@@ -695,6 +687,20 @@ where
             .pipe(from_items::<T>)
             .context(DeItemsSnafu)?
             .pipe(Ok)
+    }
+}
+
+impl<T> From<PaginationStream<StdResult<QueryOutput, SdkError<QueryError, HttpResponse>>>>
+    for PagedResultsStream<T>
+{
+    fn from(
+        value: PaginationStream<StdResult<QueryOutput, SdkError<QueryError, HttpResponse>>>,
+    ) -> Self {
+        Self {
+            stream: Some(value),
+            count: None,
+            curr: VecDeque::new(),
+        }
     }
 }
 
@@ -756,8 +762,33 @@ where
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.count, Some(self.count))
+        match self.count {
+            Some(count) => (count, Some(count)),
+            None => (0, None),
+        }
     }
+}
+
+use storage::Error as StorError;
+
+// Given an attribute value, produce an `Error`. This can be handy when manipulating `HashMap`s of
+// expression attribute values: when adding a pair, we wish to ensure we're not overwriting an
+// existing value. `HashMap::<K, V>::insert` returns an `Option<V>` to indicat this. To convert that
+// into a `Result<()>`, we can write:
+//
+//     values.insert(_, _).map_or(Ok(()), duplicate_value);
+fn duplicate_value(value: AttributeValue) -> Result<()> {
+    DuplicateAttributeValueSnafu { value }.fail()
+}
+
+// And here's a macro to make that cleaner:
+macro_rules! add_attr_value {
+    ($table: expr, $name: expr, $value: expr) => {
+        $table
+            .insert($name.to_string(), $value)
+            .map_or(Ok(()), duplicate_value)
+            .map_err(StorError::new)?
+    };
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1451,7 +1482,7 @@ impl storage::Backend for Client {
                 "following",
                 "actor_id",
                 actor_id,
-                count,
+                Some(count),
                 HashMap::new(),
                 Some("following_by_actor_id".to_owned()),
                 None,
@@ -1483,7 +1514,7 @@ impl storage::Backend for Client {
                 "likes_replies_shares",
                 "user_id",
                 &user.id().to_string(),
-                count,
+                Some(count),
                 HashMap::new(),
                 None,
                 None,
@@ -1513,7 +1544,7 @@ impl storage::Backend for Client {
                 "followers",
                 "user_id",
                 &user.id().to_string(),
-                count,
+                Some(count),
                 HashMap::new(),
                 None,
                 None,
@@ -1544,7 +1575,7 @@ impl storage::Backend for Client {
                 "following",
                 "user_id",
                 &user.id().to_string(),
-                count,
+                Some(count),
                 HashMap::new(),
                 None,
                 None,
@@ -1633,6 +1664,28 @@ impl storage::Backend for Client {
             .at_most_one()
             .map_err(StorError::new)?
             .pipe(Ok)
+    }
+
+    async fn get_likes_replies_shares(
+        &self,
+        id: &PostId,
+    ) -> StdResult<BoxStream<'static, StdResult<LikeReplyShare, StorError>>, StorError> {
+        let attribute_values =
+            HashMap::from([(":pk".to_owned(), AttributeValue::S(format!("{id}")))]);
+        let builder = self
+            .client
+            .query()
+            .table_name("incoming_likes_replies_shares")
+            .set_index_name(Some("incoming_likes_replies_shares_by_ap_id".to_owned()))
+            .key_condition_expression("in_reply_to = :pk");
+        let stream: PagedResultsStream<LikeReplyShare> = builder
+            .set_expression_attribute_values(Some(attribute_values))
+            .into_paginator()
+            .page_size(512)
+            .send()
+            .into();
+
+        Ok(Box::pin(stream))
     }
 
     async fn get_post(&self, userid: &UserId, uri: &StorUrl) -> StdResult<Option<Post>, StorError> {
@@ -1889,7 +1942,7 @@ impl storage::Backend for Client {
                 "posts",
                 "user_id",
                 &user.id().to_string(),
-                count,
+                Some(count),
                 filter_values,
                 Some("posts_by_posted".to_owned()),
                 if filter_expression.is_empty() {
