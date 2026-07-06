@@ -43,7 +43,7 @@ use indielinks_shared::{
         ClusterStatsResponse, OutboxToken, RecentPostsPage, RecentPostsRequest,
         RecentPostsResponse, ReplyRequest, TimelineBeforePage, TimelineBeforeRsp,
         TimelineInitialPage, TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp,
-        UserOutboxRequest,
+        TimelineToken, UserOutboxRequest,
     },
     entities::{Post, PostId, StorUrl, Tagname, UserId, Username},
     nonempty_string::NonEmptyString,
@@ -61,15 +61,18 @@ use crate::{
     cache::{GrpcClient, GrpcClientFactory},
     define_metric,
     entities::{FollowId, OutgoingReply, OutgoingShare, ReplyId, User, Visibility},
-    home_timeline::{FirstPage, HomeTimelines, PostKey as HomeTimelineKey, Timeline},
+    home_timeline::{FirstPage, HomeTimelines, Timeline},
     indielinks::Indielinks,
     outboxes::{ActivityKey, Outbox as UserOutbox, Page, FIRST_ACTIVITY_KEY},
     protobuf_interop::protobuf::{
         DropTimelineRequest, InsertOutboxItemRequest, InsertTimelineItemRequest, OutboxRequest,
         TimelineRequest,
     },
-    recent_posts_lists::PostKey as RecentPostsKey,
-    signing_keys::{self, SigningKey},
+    signing_keys::{
+        self,
+        pagination::{from_token, to_token},
+        SigningKey,
+    },
     storage::{Backend as StorageBackend, Counts},
 };
 
@@ -142,15 +145,22 @@ pub enum Error {
         #[snafu(source(from(crate::outboxes::Error, Box::new)))]
         source: Box<crate::outboxes::Error>,
     },
+    #[snafu(display("Outbox pagination token error {source}"))]
+    OutboxToken {
+        #[snafu(source(from(crate::signing_keys::Error, Box::new)))]
+        source: Box<crate::signing_keys::Error>,
+    },
     #[snafu(display("While packing the pagination token, {source}"))]
     PackPaginationToken {
-        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
-        source: Box<crate::home_timeline::Error>,
+        #[snafu(source(from(crate::signing_keys::Error, Box::new)))]
+        source: Box<crate::signing_keys::Error>,
     },
     #[snafu(display("Recent Posts: {source}"))]
     RecentPosts {
         source: crate::recent_posts_lists::Error,
     },
+    #[snafu(display("Recent Posts pagination token: {source}"))]
+    RecentPostsToken { source: crate::signing_keys::Error },
     #[snafu(display("While retrieving the address of node {node_id}, {source}"))]
     SocketAddr {
         node_id: NodeId,
@@ -170,8 +180,8 @@ pub enum Error {
     TopKTags { source: crate::popular_items::Error },
     #[snafu(display("While unpacking the pagination token, {source}"))]
     UnpackPaginationToken {
-        #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
-        source: Box<crate::home_timeline::Error>,
+        #[snafu(source(from(crate::signing_keys::Error, Box::new)))]
+        source: Box<crate::signing_keys::Error>,
     },
     #[snafu(display("While updating post times, {source}"))]
     UpdatePostTimes { source: crate::storage::Error },
@@ -254,11 +264,9 @@ pub async fn handle_timeline(
                         .into_nonempty_iter()
                         .map(|item| item.into())
                         .collect::<NEVec<_>>(),
-                    since: since
-                        .to_pagination_token(&key)
+                    since: to_token::<_, TimelineToken>(&since, &key)
                         .context(PackPaginationTokenSnafu)?,
-                    before: before
-                        .to_pagination_token(&key)
+                    before: to_token::<_, TimelineToken>(&before, &key)
                         .context(PackPaginationTokenSnafu)?,
                 })),
                 None => TimelineRsp::Initial(None),
@@ -267,8 +275,7 @@ pub async fn handle_timeline(
         TimelineReq::Since { since, max_posts } => {
             match timeline
                 .since(
-                    HomeTimelineKey::from_pagination_token(&since, &key)
-                        .context(UnpackPaginationTokenSnafu)?,
+                    from_token(&since, &key).context(UnpackPaginationTokenSnafu)?,
                     max_posts,
                 )
                 .await
@@ -278,8 +285,7 @@ pub async fn handle_timeline(
                         .into_nonempty_iter()
                         .map(|item| item.into())
                         .collect::<NEVec<_>>(),
-                    since: since
-                        .to_pagination_token(&key)
+                    since: to_token::<_, TimelineToken>(&since, &key)
                         .context(PackPaginationTokenSnafu)?,
                 })),
                 None => TimelineRsp::Since(None),
@@ -288,8 +294,7 @@ pub async fn handle_timeline(
         TimelineReq::Before { before, max_posts } => {
             match timeline
                 .before(
-                    HomeTimelineKey::from_pagination_token(&before, &key)
-                        .context(UnpackPaginationTokenSnafu)?,
+                    from_token(&before, &key).context(UnpackPaginationTokenSnafu)?,
                     max_posts,
                 )
                 .await
@@ -301,8 +306,7 @@ pub async fn handle_timeline(
                         .into_nonempty_iter()
                         .map(|item| item.into())
                         .collect::<NEVec<_>>(),
-                    before: before
-                        .to_pagination_token(&key)
+                    before: to_token::<_, TimelineToken>(&before, &key)
                         .context(PackPaginationTokenSnafu)?,
                 })),
                 None => TimelineRsp::Before(None),
@@ -474,9 +478,8 @@ fn make_outbox(user: &User, origin: &Origin, signing_key: &SigningKey) -> Result
     let id = make_user_outbox(user.username(), origin).context(ApSnafu)?;
     let mut first = id.clone();
 
-    let token = FIRST_ACTIVITY_KEY
-        .to_pagination_token(signing_key)
-        .context(OutboxSnafu)?;
+    let token: OutboxToken =
+        to_token(&*FIRST_ACTIVITY_KEY, signing_key).context(OutboxTokenSnafu)?;
 
     first.set_query(Some(&format!("page={token}")));
 
@@ -500,7 +503,7 @@ async fn make_outbox_page(
     let mut prev = id.clone();
     prev.set_query(Some(&format!("page={page_token}")));
 
-    let token = ActivityKey::from_pagination_token(page_token, signing_key).context(OutboxSnafu)?;
+    let token: ActivityKey = from_token(page_token, signing_key).context(OutboxTokenSnafu)?;
 
     debug!("Deserialized the pagination token to {token:#?}");
 
@@ -514,9 +517,9 @@ async fn make_outbox_page(
         }),
         Some(Page { items, next }) => {
             let next = next
-                .map(|token| token.to_pagination_token(signing_key))
+                .map(|token| to_token::<_, OutboxToken>(&token, signing_key))
                 .transpose()
-                .context(OutboxSnafu)?
+                .context(OutboxTokenSnafu)?
                 .map(|token| {
                     let mut next = id.clone();
                     next.set_query(Some(&format!("page={token}")));
@@ -726,19 +729,16 @@ pub async fn get_recent_posts(
         .get_recent_posts(
             request
                 .token
-                .map(|token| {
-                    RecentPostsKey::from_pagination_token(&token, &signing_key)
-                        .context(RecentPostsSnafu)
-                })
+                .map(|token| from_token(&token, &signing_key).context(RecentPostsTokenSnafu))
                 .transpose()?
                 .as_ref(),
             request.page_size,
         )
         .await
         .context(RecentPostsSnafu)?
-        .map(|(page, key)| match key.to_pagination_token(&signing_key) {
+        .map(|(page, key)| match to_token(&key, &signing_key) {
             Ok(token) => Ok(RecentPostsPage { page, token }),
-            Err(err) => Err(RecentPostsSnafu.into_error(err)),
+            Err(err) => Err(RecentPostsTokenSnafu.into_error(err)),
         })
         .transpose()
 }

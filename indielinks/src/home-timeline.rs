@@ -67,31 +67,21 @@ use std::{
 };
 
 use async_stream::try_stream;
-use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
-use chacha20poly1305::{
-    aead::{Aead, KeyInit},
-    ChaCha20Poly1305, Nonce,
-};
 use chrono::{DateTime, Utc};
 use either::Either::Left;
 use futures::{stream::iter, Stream, StreamExt, TryStreamExt};
-use hkdf::Hkdf;
 use http::Method;
 use lru::LruCache;
 use nonempty_collections::NEVec;
 use nonzero::nonzero;
-use rand::{rngs::OsRng, RngCore};
-use secrecy::ExposeSecret;
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
-use sha2::Sha256;
-use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
+use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::sync::Mutex;
 use tracing::debug;
 use url::Url;
 
 use indielinks_shared::{
-    api::TimelineToken,
     entities::{StorUrl, UserId, Username},
     origin::Origin,
 };
@@ -101,7 +91,6 @@ use crate::{
     ap_resolution::ApResolver,
     client_types::ClientType,
     entities::{Following, User},
-    signing_keys::SigningKey,
     storage::Backend as StorageBackend,
 };
 
@@ -214,81 +203,17 @@ impl PostKey {
             },
         }
     }
-    pub fn from_pagination_token(token: &TimelineToken, signing_key: &SigningKey) -> Result<Self> {
-        // We have a base64-encoded bytestring "12-octet-nonce | encrypted JSON"
-        let buf = BASE64_URL_SAFE_NO_PAD
-            .decode(token)
-            .context(TokenNotBase64Snafu)?;
-        // Split the buffer into nonce & ciphertext
-        let (nonce, cipher_text) = buf.split_at_checked(12).context(BadTokenSnafu)?;
-        // indielinks signing keys, at the time of this writing, are 64 octets in length (don't
-        // remember why I picked that ATM). Use a simple KDF to derive a 32 octet long key, which is
-        // what's used by ChaCha20Poly1305.
-        let key = PostKey::derive_key(signing_key)?;
-        let cipher = ChaCha20Poly1305::new(&key);
-        let nonce = Nonce::from_slice(nonce);
-
-        serde_json::from_slice::<PostKey>(
-            cipher
-                .decrypt(nonce, cipher_text)
-                .context(TokenDecryptSnafu)?
-                .as_slice(),
-        )
-        .context(TokenDeserSnafu)?
-        .pipe(Ok)
-    }
-    /// Turn this sort key into a pagination token
-    // `PostKey`s are exposed at the API level as `TimelineToken`s-- an opaque represetnation of
-    // `PostKey`. Per <https://google.aip.dev/158?utm_source=chatgpt.com> "Page tokens provided by
-    // APIs must be opaque (but URL-safe) strings, and must not be user-parseable. This is because
-    // if users are able to deconstruct these, they will do so. This effectively makes the
-    // implementation details of your API's pagination become part of the API surface, and it
-    // becomes impossible to update those details without breaking users."
-    pub fn to_pagination_token(&self, signing_key: &SigningKey) -> Result<TimelineToken> {
-        // indielinks signing keys, at the time of this writing, are 64 octets in length (don't
-        // remember why I picked that ATM). Use a simple KDF to derive a 32 octet long key, which is
-        // what's used by ChaCha20Poly1305.
-        let key = PostKey::derive_key(signing_key)?;
-        let cipher = ChaCha20Poly1305::new(&key);
-        // Symmetric encryption generally requires a per-message nonce. We're not really encrypting
-        // for security or message integrity here, just obfuscation. And I'm not interested in
-        // managing per pagination token state! So, we'll just prepend the nonce to the cipher text
-        // (it's only a 12-byte nonce).
-        let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        // OK-- serialize ourselves to JSON & encrypt.
-        let mut cipher_text = cipher
-            .encrypt(
-                nonce,
-                serde_json::to_vec(&self).context(TokenSerSnafu)?.as_slice(),
-            )
-            .context(TokenEncryptSnafu)?;
-
-        // Finally, append the two (nonce + ciphertext) and base64-encode. I couldn't come-up with a
-        // simpler way. Since `encode()` requires something that is `Deref<[u8]>`, I need a
-        // contiguous block, meaning one copy, regardless:
-        let mut out = Vec::with_capacity(12 + cipher_text.len());
-        out.extend_from_slice(&nonce_bytes); // Copy here
-        out.append(&mut cipher_text); // move here
-
-        Ok(TimelineToken::new_internal(
-            BASE64_URL_SAFE_NO_PAD.encode(out),
-        ))
-    }
-
-    /// Use an HMAC key derivation function to derive a 32-byte key from a 64-byte [SigningKey]
-    fn derive_key(signing_key: &SigningKey) -> Result<chacha20poly1305::Key> {
-        let hk = Hkdf::<Sha256>::new(None, signing_key.as_ref().expose_secret());
-        let mut key = [0u8; 32];
-        hk.expand(b"TimelineToken xchacha20poly1305", &mut key)
-            .context(HkdfSnafu)?;
-        Ok(key.into())
-    }
 }
 
 #[cfg(test)]
 mod test_postkey {
+    use indielinks_shared::api::TimelineToken;
+
+    use crate::signing_keys::{
+        pagination::{from_token, to_token},
+        SigningKey,
+    };
+
     use super::*;
 
     #[test]
@@ -328,10 +253,10 @@ mod test_postkey {
             timestamp: chrono::DateTime::UNIX_EPOCH,
             id: Url::parse("https://example.com").unwrap(/* known good */),
         };
-        let token = x.to_pagination_token(&key).unwrap(/* known good */);
+        let token: TimelineToken = to_token(&x, &key).unwrap(/* known good */);
         eprintln!("token: {token:#?}");
 
-        let post_key = PostKey::from_pagination_token(&token, &key).unwrap();
+        let post_key: PostKey = from_token(&token, &key).unwrap();
         eprintln!("{post_key:#?}");
 
         assert_eq!(post_key, x);

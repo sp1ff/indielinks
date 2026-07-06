@@ -261,13 +261,13 @@ impl AsRef<[u8]> for TimelineToken {
     }
 }
 
-impl TimelineToken {
-    // Super-lame: I want this type to be visible to everyone, but only constructable from the API's
-    // implementation in a higher-level module, on the back-end only.
-    #[cfg(feature = "__internal")]
-    #[doc(hidden)]
-    pub fn new_internal(token: String) -> TimelineToken {
-        Self(token)
+// Super-lame: I want this type to be visible to everyone, but only constructable from the API's
+// implementation in a higher-level module, on the back-end only.
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+impl From<String> for TimelineToken {
+    fn from(value: String) -> Self {
+        Self(value)
     }
 }
 
@@ -406,13 +406,13 @@ impl AsRef<[u8]> for OutboxToken {
     }
 }
 
-impl OutboxToken {
-    // Super-lame: I want this type to be visible to everyone, but only constructable from the API's
-    // implementation in a higher-level module, on the back-end only.
-    #[cfg(feature = "__internal")]
-    #[doc(hidden)]
-    pub fn new_internal(token: String) -> OutboxToken {
-        Self(token)
+// Super-lame: I want this type to be visible to everyone, but only constructable from the API's
+// implementation in a higher-level module, on the back-end only.
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+impl From<String> for OutboxToken {
+    fn from(value: String) -> OutboxToken {
+        Self(value)
     }
 }
 
@@ -442,13 +442,13 @@ impl AsRef<[u8]> for RecentPostsToken {
     }
 }
 
-impl RecentPostsToken {
-    // Super-lame: I want this type to be visible to everyone, but only constructable from the API's
-    // implementation in a higher-level module, on the back-end only.
-    #[cfg(feature = "__internal")]
-    #[doc(hidden)]
-    pub fn new_internal(token: String) -> RecentPostsToken {
-        Self(token)
+// Super-lame: I want this type to be visible to everyone, but only constructable from the API's
+// implementation in a higher-level module, on the back-end only.
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+impl From<String> for RecentPostsToken {
+    fn from(value: String) -> RecentPostsToken {
+        Self(value)
     }
 }
 
