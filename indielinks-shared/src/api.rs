@@ -497,3 +497,41 @@ pub struct ClusterStatsResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raft_leader: Option<u64>,
 }
+
+/// Opaque type representing an replies pagination token
+///
+/// Callers cannot create instances of this type; they are returned in response to paginated outbox
+/// requests and represent a particular post in a post's replies. They are intended to be specified
+/// as an "after" parameter to subsequent outbox requests.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RepliesToken(String);
+
+impl Display for RepliesToken {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<[u8]> for RepliesToken {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+// Super-lame: I want this type to be visible to everyone, but only constructable from the API's
+// implementation in a higher-level module, on the back-end only.
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+impl From<String> for RepliesToken {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PostRepliesRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "page")]
+    pub pagination_token: Option<RepliesToken>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<NonZero<usize>>,
+}

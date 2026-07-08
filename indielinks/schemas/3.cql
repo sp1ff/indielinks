@@ -19,37 +19,15 @@
 
 use indielinks;
 
-/* Basically undoing the changes in 1.cql & starting from scratch. */
-
-drop table if exists post_likes;
-drop table if exists post_replies;
-drop table if exists post_shares;
-
-drop table if exists likes;
-drop table if exists replies;
-drop table if exists shares;
-
-create table if not exists likes_replies_shares (
-  /* Is this a like, a reply, or a share? */
-  user_id uuid,
-  posted timestamp,
-  id uuid,
-  content text,
-  /* The URL of the thing that we are liking, sharing or replying to. */
-  in_reply_to ascii,
-  sort tinyint,
-  visibility tinyint,
-  /* Partition by user_id, order by descending posted */
-  PRIMARY KEY (user_id, posted, id)
-) WITH CLUSTERING ORDER BY (posted desc);
-
-create index if not exists likes_replies_shares_by_id on likes_replies_shares (id);
+/* Re-create incoming_likes_replies_shares */
+drop table if exists incoming_likes_replies_shares;
 
 create table if not exists incoming_likes_replies_shares (
   user_id uuid,
   received timestamp,
-  /* The ActivityPub ID of the thing which is being liked, replied-to, or shared. */
+  /* The (remote) ActivityPub ID of this like, reply or share */
   ap_id ascii,
+  attributed_to ascii,
   content text,
   /* The UUID of the thing being liked, replied to, or shared, if it's on this instance */
   in_reply_to uuid,
@@ -58,6 +36,10 @@ create table if not exists incoming_likes_replies_shares (
   /* Is this a like, a reply, or a share? */
   sort tinyint,
   visibility tinyint,
+  /* AP ID of this post's replies (remote) */
+  replies ascii,
+  /* AP ID of this post's replies (remote) */
+  shares ascii,  
   PRIMARY KEY (user_id, received, ap_id)
 ) WITH CLUSTERING ORDER BY (received desc);
 

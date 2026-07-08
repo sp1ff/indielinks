@@ -207,6 +207,10 @@ pub enum Error {
     MultipleAuthnHeaders,
     #[snafu(display("No authorization token found in the query string"))]
     NoAuthToken { backtrace: Backtrace },
+    #[snafu(display(
+        "The given replies collection has no 'first' element with which to begin pagination."
+    ))]
+    NoFirstPage { backtrace: Backtrace },
     #[snafu(display("No signing keys available: {source}"))]
     NoKeys { source: signing_keys::Error },
     #[snafu(display("The authorization header was not UTF-8: {source}"))]
@@ -1128,13 +1132,13 @@ fn reply_stream(
     user: &User,
     mut client: ClientType,
     replies_collection: &Replies,
-) -> impl futures::Stream<Item = Result<NoteField>> {
+) -> Result<impl futures::Stream<Item = Result<NoteField>>> {
     let mut replies: VecDeque<NoteField> = VecDeque::new();
 
     // I decided to have this `Stream` yield `Result<NoteField>` (and do the resolution) later, to
     // simplify this logic, right here: I didn't want to have to do the resolution in two places
     // (i.e. here, at init time, and below, at page time).
-    let mut next_page = match replies_collection.first() {
+    let mut next_page = match replies_collection.first().ok_or(NoFirstPageSnafu.build())? {
         FirstField::Inline(page) => {
             replies.extend(page.items.iter().cloned());
             page.next.clone()
@@ -1144,7 +1148,7 @@ fn reply_stream(
 
     let origin = origin.clone();
     let user = user.clone();
-    try_stream! {
+    Ok(try_stream! {
         loop {
             match (replies.pop_front(), &next_page) {
                 (Some(reply), _) => yield reply,
@@ -1172,7 +1176,7 @@ fn reply_stream(
                 (None, None) => return
             }
         }
-    }
+    })
 }
 
 /// Retrieve the parent (if any) of a post along with its children (if any)
@@ -1265,7 +1269,7 @@ async fn context(
             }
         }
 
-        let replies = reply_stream(origin, user, client, &replies)
+        let replies = reply_stream(origin, user, client, &replies)?
             // We've got a `Stream` yielding `Result<NoteField>`s. For each, we need to make sure
             // the `Note` is cached, if it's inlined, or resolve it through the cache if it's not.
             .and_then(|field| {

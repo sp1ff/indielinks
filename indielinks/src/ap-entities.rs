@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -138,16 +138,21 @@ use tap::Pipe;
 use tower::ServiceExt;
 use tracing::error;
 use url::Url;
+use uuid::Uuid;
 
 use indielinks_shared::{
     api::FeedPost,
     entities::{Post, PostId, UserPrivateKey, Username},
+    known_good,
     origin::Origin,
 };
 
 use crate::{
     acct::Account,
-    entities::{FollowId, LikeId, OutgoingReply, OutgoingShare, ReplyId, ShareId, User},
+    entities::{
+        FollowId, InReply, IncomingReply, LikeId, OutgoingReply, OutgoingShare, ReplyId, ShareId,
+        User, Visibility,
+    },
     sanitized_html::{parse, ParseResult, SanitizedHtml},
 };
 
@@ -442,8 +447,8 @@ lazy_static! {
         Regex::new("^/users/([a-zA-Z][-_.a-zA-Z0-9]+)/posts/([-0-9a-fA-F]{36})$").unwrap(/* known good */);
 }
 
-/// Parse a [Username] & [PostId] from and indielinks post ID (as an [Url])
-pub fn username_and_postid_from_url(origin: &Origin, url: &Url) -> Result<(Username, PostId)> {
+/// Parse a [Username] & UUID from and indielinks post ID (as an [Url])
+pub fn username_and_postid_from_url(origin: &Origin, url: &Url) -> Result<(Username, Uuid)> {
     if origin
         != &Origin::new(&url.origin()).context(OpaqueOriginSnafu {
             url: Box::new(url.clone()),
@@ -461,7 +466,7 @@ pub fn username_and_postid_from_url(origin: &Origin, url: &Url) -> Result<(Usern
     match (captures.get(1), captures.get(2)) {
         (Some(u), Some(p)) => Ok((
             Username::new(u.as_str()).context(InvalidUsernameSnafu)?,
-            PostId::new(p.as_str()).context(InvalidPostIdSnafu)?,
+            p.as_str().parse::<Uuid>().context(InvalidPostIdSnafu)?,
         )),
         _ => CaptureSnafu.fail(),
     }
@@ -527,7 +532,7 @@ mod test_locations {
         assert!("sp1ff" == username.as_ref());
         assert!(
             &Uuid::parse_str("36bbef8b-9922-4f6b-916b-2b2241797964").unwrap(/* known good */)
-                == postid.as_ref()
+                == &postid
         );
     }
 }
@@ -565,6 +570,7 @@ pub enum Type {
     Actor,
     Announce,
     Application,
+    Collection,
     Create,
     Follow,
     Like,
@@ -585,6 +591,7 @@ impl std::fmt::Display for Type {
                 Type::Actor => "Person",
                 Type::Announce => "Announce",
                 Type::Application => "Application",
+                Type::Collection => "Collection",
                 Type::Create => "Create",
                 Type::Follow => "Follow",
                 Type::Like => "Like",
@@ -1099,6 +1106,9 @@ impl Like {
     pub fn new(object: Url, id: Url, actor: ActorField) -> Like {
         Like { object, id, actor }
     }
+    pub fn actor_id(&self) -> &Url {
+        self.actor.id()
+    }
     pub fn id(&self) -> &Url {
         &self.id
     }
@@ -1139,9 +1149,18 @@ pub enum NoteField {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepliesPage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<Url>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<Url>,
     pub part_of: Url,
     pub items: Vec<NoteField>,
+}
+
+impl ToJld for RepliesPage {
+    fn get_type(&self) -> Type {
+        Type::CollectionPage
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1154,9 +1173,12 @@ pub enum FirstField {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Replies {
+    // "id":"https://indieweb.social/users/sp1ff/status/abc.../replies",
     id: Url,
     // Sometimes the first page is included inline, sometimes we just get the URL
-    first: FirstField,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    first: Option<FirstField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     total_items: Option<usize>,
 }
 
@@ -1164,36 +1186,48 @@ impl Replies {
     pub fn empty(origin: &Origin, username: &Username, postid: &PostId) -> Result<Self> {
         Ok(Replies {
             id: make_post_reply_id(username, postid, origin)?,
-            first: FirstField::Iri(make_post_reply_first(username, postid, origin)?),
+            first: Some(FirstField::Iri(make_post_reply_first(
+                username, postid, origin,
+            )?)),
             total_items: Some(0),
         })
     }
     pub fn empty_for_reply(origin: &Origin, username: &Username, postid: &ReplyId) -> Result<Self> {
         Ok(Replies {
             id: make_reply_reply_id(username, postid, origin)?,
-            first: FirstField::Iri(make_reply_reply_first(username, postid, origin)?),
+            first: Some(FirstField::Iri(make_reply_reply_first(
+                username, postid, origin,
+            )?)),
             total_items: Some(0),
         })
     }
     pub fn empty_for_share(origin: &Origin, username: &Username, postid: &ShareId) -> Result<Self> {
         Ok(Replies {
             id: make_share_reply_id(username, postid, origin)?,
-            first: FirstField::Iri(make_share_reply_first(username, postid, origin)?),
+            first: Some(FirstField::Iri(make_share_reply_first(
+                username, postid, origin,
+            )?)),
             total_items: Some(0),
         })
     }
-    pub fn new(id: Url, first: Url, total_items: Option<usize>) -> Self {
+    pub fn new(id: Url, first: Option<Url>, total_items: Option<usize>) -> Self {
         Self {
             id,
-            first: FirstField::Iri(first),
+            first: first.map(FirstField::Iri),
             total_items,
         }
     }
-    pub fn first(&self) -> &FirstField {
-        &self.first
+    pub fn first(&self) -> Option<&FirstField> {
+        self.first.as_ref()
     }
     pub fn id(&self) -> &Url {
         &self.id
+    }
+}
+
+impl ToJld for Replies {
+    fn get_type(&self) -> Type {
+        Type::Collection
     }
 }
 
@@ -1341,6 +1375,64 @@ impl Note {
             content: html.clone().into(),
             content_map: Some(HashMap::from([("en".to_owned(), html.into())])),
             replies: Replies::empty_for_share(origin, username, &share.id())?,
+        })
+    }
+    pub fn from_incoming_reply(
+        reply: &IncomingReply,
+        username: &Username,
+        origin: &Origin,
+    ) -> Result<Note> {
+        // I'm uneasy with this implementation; the problem is that when handling incoming replies,
+        // I'm discarding the to` and `cc` fields, meaning that I can't really restore them, here.
+        // Fixing that would require a schema update, and I'd like to see how this works, first.
+        let id = reply.ap_reply_id().clone();
+
+        let public: Url = known_good!("https://www.w3.org/ns/activitystreams#Public".parse());
+        let (to, cc) = match reply.visibility() {
+            Visibility::Public => (
+                vec![public],
+                vec![reply
+                    .attributed_to()
+                    .join("followers")
+                    .context(UrlParseSnafu)?],
+            ),
+            Visibility::Unlisted => (
+                vec![reply
+                    .attributed_to()
+                    .join("followers")
+                    .context(UrlParseSnafu)?],
+                vec![public],
+            ),
+            Visibility::Followers => (
+                vec![reply
+                    .attributed_to()
+                    .join("followers")
+                    .context(UrlParseSnafu)?],
+                vec![],
+            ),
+            // Super-lame: this should be: `to` contains actor IDs, `cc` is empty
+            Visibility::DirectMessage => (vec![], vec![]),
+        };
+
+        let content = parse(reply.content()).context(ParseSnafu)?.html;
+
+        Ok(Self {
+            id: id.clone(),
+            summary: None,
+            in_reply_to: match reply.in_reply_to() {
+                InReply::Post(post_id) => Some(make_user_post_id(username, post_id, origin)?),
+                InReply::Reply(reply_id) => Some(make_reply_reply_id(username, reply_id, origin)?),
+                InReply::Share(share_id) => Some(make_share_reply_id(username, share_id, origin)?),
+            },
+            published: *reply.received(),
+            url: None,
+            attributed_to: reply.attributed_to().clone(),
+            to,
+            cc,
+            content: content.into(),
+            // Lame: how do I know the language of `content`?
+            content_map: Default::default(),
+            replies: Replies::new(reply.replies().clone(), None, None),
         })
     }
     // Ack! Placeholder!

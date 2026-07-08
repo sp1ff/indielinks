@@ -41,8 +41,9 @@ use indielinks_shared::{
 
 use crate::{
     entities::{
-        ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingReply, IncomingShare,
-        LikeReplyShare, OutgoingLike, OutgoingReply, OutgoingShare, User,
+        ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShare,
+        IncomingReply, IncomingShare, LikeReplyShare, OutgoingLike, OutgoingReply, OutgoingShare,
+        User,
     },
     util::UpToThree,
 };
@@ -203,8 +204,8 @@ pub trait Backend {
     /// Retrieve all incoming likes, replies, and/or shares for a given post
     async fn get_likes_replies_shares(
         &self,
-        id: &PostId,
-    ) -> Result<BoxStream<'static, Result<LikeReplyShare, Error>>, Error>;
+        id: &Uuid,
+    ) -> Result<BoxStream<'static, Result<IncomingLikeReplyShare, Error>>, Error>;
     async fn get_post(&self, userid: &UserId, uri: &StorUrl) -> Result<Option<Post>, Error>;
     async fn get_post_by_id(&self, id: &PostId) -> Result<Option<Post>, Error>;
     /// Retrieve full posts with various filtering options

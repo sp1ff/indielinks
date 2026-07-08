@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -36,6 +36,7 @@ use either::Either::{self, Left, Right};
 use futures::{stream::iter, StreamExt};
 use http::{HeaderName, Method};
 use itertools::Itertools;
+use nonzero::nonzero;
 use opentelemetry::KeyValue;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
 use serde::{Deserialize, Serialize};
@@ -47,7 +48,7 @@ use url::Url;
 use uuid::Uuid;
 
 use indielinks_shared::{
-    api::UserOutboxRequest,
+    api::{PostRepliesRequest, UserOutboxRequest},
     entities::{PostId, StorUrl, UserId, UserPrivateKey, Username},
     origin::Origin,
 };
@@ -60,11 +61,13 @@ use crate::{
         InboxPayload, InstanceActor, Item, Jld, Like, Note, Recipient, Share, ToJld, Undo,
     },
     ap_resolution::ApResolver,
-    app_logic::{handle_outbox_or_redirect, OutboxResponse},
+    app_logic::{handle_outbox_or_redirect, OutboxResponse, RepliesResponse},
     authn::{self, check_sha_256_content_digest},
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     define_metric,
-    entities::{Follower, Following, InReply, IncomingLike, IncomingReply, LikeReplyShare, User},
+    entities::{
+        Follower, Following, InReply, IncomingLike, IncomingReply, LikeId, LikeReplyShare, User,
+    },
     home_timeline::HomeTimelines,
     http::ErrorResponseBody,
     indielinks::Indielinks,
@@ -145,6 +148,15 @@ pub enum Error {
     FollowersGetStream { source: storage::Error },
     #[snafu(display("While computing followers, our stream yielded: {source}"))]
     FollowersStream { source: storage::Error },
+    #[snafu(display("While fetching post {id}, {source}"))]
+    GetPost {
+        id: Uuid,
+        source: crate::storage::Error,
+    },
+    #[snafu(display("{id} does not name a post, reply or share"))]
+    IdIsInvalid { id: Uuid, backtrace: Backtrace },
+    #[snafu(display("{id} names a Like"))]
+    IdIsLike { id: LikeId, backtrace: Backtrace },
     #[snafu(display("Failed to create the instance actor: {source}"))]
     InstanceActor { source: crate::ap_entities::Error },
     #[snafu(display("{id} is a Like"))]
@@ -204,9 +216,11 @@ pub enum Error {
     OneSignature { backtrace: Backtrace },
     #[snafu(display("While operating on a user outbox, {source}"))]
     Outbox { source: crate::app_logic::Error },
+    #[snafu(display("While collecting post replies, {source}"))]
+    PostReplies { source: crate::app_logic::Error },
     #[snafu(display("No post {postid} for user {requested_username}"))]
     PostUserMismatch {
-        postid: PostId,
+        postid: Uuid,
         requested_username: Username,
         actual_username: Username,
         backtrace: Backtrace,
@@ -571,6 +585,33 @@ async fn log_request(
     }
 }
 
+// This surely belongs somewhere else
+async fn in_reply_for_uuid(
+    storage: &(dyn StorageBackend + Send + Sync),
+    id: &Uuid,
+) -> Result<InReply> {
+    // This seems ornate, just to figure out the sort of thing to which this reply applies--
+    // index. It's also vaguely duplicative of the logic elsewhere (`actor::get_post()`, and
+    // `app_logic::get_post_replies()`, at the time of this writing).
+    match storage
+        .get_post_by_id(&PostId::from_uuid(*id))
+        .await
+        .context(GetPostSnafu { id: *id })?
+    {
+        Some(post) => Ok(InReply::Post(post.id())),
+        None => match storage
+            .get_like_reply_share(id)
+            .await
+            .context(StorageSnafu)?
+        {
+            Some(LikeReplyShare::Like(like)) => IdIsLikeSnafu { id: like.id() }.fail(),
+            Some(LikeReplyShare::Reply(reply)) => Ok(InReply::Reply(reply.id())),
+            Some(LikeReplyShare::Share(share)) => Ok(InReply::Share(share.id())),
+            None => IdIsInvalidSnafu { id: *id }.fail(),
+        },
+    }
+}
+
 /// Handle `Note` creation
 ///
 /// Any `Create` AP entity sent to the shared inbox will wind-up here. We can receive them for
@@ -634,33 +675,40 @@ async fn accept_create(
 
     debug!("Recipients: {recipients:#?}");
 
-    // I think this is wrong-- we need to handle the case of a reply to an outgoing reply or share.
+    // This logic is a mess; but I want to get the test suite workingi before I refactor.
     let _reply = match note
         .in_reply_to()
         .and_then(|reply| username_and_postid_from_url(origin, reply).ok())
     {
-        Some((username, postid)) => {
+        Some((username, id)) => {
             debug!(
-                "The Note is (allegedly) in response to post {} by user {}.",
-                postid, username
+                "The Note is (allegedly) in response to post/reply/share {} by user {}.",
+                id, username
             );
             let user = storage
                 .user_for_name(username.as_ref())
                 .await
                 .context(StorageSnafu)?
                 .context(NoUserSnafu { username })?;
-            storage
-                .add_post_reply(&IncomingReply::new(
-                    *user.id(),
-                    note.in_reply_to().unwrap(/* known good */).clone(),
-                    Some(InReply::Post(postid)),
-                    visibility,
-                    // Irritating, s this has already been sanitized:
-                    note.content().as_ref().to_owned(),
-                ))
-                .await
-                .context(StorageSnafu)?;
-            true
+            let in_reply = in_reply_for_uuid(storage, &id).await;
+            if let Ok(in_reply) = in_reply {
+                storage
+                    .add_post_reply(&IncomingReply::new(
+                        *user.id(),
+                        note.id().clone(),
+                        in_reply,
+                        note.attributed_to().clone(),
+                        visibility,
+                        // Irritating, as this has already been sanitized:
+                        note.content().as_ref().to_owned(),
+                        note.replies().id().clone(),
+                    ))
+                    .await
+                    .context(StorageSnafu)?;
+                true
+            } else {
+                false
+            }
         }
         None => false,
     };
@@ -1087,11 +1135,14 @@ async fn accept_like(
 
     warn!("In receipt of a like: {like:#?}");
 
+    let in_reply = in_reply_for_uuid(storage, &postid).await?;
+
     storage
         .add_post_like(&IncomingLike::new(
             *user.id(),
             like.id().clone(),
-            postid.into(),
+            like.actor_id().clone(),
+            in_reply,
         ))
         .await
         .context(StorageSnafu)?;
@@ -1611,6 +1662,63 @@ async fn get_post(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                          `/users/{username}/posts/{post_id}/replies`                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "replies.pages", replies_pages, Sort::IntegralCounter }
+define_metric! { "replies.errors", replies_errors, Sort::IntegralCounter }
+
+async fn get_post_replies(
+    State(state): State<Arc<Indielinks>>,
+    axum::extract::Path((username, entityid)): axum::extract::Path<(Username, Uuid)>,
+    Query(request): Query<PostRepliesRequest>,
+) -> axum::response::Response {
+    async fn get_post_replies1(
+        state: Arc<Indielinks>,
+        username: &Username,
+        entityid: &Uuid,
+        request: PostRepliesRequest,
+    ) -> Result<RepliesResponse> {
+        // Factor this out (shared by `followers()`, above, at the least):
+        let user = state
+            .storage
+            .as_ref()
+            .user_for_name(username.as_ref())
+            .await
+            .map_err(|err| StorageSnafu.into_error(err))?
+            .ok_or(
+                NoUserSnafu {
+                    username: username.clone(),
+                }
+                .build(),
+            )?;
+
+        crate::app_logic::get_post_replies(
+            state,
+            &user,
+            entityid,
+            request
+                .pagination_token
+                .map(|token| (token, request.page_size.unwrap_or(nonzero!(20usize)))),
+        )
+        .await
+        .context(PostRepliesSnafu)
+    }
+
+    match get_post_replies1(state, &username, &entityid, request)
+        .await
+        .and_then(|rsp| Jld::new(&rsp, None).context(JrdSnafu))
+    {
+        Ok(doc) => {
+            debug!("Serving replies: {doc:#?}");
+            replies_pages.add(1, &[KeyValue::new("username", username)]);
+            patch_content_type((StatusCode::OK, doc.to_string()).into_response())
+        }
+        Err(err) => handle_err(err, replies_errors.deref()),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         instance actor                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1684,6 +1792,10 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route("/users/{username}/followers", get(followers))
         .route("/users/{username}/following", get(following))
         .route("/users/{username}/posts/{postid}", get(get_post))
+        .route(
+            "/users/{username}/posts/{postid}/replies",
+            get(get_post_replies),
+        )
         .route("/actor", get(instance_actor))
         .with_state(state)
 }

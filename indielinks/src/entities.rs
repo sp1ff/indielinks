@@ -802,13 +802,13 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Visibility {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd)]
 #[repr(i8)]
-pub enum LsrFlavor {
+pub enum LrsFlavor {
     Like = 0,
-    Share = 1,
-    Reply = 2,
+    Reply = 1,
+    Share = 2,
 }
 
-impl Serialize for LsrFlavor {
+impl Serialize for LrsFlavor {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -817,15 +817,15 @@ impl Serialize for LsrFlavor {
     }
 }
 
-impl<'de> Deserialize<'de> for LsrFlavor {
+impl<'de> Deserialize<'de> for LrsFlavor {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         match <i8 as Deserialize>::deserialize(deserializer)? {
-            0 => Ok(LsrFlavor::Like),
-            1 => Ok(LsrFlavor::Share),
-            2 => Ok(LsrFlavor::Reply),
+            0 => Ok(LrsFlavor::Like),
+            1 => Ok(LrsFlavor::Reply),
+            2 => Ok(LrsFlavor::Share),
             i => Err(serde::de::Error::custom(format!(
                 "Invalid LsrFlavor encoding {i}"
             ))),
@@ -833,7 +833,7 @@ impl<'de> Deserialize<'de> for LsrFlavor {
     }
 }
 
-impl SerializeValue for LsrFlavor {
+impl SerializeValue for LrsFlavor {
     fn serialize<'b>(
         &self,
         typ: &ColumnType<'_>,
@@ -843,7 +843,7 @@ impl SerializeValue for LsrFlavor {
     }
 }
 
-impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for LsrFlavor {
+impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for LrsFlavor {
     fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
         i8::type_check(typ)
     }
@@ -852,9 +852,9 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for LsrFlavor {
         v: Option<FrameSlice<'frame>>,
     ) -> StdResult<Self, DeserializationError> {
         match <i8 as DeserializeValue>::deserialize(typ, v)? {
-            0 => Ok(LsrFlavor::Like),
-            1 => Ok(LsrFlavor::Share),
-            2 => Ok(LsrFlavor::Reply),
+            0 => Ok(LrsFlavor::Like),
+            1 => Ok(LrsFlavor::Reply),
+            2 => Ok(LrsFlavor::Share),
             i => Err(DeserializationError::new(LsrFlavorDeSnafu { i }.build())),
         }
     }
@@ -1038,7 +1038,7 @@ impl Serialize for LikeReplyShareRef<'_> {
                     like.likeid
                 );
                 let mut state = serializer.serialize_struct("LikeReplyShare", 8)?;
-                state.serialize_field("kind", &LsrFlavor::Like)?;
+                state.serialize_field("kind", &LrsFlavor::Like)?;
                 state.serialize_field("user_id", &like.user_id)?;
                 state.serialize_field("posted_and_id", &sk)?;
                 state.serialize_field("posted", &like.posted)?;
@@ -1055,7 +1055,7 @@ impl Serialize for LikeReplyShareRef<'_> {
                     reply.replyid
                 );
                 let mut state = serializer.serialize_struct("LikeReplyShare", 8)?;
-                state.serialize_field("kind", &LsrFlavor::Reply)?;
+                state.serialize_field("kind", &LrsFlavor::Reply)?;
                 state.serialize_field("user_id", &reply.user_id)?;
                 state.serialize_field("posted_and_id", &sk)?;
                 state.serialize_field("posted", &reply.posted)?;
@@ -1072,7 +1072,7 @@ impl Serialize for LikeReplyShareRef<'_> {
                     share.shareid
                 );
                 let mut state = serializer.serialize_struct("LikeReplyShare", 8)?;
-                state.serialize_field("kind", &LsrFlavor::Share)?;
+                state.serialize_field("kind", &LrsFlavor::Share)?;
                 state.serialize_field("user_id", &share.user_id)?;
                 state.serialize_field("posted_and_id", &sk)?;
                 state.serialize_field("posted", &share.posted)?;
@@ -1290,58 +1290,6 @@ pub enum InReplySort {
     Share = 2,
 }
 
-impl Serialize for InReplySort {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_i8(*self as i8)
-    }
-}
-
-impl<'de> Deserialize<'de> for InReplySort {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        match <i8 as Deserialize>::deserialize(deserializer)? {
-            0 => Ok(InReplySort::Post),
-            1 => Ok(InReplySort::Reply),
-            2 => Ok(InReplySort::Share),
-            i => Err(serde::de::Error::custom(format!(
-                "Invalid InReplySort encoding {i}"
-            ))),
-        }
-    }
-}
-
-impl SerializeValue for InReplySort {
-    fn serialize<'b>(
-        &self,
-        typ: &ColumnType<'_>,
-        writer: CellWriter<'b>,
-    ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        SerializeValue::serialize(&(*self as i8), typ, writer)
-    }
-}
-
-impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for InReplySort {
-    fn type_check(typ: &ColumnType<'_>) -> StdResult<(), TypeCheckError> {
-        i8::type_check(typ)
-    }
-    fn deserialize(
-        typ: &'metadata ColumnType<'metadata>,
-        v: Option<FrameSlice<'frame>>,
-    ) -> StdResult<Self, DeserializationError> {
-        match <i8 as DeserializeValue>::deserialize(typ, v)? {
-            0 => Ok(InReplySort::Post),
-            1 => Ok(InReplySort::Reply),
-            2 => Ok(InReplySort::Share),
-            i => Err(DeserializationError::new(InReplySortDeSnafu { i }.build())),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum InReply {
     Post(PostId),
@@ -1355,91 +1303,15 @@ impl From<PostId> for InReply {
     }
 }
 
-impl Serialize for InReply {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            InReply::Post(postid) => {
-                let mut state = serializer.serialize_struct("InReply", 2)?;
-                state.serialize_field("kind", &InReplySort::Post)?;
-                state.serialize_field("postid", &postid)?;
-                state.end()
-            }
-            InReply::Reply(replyid) => {
-                let mut state = serializer.serialize_struct("InReply", 2)?;
-                state.serialize_field("kind", &InReplySort::Reply)?;
-                state.serialize_field("replyid", &replyid)?;
-                state.end()
-            }
-            InReply::Share(shareid) => {
-                let mut state = serializer.serialize_struct("InReply", 2)?;
-                state.serialize_field("kind", &InReplySort::Share)?;
-                state.serialize_field("shareid", &shareid)?;
-                state.end()
-            }
-        }
+impl From<ReplyId> for InReply {
+    fn from(value: ReplyId) -> Self {
+        InReply::Reply(value)
     }
 }
 
-struct InReplyVisitor;
-
-impl<'de> serde::de::Visitor<'de> for InReplyVisitor {
-    type Value = InReply;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(formatter, "An InReply")
-    }
-    fn visit_map<A>(self, mut map: A) -> StdResult<Self::Value, A::Error>
-    where
-        A: serde::de::MapAccess<'de>,
-    {
-        use serde::de::Error as DeError;
-
-        let mut kind: Option<i8> = None;
-        let mut postid: Option<PostId> = None;
-        let mut replyid: Option<ReplyId> = None;
-        let mut shareid: Option<ShareId> = None;
-
-        while let Some(key) = map.next_key::<String>()? {
-            match key.as_str() {
-                "kind" => kind = Some(map.next_value()?),
-                "postid" => postid = Some(map.next_value()?),
-                "replyid" => replyid = Some(map.next_value()?),
-                "shareid" => shareid = Some(map.next_value()?),
-                _ => {
-                    let _: String = map.next_value()?;
-                }
-            }
-        }
-
-        let kind = kind.ok_or(DeError::missing_field("kind"))?;
-
-        match kind {
-            0 => Ok(InReply::Post(
-                postid.ok_or(DeError::missing_field("postid"))?,
-            )),
-            1 => Ok(InReply::Reply(
-                replyid.ok_or(DeError::missing_field("replyid"))?,
-            )),
-            2 => Ok(InReply::Share(
-                shareid.ok_or(DeError::missing_field("shareid"))?,
-            )),
-            i => Err(DeError::invalid_value(
-                Unexpected::Signed(i as i64),
-                &"An i8 between 0 & 2, inclusive",
-            )),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for InReply {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_map(InReplyVisitor)
+impl From<ShareId> for InReply {
+    fn from(value: ShareId) -> Self {
+        InReply::Share(value)
     }
 }
 
@@ -1455,14 +1327,16 @@ pub struct IncomingLike {
     ap_like_id: StorUrl,
     // The ID of the thing being liked; Post, Reply or Share
     in_reply_to: InReply,
+    attributed_to: StorUrl,
 }
 
 impl IncomingLike {
-    pub fn new(user_id: UserId, ap_like_id: Url, in_reply_to: InReply) -> Self {
+    pub fn new(user_id: UserId, ap_like_id: Url, attributed_to: Url, in_reply_to: InReply) -> Self {
         Self {
             user_id,
             received: Utc::now(),
             ap_like_id: ap_like_id.into(),
+            attributed_to: attributed_to.into(),
             in_reply_to,
         }
     }
@@ -1475,29 +1349,58 @@ impl IncomingLike {
 pub struct IncomingReply {
     user_id: UserId,
     received: DateTime<Utc>,
+    // The (remote) AP ID of this reply
     ap_reply_id: StorUrl,
-    // The ID of the thing being liked; Post, Reply or Share, if it's on this instance
-    in_reply_to: Option<InReply>,
+    // The ID of the thing being replied-to; Post, Reply or Share. Nb. we only store replies to entities
+    // hosted on this instance
+    in_reply_to: InReply,
+    attributed_to: StorUrl,
     visibility: Visibility,
     content: String,
+    replies: StorUrl,
 }
 
 impl IncomingReply {
     pub fn new(
         user_id: UserId,
         ap_id: Url,
-        in_reply_to: Option<InReply>,
+        in_reply_to: InReply,
+        attributed_to: Url,
         visibility: Visibility,
         content: String,
+        replies: Url,
     ) -> Self {
         Self {
             user_id,
             received: Utc::now(),
             ap_reply_id: ap_id.into(),
+            attributed_to: attributed_to.into(),
             in_reply_to,
             visibility,
             content,
+            replies: replies.into(),
         }
+    }
+    pub fn ap_reply_id(&self) -> &Url {
+        self.ap_reply_id.as_ref()
+    }
+    pub fn attributed_to(&self) -> &Url {
+        self.attributed_to.as_ref()
+    }
+    pub fn content(&self) -> &str {
+        self.content.as_ref()
+    }
+    pub fn in_reply_to(&self) -> &InReply {
+        &self.in_reply_to
+    }
+    pub fn received(&self) -> &DateTime<Utc> {
+        &self.received
+    }
+    pub fn replies(&self) -> &Url {
+        self.replies.as_ref()
+    }
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
     }
 }
 
@@ -1509,10 +1412,14 @@ pub struct IncomingShare {
     user_id: UserId,
     received: DateTime<Utc>,
     ap_share_id: StorUrl,
-    // The ID of the thing being liked; Post, Reply or Share, if it's on this instance
-    in_reply_to: Option<InReply>,
+    // The ID of the thing being shared; Post, Reply or Share. Nb. we only store replies to entities
+    // hosted on this instance
+    in_reply_to: InReply,
+    attributed_to: StorUrl,
     visibility: Visibility,
     content: String,
+    replies: StorUrl,
+    shares: StorUrl,
 }
 
 // The idea here is that we can instantiate a `LikeReplyShareRef` and write it to the
@@ -1551,15 +1458,14 @@ impl Serialize for IncomingLikeReplyShareRef<'_> {
                     InReply::Share(shareid) => (2i8, shareid.into()),
                 };
                 let mut state = serializer.serialize_struct("IncomingLikeReplyShare", 8)?;
-                state.serialize_field("kind", &LsrFlavor::Like)?;
+                state.serialize_field("kind", &LrsFlavor::Like)?;
                 state.serialize_field("user_id", &like.user_id)?;
                 state.serialize_field("received_and_ap_id", &sk)?;
+                state.serialize_field("in_reply_to", &id)?;
+                state.serialize_field("in_reply_to_sort", &sort)?;
                 state.serialize_field("received", &like.received)?;
                 state.serialize_field("ap_like_id", &like.ap_like_id)?;
-                state.serialize_field("in_reply_to_sort", &Some(sort))?;
-                state.serialize_field("in_reply_to", &Some(id))?;
-                state.serialize_field("visibility", &Option::<Visibility>::None)?;
-                state.serialize_field("content", &Option::<String>::None)?;
+                state.serialize_field("attributed_to", &like.attributed_to)?;
                 state.end()
             }
             IncomingLikeReplyShareRef::Reply(reply) => {
@@ -1568,22 +1474,23 @@ impl Serialize for IncomingLikeReplyShareRef<'_> {
                     reply.received.to_rfc3339_opts(SecondsFormat::Nanos, true),
                     reply.ap_reply_id
                 );
-                let (sort, id): (Option<i8>, Option<Uuid>) = match reply.in_reply_to {
-                    Some(InReply::Post(postid)) => (Some(0i8), Some(postid.into())),
-                    Some(InReply::Reply(replyid)) => (Some(1i8), Some(replyid.into())),
-                    Some(InReply::Share(shareid)) => (Some(2i8), Some(shareid.into())),
-                    None => (None, None),
+                let (sort, id): (i8, Uuid) = match reply.in_reply_to {
+                    InReply::Post(postid) => (0i8, postid.into()),
+                    InReply::Reply(replyid) => (1i8, replyid.into()),
+                    InReply::Share(shareid) => (2i8, shareid.into()),
                 };
-                let mut state = serializer.serialize_struct("IncomingReplyReplyShare", 8)?;
-                state.serialize_field("kind", &LsrFlavor::Reply)?;
+                let mut state = serializer.serialize_struct("IncomingReplyReplyShare", 11)?;
+                state.serialize_field("kind", &LrsFlavor::Reply)?;
                 state.serialize_field("user_id", &reply.user_id)?;
                 state.serialize_field("received_and_ap_id", &sk)?;
+                state.serialize_field("in_reply_to", &id)?;
+                state.serialize_field("in_reply_to_sort", &sort)?;
                 state.serialize_field("received", &reply.received)?;
                 state.serialize_field("ap_reply_id", &reply.ap_reply_id)?;
-                state.serialize_field("in_reply_to_sort", &sort)?;
-                state.serialize_field("in_reply_to", &id)?;
-                state.serialize_field("visibility", &Some(reply.visibility))?;
-                state.serialize_field("content", &Some(&reply.content))?;
+                state.serialize_field("attributed_to", &reply.attributed_to)?;
+                state.serialize_field("visibility", &reply.visibility)?;
+                state.serialize_field("content", &reply.content)?;
+                state.serialize_field("replies", &reply.replies)?;
                 state.end()
             }
             IncomingLikeReplyShareRef::Share(share) => {
@@ -1592,22 +1499,24 @@ impl Serialize for IncomingLikeReplyShareRef<'_> {
                     share.received.to_rfc3339_opts(SecondsFormat::Nanos, true),
                     share.ap_share_id
                 );
-                let (sort, id): (Option<i8>, Option<Uuid>) = match share.in_reply_to {
-                    Some(InReply::Post(postid)) => (Some(0i8), Some(postid.into())),
-                    Some(InReply::Reply(replyid)) => (Some(1i8), Some(replyid.into())),
-                    Some(InReply::Share(shareid)) => (Some(2i8), Some(shareid.into())),
-                    None => (None, None),
+                let (sort, id): (i8, Uuid) = match share.in_reply_to {
+                    InReply::Post(postid) => (0i8, postid.into()),
+                    InReply::Reply(replyid) => (1i8, replyid.into()),
+                    InReply::Share(shareid) => (2i8, shareid.into()),
                 };
-                let mut state = serializer.serialize_struct("IncomingShareShareShare", 8)?;
-                state.serialize_field("kind", &LsrFlavor::Share)?;
+                let mut state = serializer.serialize_struct("IncomingShareShareShare", 12)?;
+                state.serialize_field("kind", &LrsFlavor::Share)?;
                 state.serialize_field("user_id", &share.user_id)?;
                 state.serialize_field("received_and_ap_id", &sk)?;
+                state.serialize_field("in_reply_to", &id)?;
+                state.serialize_field("in_reply_to_sort", &sort)?;
                 state.serialize_field("received", &share.received)?;
                 state.serialize_field("ap_share_id", &share.ap_share_id)?;
-                state.serialize_field("in_share_to_sort", &sort)?;
-                state.serialize_field("in_share_to", &id)?;
-                state.serialize_field("visibility", &Some(share.visibility))?;
-                state.serialize_field("content", &Some(&share.content))?;
+                state.serialize_field("attributed_to", &share.attributed_to)?;
+                state.serialize_field("visibility", &share.visibility)?;
+                state.serialize_field("content", &share.content)?;
+                state.serialize_field("replies", &share.replies)?;
+                state.serialize_field("shares", &share.shares)?;
                 state.end()
             }
         }
@@ -1630,25 +1539,33 @@ impl<'de> serde::de::Visitor<'de> for IncomingLikeReplyShareVisitor {
 
         let mut kind: Option<i8> = None;
         let mut user_id: Option<UserId> = None;
+        let mut in_reply_to: Option<Uuid> = None;
+        let mut in_reply_to_sort: Option<i8> = None;
         let mut received: Option<DateTime<Utc>> = None;
         let mut ap_like_id: Option<StorUrl> = None;
         let mut ap_reply_id: Option<StorUrl> = None;
         let mut ap_share_id: Option<StorUrl> = None;
-        let mut in_reply_to: Option<InReply> = None;
+        let mut attributed_to: Option<StorUrl> = None;
         let mut visibility: Option<Visibility> = None;
         let mut content: Option<String> = None;
+        let mut replies: Option<StorUrl> = None;
+        let mut shares: Option<StorUrl> = None;
 
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "kind" => kind = Some(map.next_value()?),
                 "user_id" => user_id = Some(map.next_value()?),
+                "in_reply_to" => in_reply_to = Some(map.next_value()?),
+                "in_reply_to_sort" => in_reply_to_sort = Some(map.next_value()?),
                 "received" => received = Some(map.next_value()?),
                 "ap_like_id" => ap_like_id = Some(map.next_value()?),
                 "ap_reply_id" => ap_reply_id = Some(map.next_value()?),
                 "ap_share_id" => ap_share_id = Some(map.next_value()?),
-                "in_reply_to" => in_reply_to = Some(map.next_value()?),
-                "visibility" => visibility = map.next_value()?,
-                "content" => content = map.next_value()?,
+                "attributed_to" => attributed_to = Some(map.next_value()?),
+                "visibility" => visibility = Some(map.next_value()?),
+                "content" => content = Some(map.next_value()?),
+                "replies" => replies = Some(map.next_value()?),
+                "shares" => shares = Some(map.next_value()?),
                 _ => {
                     let _: String = map.next_value()?;
                 }
@@ -1657,28 +1574,47 @@ impl<'de> serde::de::Visitor<'de> for IncomingLikeReplyShareVisitor {
 
         let kind = kind.ok_or(DeError::missing_field("kind"))?;
 
+        let in_reply_to_sort =
+            in_reply_to_sort.ok_or(DeError::missing_field("in_reply_to_sort"))?;
+        let in_reply_to = in_reply_to.ok_or(DeError::missing_field("in_reply_to"))?;
+        let in_reply_to = match in_reply_to_sort {
+            0 => Ok(InReply::Post(PostId::from_uuid(in_reply_to))),
+            1 => Ok(InReply::Reply(ReplyId::from_uuid(in_reply_to))),
+            2 => Ok(InReply::Share(ShareId::from_uuid(in_reply_to))),
+            i => Err(DeError::invalid_value(
+                Unexpected::Signed(i as i64),
+                &"An i8 between 0 & 2, inclusive",
+            )),
+        }?;
+
         match kind {
             0 => Ok(IncomingLikeReplyShare::Like(IncomingLike {
                 user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
                 received: received.ok_or(DeError::missing_field("received"))?,
                 ap_like_id: ap_like_id.ok_or(DeError::missing_field("ap_like_id"))?,
-                in_reply_to: in_reply_to.ok_or(DeError::missing_field("in_reply_to"))?,
+                in_reply_to,
+                attributed_to: attributed_to.ok_or(DeError::missing_field("attributed_to"))?,
             })),
             1 => Ok(IncomingLikeReplyShare::Reply(IncomingReply {
                 user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
                 received: received.ok_or(DeError::missing_field("received"))?,
                 ap_reply_id: ap_reply_id.ok_or(DeError::missing_field("ap_reply_id"))?,
                 in_reply_to,
+                attributed_to: attributed_to.ok_or(DeError::missing_field("attributed_to"))?,
                 visibility: visibility.ok_or(DeError::missing_field("visibility"))?,
                 content: content.ok_or(DeError::missing_field("content"))?,
+                replies: replies.ok_or(DeError::missing_field("replies"))?,
             })),
             2 => Ok(IncomingLikeReplyShare::Share(IncomingShare {
                 user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
                 received: received.ok_or(DeError::missing_field("received"))?,
                 ap_share_id: ap_share_id.ok_or(DeError::missing_field("ap_share_id"))?,
                 in_reply_to,
+                attributed_to: attributed_to.ok_or(DeError::missing_field("attributed_to"))?,
                 visibility: visibility.ok_or(DeError::missing_field("visibility"))?,
                 content: content.ok_or(DeError::missing_field("content"))?,
+                replies: replies.ok_or(DeError::missing_field("replies"))?,
+                shares: shares.ok_or(DeError::missing_field("shares"))?,
             })),
             i => Err(DeError::invalid_value(
                 Unexpected::Signed(i as i64),
@@ -1715,46 +1651,53 @@ impl scylla::serialize::row::SerializeRow for IncomingLikeReplyShareRef<'_> {
                     &like.user_id,
                     &like.received,
                     &like.ap_like_id,
-                    Some(sort),
-                    Some(id),
+                    &like.attributed_to,
+                    sort,
+                    id,
                     &Option::<Visibility>::None,
                     &Option::<&String>::None,
+                    &Option::<&StorUrl>::None,
+                    &Option::<&StorUrl>::None,
                 )
             }
             IncomingLikeReplyShareRef::Reply(reply) => {
-                let (sort, id): (Option<i8>, Option<Uuid>) = match reply.in_reply_to {
-                    Some(InReply::Post(postid)) => (Some(0i8), Some(postid.into())),
-                    Some(InReply::Reply(replyid)) => (Some(1i8), Some(replyid.into())),
-                    Some(InReply::Share(shareid)) => (Some(2i8), Some(shareid.into())),
-                    _ => (None, None),
+                let (sort, id): (i8, Uuid) = match reply.in_reply_to {
+                    InReply::Post(postid) => (0i8, postid.into()),
+                    InReply::Reply(replyid) => (1i8, replyid.into()),
+                    InReply::Share(shareid) => (2i8, shareid.into()),
                 };
                 (
                     1i8,
                     &reply.user_id,
                     &reply.received,
                     &reply.ap_reply_id,
+                    &reply.attributed_to,
                     sort,
                     id,
                     &Some(reply.visibility),
                     &Some(&reply.content),
+                    &Some(&reply.replies),
+                    &Option::<&StorUrl>::None,
                 )
             }
             IncomingLikeReplyShareRef::Share(share) => {
-                let (sort, id): (Option<i8>, Option<Uuid>) = match share.in_reply_to {
-                    Some(InReply::Post(postid)) => (Some(0), Some(postid.into())),
-                    Some(InReply::Reply(replyid)) => (Some(1), Some(replyid.into())),
-                    Some(InReply::Share(shareid)) => (Some(2), Some(shareid.into())),
-                    _ => (None, None),
+                let (sort, id): (i8, Uuid) = match share.in_reply_to {
+                    InReply::Post(postid) => (0i8, postid.into()),
+                    InReply::Reply(replyid) => (1i8, replyid.into()),
+                    InReply::Share(shareid) => (2i8, shareid.into()),
                 };
                 (
                     2i8,
                     &share.user_id,
                     &share.received,
                     &share.ap_share_id,
+                    &share.attributed_to,
                     sort,
                     id,
                     &Some(share.visibility),
                     &Some(&share.content),
+                    &Some(&share.replies),
+                    &Some(&share.shares),
                 )
             }
         };
@@ -1772,13 +1715,17 @@ impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metada
     fn type_check(specs: &[ColumnSpec]) -> StdResult<(), TypeCheckError> {
         use scylla::deserialize::row::DeserializeRow;
         <(
-            i8,
-            UserId,
-            DateTime<Utc>,
-            Uuid,
-            StorUrl,
-            Option<Visibility>,
-            Option<String>,
+            i8,                 // sort
+            UserId,             //user_id
+            DateTime<Utc>,      //received
+            StorUrl,            // ap_id
+            StorUrl,            // attributed_to
+            i8,                 // in_reply_to_sort
+            Uuid,               // in_reply_to
+            Option<Visibility>, //visibility
+            Option<String>,     // content
+            Option<StorUrl>,    // replies
+            Option<StorUrl>,    // shares
         ) as DeserializeRow>::type_check(specs)
     }
 
@@ -1786,29 +1733,37 @@ impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metada
         row: ColumnIterator<'frame, 'metadata>,
     ) -> StdResult<Self, DeserializationError> {
         use scylla::deserialize::row::DeserializeRow;
-        let (sort, user_id, received, ap_id, in_reply_to_sort, in_reply_to, visibility, content) =
-            <(
-                i8,
-                UserId,
-                DateTime<Utc>,
-                StorUrl,
-                Option<i8>,
-                Option<Uuid>,
-                Option<Visibility>,
-                Option<String>,
-            ) as DeserializeRow>::deserialize(row)?;
-        let in_reply_to = match (in_reply_to_sort, in_reply_to) {
-            (None, None) => None,
-            (Some(sort), Some(id)) => match sort {
-                0 => Some(InReply::Post(PostId::from_uuid(id))),
-                1 => Some(InReply::Reply(ReplyId::from_uuid(id))),
-                2 => Some(InReply::Share(ShareId::from_uuid(id))),
-                tag => {
-                    return Err(mk_de_err(InvalidTagSnafu { tag }.build()));
-                }
-            },
-            (_, _) => {
-                return Err(mk_de_err(BrokenInReplySnafu.build()));
+        let (
+            sort,
+            user_id,
+            received,
+            ap_id,
+            attributed_to,
+            in_reply_to_sort,
+            in_reply_to,
+            visibility,
+            content,
+            replies,
+            shares,
+        ) = <(
+            i8,
+            UserId,
+            DateTime<Utc>,
+            StorUrl,
+            StorUrl,
+            i8,
+            Uuid,
+            Option<Visibility>,
+            Option<String>,
+            Option<StorUrl>,
+            Option<StorUrl>,
+        ) as DeserializeRow>::deserialize(row)?;
+        let in_reply_to = match in_reply_to_sort {
+            0 => InReply::Post(PostId::from_uuid(in_reply_to)),
+            1 => InReply::Reply(ReplyId::from_uuid(in_reply_to)),
+            2 => InReply::Share(ShareId::from_uuid(in_reply_to)),
+            tag => {
+                return Err(mk_de_err(InvalidTagSnafu { tag }.build()));
             }
         };
         match sort {
@@ -1816,18 +1771,15 @@ impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metada
                 user_id,
                 received,
                 ap_like_id: ap_id,
-                in_reply_to: in_reply_to.ok_or(mk_de_err(
-                    MissingFieldSnafu {
-                        field: "in_reply_to",
-                    }
-                    .build(),
-                ))?,
+                in_reply_to,
+                attributed_to,
             })),
             1 => Ok(IncomingLikeReplyShare::Reply(IncomingReply {
                 user_id,
                 received,
                 ap_reply_id: ap_id,
                 in_reply_to,
+                attributed_to,
                 visibility: visibility.ok_or(mk_de_err(
                     MissingFieldSnafu {
                         field: "visibility",
@@ -1835,6 +1787,8 @@ impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metada
                     .build(),
                 ))?,
                 content: content
+                    .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
+                replies: replies
                     .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
             })),
             2 => Ok(IncomingLikeReplyShare::Share(IncomingShare {
@@ -1842,6 +1796,7 @@ impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metada
                 received,
                 ap_share_id: ap_id,
                 in_reply_to,
+                attributed_to,
                 visibility: visibility.ok_or(mk_de_err(
                     MissingFieldSnafu {
                         field: "visibility",
@@ -1850,6 +1805,9 @@ impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metada
                 ))?,
                 content: content
                     .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
+                replies: replies
+                    .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
+                shares: shares.ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
             })),
             tag => Err(mk_de_err(InvalidTagSnafu { tag }.build())),
         }

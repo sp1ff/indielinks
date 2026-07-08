@@ -26,27 +26,32 @@
 //! each returning empty) before creating any content, so every subsequent post/reply lands as a
 //! deterministic in-memory insert that the following fetch observes.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, iter::once, sync::Arc};
 
 use chrono::{SecondsFormat, Utc};
 use lazy_static::lazy_static;
 use libtest_mimic::Failed;
 use reqwest::{Body, Client, Method, StatusCode, Url};
 use secrecy::SecretString;
+use tracing::debug;
 use uuid::Uuid;
+use wiremock::MockServer;
 
 use indielinks_shared::{
-    api::{ReplyRequest, TimelineInitialRsp, TimelineReq},
-    entities::Username,
+    api::{PostsAllRsp, ReplyRequest, TimelineInitialRsp, TimelineReq},
+    entities::{PostId, Username},
     origin::Origin,
 };
 
 use indielinks::{
-    ap_entities::{Outbox, OutboxPage},
+    ap_entities::{
+        make_user_followers, make_user_post_id, Create, CreateObject, FirstField, Jld, Note,
+        NoteField, Outbox, OutboxPage, Replies, RepliesPage,
+    },
     peppers::{Pepper, Version as PepperVersion},
 };
 
-use crate::{activity_pub, helper::Helper, make_signed_request, PeerUser};
+use crate::{activity_pub, helper::Helper, make_signed_request, peer_actor, PeerUser};
 
 lazy_static! {
     static ref TEST_PASSWORD: SecretString = "4d9c0b1a2f3e4d5c6b7a8901f2e3d4c5".to_owned().into();
@@ -303,6 +308,235 @@ pub async fn post_reply_timeline(
         outbox_count(&client, &indielinks, &username, &mock_origin, &peer_user).await?,
         4,
         "outbox should contain both posts and both replies"
+    );
+
+    helper.remove_user(&username).await?;
+    Ok(())
+}
+
+/// Stand-up a fresh mock ActivityPub server hosting a single mock user, with that user's actor
+/// document mounted at `/users/{name}` so the server-under-test can resolve its public key while
+/// verifying signed requests.
+async fn spawn_mock_peer() -> Result<(MockServer, PeerUser, Origin), Failed> {
+    let server = MockServer::start().await;
+    let peer = PeerUser::new()?;
+    let origin: Origin = server.uri().try_into()?;
+    peer_actor(&peer, &origin).await?.mount(&server).await;
+    Ok((server, peer, origin))
+}
+
+/// Discover the (server-generated) [PostId] of `username`'s single bookmark via the del.icio.us
+/// `posts/all` endpoint. `posts/add` returns only "done", so we read the post back to learn its id.
+async fn only_post_id(
+    client: &Client,
+    indielinks: &Url,
+    username: &Username,
+    api_key: &str,
+) -> Result<PostId, Failed> {
+    let rsp = client
+        .get(format!("{indielinks}api/v1/posts/all"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {username}:{api_key}"),
+        )
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<PostsAllRsp>()
+        .await?;
+    assert_eq!(rsp.posts.len(), 1, "expected exactly one post");
+    Ok(rsp.posts[0].id())
+}
+
+/// Deliver a reply to `in_reply_to` (a local post's AP id) on behalf of `peer`, by forming a public
+/// `Create{Note}` addressed to `followers` and POSTing it, HTTP-signed as `peer`, to the shared
+/// inbox. Returns the AP id of the reply `Note` (which is what surfaces in the replies collection).
+async fn send_reply(
+    client: &Client,
+    indielinks: &Url,
+    in_reply_to: &Url,
+    followers: &Url,
+    peer: &PeerUser,
+    peer_origin: &Origin,
+    text: &str,
+) -> Result<Url, Failed> {
+    let public = Url::parse("https://www.w3.org/ns/activitystreams#Public")?;
+    let note_id = Url::parse(&format!(
+        "{peer_origin}/users/{}/posts/{}",
+        peer.name(),
+        Uuid::new_v4()
+    ))?;
+    let note_replies = {
+        let mut url = note_id.clone();
+        url.path_segments_mut().unwrap(/* known good */).push("replies");
+        url
+    };
+    let note = Note::new_from_parts(
+        note_id.clone(),
+        Some(in_reply_to.clone()),
+        None,
+        peer.id(peer_origin)?,
+        once(public.clone()),
+        once(followers.clone()),
+        text.into(),
+        Replies::new(note_replies, None, None),
+    )?;
+    let create = Create::from_parts(
+        Url::parse(&format!(
+            "{peer_origin}/users/{}/activities/{}",
+            peer.name(),
+            Uuid::new_v4()
+        ))?,
+        peer.id(peer_origin)?,
+        once(public),
+        once(followers.clone()),
+        CreateObject::Note(note),
+    )?;
+
+    let request = make_signed_request(
+        Method::POST,
+        indielinks.join("/inbox")?,
+        Body::from(Jld::new(&create, None)?.to_string()),
+        peer_origin,
+        peer.priv_key(),
+        peer.name(),
+    )
+    .await?;
+    assert_eq!(
+        client.execute(request).await?.status(),
+        StatusCode::ACCEPTED,
+        "shared inbox should accept the reply"
+    );
+    debug!("Sent a reply: {note_id}");
+    Ok(note_id)
+}
+
+/// Fetch a single page (of `page_size`) from `page_url`, which must already carry a `page=<token>`
+/// query, and return the set of reply-`Note` ids it holds. Also returns the `next`-page URL.
+async fn replies_page(
+    client: &Client,
+    page_url: Url,
+    page_size: usize,
+) -> Result<(HashSet<Url>, Option<Url>), Failed> {
+    let mut page_url = page_url;
+    page_url
+        .query_pairs_mut()
+        .append_pair("page_size", &page_size.to_string());
+    let page = client
+        .get(page_url)
+        .send()
+        .await
+        .unwrap()
+        // .error_for_status()?
+        .json::<RepliesPage>()
+        .await
+        .unwrap();
+    debug!("Retrieved replies page: {page:#?}");
+    let ids = page
+        .items
+        .iter()
+        .map(|item| match item {
+            NoteField::Inline(note) => note.id().clone(),
+            NoteField::Iri(url) => url.clone(),
+        })
+        .collect::<HashSet<Url>>();
+    Ok((ids, page.next))
+}
+
+/// Two remote actors each reply twice to a local post; paginating the post's replies collection
+/// with a page size of two returns the four replies across two disjoint pages.
+pub async fn post_replies_endpoint(
+    indielinks: Url,
+    pepper_version: PepperVersion,
+    pepper_key: Pepper,
+    helper: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
+    let username = Username::new("post-replies-endpoint-user").unwrap(/* known good */);
+    helper.remove_user(&username).await?;
+
+    let client = Client::builder()
+        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
+        .build()?;
+
+    let api_key = helper
+        .create_user(
+            &pepper_version,
+            &pepper_key,
+            &username,
+            &TEST_PASSWORD,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .await?;
+
+    // Create one public bookmark, then read it back to learn its (server-assigned) id.
+    create_post(
+        &client,
+        &indielinks,
+        &username,
+        &api_key,
+        "https://example.com/replies-target",
+        "RepliesTarget",
+        &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+    )
+    .await?;
+    let post_id = only_post_id(&client, &indielinks, &username, &api_key).await?;
+
+    let indielinks_origin: Origin = (&indielinks).try_into()?;
+    let in_reply_to = make_user_post_id(&username, &post_id, &indielinks_origin)?;
+    let followers = make_user_followers(&username, &indielinks_origin)?;
+
+    // Two mock peers, each replying twice: four replies in all.
+    let (_peer1_server, peer1, peer1_origin) = spawn_mock_peer().await?;
+    let (_peer2_server, peer2, peer2_origin) = spawn_mock_peer().await?;
+
+    let mut expected = HashSet::new();
+    for (peer, origin, text) in [
+        (&peer1, &peer1_origin, "peer1 first reply"),
+        (&peer1, &peer1_origin, "peer1 second reply"),
+        (&peer2, &peer2_origin, "peer2 first reply"),
+        (&peer2, &peer2_origin, "peer2 second reply"),
+    ] {
+        let reply_id = send_reply(
+            &client,
+            &indielinks,
+            &in_reply_to,
+            &followers,
+            peer,
+            origin,
+            text,
+        )
+        .await?;
+        assert!(expected.insert(reply_id), "reply ids should be distinct");
+    }
+
+    // Request the collection (no page token): its `first` link names the first page.
+    let collection = client
+        .get(indielinks.join(&format!("/users/{username}/posts/{post_id}/replies"))?)
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Replies>()
+        .await?;
+    debug!("Collection: {collection:#?}");
+    let first = match collection.first() {
+        Some(FirstField::Iri(url)) => url.clone(),
+        other => return Err(Failed::from(format!("unexpected `first` field: {other:?}"))),
+    };
+
+    // Page one (size 2), then page two via its `next` link.
+    let (page1, next) = replies_page(&client, first, 2).await?;
+    let next = next.ok_or_else(|| Failed::from("expected a second page"))?;
+    let (page2, _) = replies_page(&client, next, 2).await?;
+
+    assert_eq!(page1.len(), 2, "page one should hold two distinct replies");
+    assert_eq!(page2.len(), 2, "page two should hold two distinct replies");
+    assert!(page1.is_disjoint(&page2), "the two pages must not overlap");
+    assert_eq!(
+        page1.union(&page2).cloned().collect::<HashSet<Url>>(),
+        expected,
+        "the two pages together should yield all four replies"
     );
 
     helper.remove_user(&username).await?;

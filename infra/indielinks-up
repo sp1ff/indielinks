@@ -148,7 +148,7 @@ if [ $# -ne 1 ]; then
 fi
 
 config="$1"
-rust_log="${RUST_LOG:-debug,aws_config=warn,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,aws_smithy_http_client=info,aws_sdk_dynamodb=info,hyper=info,scylla=info,openraft=info}"
+rust_log="${RUST_LOG:-debug,aws_config=warn,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,aws_smithy_http_client=info,aws_sdk_dynamodb=info,hyper=info,scylla=info,openraft=info,opentelemetry_sdk=info,h2::codec=info,h2::proto=info,hyper_util=info}"
 
 # Clean-up & (re-)create the local state directories for each instance
 test -d ${local_state_dir} || mkdir ${local_state_dir}

@@ -2,7 +2,7 @@
   "@context": "https://www.w3.org/ns/activitystreams",
   "id": "{0}/ap/users/116370086208557206/statuses/116370106879969740/replies?only_other_accounts=true&page=true",
   "type": "CollectionPage",
-  "partOf": "http://localhost:3001/users/admin/statuses/116370106879969740/replies",
+  "partOf": "{0}/users/admin/statuses/116370106879969740/replies",
   "items": [
   ]
 }}

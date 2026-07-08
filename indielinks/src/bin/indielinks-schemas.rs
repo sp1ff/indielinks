@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2024-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -79,6 +79,7 @@ use indielinks::{
     dynamodb_schemas::{
         create_schema as create_dynamodb_schema, schema_migration_1 as ddb_schema_migration_ver_1,
         schema_migration_2 as ddb_schema_migration_ver_2,
+        schema_migration_3 as ddb_schema_migration_ver_3,
     },
     scylla::{
         create_client as create_scylla_client, create_schema as create_scylladb_schema,
@@ -188,7 +189,7 @@ fn configure_logging(debug: bool, verbose: bool, quiet: bool, plain: bool) -> Re
 //                                   schema version management                                    //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 // Each function is expected to update `schema_migrations` on successful completion
 // Can be implemented as:
@@ -220,6 +221,13 @@ const CQL_SCHEMAS: &[ScyllaDbSchemaUpdate] = &[
                 .context(CreateSchemaSnafu)
         })
     },
+    |session| {
+        Box::pin(async move {
+            create_scylladb_schema(session, include_str!("../../schemas/3.cql"), 3)
+                .await
+                .context(CreateSchemaSnafu)
+        })
+    },
 ];
 
 // Each function is expected to update `schema_versions` on successful completion
@@ -247,6 +255,13 @@ const DDB_FNS: &[DynamoDbSchemaUpdate] = &[
     |client| {
         Box::pin(async move {
             ddb_schema_migration_ver_2(client)
+                .await
+                .context(DdbSchemaUpdateSnafu)
+        })
+    },
+    |client| {
+        Box::pin(async move {
+            ddb_schema_migration_ver_3(client)
                 .await
                 .context(DdbSchemaUpdateSnafu)
         })

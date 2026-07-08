@@ -22,11 +22,14 @@
 //! I've refactored the common logic here, and I hope this module will grow into a general-purpose
 //! "application logic" repository.
 
-use std::{collections::HashSet, result::Result as StdResult, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet, num::NonZero, result::Result as StdResult, sync::Arc, time::Duration,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use either::Either::Left;
+use futures::TryStreamExt;
 use http::Method;
 use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
 use opentelemetry::KeyValue;
@@ -41,11 +44,12 @@ use indielinks_cache::{raft::CacheNode, types::NodeId};
 use indielinks_shared::{
     api::{
         ClusterStatsResponse, OutboxToken, RecentPostsPage, RecentPostsRequest,
-        RecentPostsResponse, ReplyRequest, TimelineBeforePage, TimelineBeforeRsp,
+        RecentPostsResponse, RepliesToken, ReplyRequest, TimelineBeforePage, TimelineBeforeRsp,
         TimelineInitialPage, TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp,
         TimelineToken, UserOutboxRequest,
     },
     entities::{Post, PostId, StorUrl, Tagname, UserId, Username},
+    known_good,
     nonempty_string::NonEmptyString,
     origin::Origin,
 };
@@ -54,13 +58,18 @@ use uuid::Uuid;
 use crate::{
     activity_pub::{SendCreate, SendReply},
     ap_entities::{
-        ap_request, ap_request_no_response, make_follow_id, make_user_id, make_user_outbox, Actor,
-        Announce, AnnounceOrCreate, Create, Follow, Item, Note, Outbox, OutboxPage, ToJld,
+        ap_request, ap_request_no_response, make_follow_id, make_post_reply_id,
+        make_reply_reply_id, make_share_reply_id, make_user_id, make_user_outbox, Actor, Announce,
+        AnnounceOrCreate, Create, Follow, Item, Note, NoteField, Outbox, OutboxPage, Replies,
+        RepliesPage, ToJld,
     },
     background_tasks::{self, BackgroundTask, BackgroundTasks, Context, Sender, TaggedTask, Task},
     cache::{GrpcClient, GrpcClientFactory},
     define_metric,
-    entities::{FollowId, OutgoingReply, OutgoingShare, ReplyId, User, Visibility},
+    entities::{
+        FollowId, IncomingLikeReplyShare, IncomingReply, LikeReplyShare, OutgoingReply,
+        OutgoingShare, ReplyId, User, Visibility,
+    },
     home_timeline::{FirstPage, HomeTimelines, Timeline},
     indielinks::Indielinks,
     outboxes::{ActivityKey, Outbox as UserOutbox, Page, FIRST_ACTIVITY_KEY},
@@ -102,6 +111,12 @@ pub enum Error {
         #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
         source: Box<crate::ap_resolution::Error>,
     },
+    #[snafu(display("Post {post_id} *does* exist, but it doesn't belong to user {user_id}!"))]
+    BadRepliesRequest {
+        post_id: PostId,
+        user_id: UserId,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While connecting a gRPC client, {source}"))]
     Connection { source: crate::cache::Error },
     #[snafu(display("While retrieving entity counts, {source}"))]
@@ -117,11 +132,26 @@ pub enum Error {
         #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
         source: Box<crate::ap_entities::Error>,
     },
+    #[snafu(display("While fetching a like, reply or share, {source}"))]
+    GetLikeReplyShare { source: crate::storage::Error },
+    #[snafu(display("While streaming likes, replies & shares, {source}"))]
+    GetLikesRepliesShares { source: crate::storage::Error },
+    #[snafu(display("While fetching post {id}, {source}"))]
+    GetPost {
+        id: Uuid,
+        source: crate::storage::Error,
+    },
     #[snafu(display("While computing the home timeline for {username}, {source}"))]
     HomeTimeline {
         username: Username,
         #[snafu(source(from(crate::home_timeline::Error, Box::new)))]
         source: Box<crate::home_timeline::Error>,
+    },
+    #[snafu(display("{id} is a Like"))]
+    IsALike {
+        username: Username,
+        id: Uuid,
+        backtrace: Backtrace,
     },
     #[snafu(display("While deserialzing to messagepack, {source}"))]
     MessagePackDe {
@@ -133,6 +163,8 @@ pub enum Error {
         source: rmp_serde::encode::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("No post with id {id}"))]
+    NoPost { id: Uuid, backtrace: Backtrace },
     #[snafu(display("Failed to hash UserId {userid}: {source}"))]
     NodeHash {
         userid: UserId,
@@ -161,6 +193,15 @@ pub enum Error {
     },
     #[snafu(display("Recent Posts pagination token: {source}"))]
     RecentPostsToken { source: crate::signing_keys::Error },
+    #[snafu(display("While awaiting the next chunk of replies, {source}"))]
+    IncomingRepliesChunk {
+        source: futures::stream::TryChunksError<IncomingReply, crate::storage::Error>,
+    },
+    #[snafu(display("Replies pagination token error {source}"))]
+    RepliesToken {
+        #[snafu(source(from(crate::signing_keys::Error, Box::new)))]
+        source: Box<crate::signing_keys::Error>,
+    },
     #[snafu(display("While retrieving the address of node {node_id}, {source}"))]
     SocketAddr {
         node_id: NodeId,
@@ -709,6 +750,249 @@ pub async fn handle_outbox_insert_or_redirect(
             handle_outbox_insert(state, user, key, aoc).await;
             Ok(())
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                          Post Replies                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// While replies, like, an ActivityPub Outbox, are a collection (not ordered, in the case of
+// replies), I'm going to handle them differently. This is out of curiosity, as well as the fact
+// that I expect replies to be smaller collections and less frequently queried. Instead of
+// materializing a collection in-memory on first request, then serving subsequent requests out of
+// that collectin, I'm just going to hit the data store on each request, serve that request from the
+// returned `Stream`, and throw it away.
+//
+// Admittedly, I'm guessing that this will be more efficient, but until I get indielinks
+// operational, that's all I can do; I'll just have to be careful in terms of observability.
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct RepliesSortKey {
+    timestamp: DateTime<Utc>,
+    id: Url,
+}
+
+impl RepliesSortKey {
+    pub fn from_reply(reply: &IncomingReply) -> Self {
+        Self {
+            timestamp: *reply.received(),
+            id: reply.ap_reply_id().clone(),
+        }
+    }
+}
+
+// We implement `Ord` so as to sort in reverse order, in keeping with the CQL schema.
+impl Ord for RepliesSortKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        if (self.timestamp > other.timestamp)
+            || (self.timestamp == other.timestamp && self.id > other.id)
+        {
+            Ordering::Less
+        } else if self.timestamp == other.timestamp && self.id == other.id {
+            Ordering::Equal
+        } else {
+            Ordering::Greater
+        }
+    }
+}
+
+impl PartialOrd for RepliesSortKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum RepliesResponse {
+    Replies(Replies),
+    Paged(RepliesPage),
+}
+
+impl ToJld for RepliesResponse {
+    fn get_type(&self) -> crate::ap_entities::Type {
+        match self {
+            RepliesResponse::Replies(replies) => replies.get_type(),
+            RepliesResponse::Paged(replies_page) => replies_page.get_type(),
+        }
+    }
+}
+
+// Return the "replies" collection itself
+fn make_replies_collection(collection_id: Url, signing_key: SigningKey) -> Result<Replies> {
+    let token: RepliesToken = to_token(
+        &RepliesSortKey {
+            timestamp: chrono::DateTime::<Utc>::MAX_UTC,
+            // Super-lame, but it really doesn't matter-- we just need an Url... any Url.
+            id: known_good!("https://example.net".parse()),
+        },
+        &signing_key,
+    )
+    .context(RepliesTokenSnafu)?;
+
+    let mut first = collection_id.clone();
+    first.set_query(Some(&format!("page={token}")));
+
+    Ok(Replies::new(collection_id, Some(first), None))
+}
+
+// Create a single page's worth of replies
+async fn make_replies_page(
+    state: Arc<Indielinks>,
+    user: &User,
+    post_id: &Uuid,
+    collection_id: Url,
+    signing_key: SigningKey,
+    pagination_token: &RepliesToken,
+    page_size: NonZero<usize>,
+) -> Result<RepliesPage> {
+    let mut id = collection_id.clone();
+    id.set_query(Some(&format!("page={pagination_token}")));
+
+    debug!("Pagination token: {pagination_token}");
+    let sort_key: RepliesSortKey =
+        from_token(pagination_token, &signing_key).context(RepliesTokenSnafu)?;
+    debug!("make_replies_page: Sort key: {sort_key:#?}");
+
+    let stream = state
+        .storage
+        .as_ref()
+        .get_likes_replies_shares(post_id)
+        .await
+        .context(GetLikesRepliesSharesSnafu)?
+        // We only want replies!
+        .try_filter_map(|like_reply_share| async move {
+            match like_reply_share {
+                IncomingLikeReplyShare::Reply(reply) => Ok(Some(reply)),
+                _ => Ok(None),
+            }
+        })
+        .try_skip_while(|reply| {
+            let sort_key = sort_key.clone();
+            let this_key = RepliesSortKey::from_reply(reply);
+            debug!(
+                "Considering skipping {reply:#?}; {this_key:#?} <= {sort_key:#?} :=> {}",
+                this_key <= sort_key
+            );
+            async move { Ok(this_key <= sort_key) }
+        })
+        .try_chunks(page_size.get());
+
+    futures::pin_mut!(stream);
+
+    match stream.try_next().await.context(IncomingRepliesChunkSnafu)? {
+        None => Ok(RepliesPage {
+            id: Some(id),
+            next: None,
+            part_of: collection_id,
+            items: Vec::new(),
+        }),
+        Some(replies) => {
+            // Super irritating (and why I always use `Option<NEVec>`)-- there appears to be no
+            // way we get here with an empty vector.
+            let next_key = RepliesSortKey::from_reply(replies.last().unwrap(/* known good */));
+            debug!("Returning the next sort key: {next_key:#?}");
+            let next_token: RepliesToken =
+                to_token(&next_key, &signing_key).context(RepliesTokenSnafu)?;
+            debug!("As token: {next_token}");
+            let mut next = collection_id.clone();
+            next.set_query(Some(&format!("page={next_token}")));
+            Ok(RepliesPage {
+                id: Some(id),
+                next: Some(next),
+                part_of: collection_id,
+                items: replies
+                    .into_iter()
+                    .map(|reply| {
+                        Note::from_incoming_reply(&reply, user.username(), &state.origin)
+                            .map(|note| NoteField::Inline(Box::new(note)))
+                    })
+                    .collect::<StdResult<Vec<_>, _>>()
+                    .context(ApSnafu)?,
+            })
+        }
+    }
+}
+
+/// Retrieve a post's replies, modeled as an ActivityPub Collection
+pub async fn get_post_replies(
+    state: Arc<Indielinks>,
+    user: &User,
+    entity_id: &Uuid,
+    pagination_token: Option<(RepliesToken, NonZero<usize>)>,
+) -> Result<RepliesResponse> {
+    let username = user.username();
+
+    fn check_userid(user: &User, userid: &UserId, id: &Uuid) -> Result<()> {
+        if user.id() != userid {
+            return NoPostSnafu { id: *id }.fail();
+        }
+        Ok(())
+    }
+
+    // Let's begin by checking that this post even exists, and that it was made by `user`:
+    let collection_id: Url = match state
+        .storage
+        .as_ref()
+        .get_post_by_id(&entity_id.into())
+        .await
+        .context(GetPostSnafu { id: *entity_id })?
+    {
+        Some(post) => {
+            check_userid(user, &post.user_id(), entity_id)?;
+            make_post_reply_id(username, &post.id(), &state.origin).context(ApSnafu)?
+        }
+        None => match state
+            .storage
+            .as_ref()
+            .get_like_reply_share(entity_id)
+            .await
+            .context(GetLikeReplyShareSnafu)?
+        {
+            Some(LikeReplyShare::Like(_)) => {
+                return IsALikeSnafu {
+                    username: username.clone(),
+                    id: *entity_id,
+                }
+                .fail();
+            }
+            Some(LikeReplyShare::Reply(reply)) => {
+                check_userid(user, &reply.user_id(), entity_id)?;
+                make_reply_reply_id(username, &reply.id(), &state.origin).context(ApSnafu)?
+            }
+            Some(LikeReplyShare::Share(share)) => {
+                check_userid(user, &share.user_id(), entity_id)?;
+                make_share_reply_id(username, &share.id(), &state.origin).context(ApSnafu)?
+            }
+            None => {
+                return NoPostSnafu { id: *entity_id }.fail();
+            }
+        },
+    };
+
+    // Alright, the request is legit. Let's next see whether the collection itself is being
+    // requested, or if we're in the midst of a pagination:
+    let (_, signing_key) = state.signing_keys.current().context(NoSigningKeysSnafu)?;
+
+    match pagination_token {
+        Some((pagination_token, page_size)) => Ok(RepliesResponse::Paged(
+            make_replies_page(
+                state,
+                user,
+                entity_id,
+                collection_id,
+                signing_key,
+                &pagination_token,
+                page_size,
+            )
+            .await?,
+        )),
+        None => Ok(RepliesResponse::Replies(make_replies_collection(
+            collection_id,
+            signing_key,
+        )?)),
     }
 }
 

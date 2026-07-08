@@ -84,7 +84,7 @@ use crate::{
         to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
     },
     entities::{
-        ApiKeys, FollowId, Follower, FollowerId, Following, IncomingLike,
+        ApiKeys, FollowId, Follower, FollowerId, Following, IncomingLike, IncomingLikeReplyShare,
         IncomingLikeReplyShareRef, IncomingReply, IncomingShare, LikeReplyShare, LikeReplyShareRef,
         OutgoingLike, OutgoingReply, OutgoingShare, User,
     },
@@ -1244,7 +1244,7 @@ impl Session {
             "select * from raft_log where node_id = ?",
             "update users set api_keys=? where id=?",
             "insert into likes_replies_shares (user_id, posted, id, content, in_reply_to, sort, visibility) values (?, ?, ?, ?, ?, ?, ?) if not exists", // AddOutgoingLikeReplyShare
-            "insert into incoming_likes_replies_shares (sort, user_id, received, ap_id, in_reply_to_sort, in_reply_to, visibility, content) values (?, ?, ?, ?, ?, ?, ?, ?) if not exists", // AddIncomingLikeReplyShare,
+            "insert into incoming_likes_replies_shares (sort, user_id, received, ap_id, attributed_to, in_reply_to_sort, in_reply_to, visibility, content, replies, shares) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) if not exists", // AddIncomingLikeReplyShare,
             "select * from likes_replies_shares where id = ?", // OutgoingLikeReplyShare
             "select count(*) from posts where user_id = ?", // CountPosts
             "select count(*) from likes_replies_shares where user_id = ?", // CountLikesRepliesShares
@@ -1343,6 +1343,7 @@ impl Session {
             .collect::<StdResult<Vec<PreparedStatement>, _>>()?;
 
         let get_all_likes_replies_shares_statement =
+            // `select *` is dangerous-- should select by name, in order
             "select * from likes_replies_shares where user_id = ?";
         let get_all_likes_replies_shares_statement = scylla
             .prepare(Statement::new(get_all_likes_replies_shares_statement).with_page_size(512))
@@ -1352,7 +1353,7 @@ impl Session {
             })?;
 
         let get_likes_replies_shares_statement =
-            "select * from incoming_likes_replies_shares where in_reply_to=?";
+            "select sort, user_id, received, ap_id, attributed_to, in_reply_to_sort, in_reply_to, visibility, content, replies, shares from incoming_likes_replies_shares where in_reply_to=?";
         let get_likes_replies_shares_statement = scylla
             .prepare(Statement::new(get_likes_replies_shares_statement).with_page_size(512))
             .await
@@ -1868,8 +1869,9 @@ impl storage::Backend for Session {
 
     async fn get_likes_replies_shares(
         &self,
-        id: &PostId,
-    ) -> StdResult<BoxStream<'static, StdResult<LikeReplyShare, StorageError>>, StorageError> {
+        id: &Uuid,
+    ) -> StdResult<BoxStream<'static, StdResult<IncomingLikeReplyShare, StorageError>>, StorageError>
+    {
         make_streaming_response(
             &self.session,
             self.get_likes_replies_shares_statement.clone(),

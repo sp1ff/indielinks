@@ -4,9 +4,9 @@
 # "bugfix" because it's intended for use in the bugfix worktree.
 
 runner.log-level = "DEBUG"
-runner.logging = false
+runner.logging = true
 runner.no-setup = false
-runner.no-teardown = false
+runner.no-teardown = true
 runner.enforce-single-threaded=true
 
 domain.single-node.indielinks = "http://indiemark.local:20709"

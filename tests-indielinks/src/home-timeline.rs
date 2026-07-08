@@ -76,7 +76,7 @@ fn make_note(
         SanitizedHtml::from(format!("<p>Test post #{idx}</p>").as_str()),
         Replies::new(
             Url::parse(&format!("{id}/replies"))?,
-            Url::parse(&format!("{id}/replies?page=true"))?,
+            Some(Url::parse(&format!("{id}/replies?page=true"))?),
             None,
         ),
     )?

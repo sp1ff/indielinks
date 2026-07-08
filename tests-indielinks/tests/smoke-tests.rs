@@ -94,7 +94,7 @@ use tests_indielinks::{
     helper::{DynamoConfig, DynamoDBHelper, Helper, ScyllaConfig, ScyllaHelper},
     home_timeline::{timeline_before, timeline_empty, timeline_initial},
     outboxes::outbox_smoke_test,
-    post_reply_timeline::post_reply_timeline,
+    post_reply_timeline::{post_replies_endpoint, post_reply_timeline},
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
@@ -632,7 +632,7 @@ impl tests_support::Fixture for Fixture {
             }
             FixtureId::ScyllaCluster => {
                 let backend = Arc::new(
-                    ScyllaHelper::new(Url::parse(&format!("http://localhost:{}", config.clustered.haproxy_port)).unwrap(/* known good */),
+                    ScyllaHelper::new(Url::parse(&format!("http://indiemark.local:{}", config.clustered.haproxy_port)).unwrap(/* known good */),
                                       config.clustered.nodes.iter().cloned(),
                                       &config.scylla)
                         .await
@@ -663,7 +663,7 @@ impl tests_support::Fixture for Fixture {
             }
             FixtureId::DynamoDBCluster => {
                 let backend = Arc::new(
-                    DynamoDBHelper::new(Url::parse(&format!("http://localhost:{}", config.clustered.haproxy_port)).unwrap(/* known good */),
+                    DynamoDBHelper::new(Url::parse(&format!("http://indiemark.local:{}", config.clustered.haproxy_port)).unwrap(/* known good */),
                                         config.clustered.nodes.iter().cloned(),
                                         &config.dynamo)
                         .await
@@ -1039,6 +1039,25 @@ inventory::submit!(Test {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(post_reply_timeline(
+            helper.indielinks(),
+            version,
+            pepper,
+            helper,
+        ))
+    },
+    fixtures: Some(&[
+        FixtureId::ScyllaSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::DynamoDBCluster
+    ]),
+});
+
+inventory::submit!(Test {
+    name: "112post_replies_endpoint",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(post_replies_endpoint(
             helper.indielinks(),
             version,
             pepper,

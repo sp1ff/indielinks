@@ -413,7 +413,7 @@ pub async fn as_follower(
         "<p>Greate site!</p>".into(),
         Replies::new(
             Url::parse(&format!("{id}/replies"))?,
-            Url::parse(&format!("{id}/replies?page=true"))?,
+            Some(Url::parse(&format!("{id}/replies?page=true"))?),
             None,
         ),
     )?;
@@ -545,6 +545,8 @@ pub async fn context_with_mastodon(
         .text()
         .await?
         .pipe(|text| serde_json::from_str::<ThreadContextResponse>(&text))?;
+
+    debug!("Response: {response:#?}");
 
     assert_eq!(
         response.post.id,

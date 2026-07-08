@@ -552,3 +552,9 @@ pub async fn schema_migration_2(client: Client) -> Result<()> {
     )
     .map(|_| ())
 }
+
+pub async fn schema_migration_3(_: Client) -> Result<()> {
+    // For DyanmoDB, this schema migration is a NOP-- we're just adding a column that isn't indexed.
+    // This is still a schema change for CQL, but not here.
+    Ok(())
+}

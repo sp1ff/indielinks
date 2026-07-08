@@ -78,9 +78,9 @@ use crate::{
         to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
     },
     entities::{
-        ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShareRef,
-        IncomingReply, IncomingShare, LikeReplyShare, LikeReplyShareRef, OutgoingLike,
-        OutgoingReply, OutgoingShare, User,
+        ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShare,
+        IncomingLikeReplyShareRef, IncomingReply, IncomingShare, LikeReplyShare, LikeReplyShareRef,
+        OutgoingLike, OutgoingReply, OutgoingShare, User,
     },
     storage::{self, Counts, DateRange, UsernameClaimedSnafu},
     util::{Credentials, UpToThree},
@@ -679,7 +679,7 @@ where
         })
     }
 
-    // Utility method; convert a DDB `QueryOutput` to a vector of `Following`
+    // Utility method; convert a DDB `QueryOutput` to a vector of `T`
     fn get_items(query_output: QueryOutput) -> Result<Vec<T>> {
         query_output
             .items()
@@ -1668,8 +1668,9 @@ impl storage::Backend for Client {
 
     async fn get_likes_replies_shares(
         &self,
-        id: &PostId,
-    ) -> StdResult<BoxStream<'static, StdResult<LikeReplyShare, StorError>>, StorError> {
+        id: &Uuid,
+    ) -> StdResult<BoxStream<'static, StdResult<IncomingLikeReplyShare, StorError>>, StorError>
+    {
         let attribute_values =
             HashMap::from([(":pk".to_owned(), AttributeValue::S(format!("{id}")))]);
         let builder = self
@@ -1677,8 +1678,9 @@ impl storage::Backend for Client {
             .query()
             .table_name("incoming_likes_replies_shares")
             .set_index_name(Some("incoming_likes_replies_shares_by_ap_id".to_owned()))
-            .key_condition_expression("in_reply_to = :pk");
-        let stream: PagedResultsStream<LikeReplyShare> = builder
+            .key_condition_expression("in_reply_to = :pk")
+            .scan_index_forward(false);
+        let stream: PagedResultsStream<IncomingLikeReplyShare> = builder
             .set_expression_attribute_values(Some(attribute_values))
             .into_paginator()
             .page_size(512)
