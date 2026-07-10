@@ -24,6 +24,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use snafu::{IntoError, ResultExt, Snafu};
 use tap::Pipe;
+use tracing::debug;
 use wasm_cookies::FromUrlEncodingError;
 
 use indielinks_shared::api::{LoginRsp, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME};
@@ -102,6 +103,8 @@ pub async fn refresh_token() -> StdResult<Option<SecretString>, Error> {
     let api = expect_context::<Api>().0;
     let token = expect_context::<Token>();
 
+    debug!("Refreshing the authorization token...");
+
     // We need to prove that we have code execution privileges by copying the CSRF token from it's cookie to
     // a request header
     let csrf_token = match wasm_cookies::get(REFRESH_CSRF_COOKIE) {
@@ -126,6 +129,8 @@ pub async fn refresh_token() -> StdResult<Option<SecretString>, Error> {
 
     token.set(Some(response.token.clone().into()));
 
+    debug!("Refreshing the authorization token...done(success).");
+
     Ok(Some(response.token.into()))
 }
 
@@ -144,22 +149,27 @@ where
 
     match token.get() {
         Some(token) => {
+            // This is all rather verbose. I want to remove it once this is working more reliably.
             // We have a token laying around, so use it. Retry with refresh on 401.
+            debug!("We have a token; sending the request...",);
             let response = send_request(token.expose_secret())
                 .await
                 .context(SendSnafu)?;
             if response.status() == 401 {
+                debug!("Request was 401'd attempting to refesh the auth token...");
                 match refresh_token().await? {
                     Some(token) => send_request(token.expose_secret()).await.context(SendSnafu),
                     None => NoRefreshSnafu.fail(),
                 }
             } else {
+                debug!("We weren't 401'd-- returning");
                 Ok(response)
             }
         }
         None => match refresh_token().await? {
             Some(token) => {
                 // We just refreshed-- make the request & let the chips fall where they may.
+                debug!("No token was available, but we were able refresh it. Sending.");
                 send_request(token.expose_secret()).await.context(SendSnafu)
             }
             // No token, no refresh cooke-- we're done.

@@ -28,7 +28,7 @@ use thaw::{
     Button, ButtonAppearance, Icon, InfoLabel, InfoLabelInfo, Spinner, Toast, ToastBody,
     ToastIntent, ToastOptions, ToastTitle, ToasterInjection,
 };
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use indielinks_shared::api::{
     FeedPost, TimelineBeforePage, TimelineBeforeRsp, TimelineInitialPage, TimelineInitialRsp,
@@ -279,8 +279,12 @@ pub fn ItemFeed(
 
 /// Initialize the home timeline
 async fn initial_load(api: String) -> Result<TimelineInitialRsp> {
+    debug!("feeds::initial_load()...");
     send_with_retry(
-        move || Request::post(&format!("{api}/api/v1/users/timeline")),
+        move || {
+            debug!("Fetching {api}/api/v1/users/timeline");
+            Request::post(&format!("{api}/api/v1/users/timeline"))
+        },
         TimelineReq::Initial { max_posts: None },
     )
     .await

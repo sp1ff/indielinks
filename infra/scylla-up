@@ -185,6 +185,7 @@ fi
 # Need to set RUST_LOG, here.
 AWS_EC2_METADATA_DISABLED=true cargo run --bin indielinks-schemas -- -v -p ddb http://localhost:${SCYLLA_ALTERNATOR_PORT_1}
 cargo run --bin indielinks-schemas -- -v -p scylla \
+      -t ${SCYLLA_NODE_1_ADDRESS}:${SCYLLA_NATIVE_PORT_1},127.0.0.1:${SCYLLA_NATIVE_PORT_1} \
       -t ${SCYLLA_NODE_2_ADDRESS}:${SCYLLA_NATIVE_PORT_1},127.0.0.1:${SCYLLA_NATIVE_PORT_2} \
       -t ${SCYLLA_NODE_3_ADDRESS}:${SCYLLA_NATIVE_PORT_1},127.0.0.1:${SCYLLA_NATIVE_PORT_3} \
       127.0.0.1:${SCYLLA_NATIVE_PORT_1}

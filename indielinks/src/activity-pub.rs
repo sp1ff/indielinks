@@ -786,10 +786,6 @@ impl Task<Context> for SendReply {
         );
 
         async fn exec1(this: Box<SendReply>, context: Context) -> Result<()> {
-            // Let's start by writing the reply to the database.
-
-            debug!("Wrote the outgoing reply to ScyllaDB. Sanitizing the reply HTML");
-
             let ParseResult {
                 html,
                 mentions,

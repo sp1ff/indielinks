@@ -563,15 +563,23 @@ async fn log_request(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let (parts, body) = request.into_parts();
-    // This seems dodgy... what if the request body is large. Let's impose a completely
-    // arbitrary limit of 4kb. If the request is larger than that, just fail it.
-    match axum::body::to_bytes(body, 4096usize).await {
+    // "For security reasons, Bytes will, by default, not accept bodies larger than 2MB. This also
+    // applies to extractors that uses Bytes internally such as String, Json, and Form."
+    // <https://docs.rs/axum/latest/axum/extract/struct.DefaultBodyLimit.html>
+    match axum::body::to_bytes(body, 2097152usize /* 2Mb */).await {
         Ok(bytes) => {
             info!(
                 "{:?}",
                 parts.headers.get(HeaderName::from_static("signature"))
             );
-            info!("Request body: {}", String::from_utf8_lossy(&bytes));
+            if bytes.len() < 4096 {
+                info!("Request body: {}", String::from_utf8_lossy(&bytes));
+            } else {
+                info!(
+                    "Refusing to log a request body that is {} bytes in length.",
+                    bytes.len()
+                );
+            }
             next.run(http::Request::from_parts(
                 parts,
                 axum::body::Body::from(bytes),

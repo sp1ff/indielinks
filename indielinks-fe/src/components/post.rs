@@ -151,6 +151,7 @@ fn use_replying(post_id: Url, actor_id: Url) -> Action<String, Result<()>> {
             send_with_retry(
                 move || {
                     let api = expect_context::<Api>().0;
+                    debug!("POSTing to {api}/api/v1/users/reply");
                     Request::post(&format!("{api}/api/v1/users/reply"))
                 },
                 ReplyRequest {

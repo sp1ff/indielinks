@@ -1195,18 +1195,22 @@ impl Replies {
     pub fn empty_for_reply(origin: &Origin, username: &Username, postid: &ReplyId) -> Result<Self> {
         Ok(Replies {
             id: make_reply_reply_id(username, postid, origin)?,
-            first: Some(FirstField::Iri(make_reply_reply_first(
-                username, postid, origin,
-            )?)),
+            // TODO(sp1ff): OK?
+            first: None,
+            // first: Some(FirstField::Iri(make_reply_reply_first(
+            //     username, postid, origin,
+            // )?)),
             total_items: Some(0),
         })
     }
     pub fn empty_for_share(origin: &Origin, username: &Username, postid: &ShareId) -> Result<Self> {
         Ok(Replies {
             id: make_share_reply_id(username, postid, origin)?,
-            first: Some(FirstField::Iri(make_share_reply_first(
-                username, postid, origin,
-            )?)),
+            // TODO(sp1ff): OK?
+            first: None,
+            // first: Some(FirstField::Iri(make_share_reply_first(
+            //     username, postid, origin,
+            // )?)),
             total_items: Some(0),
         })
     }
@@ -1342,7 +1346,7 @@ impl Note {
         Ok(Note {
             id: make_user_reply_id(username, &reply.id(), origin)?,
             summary: None,
-            in_reply_to: None,
+            in_reply_to: Some(reply.in_reply_to().clone().into()),
             published: reply.posted(),
             // Setting this to the same value as `id` for now, but Mastodon sets them to different
             // values: `http://indieweb.social/users/sp1ff/statuses/...` versus
@@ -1362,7 +1366,7 @@ impl Note {
         Ok(Note {
             id: make_user_share_id(username, &share.id(), origin)?,
             summary: None,
-            in_reply_to: None,
+            in_reply_to: Some(share.in_reply_to().clone().into()),
             published: share.posted(),
             // Setting this to the same value as `id` for now, but Mastodon sets them to different
             // values: `http://indieweb.social/users/sp1ff/statuses/...` versus

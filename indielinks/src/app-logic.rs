@@ -1168,15 +1168,16 @@ pub async fn get_cluster_stats(state: Arc<Indielinks>) -> Result<ClusterStatsRes
 pub async fn reply(state: Arc<Indielinks>, user: &User, request: ReplyRequest) -> Result<()> {
     // Let's write the reply down, first.
     let reply_id = ReplyId::default();
+    let outgoing = OutgoingReply::new(
+        *user.id(),
+        reply_id,
+        request.id.clone(),
+        Visibility::Public,
+        request.text.clone(),
+    );
     state
         .storage
-        .add_outgoing_reply(&OutgoingReply::new(
-            *user.id(),
-            reply_id,
-            request.id.clone(),
-            Visibility::Public,
-            request.text.clone(),
-        ))
+        .add_outgoing_reply(&outgoing)
         .await
         .context(AddReplySnafu)?;
     // Now, create a background task to send AcrtivityPub messages to our correspondent, as well as
@@ -1186,21 +1187,14 @@ pub async fn reply(state: Arc<Indielinks>, user: &User, request: ReplyRequest) -
         .send(SendReply::new(
             state.origin.clone(),
             user.clone(),
-            request.id.clone(),
+            request.id,
             reply_id,
             request.actor,
-            request.text.clone(),
+            request.text,
         ))
         .await
         .context(FederationSnafu)?;
     // Finally, add this to `user`'s materialized outbox and home timeline (if extant):
-    let outgoing = OutgoingReply::new(
-        *user.id(),
-        reply_id,
-        request.id,
-        Visibility::Public,
-        request.text,
-    );
     handle_timeline_insert_or_redirect(
         state.clone(),
         user,

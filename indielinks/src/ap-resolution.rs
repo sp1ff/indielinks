@@ -33,6 +33,7 @@ use either::Either;
 use http::{self, method::Method};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
+use tracing::debug;
 use url::Url;
 
 use indielinks_shared::{entities::UserPrivateKey, origin::Origin};
@@ -198,6 +199,8 @@ where
     ) -> Result<Note, F::CacheClient> {
         // Check the cache, first:
         if let Some(note) = self.notes.get(url).await.context(GrpcSnafu)? {
+            // TODO(sp1ff): DEBUG
+            debug!("Cache hit: {} ;=> {note:#?}", url.as_str());
             note
         } else {
             // Cache miss
@@ -213,6 +216,8 @@ where
             .await
             .context(ApSnafu)?;
 
+            // TODO(sp1ff): DEBUG
+            debug!("Cache miss: {} ;=> {note:#?}", url.as_str());
             note
         }
         .pipe(Ok)

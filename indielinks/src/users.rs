@@ -85,6 +85,7 @@ use async_stream::try_stream;
 use axum::{
     extract::{rejection::ExtensionRejection, State},
     http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
+    middleware::from_fn_with_state,
     response::IntoResponse,
     routing::{get, post},
     Extension, Json, Router,
@@ -469,7 +470,7 @@ async fn authenticate(
         }
         // I want to be careful about what sort of information we reveal to our caller...
         Err(err) => {
-            error!("indielinks failed to authenticate this request: {err:?}");
+            error!("indielinks failed to authenticate this request: {err}");
             user_auth_failures.add(1, &[]);
             err.into_response()
         }
@@ -1508,6 +1509,13 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .iter()
         .map(|o| o.to_string().parse().unwrap())
         .collect::<Vec<HeaderValue>>();
+
+    // Take care to wrap the `CorsLayer` *around* the authentication layer (by adding it after in
+    // terms of method invocations); this gives the CORS layer a crack at the request *before* it
+    // can be bounced by a failed authentication.
+    //
+    // This implementation feels a bit prolix. I'd like to find something cleaner, but I want to be
+    // sure of what I want (in terms of which CORS settings go with which endpoint), first.
     Router::new()
         // I suppose it would be more "RESTful" to have a `user/users` resource and have callers
         // perform this action by POSTing to it (they could retrieve a user via GETting
@@ -1515,91 +1523,109 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         // do via this API (how would we model minting a new API key, for instance? Or logging-in?)
         .route(
             "/users/signup",
-            post(signup).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                http::Method::POST,
-                allow_origin.clone(),
-            )),
+            post(signup)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    http::Method::POST,
+                    allow_origin.clone(),
+                )),
         )
         .route(
             "/users/login",
-            get(login).merge(post(login)).layer(mk_cors(
-                true,
-                allow_headers.clone(),
-                [http::Method::GET, http::Method::POST], // Do I really need to support `GET`?
-                allow_origin.clone(),
-            )),
+            get(login)
+                .merge(post(login))
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    true,
+                    allow_headers.clone(),
+                    [http::Method::GET, http::Method::POST], // Do I really need to support `GET`?
+                    allow_origin.clone(),
+                )),
         )
         .route(
             "/users/refresh",
-            post(refresh).layer(mk_cors(
-                true,
-                [
-                    CONTENT_TYPE,
-                    http::header::USER_AGENT,
-                    http::header::REFERER,
-                    http::header::HeaderName::from_static(REFRESH_CSRF_HEADER_NAME_LC),
-                ],
-                http::Method::POST,
-                allow_origin.clone(),
-            )),
+            post(refresh)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    true,
+                    [
+                        CONTENT_TYPE,
+                        http::header::USER_AGENT,
+                        http::header::REFERER,
+                        http::header::HeaderName::from_static(REFRESH_CSRF_HEADER_NAME_LC),
+                    ],
+                    http::Method::POST,
+                    allow_origin.clone(),
+                )),
         )
         .route(
             "/users/logout",
-            post(logout).layer(mk_cors(
-                true,
-                [
-                    CONTENT_TYPE,
-                    http::header::USER_AGENT,
-                    http::header::REFERER,
-                    http::header::AUTHORIZATION,
-                    http::header::HeaderName::from_static(REFRESH_CSRF_HEADER_NAME_LC),
-                ],
-                http::Method::POST,
-                allow_origin.clone(),
-            )),
+            post(logout)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    true,
+                    [
+                        CONTENT_TYPE,
+                        http::header::USER_AGENT,
+                        http::header::REFERER,
+                        http::header::AUTHORIZATION,
+                        http::header::HeaderName::from_static(REFRESH_CSRF_HEADER_NAME_LC),
+                    ],
+                    http::Method::POST,
+                    allow_origin.clone(),
+                )),
         )
         .route(
             "/users/follow",
-            post(follow).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                http::Method::POST,
-                AllowOrigin::any(),
-            )),
+            post(follow)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    http::Method::POST,
+                    AllowOrigin::any(),
+                )),
         )
         .route(
             "/users/like",
-            post(like).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                http::Method::POST,
-                AllowOrigin::any(),
-            )),
+            post(like)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    http::Method::POST,
+                    AllowOrigin::any(),
+                )),
         )
         .route(
             "/users/reply",
-            post(reply).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                http::Method::POST,
-                AllowOrigin::any(),
-            )),
+            post(reply)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    http::Method::POST,
+                    AllowOrigin::any(),
+                )),
         )
         .route(
             "/users/mint-key",
-            get(mint_key).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                http::Method::GET,
-                AllowOrigin::any(),
-            )),
+            get(mint_key)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    http::Method::GET,
+                    AllowOrigin::any(),
+                )),
         )
         .route(
             "/users/timeline",
             get(timeline)
                 .merge(post(timeline))
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
                 // Likewise, for now I think I'll limit this to the front end
                 .layer(mk_cors(
                     false,
@@ -1610,44 +1636,51 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         )
         .route(
             "/users/context",
-            get(context).merge(post(context)).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                [http::Method::GET, http::Method::POST],
-                AllowOrigin::any(),
-            )),
+            get(context)
+                .merge(post(context))
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    [http::Method::GET, http::Method::POST],
+                    AllowOrigin::any(),
+                )),
         )
         .route(
             "/users/recent-posts",
-            get(recent_posts).merge(post(recent_posts)).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                [http::Method::GET, http::Method::POST],
-                AllowOrigin::any(),
-            )),
+            get(recent_posts)
+                .merge(post(recent_posts))
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    [http::Method::GET, http::Method::POST],
+                    AllowOrigin::any(),
+                )),
         )
         .route(
             "/users/top-k-tags",
-            get(top_k_tags).merge(post(top_k_tags)).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                [http::Method::GET, http::Method::POST],
-                AllowOrigin::any(),
-            )),
+            get(top_k_tags)
+                .merge(post(top_k_tags))
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    [http::Method::GET, http::Method::POST],
+                    AllowOrigin::any(),
+                )),
         )
         .route(
             "/users/cluster-stats",
-            get(cluster_stats).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                [http::Method::GET],
-                AllowOrigin::any(),
-            )),
+            get(cluster_stats)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    [http::Method::GET],
+                    AllowOrigin::any(),
+                )),
         )
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            authenticate,
-        ))
         // All responses are JSON; add the appropriate Content-Type header (but leave the existing
         // Content-Type header should a handler set it specially).
         .layer(SetResponseHeaderLayer::if_not_present(
