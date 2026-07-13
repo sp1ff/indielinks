@@ -254,7 +254,7 @@ type StdResult<T, E> = std::result::Result<T, E>;
 
 static DEFAULT_LOCALSTATEDIR: &str = ".";
 
-static SCHEMA_VERSION: u32 = 0;
+static SCHEMA_VERSION: u32 = 3;
 
 /// The execution environment into which this instance has been deployed
 #[derive(Clone, Debug, Default)]

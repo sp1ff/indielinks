@@ -549,12 +549,12 @@ pub async fn schema_migration_2(client: Client) -> Result<()> {
         sk = "received_and_ap_id",
         // This is a misnomer-- we're not indexing by ActivityPub ID, but just Post ID
         gsi: (name = "incoming_likes_replies_shares_by_ap_id", pk = "in_reply_to")
-    )
-    .map(|_| ())
+    )?;
+    update_schema_migrations(&client, 2).await
 }
 
-pub async fn schema_migration_3(_: Client) -> Result<()> {
+pub async fn schema_migration_3(client: Client) -> Result<()> {
     // For DyanmoDB, this schema migration is a NOP-- we're just adding a column that isn't indexed.
     // This is still a schema change for CQL, but not here.
-    Ok(())
+    update_schema_migrations(&client, 3).await
 }
