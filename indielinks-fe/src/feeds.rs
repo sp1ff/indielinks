@@ -261,6 +261,7 @@ pub fn ItemFeed(
     posts: NEVec<FeedPost>,
     since: TimelineToken,
     before: TimelineToken,
+    #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
 ) -> Result<impl IntoView> {
     let open_menu = use_dropdown::<MenuId>();
     let posts_s = RwSignal::<VecDeque<FeedPost>>::new(VecDeque::from_iter(posts.into_iter()));
@@ -270,7 +271,7 @@ pub fn ItemFeed(
         <For each=move || posts_s.get()
              key=|post| post.id.clone()
              children=move |post: FeedPost| {
-                 view! { <Post post open_menu /> }
+                 view! { <Post post open_menu rerender=rerender.clone() /> }
              } >
         </For>
         <BottomNav before posts_s />
@@ -327,6 +328,7 @@ pub fn ItemFeedOuter() -> impl IntoView {
             let rerender = rerender.clone();
             async move {
                 rerender.track();
+                debug!("Loading the timeline...");
                 initial_load(api).await
             }
         }
@@ -379,7 +381,7 @@ pub fn ItemFeedOuter() -> impl IntoView {
                     Ok(initial_response.map(|initial_response| {
                         match initial_response {
                             Some(TimelineInitialPage { posts, since, before }) => {
-                                Either::Left(view! { <ItemFeed posts since before /> })
+                                Either::Left(view! { <ItemFeed posts since before rerender=Some(rerender.clone())/> })
                             },
                             None => Either::Right(view! {
                                 <div class="mx-auto max-w-md m-8 p-8 text-gray-600">

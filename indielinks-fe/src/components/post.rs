@@ -181,19 +181,33 @@ fn ReplyingPost(
     actor_id: Url,
     reply_elt: NodeRef<html::Textarea>,
     set_replying: WriteSignal<bool>,
+    #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
 ) -> impl IntoView {
     let send_reply = use_replying(post_id, actor_id);
 
     let toaster = ToasterInjection::expect_context();
 
     Effect::new(move |_| {
-        if let Some(Err(err)) = send_reply.value().get() {
-            pop_toast(
+        // We're moving `rerender` into this closure, which is fine-- it's not used anywhere else.
+        // However, because it's an `Option<ArcTrigger>`, I'm going to invoke it below via
+        // `Option::map()` which consumes the argument. So. We move `rerender` into the closure,
+        // then consume a *clone* on every invocation.
+        let rerender = rerender.clone();
+        match send_reply.value().get() {
+            Some(Err(err)) => pop_toast(
                 toaster,
                 ToastIntent::Error,
                 "Replying".into_owned(),
                 format!("{err}"),
-            )
+            ),
+            Some(Ok(_)) => {
+                // use_context::<ArcTrigger>().map(|trigger| trigger.notify());
+                rerender.map(|trigger| trigger.notify());
+                // Important! Take care not to set this signal until we're all done, here-- this
+                // will actually tear-down this scope (killing this `Effect`, among other things)
+                set_replying.set(false);
+            }
+            None => (),
         }
     });
 
@@ -214,7 +228,6 @@ fn ReplyingPost(
                       class="text-gray-600"
                       on_click=move |_| {
                           let text = string_for_node_ref(&reply_elt);
-                          set_replying.set(false);
                           send_reply.dispatch(text);
                       }/>
                 <Icon icon=icondata::TbSendOffOutline
@@ -332,6 +345,7 @@ fn ViewPost(
     open_menu: RwSignal<Option<MenuId>>,
     #[prop(default = false)] current: bool,
     #[prop(optional)] on_click: Option<Callback<()>>,
+    #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
 ) -> impl IntoView {
     let (replying, set_replying) = signal::<bool>(false);
 
@@ -389,7 +403,8 @@ fn ViewPost(
                             view!{<ReplyingPost post_id
                                   actor_id=post_actor
                                   reply_elt=reply_element
-                                  set_replying />}
+                                  set_replying
+                                  rerender=rerender.clone()/>}
                         )
                     } else {
                         Either::Right(
@@ -457,6 +472,7 @@ pub fn ViewConversation(
     open_menu: RwSignal<Option<MenuId>>,
     show: WriteSignal<bool>,
     initial_url: Url,
+    #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
 ) -> impl IntoView {
     let action: Action<Url, Result<ThreadContextResponse>> = Action::new_local(move |url: &Url| {
         let url = url.clone();
@@ -535,11 +551,11 @@ pub fn ViewConversation(
                             {ctx.parent.map(|p| {
                                 let url = p.id.clone();
                                 let cb = Callback::new(move |_: ()| { action.dispatch(url.clone()); });
-                                view! { <ViewPost post=p open_menu on_click=cb /> }
+                                view! { <ViewPost post=p open_menu on_click=cb rerender=rerender.clone() /> }
                             })}
 
                             // Focal post — inert, no click handler.
-                            <ViewPost post=ctx.post open_menu current=true />
+                            <ViewPost post=ctx.post open_menu current=true rerender=rerender.clone() />
 
                             // Children — each click navigates into that child.
                             {ctx.children
@@ -547,7 +563,7 @@ pub fn ViewConversation(
                                 .map(|c| {
                                     let url = c.id.clone();
                                     let cb = Callback::new(move |_: ()| { action.dispatch(url.clone()); });
-                                    view! { <ViewPost post=c open_menu on_click=cb /> }
+                                    view! { <ViewPost post=c open_menu on_click=cb rerender=rerender.clone() /> }
                                 })
                                 .collect::<Vec<_>>()}
                         </div>
@@ -563,7 +579,11 @@ pub fn ViewConversation(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[component]
-pub fn Post(post: FeedPost, open_menu: RwSignal<Option<MenuId>>) -> impl IntoView {
+pub fn Post(
+    post: FeedPost,
+    open_menu: RwSignal<Option<MenuId>>,
+    #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
+) -> impl IntoView {
     let (show_convo, set_show_convo) = signal::<bool>(false);
     let cb = Callback::new(move |_: ()| set_show_convo.set(true));
     view! {
@@ -571,14 +591,17 @@ pub fn Post(post: FeedPost, open_menu: RwSignal<Option<MenuId>>) -> impl IntoVie
             when=move || show_convo.get()
             fallback={
                 let post = post.clone();
+                let rerender = rerender.clone();
                 move || view!{
-                    <ViewPost post=post.clone() open_menu on_click=cb/>
+                    <ViewPost post=post.clone() open_menu on_click=cb rerender=rerender.clone()/>
                 }
             }>
             <ViewConversation
                 open_menu
                 show=set_show_convo
-                initial_url=post.clone().id />
+                initial_url=post.clone().id
+                rerender=rerender.clone()
+            />
         </Show>
     }
 }
