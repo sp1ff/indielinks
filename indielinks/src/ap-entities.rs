@@ -1195,22 +1195,14 @@ impl Replies {
     pub fn empty_for_reply(origin: &Origin, username: &Username, postid: &ReplyId) -> Result<Self> {
         Ok(Replies {
             id: make_reply_reply_id(username, postid, origin)?,
-            // TODO(sp1ff): OK?
             first: None,
-            // first: Some(FirstField::Iri(make_reply_reply_first(
-            //     username, postid, origin,
-            // )?)),
             total_items: Some(0),
         })
     }
     pub fn empty_for_share(origin: &Origin, username: &Username, postid: &ShareId) -> Result<Self> {
         Ok(Replies {
             id: make_share_reply_id(username, postid, origin)?,
-            // TODO(sp1ff): OK?
             first: None,
-            // first: Some(FirstField::Iri(make_share_reply_first(
-            //     username, postid, origin,
-            // )?)),
             total_items: Some(0),
         })
     }

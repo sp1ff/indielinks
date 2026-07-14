@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, Snafu};
 use tap::{Conv, Pipe, TryConv};
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use indielinks_cache::{
     cache::Cache,
@@ -264,6 +264,8 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         use indielinks_shared::api::UserOutboxRequest;
         use indielinks_shared::entities::UserId;
 
+        debug!("gRPC server outbox request received");
+
         let req = req.into_inner();
         let user_id = rmp_serde::from_slice::<UserId>(&req.user_id).map_err(to_tonic)?;
         let outbox_req =
@@ -280,6 +282,8 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         let rsp = crate::app_logic::handle_outbox(self.state.clone(), &user, outbox_req)
             .await
             .map_err(to_tonic)?;
+
+        debug!("gRPC server outbox request complete");
 
         // This is important. By default (i.e. when `rmp_serde::to_vec()` is used), structs will be
         // serialized to a messagepack array containing *just* the field values. Since
@@ -298,6 +302,8 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         use indielinks_shared::api::TimelineReq;
         use indielinks_shared::entities::UserId;
 
+        debug!("gRPC server timeline request received");
+
         let req = req.into_inner();
         let user_id = rmp_serde::from_slice::<UserId>(&req.user_id).map_err(to_tonic)?;
         let timeline_req = rmp_serde::from_slice::<TimelineReq>(&req.request).map_err(to_tonic)?;
@@ -314,16 +320,20 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
             .await
             .map_err(to_tonic)?;
 
+        debug!("gRPC server timeline request complete");
+
         rmp_serde::to_vec(&rsp)
             .map_err(to_tonic)
             .map(|bytes| protobuf::TimelineResponse { response: bytes }.into())
     }
-    /// Add an item to a user's home timeline (deferred; see plan 006)
+    /// Add an item to a user's home timeline
     async fn insert_timeline_item(
         &self,
         request: tonic::Request<protobuf::InsertTimelineItemRequest>,
     ) -> StdResult<tonic::Response</*protobuf::InsertTimelineItemResponse*/ ()>, tonic::Status>
     {
+        debug!("gRPC server timeline insert request received");
+
         let request = request.into_inner();
 
         let user_id = rmp_serde::from_slice::<UserId>(&request.user_id).map_err(to_tonic)?;
@@ -339,9 +349,11 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
 
         app_logic::handle_timeline_insert(self.state.clone(), &user, &item).await;
 
+        debug!("gRPC server timeline insert request complete");
+
         Ok(().into())
     }
-    /// Drop a user's home timeline (deferred; see plan 006)
+    /// Drop a user's home timeline
     async fn drop_timeline(
         &self,
         request: tonic::Request<protobuf::DropTimelineRequest>,
@@ -362,7 +374,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
 
         Ok(().into())
     }
-    /// Insert an activity into a user's in-memory materialized outbox (deferred; see plan 011)
+    /// Insert an activity into a user's in-memory materialized outbox
     async fn insert_outbox_item(
         &self,
         request: tonic::Request<protobuf::InsertOutboxItemRequest>,
@@ -370,6 +382,8 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         use crate::ap_entities::AnnounceOrCreate;
         use crate::outboxes::ActivityKey;
         use uuid::Uuid;
+
+        debug!("gRPC server outbox insert request received");
 
         let request = request.into_inner();
         let user_id = rmp_serde::from_slice::<UserId>(&request.user_id).map_err(to_tonic)?;
@@ -392,6 +406,8 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
             .ok_or_else(|| tonic::Status::not_found(format!("User {user_id} not found")))?;
 
         app_logic::handle_outbox_insert(self.state.clone(), &user, key, aoc).await;
+
+        debug!("gRPC server outbox insert request complete");
 
         Ok(().into())
     }

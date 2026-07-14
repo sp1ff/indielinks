@@ -423,13 +423,24 @@ async fn redirect_timeline_insert(
         .context(SocketAddrSnafu {
             node_id: responsible_node,
         })?;
+    // This is inelegant & irritating; I need to factor this out, somehow.
+    let mut user_id_buf = Vec::new();
+    let mut serializer = rmp_serde::Serializer::new(&mut user_id_buf).with_struct_map();
+    user.id()
+        .serialize(&mut serializer)
+        .context(MessagePackSerSnafu)?;
+    let mut item_buf = Vec::new();
+    let mut serializer = rmp_serde::Serializer::new(&mut item_buf).with_struct_map();
+    item.serialize(&mut serializer)
+        .context(MessagePackSerSnafu)?;
+
     GrpcClient::new(responsible_node, addr)
         .ensure_connected()
         .await
         .context(ConnectionSnafu)?
         .insert_timeline_item(InsertTimelineItemRequest {
-            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
-            item: rmp_serde::to_vec(item).context(MessagePackSerSnafu)?,
+            user_id: user_id_buf,
+            item: item_buf,
         })
         .await
         .context(TonicSnafu)?;
@@ -1195,6 +1206,10 @@ pub async fn reply(state: Arc<Indielinks>, user: &User, request: ReplyRequest) -
         .await
         .context(FederationSnafu)?;
     // Finally, add this to `user`'s materialized outbox and home timeline (if extant):
+    debug!(
+        "Inserting this reply into {}'s home timeline",
+        user.username()
+    );
     handle_timeline_insert_or_redirect(
         state.clone(),
         user,
@@ -1203,6 +1218,7 @@ pub async fn reply(state: Arc<Indielinks>, user: &User, request: ReplyRequest) -
         )),
     )
     .await?;
+    debug!("Inserting this reply into {}'s outbox", user.username());
     handle_outbox_insert_or_redirect(state, user, &PostReplyShare::Reply(outgoing)).await
 }
 
