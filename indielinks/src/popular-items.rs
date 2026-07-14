@@ -490,7 +490,8 @@ where
             .await?
             .add_sightings(AddSightingsRequest {
                 slot: slot.get() as u64,
-                items: rmp_serde::to_vec(&items.collect::<Vec<Item>>()).context(EncodeSnafu)?,
+                items: rmp_serde::to_vec_named(&items.collect::<Vec<Item>>())
+                    .context(EncodeSnafu)?,
             })
             .await
             .context(TonicSnafu)

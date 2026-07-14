@@ -221,7 +221,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                     .get(&key)
                     .await
                     .map_err(to_tonic)?
-                    .map(|rsp| rmp_serde::to_vec(&rsp).map_err(to_tonic))
+                    .map(|rsp| rmp_serde::to_vec_named(&rsp).map_err(to_tonic))
                     .transpose()?
             }
             NOTE_ID_TO_NOTE => {
@@ -230,7 +230,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                     .get(&key)
                     .await
                     .map_err(to_tonic)?
-                    .map(|rsp| rmp_serde::to_vec(&rsp).map_err(to_tonic))
+                    .map(|rsp| rmp_serde::to_vec_named(&rsp).map_err(to_tonic))
                     .transpose()?
             }
             ACCOUNT_TO_ACTOR => {
@@ -239,7 +239,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                     .get(&key)
                     .await
                     .map_err(to_tonic)?
-                    .map(|rsp| rmp_serde::to_vec(&rsp).map_err(to_tonic))
+                    .map(|rsp| rmp_serde::to_vec_named(&rsp).map_err(to_tonic))
                     .transpose()?
             }
             _ => {
@@ -322,7 +322,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
 
         debug!("gRPC server timeline request complete");
 
-        rmp_serde::to_vec(&rsp)
+        rmp_serde::to_vec_named(&rsp)
             .map_err(to_tonic)
             .map(|bytes| protobuf::TimelineResponse { response: bytes }.into())
     }
@@ -471,8 +471,8 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
             .map_err(to_tonic)?
         {
             Some((posts, key)) => Ok(protobuf::GetRecentPostsResponse {
-                posts: rmp_serde::to_vec(&posts).map_err(to_tonic)?,
-                key: Some(rmp_serde::to_vec(&key).map_err(to_tonic)?),
+                posts: rmp_serde::to_vec_named(&posts).map_err(to_tonic)?,
+                key: Some(rmp_serde::to_vec_named(&key).map_err(to_tonic)?),
             }
             .into()),
             None => Ok(protobuf::GetRecentPostsResponse {
@@ -543,7 +543,7 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
                     // method. The root of the problem (the large size of `tonic::Status` is out of my
                     // hands).
                     #[allow(clippy::result_large_err)]
-                    |items| rmp_serde::to_vec(&items).map_err(to_tonic),
+                    |items| rmp_serde::to_vec_named(&items).map_err(to_tonic),
                 )
                 .map(|bytes| protobuf::GetTopKResponse { items: bytes }.into())
         } else {

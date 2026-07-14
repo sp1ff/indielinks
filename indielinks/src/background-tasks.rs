@@ -78,7 +78,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use indielinks_cache::raft::CacheNode;
 use pin_project::pin_project;
-use rmp_serde::to_vec;
 use scylla::DeserializeRow;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
@@ -660,7 +659,7 @@ where
     /// Task can be serialized; serialize to MessagePack, then write to a dedicated table
     async fn send(&self, task: T) -> Result<()> {
         let tag = T::get_tag();
-        let buf = to_vec(&task).context(TaskSerSnafu)?;
+        let buf = rmp_serde::to_vec_named(&task).context(TaskSerSnafu)?;
         self.storage.write_task(&tag, &buf).await
     }
 }

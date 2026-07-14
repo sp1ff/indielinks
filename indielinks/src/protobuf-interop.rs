@@ -680,17 +680,10 @@ pub fn try_into_cache_insert_request<K: Serialize, V: Serialize>(
     key: impl Into<K>,
     value: impl Into<V>,
 ) -> Result<protobuf::CacheInsertRequest> {
-    let mut key_buf = Vec::new();
-    let mut serializer = rmp_serde::Serializer::new(&mut key_buf).with_struct_map();
-    key.into().serialize(&mut serializer).context(SerSnafu)?;
-    let mut value_buf = Vec::new();
-    let mut serializer = rmp_serde::Serializer::new(&mut value_buf).with_struct_map();
-    value.into().serialize(&mut serializer).context(SerSnafu)?;
-
     Ok(protobuf::CacheInsertRequest {
         cache_id: cache,
-        key: key_buf,
-        value: value_buf,
+        key: rmp_serde::to_vec_named(&key.into()).context(SerSnafu)?,
+        value: rmp_serde::to_vec_named(&value.into()).context(SerSnafu)?,
     })
 }
 
@@ -700,6 +693,6 @@ pub fn try_into_cache_lookup_request<K: Serialize>(
 ) -> Result<protobuf::CacheLookupRequest> {
     Ok(protobuf::CacheLookupRequest {
         cache_id,
-        key: rmp_serde::to_vec(&key.into()).context(SerSnafu)?,
+        key: rmp_serde::to_vec_named(&key.into()).context(SerSnafu)?,
     })
 }

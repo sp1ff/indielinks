@@ -288,7 +288,7 @@ async fn update_schema_migrations(client: &Client, schema_version: i64) -> Resul
         }
     };
 
-    let buf = rmp_serde::to_vec(&instance_state).context(SerInstanceStateSnafu)?;
+    let buf = rmp_serde::to_vec_named(&instance_state).context(SerInstanceStateSnafu)?;
 
     client
         .put_item()

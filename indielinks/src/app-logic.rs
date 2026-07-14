@@ -376,8 +376,8 @@ async fn redirect_timeline(
         .await
         .context(ConnectionSnafu)?
         .timeline(TimelineRequest {
-            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
-            request: rmp_serde::to_vec(&request).context(MessagePackSerSnafu)?,
+            user_id: rmp_serde::to_vec_named(user.id()).context(MessagePackSerSnafu)?,
+            request: rmp_serde::to_vec_named(&request).context(MessagePackSerSnafu)?,
         })
         .await
         .context(TonicSnafu)?
@@ -423,24 +423,13 @@ async fn redirect_timeline_insert(
         .context(SocketAddrSnafu {
             node_id: responsible_node,
         })?;
-    // This is inelegant & irritating; I need to factor this out, somehow.
-    let mut user_id_buf = Vec::new();
-    let mut serializer = rmp_serde::Serializer::new(&mut user_id_buf).with_struct_map();
-    user.id()
-        .serialize(&mut serializer)
-        .context(MessagePackSerSnafu)?;
-    let mut item_buf = Vec::new();
-    let mut serializer = rmp_serde::Serializer::new(&mut item_buf).with_struct_map();
-    item.serialize(&mut serializer)
-        .context(MessagePackSerSnafu)?;
-
     GrpcClient::new(responsible_node, addr)
         .ensure_connected()
         .await
         .context(ConnectionSnafu)?
         .insert_timeline_item(InsertTimelineItemRequest {
-            user_id: user_id_buf,
-            item: item_buf,
+            user_id: rmp_serde::to_vec_named(user.id()).context(MessagePackSerSnafu)?,
+            item: rmp_serde::to_vec_named(&item).context(MessagePackSerSnafu)?,
         })
         .await
         .context(TonicSnafu)?;
@@ -484,7 +473,7 @@ async fn redirect_timeline_drop(
         .await
         .context(ConnectionSnafu)?
         .drop_timeline(DropTimelineRequest {
-            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
+            user_id: rmp_serde::to_vec_named(user.id()).context(MessagePackSerSnafu)?,
         })
         .await
         .context(TonicSnafu)?;
@@ -651,8 +640,8 @@ async fn redirect_outbox(
         .await
         .context(ConnectionSnafu)?
         .outbox(OutboxRequest {
-            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
-            request: rmp_serde::to_vec(&request).context(MessagePackSerSnafu)?,
+            user_id: rmp_serde::to_vec_named(user.id()).context(MessagePackSerSnafu)?,
+            request: rmp_serde::to_vec_named(&request).context(MessagePackSerSnafu)?,
         })
         .await
         .context(TonicSnafu)?
@@ -723,7 +712,7 @@ async fn redirect_outbox_insert(
         .await
         .context(ConnectionSnafu)?
         .insert_outbox_item(InsertOutboxItemRequest {
-            user_id: rmp_serde::to_vec(user.id()).context(MessagePackSerSnafu)?,
+            user_id: rmp_serde::to_vec_named(user.id()).context(MessagePackSerSnafu)?,
             activity: rmp_serde::to_vec_named(activity).context(MessagePackSerSnafu)?,
         })
         .await

@@ -341,7 +341,7 @@ impl Client for GrpcClient {
         self.ensure_connected()
             .await?
             .add_recent_post(AddRecentPostRequest {
-                post: rmp_serde::to_vec(post).context(EncodeSnafu)?,
+                post: rmp_serde::to_vec_named(post).context(EncodeSnafu)?,
             })
             .await
             .context(TonicSnafu)
@@ -357,7 +357,7 @@ impl Client for GrpcClient {
             .await?
             .get_recent_posts(GetRecentPostsRequest {
                 key: key
-                    .map(|key| rmp_serde::to_vec(&key).context(EncodeSnafu))
+                    .map(|key| rmp_serde::to_vec_named(&key).context(EncodeSnafu))
                     .transpose()?,
                 page_size: page_size.map(|x| x.get() as u64),
             })

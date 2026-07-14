@@ -5,7 +5,15 @@ provider "registry.opentofu.org/hashicorp/aws" {
   version     = "6.30.0"
   constraints = ">= 5.0.0"
   hashes = [
+    "h1:183n3MCQJFoK24qq12nreIUTJeiF/cl1671WNJvroPU=",
     "h1:1cZvSrqXPq5FzDtKwWAvBcNjpv2R7K7d2q0el7Kuf/A=",
+    "h1:FCq9CnVll6bPGxoPS8mdc8vj624kXpCjzKgpOhQMnvA=",
+    "h1:GcpvZBZGd9ULcI29hxZWs/qj26E71H3MonIGM5hTJjY=",
+    "h1:HMYDPD7cLU/4mPx85QGVMwwmXZUu81BPX4GA38bA7Q0=",
+    "h1:NHiqp80E8X7hV7Da63+5DVAiAgusDhG12+VUBeMR8dE=",
+    "h1:RLpAiAa5N5wxw6N+W5MYnl/PIFDiQBdmjDT+yhmi2cM=",
+    "h1:SFvKD/dwjAJZV1XjZdYpOuvIisvit5rKAiXZcQHbMHg=",
+    "h1:WbuES1d+JCpRiUR0qwDLda+UPa3AtqkiqsjBrXYhREM=",
     "zh:0e28cc366c4983b2e561c3d98484077cee9dce099ef089c216cc9ce37ea2eef1",
     "zh:4867aed567af2e7cc4d76c2efd388c1e4cfe63f7d1c8671216390a06d1d1cff3",
     "zh:5c3df2978d902de86088f7f4bc1c25f7b24751d5f159112c545bb368d8713395",

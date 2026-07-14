@@ -68,7 +68,11 @@ jobs:
         rustup component add rustfmt
         rustup target add wasm32-unknown-unknown
         cargo install --force ripgrep
-        cargo install --force cargo-audit
+        # Turning this off, since as of 0.22.2 it requires a fairly
+        # recent version of rust, breaking my "pinned" variant, and
+        # I'm not using it RN, anyway. When I turn `cargo audit` back
+        # on in my linting, I'll have to address this, somehow.
+        # cargo install --force cargo-audit
         rustc --version
 
     - name: Lint
