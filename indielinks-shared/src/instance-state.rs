@@ -104,7 +104,7 @@ impl SerializeValue for InstanceStateV0 {
         use crate::{entities::mk_ser_err, native_type_check};
 
         native_type_check!(typ, Blob, SerializationError, "InstanceStateV0")?;
-        let buf = rmp_serde::to_vec(&self).map_err(mk_ser_err)?;
+        let buf = rmp_serde::to_vec_named(&self).map_err(mk_ser_err)?;
         writer.set_value(buf.as_slice()).map_err(mk_ser_err)
     }
 }

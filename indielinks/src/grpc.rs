@@ -285,11 +285,11 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
 
         debug!("gRPC server outbox request complete");
 
-        // This is important. By default (i.e. when `rmp_serde::to_vec()` is used), structs will be
-        // serialized to a messagepack array containing *just* the field values. Since
-        // `OutboxResponse` is, perforce, an untagged enum, this format will confuse the code on the
-        // receiver side. `to_vec_named()` will serialize it as a map containing field names, which
-        // will enable the deserialization probing on the receive side to work.
+        // This is important. By default (i.e. when `to_vec()` is used), structs will be serialized
+        // to a messagepack array containing *just* the field values. Since `OutboxResponse` is,
+        // perforce, an untagged enum, this format will confuse the code on the receiver side.
+        // `to_vec_named()` will serialize it as a map containing field names, which will enable the
+        // deserialization probing on the receive side to work.
         rmp_serde::to_vec_named(&rsp)
             .map_err(to_tonic)
             .map(|bytes| protobuf::OutboxResponse { response: bytes }.into())

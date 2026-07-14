@@ -1,6 +1,6 @@
 #+TITLE: indielinks
 #+DESCRIPTION: Bookmarks in the Fediverse
-#+DATE: <2026-06-05 Fri 20:31>
+#+DATE: <2026-07-14 Tue 13:08>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -44,7 +44,7 @@ To build from source, the Rust stable [[https://rustup.rs/][toolchain]] is requi
 I hope that in the not-too-distant future, an indielinks instance will be available on the web. In the meantime, indielinks can be installed locally, running against ScyllaDB. I also maintain an Arch package on the [[https://aur.archlinux.org/packages/indielinks-git][AUR]], and a Debian binary package on my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]]. See [[INSTALL.org]] for details.
 * Status & Roadmap
 
-I'm using indielinks today, running locally on bare metal to save bookmarks, maintain reading lists, & post to the Fediverse (via a CloudFlare tunnel). That said, it's early code, and I haven't even stood-up the first public instance, yet. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support on the backend, have made an indielinks cluster into a Raft consensus cluster (in anticipation of caching), and am currently working on the front end. Outside of installation, the front end is probably the most lacking: it's incomplete, and generally looks like it was written, well, by a back end developer.
+I'm using indielinks today, running locally on bare metal to save bookmarks, maintain reading lists, & post to the Fediverse (via a CloudFlare tunnel). That said, it's early code, and I haven't even stood-up the first public instance, yet. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support on the backend, have made an indielinks cluster into a Raft consensus cluster (in anticipation of caching). Outside of installation, the front end is probably the most lacking: it's incomplete, and generally looks like it was written, well, by a back end developer.
 
 I've only recently made this project public. You can read more about the project & goals [[https://www.unwoundstack.com/blog/indielinks.html][here]]. I presented on the project at the [[https://www.meetup.com/vancouver-rust/events/307731034/][Vancouver Rust Meetup]] (recording [[https://www.youtube.com/watch?v=aztJzpBRFAQ][here]]).
 

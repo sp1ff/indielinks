@@ -1,8 +1,13 @@
 #!/bin/bash
-set -x
+set -euxo pipefail
 
 if rg -t rust -t protobuf -t css -t html -g '!.personal' 'TODO|TOOD|LATER|IN-?PROGRESS|\\todo|todo!|dbg!'; then
     echo "You have TODO-s"
+    exit 1
+fi
+
+if rg -t rust -g '!.personal' -F 'rmp_serde::to_vec('; then
+    echo "You used rmp_serde::to_vec(); prefer to_vec_named()."
     exit 1
 fi
 

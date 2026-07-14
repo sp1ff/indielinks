@@ -338,6 +338,28 @@
 //! on how this situation came to be. See also
 //! [here](https://fedify.dev/manual/access-control#instance-actor)
 //!
+//! ## Error Design
+//!
+//! [indielinks] uses the [snafu] crate throughout. One question that comes up routinely is
+//! whether & when to add a new variant to the `Error` enum.
+//!
+//! If you're adding new context then it certainly makes sense to define a new variant, but what if
+//! you're not? What if you're just "passing along" the source `Error`? On the one hand, I maintain
+//! that, for the most part, your callers won't care: the only meaningful distinction is whether
+//! this error is recoverable or not. OTOH, a call-site specific variant, even with no new context,
+//! pins down the exact point of failure: no more "something went wrong" errors. Now, one _could_
+//! argue that that's what the `Backtrace` is for, but, you can't pattern match on a call site in a
+//! `Backtrace`; you can't reliably make decisions on a `Backtrace` at all-- they're for the
+//! developer/operator.
+//!
+//! [snafu]: https://docs.rs/snafu/latest/snafu
+//!
+//! All in all, I think a given module's error type should have variants corresponding to failure
+//! modalities, if multiple ways of failing all happen to employ the same source Error type, well,
+//! that's where [snafu] shines over [anyhow].
+//!
+//! [anyhow]: https://docs.rs/anyhow/latest/anyhow
+//!
 //! # Developers' Documentation
 //!
 //! I spent the best part of a year (on & off) "picking at" the problem of implementing an
@@ -354,7 +376,7 @@
 //!
 //! - 0: (webfinger users scylla ops metrics_task grpc serde_hash_string dynamodb delicious client bookmarklets actor)
 //! - 1: (app_logic)
-//! - 2: (indielinks activity_pub)
+//! - 2: (pagination indielinks activity_pub)
 //! - 3: (recent_posts_lists popular_items outboxes background_tasks)
 //! - 4: (home_timeline)
 //! - 5: (client_types ap_resolution)
@@ -543,3 +565,27 @@
 //!
 //! At the time of this writing, however, the API is unfortunate in that it generally requires type
 //! hints from the caller.
+//!
+//! ## Serializing to MessagePack
+//!
+//! There are a few places in which [indielinks] finds a binary serialization format convenient
+//! (primarily intra-cluster gRPC, but there are others). I initially chose [MessagePack], primarily
+//! due to familiarity. The standard crate for Rust serde to & from [MessagePack] is [rmp_serde].
+//! I've learned the hard way, however, that there are a [few] [footguns] [associated] [with] these
+//! choices. You can read the gory details at the links, but the TL;DR; is this: do *not* serialize
+//! via [rmp_serde::to_vec]-- it assumes that the struct layout is known & fixed and omits field
+//! names for the sake of space (think C structs). This works poorly with Rust structs that use
+//! [serde]'s optional field facilityes. Prefer [rmp_serde::to_vec_named]; `admin/run-linters` even
+//! checks for it.
+//!
+//! [MessagePack]: https://msgpack.org/
+//! [few]: https://github.com/3Hren/msgpack-rust/issues/86
+//! [footguns]: https://github.com/3Hren/msgpack-rust/issues/148
+//! [associated]: https://github.com/3Hren/msgpack-rust/pull/149
+//! [with]: https://github.com/3Hren/msgpack-rust/issues/354
+//!
+//! More generally, this calls into question my basic choice of (binary) serialization format,
+//! altogether; my use cases don't seem like a good fit for [MessagePack]. I may transition to
+//! [CBOR].
+//!
+//! [CBOR]: https://cbor.io/
