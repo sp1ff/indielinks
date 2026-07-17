@@ -386,11 +386,15 @@ impl Default for SingleNode {
             // I'd love to get rid of the requirement to add "indiemark.local" to your `/etc/hosts`,
             // but one thing at a time.
             indielinks: Url::parse("http://indiemark.local:20679").unwrap(/* known good */),
-            indielinks_alternator_config_file: PathBuf::from("indielinksd-alternator.toml"),
-            indielinks_scylla_config_file: PathBuf::from("indielinksd-scylla.toml"),
+            indielinks_alternator_config_file: PathBuf::from(
+                "../target/conf/master/indielinksd-master-alternator.toml",
+            ),
+            indielinks_scylla_config_file: PathBuf::from(
+                "../target/conf/master/indielinksd-master-scylla.toml",
+            ),
             ops: Url::parse("http://localhost:20680").unwrap(/* known good */),
             grpc: "127.0.0.1:20681".parse::<SocketAddr>().unwrap(/* known good */),
-            local_state_dir: PathBuf::from("."),
+            local_state_dir: PathBuf::from("/tmp/indielinks-master"),
         }
     }
 }
@@ -424,9 +428,11 @@ pub struct Clustered {
 impl Default for Clustered {
     fn default() -> Self {
         Self {
-            indielinks_scylla_cluster_config_base: PathBuf::from("../conf/indielinksd-scylla-"),
+            indielinks_scylla_cluster_config_base: PathBuf::from(
+                "../target/conf/master/indielinksd-scylla-",
+            ),
             indielinks_alternator_cluster_config_base: PathBuf::from(
-                "../conf/indielinksd-alternator-",
+                "../target/conf/master/indielinksd-alternator-",
             ),
             cluster_size: 3,
             nodes: nev![
@@ -448,7 +454,7 @@ impl Default for Clustered {
             ],
             haproxy_id: 0,
             haproxy_port: 20673,
-            cluster_local_state_base: PathBuf::from("/tmp/indielinksd-cluster-"),
+            cluster_local_state_base: PathBuf::from("/tmp/indielinksd-master-"),
         }
     }
 }

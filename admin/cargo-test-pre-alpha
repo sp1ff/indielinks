@@ -5,8 +5,8 @@ args="--user -p CPUQuota=800% --pipe --pty --same-dir"
 # waiting for services to come up.
 time systemd-run ${args} -- cargo test --no-run
 time systemd-run ${args} \
-     -E INDIELINKS_CACHE_CLUSTER_TESTS_CONFIG=conf/cache-cluster-tests-pre-alpha.toml \
-     -E INDIELINKS_CACHE_TESTS_CONFIG=conf/cache-tests-pre-alpha.toml \
-     -E INDIELINKS_SMOKE_TESTS_CONFIG=conf/smoke-tests-pre-alpha.toml \
-     -E INDIELINKS_BACKGROUND_TASK_TESTS_CONFIG=conf/background-task-tests-pre-alpha.toml \
+     -E INDIELINKS_CACHE_CLUSTER_TESTS_CONFIG=../target/conf/pre-alpha/cache-cluster-tests-pre-alpha.toml \
+     -E INDIELINKS_CACHE_TESTS_CONFIG=../target/conf/pre-alpha/cache-tests-pre-alpha.toml \
+     -E INDIELINKS_SMOKE_TESTS_CONFIG=../target/conf/pre-alpha/smoke-tests-pre-alpha.toml \
+     -E INDIELINKS_BACKGROUND_TASK_TESTS_CONFIG=../target/conf/pre-alpha/background-task-tests-pre-alpha.toml \
      -- cargo test

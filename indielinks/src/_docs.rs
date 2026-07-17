@@ -430,6 +430,27 @@
 //! the `create-stack` script in the `admin` folder, and you can see examples of the top-level
 //! scripts in `cargo-test-bugfix`, `cargo-test-pre-alpha` and so on, also in `admin`.
 //!
+//! ## Configuration Files
+//!
+//! [indielinksd] requires a moderately complex configuration file. As the integration test suite
+//! grew, the `/conf` directory (in the workspace root) collected more & more instances of that
+//! configuration. In order to work, the integration tests need to be configured with [indielinksd]
+//! ports, working directories, and so on, meaning that the same state had to be faithfully
+//! replicated a pair of configuration files. When I introduced the idea of integration testing
+//! stacks, the problem exploded.
+//!
+//! So, I burned some time moving the configuration to [nickel], a gradually-typed configuration
+//! language. Bits of configuration are recorded in assorted `.ncl` files around the project. Each
+//! crate that requires configuration, as part of its `build.rs`, will generate them from the
+//! appropriate nickel source code. Paired [indielinksd] and integration test configuration files
+//! are built from the same source. The generated TOML files all wind-up in `target/conf` so they
+//! don't litter the source directories & will be cleaned-up automatically on `cargo build`.
+//!
+//! [nickel]: https://nickel-lang.org/
+//!
+//! There's still configuration state residing in hand-coded `.toml` & `.env` files that should
+//! probably recorded once in a nickel file, but the situation is much improved at this point.
+//!
 //! ## The ChangeLog (or the lack thereof)
 //!
 //! First, let's fix terminology. In this section, I'm using the GNU term "ChangeLog", as
@@ -455,7 +476,7 @@
 //! [gnulib]: https://www.gnu.org/software/gnulib/manual/gnulib.html#Top
 //! [gitlog-to-changelog]: https://www.gnu.org/software/gnulib/manual/gnulib.html#gitlog_002dto_002dchangelog
 //!
-//! As a ressult, I'm simply not maintaining a ChangeLog for the indielinks project.
+//! As a result, I'm simply not maintaining a ChangeLog for the indielinks project.
 //!
 //! Now, [keep a changelog] seems to mean something different by the word "changelog", declaring
 //! the "GNU changelog style guide, \[and\] the two-paragraph-long GNU NEWS file 'guideline'...

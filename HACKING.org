@@ -1,6 +1,6 @@
 #+TITLE: HACKING
 #+DESCRIPTION: How to hack on indielinks
-#+DATE: <2026-06-24 Wed 11:51>
+#+DATE: <2026-07-22 Wed 16:49>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -41,7 +41,7 @@ indielinks builds on stable Rust. Assuming you've got the toolchain installed (s
 You may find it useful to generate rustdocs (especially the aforementioned documentation-only module):
 
 #+BEGIN_SRC bash
-  cargo doc --open
+  cargo doc --no-deps --open
 #+END_SRC
 * Testing
 
@@ -126,7 +126,7 @@ When you're ready to merge, get signoff. I prefer to run as much in terms of pre
   admin/signoff
 #+END_SRC
 
-Before pushing, go over your commits & consider squashing some or all. The goal here is to have each commit represent an individually revertible unit of fucntionality. Don't skimp on commit messages: begin with a one-line summary. Then give a paragraph or two describing the commit's functionality & noting any salient implementation decisions.
+Before pushing, go over your commits & consider squashing some or all. The goal here is to have each commit represent an individually revertible unit of functionality. Don't skimp on commit messages: begin with a one-line summary. Then give a paragraph or two describing the commit's functionality & noting any salient implementation decisions.
 
 Cut a PR.
 * Operational Overview

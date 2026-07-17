@@ -96,6 +96,7 @@ uuid = { version = "1.11.0", features = ["serde"] }
 zxcvbn = "3.1.0"
 
 [build-dependencies]
+nickel-lang = "2.2.0"
 prost-build = "0.14.1"
 tonic-build = "0.13.1"
 

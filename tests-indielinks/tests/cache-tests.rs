@@ -264,9 +264,9 @@ impl Default for Configuration {
             indielinks: known_good!(Url::parse("http://indiemark.local:20673")),
             ops: known_good!(Url::parse("http://127.0.0.1:20680")),
             scylla_env_file: None,
-            local_state_base: "/tmp/indielinksd-cluster-".to_owned(),
-            alternator_config_base: "../conf/indielinksd-alternator-".to_owned(),
-            scylla_config_base: "../conf/indielinksd-scylla-".to_owned(),
+            local_state_base: "/tmp/indielinksd-master-".to_owned(),
+            alternator_config_base: "../target/conf/master/indielinksd-alternator-".to_owned(),
+            scylla_config_base: "../target/conf/master/indielinksd-scylla-".to_owned(),
             haproxy_id: "0".to_owned(),
             haproxy_port: 20673,
             raft_nodes: HashMap::from([

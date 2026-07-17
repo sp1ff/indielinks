@@ -119,7 +119,7 @@ Options:
 
 Argument:
 
-    Relative path to the indielinksd configuration file to be used
+    Relative (to the indielinks crate) path to the indielinksd configuration file to be used
 EOF
     exit 0
 fi
@@ -154,7 +154,7 @@ rust_log="${RUST_LOG:-debug,aws_config=warn,aws_runtime=info,aws_sdk_sts=info,aw
 test -d ${local_state_dir} || mkdir ${local_state_dir}
 
 # Run `indielinksd` as a daemon in the indielinks directory
-(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_dir} -C -c ${here}/../conf/${config}) > ${local_state_dir}/stdout.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_dir} -C -c ${here}/${config}) > ${local_state_dir}/stdout.log 2>&1 < /dev/null &
 
 # Wait for the daemon to healthcheck:
 sleep=0.5
