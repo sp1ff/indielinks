@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -18,10 +18,10 @@
 //! This is a low-level module containing assorted HTTP-related utilities that don't depend on much
 //! of anything else.
 
-use std::{convert::Infallible, ops::Deref};
+use std::{collections::HashSet, convert::Infallible, ops::Deref, time::Duration};
 
 use axum::Json;
-use http::{header::HOST, Request};
+use http::{header::HOST, HeaderMap, HeaderName, HeaderValue, Request};
 use indielinks_shared::origin::NetLoc;
 use itertools::Itertools;
 use opentelemetry::KeyValue;
@@ -31,7 +31,11 @@ use snafu::{Backtrace, Snafu};
 use tap::Pipe;
 use tower::{Layer, Service};
 use tower_gcra::keyed::KeyExtractor;
-use tracing::{debug, error, Level};
+use tower_http::{
+    trace::{MakeSpan, OnResponse},
+    LatencyUnit,
+};
+use tracing::{debug, error, Level, Span};
 
 use crate::define_metric;
 
@@ -239,6 +243,10 @@ impl<S> Layer<S> for InstrumentedLayer {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         HostExtractor                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum HostKey {
     Null,
@@ -267,5 +275,214 @@ impl<B> KeyExtractor<Request<B>> for HostExtractor {
             .map(HostKey::Host)
             .unwrap_or(HostKey::Null)
             .pipe(Ok)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                        SanitizeHeaders                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Scrub a [HeaderMap] of a given list of headers
+// Consume the `HeaderMap`, giving the caller the choice as to whether to clone or not.
+pub fn sanitize_headers(headers: HeaderMap, denials: &HashSet<HeaderName>) -> HeaderMap {
+    headers
+        .into_iter()
+        .scan(None, |state, (name, value)| {
+            if matches!(name, Some(_)) {
+                *state = name;
+            }
+            // `HeaderMap` promises that "the first yielded item will have HeaderName set",
+            // so at this point, `state` should always be `&mut Some(header_name)`
+            Some((
+                state.as_ref().expect("No opening header name?").clone(),
+                value,
+            ))
+        })
+        .filter(|(name, _)| !denials.contains(name))
+        .collect()
+}
+
+#[cfg(test)]
+mod test {
+    use http::header::{AUTHORIZATION, USER_AGENT};
+
+    use super::*;
+
+    #[test]
+    fn test_sanitize_headers() {
+        let user_agent = HeaderValue::from_static("test/1.2.3 +sp1ff@pobox.com");
+        let headers = HeaderMap::from_iter(
+            [
+                (USER_AGENT, user_agent.clone()),
+                (
+                    AUTHORIZATION,
+                    HeaderValue::from_static("Bearer super-secret-key"),
+                ),
+            ]
+            .into_iter(),
+        );
+        let mut sanitized_headers =
+            sanitize_headers(headers, &HashSet::from_iter([AUTHORIZATION].into_iter())).into_iter();
+        assert_eq!(
+            sanitized_headers.next(),
+            Some((Some(USER_AGENT), user_agent))
+        );
+        assert_eq!(sanitized_headers.next(), None);
+    }
+}
+
+static DEFAULT_DENIALS: [&str; 4] = ["authorization", "cookie", "set-cookie", "signature"];
+
+static DEFAULT_LEVEL: Level = Level::DEBUG;
+
+static DEFAULT_LATENCY_UNIT: LatencyUnit = LatencyUnit::Millis;
+
+/// A [MakeSpan] implementation that excludes headers based on a blacklist
+#[derive(Clone, Debug)]
+pub struct HygienicMakeSpan {
+    level: Level,
+    denials: HashSet<HeaderName>,
+}
+
+impl HygienicMakeSpan {
+    pub fn new() -> Self {
+        Self {
+            level: DEFAULT_LEVEL,
+            denials: HashSet::from_iter(DEFAULT_DENIALS.into_iter().map(HeaderName::from_static)),
+        }
+    }
+    pub fn with_deny_list<I>(self, deny_list: I) -> Self
+    where
+        I: IntoIterator<Item = HeaderName>,
+    {
+        Self {
+            level: self.level,
+            denials: HashSet::from_iter(deny_list.into_iter()),
+        }
+    }
+    pub fn with_level(self, level: Level) -> Self {
+        Self {
+            level,
+            denials: self.denials,
+        }
+    }
+}
+
+impl<B> MakeSpan<B> for HygienicMakeSpan {
+    fn make_span(&mut self, request: &Request<B>) -> Span {
+        // Per <https://docs.rs/tower-http/latest/src/tower_http/trace/make_span.rs.html#79>, "This
+        // ugly macro is needed, unfortunately, because `tracing::span!` required the level argument
+        // to be static. Meaning we can't just pass `self.level`.
+        macro_rules! make_span {
+            ($level:expr) => {
+                tracing::span!(
+                    $level,
+                    "request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    version = ?request.version(),
+                    headers = ?sanitize_headers(request.headers().clone(), &self.denials)
+                )
+            }
+        }
+
+        match self.level {
+            Level::ERROR => make_span!(Level::ERROR),
+            Level::WARN => make_span!(Level::WARN),
+            Level::INFO => make_span!(Level::INFO),
+            Level::DEBUG => make_span!(Level::DEBUG),
+            Level::TRACE => make_span!(Level::TRACE),
+        }
+    }
+}
+
+/// An [OnResponse] implementation taht excludes headers based on a blacklist
+#[derive(Clone, Debug)]
+pub struct HygienicOnResponse {
+    level: Level,
+    latency_unit: LatencyUnit,
+    denials: HashSet<HeaderName>,
+}
+
+impl HygienicOnResponse {
+    pub fn new() -> Self {
+        Self {
+            level: DEFAULT_LEVEL,
+            latency_unit: DEFAULT_LATENCY_UNIT,
+            denials: HashSet::from_iter(DEFAULT_DENIALS.into_iter().map(HeaderName::from_static)),
+        }
+    }
+    pub fn with_deny_list<I>(self, deny_list: I) -> Self
+    where
+        I: IntoIterator<Item = HeaderName>,
+    {
+        Self {
+            level: self.level,
+            latency_unit: self.latency_unit,
+            denials: HashSet::from_iter(deny_list.into_iter()),
+        }
+    }
+    pub fn with_latency_unit(self, latency_unit: LatencyUnit) -> Self {
+        Self {
+            level: self.level,
+            latency_unit,
+            denials: self.denials,
+        }
+    }
+    pub fn with_level(self, level: Level) -> Self {
+        Self {
+            level,
+            latency_unit: self.latency_unit,
+            denials: self.denials,
+        }
+    }
+}
+
+// Regrettably copied verbatim out of the `tower-http` source, since they made it private.
+struct Latency {
+    unit: LatencyUnit,
+    duration: Duration,
+}
+
+impl std::fmt::Display for Latency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.unit {
+            LatencyUnit::Seconds => write!(f, "{} s", self.duration.as_secs_f64()),
+            LatencyUnit::Millis => write!(f, "{} ms", self.duration.as_millis()),
+            LatencyUnit::Micros => write!(f, "{} μs", self.duration.as_micros()),
+            LatencyUnit::Nanos => write!(f, "{} ns", self.duration.as_nanos()),
+            _ => write!(f, "{:?}", self.duration),
+        }
+    }
+}
+
+impl<B> OnResponse<B> for HygienicOnResponse {
+    fn on_response(self, response: &http::Response<B>, latency: Duration, span: &Span) {
+        let latency = Latency {
+            unit: self.latency_unit,
+            duration: latency,
+        };
+        let response_headers =
+            tracing::field::debug(sanitize_headers(response.headers().clone(), &self.denials));
+
+        macro_rules! make_event {
+            ($level:expr) => {
+                tracing::event!(
+                    parent: span,
+                    $level,
+                    %latency,
+                    status = response.status().as_u16(),
+                    response_headers,
+                    "finished processing request"
+                )
+            }
+        }
+        match self.level {
+            Level::ERROR => make_event!(Level::ERROR),
+            Level::WARN => make_event!(Level::WARN),
+            Level::INFO => make_event!(Level::INFO),
+            Level::DEBUG => make_event!(Level::DEBUG),
+            Level::TRACE => make_event!(Level::TRACE),
+        }
     }
 }

@@ -111,7 +111,7 @@ use indielinks::{
         NOTE_ID_TO_NOTE,
     },
     home_timeline::HomeTimelines,
-    http::HostKey,
+    http::{HostKey, HygienicMakeSpan, HygienicOnResponse},
     indielinks::Indielinks,
     metrics::check_metric_names,
     metrics_task::produce_metrics,
@@ -991,8 +991,11 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
         )))
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().include_headers(true))
-                .on_response(DefaultOnResponse::new().include_headers(true)),
+                // I'd like to make both the tracing level and the blacklist configurable here, but
+                // at the the of this writing, I'm rewiring the configuration system in another
+                // worktree. I've setup sensible defaults, so I'll leave them off, for now.
+                .make_span_with(HygienicMakeSpan::new())
+                .on_response(HygienicOnResponse::new()),
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
