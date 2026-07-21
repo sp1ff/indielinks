@@ -31,7 +31,7 @@
 //! [RFC-3230]: https://datatracker.ietf.org/doc/html/rfc3230
 //! [RFC-9530]: https://www.ietf.org/archive/id/draft-ietf-httpbis-digest-headers-12.html#name-the-content-digest-field
 
-use std::{fmt::Debug, hash::Hash};
+use std::{fmt::Debug, hash::Hash, time::Duration};
 
 use bytes::Bytes;
 use either::Either;
@@ -44,6 +44,7 @@ use tower::{
         backoff::{ExponentialBackoffMaker, MakeBackoff},
         RetryLayer,
     },
+    timeout::TimeoutLayer,
     ServiceBuilder,
 };
 use tower_gcra::keyed::{KeyExtractor, Layer as GovernorLayer};
@@ -218,13 +219,14 @@ where
         // | | | | +-------------   Set User-Agent header   -------------+ | | | |
         // | | | | | +-----------     retry on failure      -----------+ | | | | |
         // | | | | | | | +-------    rate-limiting layer    -------+ | | | | | | |
-        // | | | | | | | | +-----      instrumentation      -----+ | | | | | | | |
-        // | | | | | | | | | +---       Reqwest layer       ---+ | | | | | | | | |
-        // | | | | | | | | | |                                 | | | | | | | | | |
-        // | | | | | | | | | |             remote              | | | | | | | | | |
-        // | | | | | | | | | |                                 | | | | | | | | | |
-        // | | | | | | | | | +-->       Reqwest layer       <--+ | | | | | | | | |
-        // | | | | | | | | +---->      instrumentation      <----+ | | | | | | | |
+        // | | | | | | | | +-----       timeout layer       -----+ | | | | | | | |
+        // | | | | | | | | | +---    instrumentation        ---+ | | | | | | | | |
+        // | | | | | | | | | | +-       Reqwest layer       -+ | | | | | | | | | |
+        // | | | | | | | | | | |                             | | | | | | | | | | |
+        // | | | | | | | | | | |           remote            | | | | | | | | | | |
+        // | | | | | | | | | | +->      Reqwest layer      <-+ | | | | | | | | | |
+        // | | | | | | | | | +-->      instrumentation      <--+ | | | | | | | | |
+        // | | | | | | | | +---->        timeout layer      <----+ | | | | | | | |
         // | | | | | | | +------>    rate-limiting layer    <------+ | | | | | | |
         // | | | | | +---------->     retry on failure      <----------+ | | | | |
         // | | | | +------------>   Set User-Agent header   <------------+ | | | |
@@ -257,6 +259,12 @@ where
             .make_backoff(),
             num_attempts: backoff_parameters.num_attempts(),
         }))
+        // I want to make this configurable, but at the time of this writing, I'm rewiring the
+        // configuration system in another worktree, so I don't want to touch that, now. Pick a
+        // sensible default & come back to it.
+        // .layer(TimeoutLayer::new(Duration::from_secs(5))) // Seems quite generous to me...
+        // // TODO(sp1ff):
+        // .map_err(BoxedError)
         .layer(GovernorLayer::new_with_limiter(key_extractor, rate_limiter))
         .layer(InstrumentedLayer)
         .layer(ReqwestServiceLayer::new(Body))
