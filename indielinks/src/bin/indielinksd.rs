@@ -69,7 +69,7 @@ use tonic::transport::Server as TonicServer;
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
-    trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
+    trace::TraceLayer,
 };
 use tracing::{debug, error, info, Level};
 use tracing_subscriber::{

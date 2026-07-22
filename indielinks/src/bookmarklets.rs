@@ -92,7 +92,7 @@ use uuid::Uuid;
 
 use crate::{
     app_logic::add_post,
-    client_types::ClientType,
+    client_types::{BoxedError, ClientType},
     define_metric,
     indielinks::Indielinks,
     signing_keys::SigningKey,
@@ -109,8 +109,8 @@ pub enum Error {
     AddPost { source: crate::app_logic::Error },
     #[snafu(display("While making the Pinboard request, {source}"))]
     Client {
-        #[snafu(source(from(either::Either<std::convert::Infallible, indielinks_shared::service::Error>, Box::new)))]
-        source: Box<either::Either<std::convert::Infallible, indielinks_shared::service::Error>>,
+        #[snafu(source(from(either::Either<std::convert::Infallible, BoxedError>, Box::new)))]
+        source: Box<either::Either<std::convert::Infallible, BoxedError>>,
         backtrace: Backtrace,
     },
     #[snafu(display("While setting a cookie, {source}"))]
