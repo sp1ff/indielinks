@@ -91,16 +91,16 @@ secs = 3
 nanos = 0
 
 [client-rate-limits]
+per-hour = 5760 # 16/sec
 custom = []
-per-hour = 5760
-
-[general-purpose-rate-limits]
-custom = []
-per-hour = 2880
 
 [local-rate-limits]
+per-hour = 8320 # 32/sec
 custom = []
-per-hour = 8320
+
+[general-purpose-rate-limits]
+per-hour = 2880 # 8/sec
+custom = []
 
 [client-configuration]
 timeout = [
