@@ -1,427 +1,73 @@
-use governor::{clock::DefaultClock, state::keyed::DefaultKeyedStateStore};
-use tower::retry::Retry;
-use tower_gcra::extractors::KeyedDashmapMiddleware;
-use tower_http::set_header::SetRequestHeader;
-
-use indielinks_shared::service::{ExponentialBackoffPolicy, ReqwestService};
-
-use crate::{
-    authn::AddSha256DigestIfNotPresent,
-    http::{HostExtractor, HostKey, InstrumentedService},
-};
-
-// In indielinks-client, I make the client type generic, with a type constraint like:
+// Copyright (C) 2026 Michael Herstine <sp1ff@pobox.com>
 //
-//     impl Service<
-//         http::Request<Bytes>,
-//         Response = http::Response<Bytes>,
-//         Error = Box<dyn std::error::Error + Send + Sync>,
-//     > + Clone,
+// This file is part of indielinks.
 //
-// In this crate, however, I find myself naming the type more frequently, so I'm going with a type
-// alias. This is also inconvenient, but better than making every type and function that deals with
-// our client type generic. Since the types are extremely large, I've moved them off into their own
-// module to avoid cluttering the code.
+// indielinks is free software: you can redistribute it and/or modify it under the terms of the GNU
+// General Public License as published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
 //
-// If you need to update this, say due to adding or removing a layer in `make_client()`, just do a
-// `cargo build`; the `make_client()` return type won't type-check, but the compiler will write the
-// expected type to a text file in the build directory (it will be the second one)-- just copy it
-// from there over this one:
+// indielinks is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+// even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
+// see <http://www.gnu.org/licenses/>.
 
-pub type GenericClientType<KE, S, C, MW> = SetRequestHeader<
-    tower::util::Either<
-        SetRequestHeader<
-            tower::util::Either<
-                AddSha256DigestIfNotPresent<
-                    tower::util::Either<
-                        SetRequestHeader<
-                            SetRequestHeader<
-                                Retry<
-                                    ExponentialBackoffPolicy,
-                                    tower_gcra::keyed::Governor<
-                                        InstrumentedService<
-                                            ReqwestService<
-                                                reqwest::Client,
-                                                indielinks_shared::service::Body,
-                                            >,
-                                        >,
-                                        KE,
-                                        http::Request<bytes::Bytes>,
-                                        S,
-                                        C,
-                                        MW,
-                                    >,
-                                >,
-                                http::HeaderValue,
-                            >,
-                            for<'a> fn(
-                                &'a http::Request<bytes::Bytes>,
-                            )
-                                -> std::option::Option<http::HeaderValue>,
-                        >,
-                        SetRequestHeader<
-                            Retry<
-                                ExponentialBackoffPolicy,
-                                tower_gcra::keyed::Governor<
-                                    InstrumentedService<
-                                        ReqwestService<
-                                            reqwest::Client,
-                                            indielinks_shared::service::Body,
-                                        >,
-                                    >,
-                                    KE,
-                                    http::Request<bytes::Bytes>,
-                                    S,
-                                    C,
-                                    MW,
-                                >,
-                            >,
-                            http::HeaderValue,
-                        >,
-                    >,
-                >,
-                tower::util::Either<
-                    SetRequestHeader<
-                        SetRequestHeader<
-                            Retry<
-                                ExponentialBackoffPolicy,
-                                tower_gcra::keyed::Governor<
-                                    InstrumentedService<
-                                        ReqwestService<
-                                            reqwest::Client,
-                                            indielinks_shared::service::Body,
-                                        >,
-                                    >,
-                                    KE,
-                                    http::Request<bytes::Bytes>,
-                                    S,
-                                    C,
-                                    MW,
-                                >,
-                            >,
-                            http::HeaderValue,
-                        >,
-                        for<'a> fn(
-                            &'a http::Request<bytes::Bytes>,
-                        )
-                            -> std::option::Option<http::HeaderValue>,
-                    >,
-                    SetRequestHeader<
-                        Retry<
-                            ExponentialBackoffPolicy,
-                            tower_gcra::keyed::Governor<
-                                InstrumentedService<
-                                    ReqwestService<
-                                        reqwest::Client,
-                                        indielinks_shared::service::Body,
-                                    >,
-                                >,
-                                KE,
-                                http::Request<bytes::Bytes>,
-                                S,
-                                C,
-                                MW,
-                            >,
-                        >,
-                        http::HeaderValue,
-                    >,
-                >,
-            >,
-            for<'a> fn(&'a http::Request<bytes::Bytes>) -> std::option::Option<http::HeaderValue>,
-        >,
-        tower::util::Either<
-            AddSha256DigestIfNotPresent<
-                tower::util::Either<
-                    SetRequestHeader<
-                        SetRequestHeader<
-                            Retry<
-                                ExponentialBackoffPolicy,
-                                tower_gcra::keyed::Governor<
-                                    InstrumentedService<
-                                        ReqwestService<
-                                            reqwest::Client,
-                                            indielinks_shared::service::Body,
-                                        >,
-                                    >,
-                                    KE,
-                                    http::Request<bytes::Bytes>,
-                                    S,
-                                    C,
-                                    MW,
-                                >,
-                            >,
-                            http::HeaderValue,
-                        >,
-                        for<'a> fn(
-                            &'a http::Request<bytes::Bytes>,
-                        )
-                            -> std::option::Option<http::HeaderValue>,
-                    >,
-                    SetRequestHeader<
-                        Retry<
-                            ExponentialBackoffPolicy,
-                            tower_gcra::keyed::Governor<
-                                InstrumentedService<
-                                    ReqwestService<
-                                        reqwest::Client,
-                                        indielinks_shared::service::Body,
-                                    >,
-                                >,
-                                KE,
-                                http::Request<bytes::Bytes>,
-                                S,
-                                C,
-                                MW,
-                            >,
-                        >,
-                        http::HeaderValue,
-                    >,
-                >,
-            >,
-            tower::util::Either<
-                SetRequestHeader<
-                    SetRequestHeader<
-                        Retry<
-                            ExponentialBackoffPolicy,
-                            tower_gcra::keyed::Governor<
-                                InstrumentedService<
-                                    ReqwestService<
-                                        reqwest::Client,
-                                        indielinks_shared::service::Body,
-                                    >,
-                                >,
-                                KE,
-                                http::Request<bytes::Bytes>,
-                                S,
-                                C,
-                                MW,
-                            >,
-                        >,
-                        http::HeaderValue,
-                    >,
-                    for<'a> fn(
-                        &'a http::Request<bytes::Bytes>,
-                    ) -> std::option::Option<http::HeaderValue>,
-                >,
-                SetRequestHeader<
-                    Retry<
-                        ExponentialBackoffPolicy,
-                        tower_gcra::keyed::Governor<
-                            InstrumentedService<
-                                ReqwestService<reqwest::Client, indielinks_shared::service::Body>,
-                            >,
-                            KE,
-                            http::Request<bytes::Bytes>,
-                            S,
-                            C,
-                            MW,
-                        >,
-                    >,
-                    http::HeaderValue,
-                >,
-            >,
-        >,
-    >,
-    for<'a> fn(&'a http::Request<bytes::Bytes>) -> std::option::Option<http::HeaderValue>,
->;
+//! # indielinks HTTP Client Types
+//!
+//! ## Discussion
+//!
+//! In indielinks-client, I make the client type generic, with a type constraint like:
+//!
+//! ```ignore
+//!     impl Service<
+//!         http::Request<Bytes>,
+//!         Response = http::Response<Bytes>,
+//!         Error = Box<dyn std::error::Error + Send + Sync>,
+//!     > + Clone,
+//! ```
+//!
+//! In this crate, however, I find myself naming the type more frequently. I first laboriously
+//! copied the entire type of the resulting [tower] stack here. That was inconvenient, but better
+//! than making every type and function that deals with our client type generic. Since the types
+//! were extremely large, I moved them off into their own module to avoid cluttering the code.
+//!
+//! After burning an afternoon trying to add a single layer into the stack, I gave up and just
+//! erased the type altogether. This, unfortunately, means imposing a number of additional
+//! contraints on the generic parameters to `make_client()`.
 
-// KE :=> HostExtractor
-// C  :=> DefaultClock
-// S  :=> DefaultKeyedStateStore<HostKey>
-// M  :=> KeyedDashmapMiddleware<HostKey>
-pub type ClientType = SetRequestHeader<
-    tower::util::Either<
-        SetRequestHeader<
-            tower::util::Either<
-                AddSha256DigestIfNotPresent<
-                    tower::util::Either<
-                        SetRequestHeader<
-                            SetRequestHeader<
-                                Retry<
-                                    ExponentialBackoffPolicy,
-                                    tower_gcra::keyed::Governor<
-                                        InstrumentedService<
-                                            ReqwestService<
-                                                reqwest::Client,
-                                                indielinks_shared::service::Body,
-                                            >,
-                                        >,
-                                        HostExtractor,
-                                        http::Request<bytes::Bytes>,
-                                        DefaultKeyedStateStore<HostKey>,
-                                        DefaultClock,
-                                        KeyedDashmapMiddleware<HostKey>,
-                                    >,
-                                >,
-                                http::HeaderValue,
-                            >,
-                            for<'a> fn(
-                                &'a http::Request<bytes::Bytes>,
-                            )
-                                -> std::option::Option<http::HeaderValue>,
-                        >,
-                        SetRequestHeader<
-                            Retry<
-                                ExponentialBackoffPolicy,
-                                tower_gcra::keyed::Governor<
-                                    InstrumentedService<
-                                        ReqwestService<
-                                            reqwest::Client,
-                                            indielinks_shared::service::Body,
-                                        >,
-                                    >,
-                                    HostExtractor,
-                                    http::Request<bytes::Bytes>,
-                                    DefaultKeyedStateStore<HostKey>,
-                                    DefaultClock,
-                                    KeyedDashmapMiddleware<HostKey>,
-                                >,
-                            >,
-                            http::HeaderValue,
-                        >,
-                    >,
-                >,
-                tower::util::Either<
-                    SetRequestHeader<
-                        SetRequestHeader<
-                            Retry<
-                                ExponentialBackoffPolicy,
-                                tower_gcra::keyed::Governor<
-                                    InstrumentedService<
-                                        ReqwestService<
-                                            reqwest::Client,
-                                            indielinks_shared::service::Body,
-                                        >,
-                                    >,
-                                    HostExtractor,
-                                    http::Request<bytes::Bytes>,
-                                    DefaultKeyedStateStore<HostKey>,
-                                    DefaultClock,
-                                    KeyedDashmapMiddleware<HostKey>,
-                                >,
-                            >,
-                            http::HeaderValue,
-                        >,
-                        for<'a> fn(
-                            &'a http::Request<bytes::Bytes>,
-                        )
-                            -> std::option::Option<http::HeaderValue>,
-                    >,
-                    SetRequestHeader<
-                        Retry<
-                            ExponentialBackoffPolicy,
-                            tower_gcra::keyed::Governor<
-                                InstrumentedService<
-                                    ReqwestService<
-                                        reqwest::Client,
-                                        indielinks_shared::service::Body,
-                                    >,
-                                >,
-                                HostExtractor,
-                                http::Request<bytes::Bytes>,
-                                DefaultKeyedStateStore<HostKey>,
-                                DefaultClock,
-                                KeyedDashmapMiddleware<HostKey>,
-                            >,
-                        >,
-                        http::HeaderValue,
-                    >,
-                >,
-            >,
-            for<'a> fn(&'a http::Request<bytes::Bytes>) -> std::option::Option<http::HeaderValue>,
-        >,
-        tower::util::Either<
-            AddSha256DigestIfNotPresent<
-                tower::util::Either<
-                    SetRequestHeader<
-                        SetRequestHeader<
-                            Retry<
-                                ExponentialBackoffPolicy,
-                                tower_gcra::keyed::Governor<
-                                    InstrumentedService<
-                                        ReqwestService<
-                                            reqwest::Client,
-                                            indielinks_shared::service::Body,
-                                        >,
-                                    >,
-                                    HostExtractor,
-                                    http::Request<bytes::Bytes>,
-                                    DefaultKeyedStateStore<HostKey>,
-                                    DefaultClock,
-                                    KeyedDashmapMiddleware<HostKey>,
-                                >,
-                            >,
-                            http::HeaderValue,
-                        >,
-                        for<'a> fn(
-                            &'a http::Request<bytes::Bytes>,
-                        )
-                            -> std::option::Option<http::HeaderValue>,
-                    >,
-                    SetRequestHeader<
-                        Retry<
-                            ExponentialBackoffPolicy,
-                            tower_gcra::keyed::Governor<
-                                InstrumentedService<
-                                    ReqwestService<
-                                        reqwest::Client,
-                                        indielinks_shared::service::Body,
-                                    >,
-                                >,
-                                HostExtractor,
-                                http::Request<bytes::Bytes>,
-                                DefaultKeyedStateStore<HostKey>,
-                                DefaultClock,
-                                KeyedDashmapMiddleware<HostKey>,
-                            >,
-                        >,
-                        http::HeaderValue,
-                    >,
-                >,
-            >,
-            tower::util::Either<
-                SetRequestHeader<
-                    SetRequestHeader<
-                        Retry<
-                            ExponentialBackoffPolicy,
-                            tower_gcra::keyed::Governor<
-                                InstrumentedService<
-                                    ReqwestService<
-                                        reqwest::Client,
-                                        indielinks_shared::service::Body,
-                                    >,
-                                >,
-                                HostExtractor,
-                                http::Request<bytes::Bytes>,
-                                DefaultKeyedStateStore<HostKey>,
-                                DefaultClock,
-                                KeyedDashmapMiddleware<HostKey>,
-                            >,
-                        >,
-                        http::HeaderValue,
-                    >,
-                    for<'a> fn(
-                        &'a http::Request<bytes::Bytes>,
-                    ) -> std::option::Option<http::HeaderValue>,
-                >,
-                SetRequestHeader<
-                    Retry<
-                        ExponentialBackoffPolicy,
-                        tower_gcra::keyed::Governor<
-                            InstrumentedService<
-                                ReqwestService<reqwest::Client, indielinks_shared::service::Body>,
-                            >,
-                            HostExtractor,
-                            http::Request<bytes::Bytes>,
-                            DefaultKeyedStateStore<HostKey>,
-                            DefaultClock,
-                            KeyedDashmapMiddleware<HostKey>,
-                        >,
-                    >,
-                    http::HeaderValue,
-                >,
-            >,
-        >,
-    >,
-    for<'a> fn(&'a http::Request<bytes::Bytes>) -> std::option::Option<http::HeaderValue>,
+use std::{convert::Infallible, error::Error as StdError, fmt};
+
+use bytes::Bytes;
+use tower::util::BoxCloneSyncService;
+use tower_gcra::keyed::KeyExtractor;
+
+#[derive(Debug)]
+pub struct BoxedError(pub Box<dyn std::error::Error + Send + Sync + 'static>);
+
+impl fmt::Display for BoxedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl StdError for BoxedError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.0.source()
+    }
+}
+
+/// The `Error` type returned by our HTTP client [Service](tower::Service)
+pub type GenericClientErrorType<KE> =
+    either::Either<<KE as KeyExtractor<http::Request<Bytes>>>::Error, BoxedError>;
+
+/// Our type-erased HTTP client
+pub type GenericClientType<KE> =
+    BoxCloneSyncService<http::Request<Bytes>, http::Response<Bytes>, GenericClientErrorType<KE>>;
+
+/// Our concrete HTTP client type
+pub type ClientType = BoxCloneSyncService<
+    http::Request<Bytes>,
+    http::Response<Bytes>,
+    either::Either<Infallible, BoxedError>,
 >;

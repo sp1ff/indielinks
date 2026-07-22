@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2024-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -35,10 +35,11 @@ use std::{fmt::Debug, hash::Hash, time::Duration};
 
 use bytes::Bytes;
 use either::Either;
-use governor::{clock::Clock, middleware::RateLimitingMiddleware, state::StateStore, RateLimiter};
+use governor::{
+    clock::Clock, middleware::RateLimitingMiddleware, state::StateStore, NotUntil, RateLimiter,
+};
 use http::{header::USER_AGENT, HeaderName, HeaderValue, Request};
 use snafu::{Backtrace, ResultExt, Snafu};
-use tap::Pipe;
 use tower::{
     retry::{
         backoff::{ExponentialBackoffMaker, MakeBackoff},
@@ -59,6 +60,7 @@ use indielinks_shared::{
 use crate::{
     ap_entities::{make_instance_actor_key_id, make_key_id},
     authn::{compute_signature, AddSha256DigestIfNotPresentLayer},
+    client_types::BoxedError,
     entities::User,
     http::InstrumentedLayer,
 };
@@ -101,6 +103,8 @@ pub enum Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                 adding ActivityPub signatures                                  //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Add an Activity Pub signature to `request` if there is an `(Either<User, UserPrivateKey>,
@@ -159,18 +163,11 @@ fn add_host<B: AsRef<[u8]>>(request: &http::Request<B>) -> Option<HeaderValue> {
         .unwrap_or(None)
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                    indielinks HTTP clients                                     //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// Build a [tower] [Service](tower::Service) based on [reqwest::Client]
-///
-/// This function starts with a [reqwest::Client] and then:
-/// - adds the Host header, if it's not present
-/// - if the caller has requested ActivityPub support:
-///     - adds Date & SHA-256 digest headers, if they're not present
-///     - add a "draft Cavage" HTTP signature, but only if the Request extensions contain either a
-///       [User] or [UserPrivateKey]
-/// - set the User Agent header
-/// - retry failed requests
-/// - rate limit outgoing requests
-/// - instrument all requests
 ///
 /// Request & response bodies are modelled as [Bytes]. Rate-limiting & exponential backoff are configurable.
 pub fn make_client<KE, S, C, MW>(
@@ -179,13 +176,19 @@ pub fn make_client<KE, S, C, MW>(
     key_extractor: KE,
     rate_limiter: RateLimiter<<KE as KeyExtractor<Request<Bytes>>>::Key, S, C, MW>,
     backoff_parameters: &ExponentialBackoffParameters,
-) -> Result<crate::client_types::GenericClientType<KE, S, C, MW>>
+) -> Result<crate::client_types::GenericClientType<KE>>
 where
-    KE: KeyExtractor<Request<Bytes>> + Clone,
-    <KE as KeyExtractor<Request<Bytes>>>::Key: Clone + Eq + Hash,
-    S: StateStore<Key = <KE as KeyExtractor<Request<Bytes>>>::Key>,
-    C: Clock,
-    MW: RateLimitingMiddleware<<KE as KeyExtractor<Request<Bytes>>>::Key, C::Instant>,
+    KE: KeyExtractor<Request<Bytes>> + Clone + Send + Sync + 'static,
+    <KE as KeyExtractor<Request<Bytes>>>::Key: Clone + Eq + Hash + Send + Sync + 'static,
+    S: StateStore<Key = <KE as KeyExtractor<Request<Bytes>>>::Key> + Send + Sync + 'static,
+    C: Clock + Send + Sync + 'static,
+    MW: RateLimitingMiddleware<
+            <KE as KeyExtractor<Request<Bytes>>>::Key,
+            C::Instant,
+            NegativeOutcome = NotUntil<C::Instant>,
+        > + Send
+        + Sync
+        + 'static,
 {
     let (add_date, add_digest, add_signature) = if support_ap {
         (
@@ -204,36 +207,36 @@ where
         (None, None, None)
     };
 
-    ServiceBuilder::new()
+    let service = ServiceBuilder::new()
         // Apply the signing middleware first, so that the outgoing request is only signed once. Then
         // apply the retry middleware, and finally the instrumentation (so that metrics will be emitted
         // on each retry):
         //
-        //                              requests
-        //                                  |
-        //                                  v
-        // +---------------------      Add Date header      ---------------------+
-        // | +-------------------      Add Host header      -------------------+ |
-        // | | +-----------------    Add SHA-256 digest     -----------------+ | |
-        // | | | +--------------- Add ActivityPub signature ---------------+ | | |
-        // | | | | +-------------   Set User-Agent header   -------------+ | | | |
-        // | | | | | +-----------     retry on failure      -----------+ | | | | |
-        // | | | | | | | +-------    rate-limiting layer    -------+ | | | | | | |
-        // | | | | | | | | +-----       timeout layer       -----+ | | | | | | | |
-        // | | | | | | | | | +---    instrumentation        ---+ | | | | | | | | |
-        // | | | | | | | | | | +-       Reqwest layer       -+ | | | | | | | | | |
-        // | | | | | | | | | | |                             | | | | | | | | | | |
-        // | | | | | | | | | | |           remote            | | | | | | | | | | |
-        // | | | | | | | | | | +->      Reqwest layer      <-+ | | | | | | | | | |
-        // | | | | | | | | | +-->      instrumentation      <--+ | | | | | | | | |
-        // | | | | | | | | +---->        timeout layer      <----+ | | | | | | | |
-        // | | | | | | | +------>    rate-limiting layer    <------+ | | | | | | |
-        // | | | | | +---------->     retry on failure      <----------+ | | | | |
-        // | | | | +------------>   Set User-Agent header   <------------+ | | | |
-        // | | | +--------------> Add ActivityPub signature <--------------+ | | |
-        // | | +---------------->    Add SHA-256 digest     <----------------+ | |
-        // | +------------------>      Add Host header      <------------------+ |
-        // +-------------------->      Add Date header      <--------------------+
+        //                               requests
+        //                                   |
+        //                                   v
+        // +----------------------      Add Date header      ----------------------+
+        // | +--------------------      Add Host header      --------------------+ |
+        // | | +------------------    Add SHA-256 digest     ------------------+ | |
+        // | | | +---------------- Add ActivityPub signature ----------------+ | | |
+        // | | | | +--------------   Set User-Agent header   --------------+ | | | |
+        // | | | | | +------------     retry on failure      ------------+ | | | | |
+        // | | | | | | | +--------    rate-limiting layer    --------+ | | | | | | |
+        // | | | | | | | | +------       timeout layer       ------+ | | | | | | | |
+        // | | | | | | | | | +----    instrumentation        ----+ | | | | | | | | |
+        // | | | | | | | | | | +--       Reqwest layer       --+ | | | | | | | | | |
+        // | | | | | | | | | | |                               | | | | | | | | | | |
+        // | | | | | | | | | | |           remote              | | | | | | | | | | |
+        // | | | | | | | | | | +->      Reqwest layer        <-+ | | | | | | | | | |
+        // | | | | | | | | | +--->      instrumentation      <---+ | | | | | | | | |
+        // | | | | | | | | +----->        timeout layer      <-----+ | | | | | | | |
+        // | | | | | | | +------->    rate-limiting layer    <-------+ | | | | | | |
+        // | | | | | +----------->     retry on failure      <-----------+ | | | | |
+        // | | | | +------------->   Set User-Agent header   <-------------+ | | | |
+        // | | | +---------------> Add ActivityPub signature <---------------+ | | |
+        // | | +----------------->    Add SHA-256 digest     <-----------------+ | |
+        // | +------------------->      Add Host header      <-------------------+ |
+        // +--------------------->      Add Date header      <---------------------+
         //                                   |
         //                                   v
         //                               responses
@@ -262,14 +265,20 @@ where
         // I want to make this configurable, but at the time of this writing, I'm rewiring the
         // configuration system in another worktree, so I don't want to touch that, now. Pick a
         // sensible default & come back to it.
-        // .layer(TimeoutLayer::new(Duration::from_secs(5))) // Seems quite generous to me...
-        // // TODO(sp1ff):
-        // .map_err(BoxedError)
         .layer(GovernorLayer::new_with_limiter(key_extractor, rate_limiter))
+        // `TimeoutLayer` regrettably erases the type of any error it may return; that is, it's
+        // associated `Error` type is `Box<dyn StdError...>`. This brings-up good ol'
+        // <https://github.com/rust-lang/rust/issues/68185>: Box<dyn Error...> does not implement
+        // `Error` (!), which is problematic for us because there are multiple places where we
+        // require the `Err` variant to, you know, *implement Error*. As a workaround, I created a
+        // newtype to wrap the boxed error & manuall implemented `Error` on that.
+        .map_err(BoxedError)
+        .layer(TimeoutLayer::new(Duration::from_secs(5))) // Seems quite generous to me...
         .layer(InstrumentedLayer)
         .layer(ReqwestServiceLayer::new(Body))
-        .service(reqwest::Client::new())
-        .pipe(Ok)
+        .service(reqwest::Client::new());
+
+    Ok(crate::client_types::GenericClientType::<KE>::new(service))
 }
 
 #[cfg(test)]

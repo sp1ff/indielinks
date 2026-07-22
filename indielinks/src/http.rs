@@ -21,7 +21,7 @@
 use std::{collections::HashSet, convert::Infallible, ops::Deref, time::Duration};
 
 use axum::Json;
-use http::{header::HOST, HeaderMap, HeaderName, HeaderValue, Request};
+use http::{header::HOST, HeaderMap, HeaderName, Request};
 use indielinks_shared::origin::NetLoc;
 use itertools::Itertools;
 use opentelemetry::KeyValue;
@@ -288,7 +288,7 @@ pub fn sanitize_headers(headers: HeaderMap, denials: &HashSet<HeaderName>) -> He
     headers
         .into_iter()
         .scan(None, |state, (name, value)| {
-            if matches!(name, Some(_)) {
+            if name.is_some() {
                 *state = name;
             }
             // `HeaderMap` promises that "the first yielded item will have HeaderName set",
@@ -304,7 +304,10 @@ pub fn sanitize_headers(headers: HeaderMap, denials: &HashSet<HeaderName>) -> He
 
 #[cfg(test)]
 mod test {
-    use http::header::{AUTHORIZATION, USER_AGENT};
+    use http::{
+        header::{AUTHORIZATION, USER_AGENT},
+        HeaderValue,
+    };
 
     use super::*;
 
@@ -357,7 +360,7 @@ impl HygienicMakeSpan {
     {
         Self {
             level: self.level,
-            denials: HashSet::from_iter(deny_list.into_iter()),
+            denials: HashSet::from_iter(deny_list),
         }
     }
     pub fn with_level(self, level: Level) -> Self {
@@ -365,6 +368,12 @@ impl HygienicMakeSpan {
             level,
             denials: self.denials,
         }
+    }
+}
+
+impl Default for HygienicMakeSpan {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -419,7 +428,7 @@ impl HygienicOnResponse {
         Self {
             level: self.level,
             latency_unit: self.latency_unit,
-            denials: HashSet::from_iter(deny_list.into_iter()),
+            denials: HashSet::from_iter(deny_list),
         }
     }
     pub fn with_latency_unit(self, latency_unit: LatencyUnit) -> Self {
@@ -435,6 +444,12 @@ impl HygienicOnResponse {
             latency_unit: self.latency_unit,
             denials: self.denials,
         }
+    }
+}
+
+impl Default for HygienicOnResponse {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
