@@ -7,32 +7,29 @@ function hc {
     local bin="$1"
     local port="$2"
     local num_polls="$3"
-    local status=$(curl -4 -s http://localhost:${port}/healthcheck || true)
+    local status=$(curl -s http://localhost:${port}/healthcheck || true)
     local ntries=1
     while [ "${status}" != "GOOD" ]; do
         sleep 1.0
+        status=$(curl -s http://localhost:${port}/healthcheck || true)
         ntries=$(($ntries+1))
         if [ ${ntries} -gt ${num_polls} ]; then
-            echo "${bin} failed to come up" >&2
-            ps aux|grep "${bin}"|grep -v grep
-            set +e
-            curl -4 -v http://localhost:${port}/healthcheck
-            set -e
+            echo "${bin}:${port} failed to come up; log file follows on stdout:" >&2
+            ls -l "$log" || true
+            cat "$log"
+            echo "=== end stdout =="
+            echo "ps & netstat output:"
+            ps aux|grep -F "$bin"|grep -v grep
+            sudo netstat -lpent|grep -F "$port"|grep -v grep
             return "1"
         fi
-        if [ $(($ntries % 10)) -eq 0 ]; then
-            set +e
-            curl -4 -v http://localhost:${port}/healthcheck
-            set -e
-        fi
-        status=$(curl -4 -s http://localhost:${port}/healthcheck || true)
     done
     return "0"
 }
 
 help=
 nargs=0
-num_polls=45 # Give it thirty seconds to come up, just in case we need to rebuild
+num_polls=120 # generous limit of two minutes
 prev_option=
 verbose=
 version=
