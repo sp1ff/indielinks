@@ -105,6 +105,59 @@
 //!
 //! [instrument]: https://docs.rs/tracing/latest/tracing/attr.instrument.html
 //!
+//! #### Current Metrics
+//!
+//! At the time of this writing, the list of metrics produced is:
+//!
+//! - actor_retrieved_total
+//! - actor_verification_failures_total
+//! - actor_verification_successes_total
+//! - ap_resolution_actors_count
+//! - ap_resolution_handles_count
+//! - ap_resolution_notes_count
+//! - background_processor_tasks_completed_total
+//! - background_processor_tasks_inflight
+//! - bookmarklets_add_successes_total
+//! - bookmarklets_authn_successes_total
+//! - bookmarklets_save_successes_total
+//! - client_requests_total
+//! - client_responses_client_error_total
+//! - client_responses_server_error_total
+//! - client_responses_success_total
+//! - delicious_auth_failures_total
+//! - delicious_auth_successes_total
+//! - delicious_posts_added_total
+//! - delicious_posts_all_total
+//! - followers_pages_total
+//! - following_pages_total
+//! - frontend_asset_successes_total
+//! - http_local_requests_total
+//! - http_local_responses_2xx_total
+//! - http_public_requests_total
+//! - http_public_responses_2xx_total
+//! - http_public_responses_4xx_total
+//! - http_public_responses_5xx_total
+//! - http_requests_total
+//! - inbox_follows_total
+//! - instance_actor_served_total
+//! - outbox_pages_total
+//! - posts_errors_total
+//! - posts_served_total
+//! - replies_errors_total
+//! - replies_pages_total
+//! - shared_inbox_announcements_total
+//! - shared_inbox_creates_total
+//! - shared_inbox_successes_total
+//! - user_auth_failures_total
+//! - user_auth_successes_total
+//! - user_logins_successful_total
+//! - user_recentposts_successful_total
+//! - user_refreshes_successful_total
+//! - user_replies_successful_total
+//! - user_timeline_failures_total
+//! - user_timeline_successful_total
+//! - webfinger_served_total
+//!
 //! ## Background Task Processing
 //!
 //! Surprisingly (to me), [axum] makes no provision for compute outside request handlers. There's
