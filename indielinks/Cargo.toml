@@ -110,7 +110,7 @@ tonic-prost-build = "0.14.6"
 wiremock = { workspace = true }
 
 [package.metadata.deb]
-copyright = "Copyright (C) 2024-2025 Michael Herstine"
+copyright = "Copyright (C) 2024-2026 Michael Herstine"
 depends = ["libssl-dev", "adduser", "acl"]
 maintainer = "Michael Herstine <sp1ff@pobox.com>"
 maintainer-scripts = "../admin/debian/deb-maintainer-scripts"
