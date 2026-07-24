@@ -181,8 +181,9 @@ pub async fn first_background(
                                 true,
                                 HostExtractor,
                                 RateLimiter::keyed(Quota::per_second(nonzero!(16u32)))
-                                    .use_middleware(KeyedDashmapMiddleware::from(vec![])),
-                                &Default::default())
+                                .use_middleware(KeyedDashmapMiddleware::from(vec![])),
+                                &Default::default(),
+                                Duration::from_secs(2))
         .unwrap(/* known good */);
 
     let cache_node = make_shared_cache_node(
@@ -218,8 +219,18 @@ pub async fn first_background(
             origin,
             storage,
             ap_client,
-            local_client: make_client("user-agent", false, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(32u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
-            general_purpose_client: make_client("user-agent", false, HostExtractor, RateLimiter::keyed(Quota::per_second(nonzero!(4u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])), &Default::default()).unwrap(/* known good */),
+            local_client: make_client("user-agent",
+                                      false,
+                                      HostExtractor,
+                                      RateLimiter::keyed(Quota::per_second(nonzero!(32u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])),
+                                      &Default::default(),
+                                      Duration::from_secs(2)).unwrap(/* known good */),
+            general_purpose_client: make_client("user-agent",
+                                                false,
+                                                HostExtractor,
+                                                RateLimiter::keyed(Quota::per_second(nonzero!(4u32))).use_middleware(KeyedDashmapMiddleware::from(vec![])),
+                                                &Default::default(),
+                                                Duration::from_secs(2)).unwrap(/* known good */),
             cache_node,
             ap_resolver,
             home_timelines: Arc::new(Mutex::new(HomeTimelines::new(nonzero!(256usize)))),

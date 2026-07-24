@@ -24,7 +24,7 @@
 //! [ActivityPub]: https://www.w3.org/TR/activitypub/#server-to-server-interactions
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env,
     ffi::{CString, OsString},
     fmt::Display,
@@ -90,7 +90,7 @@ use indielinks::{
     bookmarklets::make_router as make_bookmarklets_router,
     cache::GrpcClientFactory,
     client::make_client,
-    configuration::{ConfigV1, Configuration, OtelExportConfig, StorageConfig},
+    configuration::{ConfigV1, Configuration, HeaderBlacklist, OtelExportConfig, StorageConfig},
     define_metric,
     delicious::{
         authenticate as authenticate_for_delicious, feed as atom_feed,
@@ -225,6 +225,8 @@ pub enum Error {
         #[snafu(source(from(indielinks::scylla::Error, Box::new)))]
         source: Box<indielinks::scylla::Error>,
     },
+    #[snafu(display("Negative timeout specified"))]
+    Timeout { source: chrono::OutOfRangeError },
     #[snafu(display("Failed to instantiate a Tokio runtime: {source}"))]
     TokioRuntime { source: std::io::Error },
     #[snafu(display("Failed to write the indielinks PID file: errno={errno}"))]
@@ -755,7 +757,11 @@ impl MakeRequestId for RequestIdGenerator {
 }
 
 /// Make the [Router] that will be accessible to the world
-fn make_world_router(state: Arc<Indielinks>) -> Router {
+fn make_world_router(state: Arc<Indielinks>, header_blacklist: Option<&HeaderBlacklist>) -> Router {
+    let make_span_deny_list = header_blacklist
+        .map(|blacklist| blacklist.iter().cloned().collect::<HashSet<HeaderName>>());
+    let on_response_deny_list = make_span_deny_list.clone();
+
     Router::new()
         .route("/healthcheck", get(healthcheck))
         // It's *really* irritating that I need to specify three separate routes to handle each of
@@ -809,8 +815,10 @@ fn make_world_router(state: Arc<Indielinks>) -> Router {
                 // I'd like to make both the tracing level and the blacklist configurable here, but
                 // at the the of this writing, I'm rewiring the configuration system in another
                 // worktree. I've setup sensible defaults, so I'll leave them off, for now.
-                .make_span_with(HygienicMakeSpan::new())
-                .on_response(HygienicOnResponse::new()),
+                .make_span_with(HygienicMakeSpan::new().with_option_deny_list(make_span_deny_list))
+                .on_response(
+                    HygienicOnResponse::new().with_option_deny_list(on_response_deny_list),
+                ),
         )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -899,16 +907,21 @@ async fn serve(
 
     // Loop forever, handling SIGHUPs, until asked to terminate:
     loop {
-        let ap_rate_limiter =
-            governor::RateLimiter::keyed(Quota::per_hour(cfg.client_rate_limits.per_hour))
-                .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
-                    cfg.client_rate_limits.custom.iter().map(|(k, v)| {
-                        (
-                            HostKey::Host(k.clone()),
-                            governor::gcra::Gcra::new(Quota::per_second(*v)),
-                        )
-                    }),
-                ));
+        let ap_rate_limiter = governor::RateLimiter::keyed(Quota::per_hour(
+            cfg.client_configuration.rate_limits.per_hour,
+        ))
+        .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
+            cfg.client_configuration
+                .rate_limits
+                .custom
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        HostKey::Host(k.clone()),
+                        governor::gcra::Gcra::new(Quota::per_second(*v)),
+                    )
+                }),
+        ));
 
         let ap_client = make_client(
             &cfg.user_agent,
@@ -916,19 +929,28 @@ async fn serve(
             indielinks::http::HostExtractor,
             ap_rate_limiter,
             &cfg.client_exponential_backoff,
+            cfg.client_configuration
+                .timeout
+                .to_std()
+                .context(TimeoutSnafu)?,
         )
         .context(ClientSnafu)?;
 
-        let local_rate_limiter =
-            governor::RateLimiter::keyed(Quota::per_hour(cfg.local_rate_limits.per_hour))
-                .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
-                    cfg.local_rate_limits.custom.iter().map(|(k, v)| {
-                        (
-                            HostKey::Host(k.clone()),
-                            governor::gcra::Gcra::new(Quota::per_second(*v)),
-                        )
-                    }),
-                ));
+        let local_rate_limiter = governor::RateLimiter::keyed(Quota::per_hour(
+            cfg.local_client_configuration.rate_limits.per_hour,
+        ))
+        .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
+            cfg.local_client_configuration
+                .rate_limits
+                .custom
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        HostKey::Host(k.clone()),
+                        governor::gcra::Gcra::new(Quota::per_second(*v)),
+                    )
+                }),
+        ));
 
         let local_client = make_client(
             &cfg.user_agent,
@@ -936,19 +958,30 @@ async fn serve(
             indielinks::http::HostExtractor,
             local_rate_limiter,
             &cfg.client_exponential_backoff,
+            cfg.local_client_configuration
+                .timeout
+                .to_std()
+                .context(TimeoutSnafu)?,
         )
         .context(ClientSnafu)?;
 
-        let general_purpose_rate_limiter =
-            governor::RateLimiter::keyed(Quota::per_hour(cfg.general_purpose_rate_limits.per_hour))
-                .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
-                    cfg.general_purpose_rate_limits.custom.iter().map(|(k, v)| {
-                        (
-                            HostKey::Host(k.clone()),
-                            governor::gcra::Gcra::new(Quota::per_second(*v)),
-                        )
-                    }),
-                ));
+        let general_purpose_rate_limiter = governor::RateLimiter::keyed(Quota::per_hour(
+            cfg.general_purpose_client_configuration
+                .rate_limits
+                .per_hour,
+        ))
+        .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from(
+            cfg.general_purpose_client_configuration
+                .rate_limits
+                .custom
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        HostKey::Host(k.clone()),
+                        governor::gcra::Gcra::new(Quota::per_second(*v)),
+                    )
+                }),
+        ));
 
         let general_purpose_client = make_client(
             &cfg.user_agent,
@@ -956,6 +989,10 @@ async fn serve(
             indielinks::http::HostExtractor,
             general_purpose_rate_limiter,
             &cfg.client_exponential_backoff,
+            cfg.general_purpose_client_configuration
+                .timeout
+                .to_std()
+                .context(TimeoutSnafu)?,
         )
         .context(ClientSnafu)?;
 
@@ -1056,7 +1093,7 @@ async fn serve(
             TcpListener::bind(cfg.public_address())
                 .await
                 .context(BindSnafu)?,
-            make_world_router(state.clone()),
+            make_world_router(state.clone(), cfg.header_blacklist.as_ref()),
         )
         .with_graceful_shutdown(shutdown_signal(world_nfy.clone()));
 

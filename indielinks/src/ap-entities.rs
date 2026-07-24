@@ -2431,6 +2431,9 @@ where
 
 #[cfg(test)]
 mod prototype {
+
+    use std::time::Duration;
+
     use either::Either::Right;
     use governor::{Quota, RateLimiter};
     use indielinks_shared::{
@@ -2470,6 +2473,7 @@ mod prototype {
             RateLimiter::keyed(Quota::per_second(nonzero!(16u32)))
                 .use_middleware(tower_gcra::extractors::KeyedDashmapMiddleware::from([])),
             &Default::default(),
+            Duration::from_secs(2),
         )
         .expect("Malformed client!?");
         let origin = (

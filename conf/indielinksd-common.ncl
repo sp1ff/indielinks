@@ -102,7 +102,16 @@ let peppers = import "peppers.ncl" in
         num-attempts = 3,
         durations = { min = { secs = 1, nanos = 0 }, max = { secs = 3, nanos = 0 } }
     },
-    client-rate-limits = { per-hour = 5760, custom = [] },
-    local-rate-limits = { per-hour = 8320, custom = [] },
-    general-purpose-rate-limits = { per-hour = 2880, custom = [] }
+    client-configuration = {
+        rate-limits = { per-hour = 5760, custom = [] },
+        timeout = [5, 0] # five seconds, zero nanoseconds
+    },
+    local-client-configuration = {
+        rate-limits = { per-hour = 8320, custom = [] },
+        timeout = [2, 0] # two seconds, zero nanoseconds
+    },
+    general-purpose-client-configuration = {
+        rate-limits = { per-hour = 2880, custom = [] },
+        timeout = [3, 0] # three seconds, zero nanoseconds
+    }
 }

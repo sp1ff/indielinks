@@ -71,6 +71,7 @@ use chrono::{DateTime, Utc};
 use either::Either::Left;
 use futures::{stream::iter, Stream, StreamExt, TryStreamExt};
 use http::Method;
+use itertools::Itertools;
 use lru::LruCache;
 use nonempty_collections::NEVec;
 use nonzero::nonzero;
@@ -78,7 +79,7 @@ use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, error};
 use url::Url;
 
 use indielinks_shared::{
@@ -439,14 +440,22 @@ impl Outbox {
                             &(),
                         ).await.context(OutboxPageSnafu)?;
                         if ! page.ordered_items.is_empty() {
-                            items = iter(page.ordered_items)
+                            let (notes, errors): (VecDeque<Item>, Vec<_>) = iter(page.ordered_items)
                                 .then(|aoc| to_note(aoc, &user, ap_resolver.clone()))
-                                .collect::<VecDeque<StdResult<Item, _>>>()
+                                .collect::<Vec<StdResult<Item, _>>>()
                                 .await
                                 .into_iter()
-                                .collect::<StdResult<VecDeque<Item>, _>>()?;
+                                .partition_result();
+                            // I'm not exactly sure how to handle this, but I'm finding ActivityPub
+                            // calls failing (or just timing out) pretty-frequently in the wild. For
+                            // now, I'm just going to log the failures and move on.
+                            errors.into_iter().for_each(|err| error!("Failed to retrieve an outbox item from {}: {err}", page.id.as_str()) );
+                            // Now, it's possible all the items errored-out:
                             next_page = page.next.map(|url| url.into());
-                            yield items.pop_front().unwrap(/* known good */)
+                            if !notes.is_empty() {
+                                items = notes;
+                                yield items.pop_front().unwrap(/* known good */)
+                            }
                         } else {
                             next_page = None;
                         }

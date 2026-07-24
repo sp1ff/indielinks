@@ -176,6 +176,7 @@ pub fn make_client<KE, S, C, MW>(
     key_extractor: KE,
     rate_limiter: RateLimiter<<KE as KeyExtractor<Request<Bytes>>>::Key, S, C, MW>,
     backoff_parameters: &ExponentialBackoffParameters,
+    timeout: Duration,
 ) -> Result<crate::client_types::GenericClientType<KE>>
 where
     KE: KeyExtractor<Request<Bytes>> + Clone + Send + Sync + 'static,
@@ -273,7 +274,7 @@ where
         // require the `Err` variant to, you know, *implement Error*. As a workaround, I created a
         // newtype to wrap the boxed error & manuall implemented `Error` on that.
         .map_err(BoxedError)
-        .layer(TimeoutLayer::new(Duration::from_secs(5))) // Seems quite generous to me...
+        .layer(TimeoutLayer::new(timeout))
         .layer(InstrumentedLayer)
         .layer(ReqwestServiceLayer::new(Body))
         .service(reqwest::Client::new());
@@ -323,6 +324,7 @@ mod test {
             HostExtractor,
             RateLimiter::keyed(Quota::per_second(nonzero!(10u32))),
             &ExponentialBackoffParameters::default(),
+            Duration::from_secs(2),
         )
         .unwrap();
 

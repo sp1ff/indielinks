@@ -153,7 +153,7 @@ impl Fixture for CacheClusterFixture {
                         cmd: "cache-test-cluster-down",
                     },
                 )?;
-                common::run("../infra/cache-test-cluster-up", ["in-memory", &port]).context(
+                common::run("../infra/cache-test-cluster-up", ["-v", "in-memory", &port]).context(
                     CommandSnafu {
                         cmd: "cache-test-cluster-up",
                     },
@@ -165,7 +165,7 @@ impl Fixture for CacheClusterFixture {
                         cmd: "cache-test-cluster-down",
                     },
                 )?;
-                common::run("../infra/cache-test-cluster-up", ["on-disk", &port]).context(
+                common::run("../infra/cache-test-cluster-up", ["-v", "on-disk", &port]).context(
                     CommandSnafu {
                         cmd: "cache-test-cluster-up",
                     },
@@ -177,11 +177,13 @@ impl Fixture for CacheClusterFixture {
                         cmd: "single-node-cluster-down",
                     },
                 )?;
-                common::run("../infra/single-node-cluster-up", ["in-memory", &port]).context(
-                    CommandSnafu {
-                        cmd: "single-node-cluster-up",
-                    },
-                )?;
+                common::run(
+                    "../infra/single-node-cluster-up",
+                    ["-v", "in-memory", &port],
+                )
+                .context(CommandSnafu {
+                    cmd: "single-node-cluster-up",
+                })?;
             }
         }
         Ok(())

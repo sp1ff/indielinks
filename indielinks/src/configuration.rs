@@ -19,10 +19,14 @@
 //!
 //! This module handles application configuration for the `indielinksd` daemon process.
 
-use std::{net::SocketAddr, num::NonZeroU32, path::PathBuf, str::FromStr};
+use std::{
+    collections::HashSet, net::SocketAddr, num::NonZeroU32, path::PathBuf,
+    result::Result as StdResult, str::FromStr,
+};
 
 use chrono::Duration;
 use clap::crate_version;
+use http::HeaderName;
 use indielinks_shared::{
     origin::{NetLoc, Origin},
     service::ExponentialBackoffParameters,
@@ -30,6 +34,7 @@ use indielinks_shared::{
 use nonzero::nonzero;
 use secrecy::SecretString;
 use serde::Deserialize;
+use snafu::{ResultExt, Snafu};
 use url::Url;
 
 use indielinks_cache::raft::Configuration as RaftConfiguration;
@@ -38,6 +43,17 @@ use crate::{
     background_tasks, dynamodb::Location as DynamoLocation, http::SameSite, peppers::Peppers,
     signing_keys::SigningKeys, util::Credentials,
 };
+
+#[derive(Debug, Snafu)]
+#[non_exhaustive]
+pub enum Error {
+    #[snafu(display("While reading the header blacklist, {source}"))]
+    HeaderBlacklist {
+        source: http::header::InvalidHeaderName,
+    },
+}
+
+pub type Result<T> = StdResult<T, Error>;
 
 /// Indielinks datastore configuration
 ///
@@ -132,6 +148,57 @@ impl Default for ClientRateLimits {
     }
 }
 
+/// [indielinksd](crate) client configuration
+#[derive(Clone, Debug, Deserialize)]
+pub struct ClientConfiguration {
+    #[serde(rename = "rate-limits")]
+    pub rate_limits: ClientRateLimits,
+    pub timeout: Duration,
+}
+
+impl Default for ClientConfiguration {
+    fn default() -> Self {
+        Self {
+            rate_limits: Default::default(),
+            timeout: Duration::seconds(5),
+        }
+    }
+}
+
+/// Headers to elide when logging
+// Newtype to perform validation at the site of ingestion; write it down as a simple list
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "Vec<String>")]
+pub struct HeaderBlacklist(HashSet<HeaderName>);
+
+impl HeaderBlacklist {
+    pub fn iter(&self) -> std::collections::hash_set::Iter<'_, HeaderName> {
+        self.0.iter()
+    }
+}
+
+impl TryFrom<Vec<String>> for HeaderBlacklist {
+    type Error = Error;
+
+    fn try_from(value: Vec<String>) -> Result<Self> {
+        Ok(HeaderBlacklist(
+            value
+                .into_iter()
+                .map(|s| HeaderName::from_bytes(s.as_bytes()))
+                .collect::<StdResult<Vec<HeaderName>, _>>()
+                .context(HeaderBlacklistSnafu)?
+                .into_iter()
+                .collect(),
+        ))
+    }
+}
+
+impl From<HeaderBlacklist> for HashSet<HeaderName> {
+    fn from(value: HeaderBlacklist) -> Self {
+        value.0
+    }
+}
+
 // I suppose I could pull-in the `cookie` crate... but c'mon: it's a few cookies.
 
 #[derive(Clone, Debug, Deserialize)]
@@ -196,12 +263,12 @@ pub struct ConfigV1 {
     pub user_agent: String,
     #[serde(rename = "client-exponential-backoff")]
     pub client_exponential_backoff: ExponentialBackoffParameters,
-    #[serde(rename = "client-rate-limits")]
-    pub client_rate_limits: ClientRateLimits,
-    #[serde(rename = "local-rate-limits")]
-    pub local_rate_limits: ClientRateLimits,
-    #[serde(rename = "general-purpose-rate-limits")]
-    pub general_purpose_rate_limits: ClientRateLimits,
+    #[serde(rename = "client-configuration")]
+    pub client_configuration: ClientConfiguration,
+    #[serde(rename = "local-client-configuration")]
+    pub local_client_configuration: ClientConfiguration,
+    #[serde(rename = "general-purpose-client-configuration")]
+    pub general_purpose_client_configuration: ClientConfiguration,
     #[serde(rename = "collection-page-size")]
     pub collection_page_size: usize,
     pub assets: Option<PathBuf>,
@@ -209,6 +276,8 @@ pub struct ConfigV1 {
     background_tasks: background_tasks::Config,
     #[serde(rename = "raft-config")]
     pub raft_config: RaftConfiguration,
+    #[serde(rename = "header-blacklist")]
+    pub header_blacklist: Option<HeaderBlacklist>,
     #[serde(rename = "pinboard-token")]
     pub pinboard_token: Option<SecretString>,
 }
@@ -240,13 +309,14 @@ impl Default for ConfigV1 {
             users_config: UsersConfiguration::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
             client_exponential_backoff: Default::default(),
-            client_rate_limits: Default::default(),
-            local_rate_limits: Default::default(),
-            general_purpose_rate_limits: Default::default(),
+            client_configuration: Default::default(),
+            local_client_configuration: Default::default(),
+            general_purpose_client_configuration: Default::default(),
             collection_page_size: 12, // Copied from Mastodon
             assets: None,
             background_tasks: background_tasks::Config::default(),
             raft_config: RaftConfiguration::default(),
+            header_blacklist: None,
             pinboard_token: None,
         }
     }

@@ -363,6 +363,20 @@ impl HygienicMakeSpan {
             denials: HashSet::from_iter(deny_list),
         }
     }
+    pub fn with_option_deny_list<I>(self, maybe_deny_list: Option<I>) -> Self
+    where
+        I: IntoIterator<Item = HeaderName>,
+    {
+        Self {
+            level: self.level,
+            denials: match maybe_deny_list {
+                Some(deny_list) => HashSet::from_iter(deny_list),
+                None => {
+                    HashSet::from_iter(DEFAULT_DENIALS.into_iter().map(HeaderName::from_static))
+                }
+            },
+        }
+    }
     pub fn with_level(self, level: Level) -> Self {
         Self {
             level,
@@ -429,6 +443,21 @@ impl HygienicOnResponse {
             level: self.level,
             latency_unit: self.latency_unit,
             denials: HashSet::from_iter(deny_list),
+        }
+    }
+    pub fn with_option_deny_list<I>(self, maybe_deny_list: Option<I>) -> Self
+    where
+        I: IntoIterator<Item = HeaderName>,
+    {
+        Self {
+            level: self.level,
+            latency_unit: self.latency_unit,
+            denials: match maybe_deny_list {
+                Some(deny_list) => HashSet::from_iter(deny_list),
+                None => {
+                    HashSet::from_iter(DEFAULT_DENIALS.into_iter().map(HeaderName::from_static))
+                }
+            },
         }
     }
     pub fn with_latency_unit(self, latency_unit: LatencyUnit) -> Self {
