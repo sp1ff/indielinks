@@ -86,21 +86,11 @@ num-attempts = 3
 [client-exponential-backoff.durations.min]
 secs = 1
 nanos = 0
+
 [client-exponential-backoff.durations.max]
 secs = 3
 nanos = 0
 
-[client-rate-limits]
-per-hour = 5760 # 16/sec
-custom = []
-
-[local-rate-limits]
-per-hour = 8320 # 32/sec
-custom = []
-
-[general-purpose-rate-limits]
-per-hour = 2880 # 8/sec
-custom = []
 
 [client-configuration]
 timeout = [
@@ -131,4 +121,3 @@ timeout = [
 [local-client-configuration.rate-limits]
 custom = []
 per-hour = 8320
-

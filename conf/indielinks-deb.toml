@@ -89,14 +89,32 @@ nanos = 0
 secs = 3
 nanos = 0
 
-[client-rate-limits]
-per-hour = 5760 # 16/sec
-custom = []
+[client-configuration]
+timeout = [
+    5,
+    0,
+]
 
-[local-rate-limits]
-per-hour = 8320 # 32/sec
+[client-configuration.rate-limits]
 custom = []
+per-hour = 5760
 
-[general-purpose-rate-limits]
-per-hour = 2880 # 8/sec
+[local-client-configuration]
+timeout = [
+    2,
+    0,
+]
+
+[local-client-configuration.rate-limits]
 custom = []
+per-hour = 8320
+
+[general-purpose-client-configuration]
+timeout = [
+    3,
+    0,
+]
+
+[general-purpose-client-configuration.rate-limits]
+custom = []
+per-hour = 2880
