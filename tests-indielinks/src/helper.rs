@@ -20,6 +20,7 @@ use aws_sdk_dynamodb::types::{AttributeValue, DeleteRequest, Select, WriteReques
 use crypto_common::rand_core::{OsRng, RngCore};
 use itertools::Itertools;
 use libtest_mimic::Failed;
+use nonempty_collections::{NEVec, NonEmptyIterator};
 use secrecy::SecretString;
 use serde::Deserialize;
 use serde_dynamo::aws_sdk_dynamodb_1::{from_items, to_item};
@@ -221,22 +222,25 @@ pub trait Helper {
     /// Retrieve the public address at which tests can reach indielinks, whether it's clustered or
     /// single-node
     fn indielinks(&self) -> Url;
+    /// Retrieve an address at which the local/ops endpoint can be reached, whether it's clustered
+    /// or single-node
+    fn ops(&self) -> Url;
     /// Retrieve the nodes comprising the indielinks cluster under test.
     // It would be nicer to return `impl Iterator<Item = ...>`, but that's not dyn compatible
-    fn nodes(&self) -> Vec<(Url, Url, SocketAddr)>;
+    fn nodes(&self) -> NEVec<(Url, Url, SocketAddr)>;
 }
 
 /// Application state shared across all tests
 pub struct DynamoDBHelper {
     client: ::aws_sdk_dynamodb::Client,
     indielinks: Url,
-    nodes: Vec<(Url, Url, SocketAddr)>,
+    nodes: NEVec<(Url, Url, SocketAddr)>,
 }
 
 impl DynamoDBHelper {
     pub async fn new(
         indielinks: Url,
-        nodes: impl Iterator<Item = (Url, Url, SocketAddr)>,
+        nodes: impl NonEmptyIterator<Item = (Url, Url, SocketAddr)>,
         cfg: &DynamoConfig,
     ) -> Result<DynamoDBHelper> {
         Ok(DynamoDBHelper {
@@ -448,7 +452,10 @@ impl Helper for DynamoDBHelper {
     fn indielinks(&self) -> Url {
         self.indielinks.clone()
     }
-    fn nodes(&self) -> Vec<(Url, Url, SocketAddr)> {
+    fn ops(&self) -> Url {
+        self.nodes.first().1.clone()
+    }
+    fn nodes(&self) -> NEVec<(Url, Url, SocketAddr)> {
         self.nodes.clone()
     }
 }
@@ -456,13 +463,13 @@ impl Helper for DynamoDBHelper {
 pub struct ScyllaHelper {
     session: ::scylla::client::session::Session,
     indielinks: Url,
-    nodes: Vec<(Url, Url, SocketAddr)>,
+    nodes: NEVec<(Url, Url, SocketAddr)>,
 }
 
 impl ScyllaHelper {
     pub async fn new(
         indielinks: Url,
-        nodes: impl Iterator<Item = (Url, Url, SocketAddr)>,
+        nodes: impl NonEmptyIterator<Item = (Url, Url, SocketAddr)>,
         cfg: &ScyllaConfig,
     ) -> Result<ScyllaHelper> {
         let session = create_scylla_client(
@@ -616,7 +623,10 @@ impl Helper for ScyllaHelper {
     fn indielinks(&self) -> Url {
         self.indielinks.clone()
     }
-    fn nodes(&self) -> Vec<(Url, Url, SocketAddr)> {
+    fn ops(&self) -> Url {
+        self.nodes.first().1.clone()
+    }
+    fn nodes(&self) -> NEVec<(Url, Url, SocketAddr)> {
         self.nodes.clone()
     }
 }

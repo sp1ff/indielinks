@@ -132,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = nickel_lang::Context::new().with_added_import_paths(vec!["../conf".into()]);
     // It's a bit irritating to have the list of stacks hard-coded; we should drive this off of,
     // well, off of a configuration file.
-    ["master", "bugfix", "front-end", "pre-alpha"]
+    ["master", "bugfix", "front-end", "pre-alpha", "cloud"]
         .into_iter()
         .map(|stack| configure_stack(&mut ctx, stack))
         .collect::<Result<Vec<_>, _>>()

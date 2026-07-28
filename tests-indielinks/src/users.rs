@@ -33,14 +33,18 @@ use indielinks::http::ErrorResponseBody;
 use crate::helper::Helper;
 
 /// Test `/user/signup`
-pub async fn test_signup(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Result<(), Failed> {
+pub async fn test_signup(
+    url: Url,
+    ops: Url,
+    utils: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
     // Cleanup the test user we'll create if he's around from a previous test
     let _ = utils.remove_user(&Username::new("johndoe").unwrap()).await;
 
     let client = Client::new();
 
     let rsp = client
-        .post(url.join("/api/v1/users/signup")?)
+        .post(ops.join("/ops/users/signup")?)
         .json(
             &json!({"username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"}),
         )
@@ -52,7 +56,7 @@ pub async fn test_signup(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Resu
     assert_eq!("Welcome to indielinks!", body.greeting);
 
     let rsp = client
-        .post(url.join("/api/v1/users/signup")?)
+        .post(ops.join("/ops/users/signup")?)
         .json(
             &json!({"username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"}),
         )
@@ -75,7 +79,11 @@ pub async fn test_signup(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Resu
 }
 
 /// Test `/users/mint-key`
-pub async fn test_mint_key(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Result<(), Failed> {
+pub async fn test_mint_key(
+    url: Url,
+    ops: Url,
+    utils: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
     // Cleanup the test user we'll create if he's around from a previous test
     let _ = utils.remove_user(&Username::new("johndoe").unwrap()).await;
 
@@ -83,7 +91,7 @@ pub async fn test_mint_key(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Re
 
     // Alright-- let's create a user...
     let rsp = client
-        .post(url.join("/api/v1/users/signup")?)
+        .post(ops.join("/ops/users/signup")?)
         .json(
             &json!({"username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"}),
         )

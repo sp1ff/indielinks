@@ -73,6 +73,7 @@ type Result<T> = std::result::Result<T, Error>;
 pub async fn add_user<C>(
     mut client: C,
     api: &Origin,
+    ops: &Origin,
     username: &Username,
     password: &SecretBox<Password>,
     email: &UserEmail,
@@ -112,7 +113,7 @@ where
     };
     let request = Request::builder()
         .method(Method::POST)
-        .uri(format!("{api}/api/v1/users/signup"))
+        .uri(format!("{ops}/api/v1/users/signup"))
         .header(CONTENT_TYPE, "application/json")
         .body(ReqBody::Signup(request))
         .context(RequestSnafu)?;
