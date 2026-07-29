@@ -129,10 +129,10 @@ fi
 
 docker compose $compose_args
 ntries=1
-nnodes=$(docker ps|{ grep scylla-node-[${SCYLLA_NODE_1}${SCYLLA_NODE_2}${SCYLLA_NODE_3}] || true; }|wc -l)
+nnodes=$(docker ps|{ grep -E "scylla-node-(${SCYLLA_NODE_1}|${SCYLLA_NODE_2}|${SCYLLA_NODE_3})\\b" || true; }|wc -l)
 while [ ${nnodes} -ne 0 ]; do
     sleep 0.5
-    nnodes=$(docker ps|{ grep scylla-node-[${SCYLLA_NODE_1}${SCYLLA_NODE_2}${SCYLLA_NODE_3}] || true; }|wc -l)
+    nnodes=$(docker ps|{ grep -E "scylla-node-(${SCYLLA_NODE_1}|${SCYLLA_NODE_2}|${SCYLLA_NODE_3})\\b" || true; }|wc -l)
     ntries=$(($ntries+1))
     if [ ${ntries} -gt ${num_polls} ]; then
         echo "ScyllaDB failed to shut down" >&2
