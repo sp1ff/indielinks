@@ -237,7 +237,7 @@ macro_rules! create_table {
     };
 }
 
-macro_rules! delete_table {
+macro_rules! _delete_table {
     ($client:expr, $table_name:expr, $timeout:expr) => {
         $client
             .delete_table()
@@ -374,40 +374,6 @@ async fn create_tables(client: &Client) -> Result<()> {
     create_posts(client).await?;
     create_table!(
         client = client,
-        table_name = "likes",
-        attr_defn = ("user_id_and_url", S), // partition key
-        attr_defn = ("like_id", S),         // sort key
-        pk = "user_id_and_url",
-        sk = "like_id"
-    )?;
-    create_table!(
-        client = client,
-        table_name = "replies",
-        attr_defn = ("user_id_and_url", S), // partition key
-        attr_defn = ("reply_id", S),        // sort key
-        pk = "user_id_and_url",
-        sk = "reply_id"
-    )?;
-    create_table!(
-        client = client,
-        table_name = "shares",
-        attr_defn = ("user_id_and_url", S), // partition key
-        attr_defn = ("share_id", S),        // sort key
-        pk = "user_id_and_url",
-        sk = "share_id"
-    )?;
-    create_table!(
-        client = client,
-        table_name = "activity_pub_posts",
-        attr_defn = ("user_id", S),
-        attr_defn = ("post_id", S),
-        attr_defn = ("posted", S), // Sort key for the LSI
-        pk = "user_id",
-        sk = "post_id",
-        lsi : (name = "activity_pub_posts_by_posted", pk = "user_id", sk = "posted")
-    )?;
-    create_table!(
-        client = client,
         table_name = "tasks",
         attr_defn = ("id", S),
         pk = "id"
@@ -434,101 +400,6 @@ async fn create_tables(client: &Client) -> Result<()> {
         attr_defn = ("version", N),
         pk = "version"
     )?;
-    Ok(())
-}
-
-pub async fn create_schema(client: Client) -> Result<()> {
-    create_tables(&client).await?;
-    // Even when a `CreateTable` request has returned success, the table is not available for
-    // immediate use; it can take several seconds before the new table is ready to receive traffic.
-    client
-        .wait_until_table_exists()
-        .table_name("schema_migrations")
-        .wait(Duration::from_secs(60))
-        .await
-        .context(SchemaMigrationsExistsSnafu)?;
-    update_schema_migrations(&client, 0).await
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                 migration to schema version 1                                  //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-async fn create_new_tables_ver_1(client: &Client) -> Result<()> {
-    create_table!(
-        client = client,
-        table_name = "post_likes",
-        attr_defn = ("post_id", S),
-        attr_defn = ("like_url", S),
-        pk = "post_id",
-        sk = "like_url"
-    )?;
-    create_table!(
-        client = client,
-        table_name = "post_replies",
-        attr_defn = ("post_id", S),
-        attr_defn = ("reply_url", S),
-        pk = "post_id",
-        sk = "reply_url"
-    )?;
-    create_table!(
-        client = client,
-        table_name = "post_shares",
-        attr_defn = ("post_id", S),
-        attr_defn = ("share_url", S),
-        pk = "post_id",
-        sk = "share_url"
-    )
-    .map(|_| ())
-}
-
-async fn recreate_tables_ver_1(client: &Client) -> Result<()> {
-    delete_table!(client, "likes", 60);
-    create_table!(
-        client = client,
-        table_name = "likes",
-        attr_defn = ("user_id", S),
-        attr_defn = ("created", S),
-        pk = "user_id",
-        sk = "created"
-    )?;
-
-    delete_table!(client, "replies", 60);
-    create_table!(
-        client = client,
-        table_name = "replies",
-        attr_defn = ("user_id", S),
-        attr_defn = ("created", S),
-        pk = "user_id",
-        sk = "created"
-    )?;
-    delete_table!(client, "shares", 60);
-    create_table!(
-        client = client,
-        table_name = "shares",
-        attr_defn = ("user_id", S),
-        attr_defn = ("created", S),
-        pk = "user_id",
-        sk = "created"
-    )
-    .map(|_| ())
-}
-
-pub async fn schema_migration_1(client: Client) -> Result<()> {
-    create_new_tables_ver_1(&client).await?;
-    recreate_tables_ver_1(&client).await?;
-    delete_table!(client, "activity_pub_posts", 60);
-    update_schema_migrations(&client, 1).await
-}
-
-pub async fn schema_migration_2(client: Client) -> Result<()> {
-    delete_table!(client, "post_likes", 60);
-    delete_table!(client, "post_replies", 60);
-    delete_table!(client, "post_shares", 60);
-    delete_table!(client, "likes", 60);
-    delete_table!(client, "replies", 60);
-    delete_table!(client, "shares", 60);
-
     create_table!(
         client = client,
         table_name = "likes_replies_shares",
@@ -549,12 +420,19 @@ pub async fn schema_migration_2(client: Client) -> Result<()> {
         sk = "received_and_ap_id",
         // This is a misnomer-- we're not indexing by ActivityPub ID, but just Post ID
         gsi: (name = "incoming_likes_replies_shares_by_ap_id", pk = "in_reply_to")
-    )?;
-    update_schema_migrations(&client, 2).await
+    )
+    .map(|_| ())
 }
 
-pub async fn schema_migration_3(client: Client) -> Result<()> {
-    // For DyanmoDB, this schema migration is a NOP-- we're just adding a column that isn't indexed.
-    // This is still a schema change for CQL, but not here.
-    update_schema_migrations(&client, 3).await
+pub async fn create_schema(client: Client) -> Result<()> {
+    create_tables(&client).await?;
+    // Even when a `CreateTable` request has returned success, the table is not available for
+    // immediate use; it can take several seconds before the new table is ready to receive traffic.
+    client
+        .wait_until_table_exists()
+        .table_name("schema_migrations")
+        .wait(Duration::from_secs(60))
+        .await
+        .context(SchemaMigrationsExistsSnafu)?;
+    update_schema_migrations(&client, 0).await
 }

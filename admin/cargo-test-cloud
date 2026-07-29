@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+args="--user -p CPUQuota=800% --pipe --pty --same-dir"
+# Pre-build all the tests; that way, integration test scripts won't hang-up
+# waiting for services to come up.
+time systemd-run ${args} -- cargo test --no-run
+time systemd-run ${args} \
+     -E INDIELINKS_CACHE_CLUSTER_TESTS_CONFIG=../target/conf/cloud/cache-cluster-tests-cloud.toml \
+     -E INDIELINKS_CACHE_TESTS_CONFIG=../target/conf/cloud/cache-tests-cloud.toml \
+     -E INDIELINKS_SMOKE_TESTS_CONFIG=../target/conf/cloud/smoke-tests-cloud.toml \
+     -E INDIELINKS_BACKGROUND_TASK_TESTS_CONFIG=../target/conf/cloud/background-task-tests-cloud.toml \
+     -- cargo test

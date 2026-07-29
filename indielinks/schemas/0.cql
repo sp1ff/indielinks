@@ -171,51 +171,6 @@ create materialized view if not exists posts_by_day as
 
 create index if not exists post_id_idx on posts (id);
 
-/* This table will be modifed in 1.cql to contain outgoing (i.e.
-   indielinks-generated) likes. */
-create table if not exists likes (
-  user_id uuid,
-  url ascii,
-  id uuid,
-  created timestamp,
-  like_id ascii,
-  PRIMARY KEY ((user_id, url), like_id)
-);
-
-create table if not exists replies (
-  user_id uuid,
-  url ascii,
-  id uuid,
-  created timestamp,
-  reply_id ascii,
-  visibility tinyint,
-  PRIMARY KEY ((user_id, url), reply_id)
-);
-
-create table if not exists shares (
-  user_id uuid,
-  url ascii,
-  id uuid,
-  created timestamp,
-  share_id ascii,
-  visibility tinyint,
-  PRIMARY KEY ((user_id, url), share_id)
-);
-
-create table if not exists activity_pub_posts (
-  user_id uuid,
-  post_id ascii,
-  posted timestamp,
-  flavor tinyint,
-  visibility tinyint,
-  PRIMARY KEY (user_id, post_id)
-);
-
-create materialized view if not exists activity_pub_posts_by_posted as
-  select * from activity_pub_posts where post_id is not null and posted is not null
-  primary key (user_id, posted, post_id) -- user_id is still the partition key
-  with clustering order by (posted desc);
-
 /* Background tasks */
 create table if not exists tasks (
   id uuid PRIMARY KEY,
@@ -241,3 +196,42 @@ create table if not exists raft_metadata (
   data blob,
   PRIMARY KEY (node_id, flavor)
 );
+
+create table if not exists likes_replies_shares (
+  /* Is this a like, a reply, or a share? */
+  user_id uuid,
+  posted timestamp,
+  id uuid,
+  content text,
+  /* The URL of the thing that we are liking, sharing or replying to. */
+  in_reply_to ascii,
+  sort tinyint,
+  visibility tinyint,
+  /* Partition by user_id, order by descending posted */
+  PRIMARY KEY (user_id, posted, id)
+) WITH CLUSTERING ORDER BY (posted desc);
+
+create index if not exists likes_replies_shares_by_id on likes_replies_shares (id);
+
+create table if not exists incoming_likes_replies_shares (
+  user_id uuid,
+  received timestamp,
+  /* The (remote) ActivityPub ID of this like, reply or share */
+  ap_id ascii,
+  attributed_to ascii,
+  content text,
+  /* The UUID of the thing being liked, replied to, or shared, if it's on this instance */
+  in_reply_to uuid,
+  /* The sort of thing being liked, replied to, or shared, if it's on this instance */
+  in_reply_to_sort tinyint,
+  /* Is this a like, a reply, or a share? */
+  sort tinyint,
+  visibility tinyint,
+  /* AP ID of this post's replies (remote) */
+  replies ascii,
+  /* AP ID of this post's replies (remote) */
+  shares ascii,
+  PRIMARY KEY (user_id, received, ap_id)
+) WITH CLUSTERING ORDER BY (received desc);
+
+create index if not exists incoming_likes_replies_shares_in_reply_to on incoming_likes_replies_shares (in_reply_to);
