@@ -211,6 +211,7 @@ use std::{
     env, fs,
     hash::Hash,
     io,
+    ops::ControlFlow,
     path::{Path, PathBuf},
     process::ExitCode,
     result::Result as StdResult,
@@ -222,7 +223,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 use serde::{Deserialize, de::DeserializeOwned};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
@@ -392,10 +393,14 @@ pub struct TestRunnerConfiguration {
     #[serde(deserialize_with = "de_level::deserialize", rename = "log-level")]
     pub log_level: Level,
     pub logging: bool,
+    #[serde(rename = "no-ansi")]
+    pub no_ansi: Option<bool>,
     #[serde(rename = "no-setup")]
     pub no_setup: bool,
     #[serde(rename = "no-teardown")]
     pub no_teardown: bool,
+    #[serde(rename = "stop-on-first-failed-fixture")]
+    pub stop_on_first_failed_fixture: Option<bool>,
     #[serde(rename = "enforce-single-threaded")]
     pub enforce_single_threaded: bool,
 }
@@ -405,8 +410,10 @@ impl Default for TestRunnerConfiguration {
         Self {
             log_level: Level::INFO,
             logging: false,
+            no_ansi: None,
             no_setup: false,
             no_teardown: false,
+            stop_on_first_failed_fixture: None,
             enforce_single_threaded: true,
         }
     }
@@ -630,11 +637,14 @@ where
                 .with_default_directive(runner_config.log_level.into())
                 .from_env()
                 .context(FilterSnafu)?;
-            // This is a personal indulgence-- I often run compilations inside Emacs, and while
-            // libtest-mimic somehow figures-out that it's not running inside a full-on terminal,
-            // tracing-subscriber does not. Recall that `env::var()` will return
-            // `Err(VarError::NotPresent)` if the variable is not set.
-            let with_ansi = env::var("INSIDE_EMACS").is_err();
+            let with_ansi = runner_config
+                .no_ansi
+                .map(|x| !x)
+                // This is a personal indulgence-- I often run compilations inside Emacs, and while
+                // libtest-mimic somehow figures-out that it's not running inside a full-on
+                // terminal, tracing-subscriber does not. Recall that `env::var()` will return
+                // `Err(VarError::NotPresent)` if the variable is not set.
+                .unwrap_or(env::var("INSIDE_EMACS").is_err());
             tracing::subscriber::set_global_default(
                 Registry::default()
                     .with(
@@ -678,14 +688,15 @@ where
 
     let tests = tests.into_iter();
 
-    let failed = fixtures
-        .filter(|fix| {
-            enabled_fixtures
-                .as_ref()
-                .map(|m| m.contains(&fix.id()))
-                .unwrap_or(true)
-        })
-        .map(|fixture| {
+    let mut fixtures = fixtures.filter(|fix| {
+        enabled_fixtures
+            .as_ref()
+            .map(|m| m.contains(&fix.id()))
+            .unwrap_or(true)
+    });
+
+    let failed = if runner_config.stop_on_first_failed_fixture.unwrap_or(false) {
+        let control_flow = fixtures.try_for_each(|fixture| {
             execute_fixture(
                 tests.clone(),
                 &test_runner,
@@ -695,11 +706,40 @@ where
                 rt.clone(),
                 fixture,
             )
-        })
-        .collect::<StdResult<Vec<Conclusion>, _>>()
-        .context(FixtureSnafu)?
-        .iter()
-        .any(Conclusion::has_failed);
+            .map_or_else(
+                |err| ControlFlow::Break(Either::Left(err)),
+                |conclusion| {
+                    if conclusion.has_failed() {
+                        ControlFlow::Break(Either::Right(conclusion))
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                },
+            )
+        });
+        match control_flow {
+            ControlFlow::Continue(_) => false,
+            ControlFlow::Break(Either::Left(err)) => return Err(FixtureSnafu.into_error(err)),
+            ControlFlow::Break(Either::Right(_)) => true,
+        }
+    } else {
+        fixtures
+            .map(|fixture| {
+                execute_fixture(
+                    tests.clone(),
+                    &test_runner,
+                    &args,
+                    &runner_config,
+                    &domain_config,
+                    rt.clone(),
+                    fixture,
+                )
+            })
+            .collect::<StdResult<Vec<Conclusion>, _>>()
+            .context(FixtureSnafu)?
+            .iter()
+            .any(Conclusion::has_failed)
+    };
 
     Ok(if failed {
         ExitCode::from(101)

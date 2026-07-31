@@ -102,3 +102,7 @@ log-level = "DEBUG"
 logging = true
 no-setup = false
 no-teardown = true
+stop-on-first-failed-fixture = true
+no-ansi = true
+
+

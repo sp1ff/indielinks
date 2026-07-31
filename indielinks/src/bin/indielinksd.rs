@@ -51,7 +51,7 @@ use errno::Errno;
 use governor::Quota;
 use http::{HeaderName, HeaderValue};
 use lazy_static::lazy_static;
-use libc::c_int;
+use libc::{c_int, SIGPIPE, SIG_IGN};
 use nonzero::nonzero;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
@@ -1585,6 +1585,7 @@ fn daemonize(local_statedir: &Path, no_chdir: bool, log_fd: RawFd) -> Result<()>
         for signum in 1..=libc::SIGSYS {
             if signum != SIGKILL
                 && signum != SIGSTOP
+                && signum != SIGPIPE // See below
                 && sigaction(signum, &sa, std::ptr::null_mut()) != 0
             {
                 return SigactionSnafu {
@@ -1593,6 +1594,27 @@ fn daemonize(local_statedir: &Path, no_chdir: bool, log_fd: RawFd) -> Result<()>
                 }
                 .fail();
             }
+        }
+
+        // I'm handling `SIGPIPE` a little differently, and I'm not sure how I feel about it. The
+        // default action is immediate termination, which seems bad (the process just disappears,
+        // with nothing in the log to indicate what happened). This will just restore the default
+        // Rust behavior (ignore it) (see <https://github.com/rust-lang/rust/pull/13158> and
+        // <https://github.com/rust-lang/rust/issues/62569>), although there is, at the time of this
+        // writing, a good bit of discussion about what the right thing to do is.
+        let ignore = sigaction {
+            sa_sigaction: SIG_IGN,
+            sa_mask: mask,
+            sa_flags: 0,
+            sa_restorer: None,
+        };
+
+        if sigaction(SIGPIPE, &ignore, std::ptr::null_mut()) != 0 {
+            return SigactionSnafu {
+                signum: SIGPIPE,
+                errno: errno(),
+            }
+            .fail();
         }
 
         let n = sigprocmask(SIG_SETMASK, &mask, std::ptr::null_mut());

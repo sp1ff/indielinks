@@ -113,7 +113,7 @@ where
     };
     let request = Request::builder()
         .method(Method::POST)
-        .uri(format!("{ops}/api/v1/users/signup"))
+        .uri(format!("{ops}/ops/users/signup"))
         .header(CONTENT_TYPE, "application/json")
         .body(ReqBody::Signup(request))
         .context(RequestSnafu)?;
