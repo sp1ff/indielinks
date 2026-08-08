@@ -52,7 +52,6 @@ use indielinks_shared::{
         TimelineToken, UserOutboxRequest,
     },
     entities::{Post, PostId, StorUrl, Tagname, UserId, Username},
-    known_good,
     nonempty_string::NonEmptyString,
     origin::Origin,
 };
@@ -780,14 +779,20 @@ pub async fn handle_outbox_insert_or_redirect(
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct RepliesSortKey {
     timestamp: DateTime<Utc>,
-    id: Url,
+    id: Option<Url>,
 }
 
 impl RepliesSortKey {
     pub fn from_reply(reply: &IncomingReply) -> Self {
         Self {
             timestamp: *reply.received(),
-            id: reply.ap_reply_id().clone(),
+            id: Some(reply.ap_reply_id().clone()),
+        }
+    }
+    pub fn least() -> RepliesSortKey {
+        RepliesSortKey {
+            timestamp: chrono::DateTime::<Utc>::MAX_UTC,
+            id: None,
         }
     }
 }
@@ -797,7 +802,7 @@ impl Ord for RepliesSortKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;
         if (self.timestamp > other.timestamp)
-            || (self.timestamp == other.timestamp && self.id > other.id)
+            || (self.timestamp == other.timestamp && self.id < other.id)
         {
             Ordering::Less
         } else if self.timestamp == other.timestamp && self.id == other.id {
@@ -811,6 +816,77 @@ impl Ord for RepliesSortKey {
 impl PartialOrd for RepliesSortKey {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+mod test_replies_sort_key {
+
+    use indielinks_shared::known_good;
+    use itertools::Itertools;
+
+    use super::*;
+
+    #[test]
+    fn ordering() {
+        // Greater timestamps should compare as "less"
+        assert!(
+            RepliesSortKey {
+                // Wednesday, July 29, 2026 at 10:10:07 UTC-07:00 DST
+                timestamp: known_good!(DateTime::from_timestamp(1785345007, 0)),
+                id: None
+            } > RepliesSortKey {
+                // Wednesday, July 29, 2026 at 10:11:07 UTC-07:00 DST
+                timestamp: known_good!(DateTime::from_timestamp(1785345067, 0)),
+                id: None
+            }
+        );
+        // and if the timestamps are equal, comparison should be as for `Option<Url>`
+        // (we don't really care about the direction of the ordering, we just need
+        // a tie-breaker)...
+        assert!(
+            Some(known_good!("https://example.com".parse::<Url>()))
+                < Some(known_good!("https://example.net".parse::<Url>()))
+        );
+        // so long as `None` compares as less than `Some`:
+        assert!(None < Some(known_good!("https://zzzz.za".parse::<Url>())));
+
+        let sorted = [
+            // This should be the least possible sort key:
+            RepliesSortKey {
+                timestamp: chrono::DateTime::<Utc>::MAX_UTC,
+                id: None,
+            },
+            RepliesSortKey {
+                // Wednesday, July 29, 2026 at 10:11:07 UTC-07:00 DST
+                timestamp: known_good!(DateTime::from_timestamp(1785345067, 0)),
+                id: None,
+            },
+            RepliesSortKey {
+                // Wednesday, July 29, 2026 at 10:11:07 UTC-07:00 DST
+                timestamp: known_good!(DateTime::from_timestamp(1785345067, 0)),
+                id: Some(known_good!("https://example.com".parse::<Url>())),
+            },
+            RepliesSortKey {
+                // Wednesday, July 29, 2026 at 10:11:07 UTC-07:00 DST
+                timestamp: known_good!(DateTime::from_timestamp(1785345067, 0)),
+                id: Some(known_good!("https://example.net".parse::<Url>())),
+            },
+            RepliesSortKey {
+                // Wednesday, July 29, 2026 at 10:10:07 UTC-07:00 DST
+                timestamp: known_good!(DateTime::from_timestamp(1785345007, 0)),
+                id: None,
+            },
+            RepliesSortKey {
+                // Wednesday, July 29, 2026 at 10:10:07 UTC-07:00 DST
+                timestamp: known_good!(DateTime::from_timestamp(1785345007, 0)),
+                id: Some(known_good!("https://example.net".parse::<Url>())),
+            },
+        ];
+        sorted
+            .iter()
+            .tuple_windows()
+            .for_each(|(a, b)| assert!(a < b, "{a:#?} should compare less than {b:#?}"));
     }
 }
 
@@ -832,15 +908,8 @@ impl ToJld for RepliesResponse {
 
 // Return the "replies" collection itself
 fn make_replies_collection(collection_id: Url, signing_key: SigningKey) -> Result<Replies> {
-    let token: RepliesToken = to_token(
-        &RepliesSortKey {
-            timestamp: chrono::DateTime::<Utc>::MAX_UTC,
-            // Super-lame, but it really doesn't matter-- we just need an Url... any Url.
-            id: known_good!("https://example.net".parse()),
-        },
-        &signing_key,
-    )
-    .context(RepliesTokenSnafu)?;
+    let token: RepliesToken =
+        to_token(&RepliesSortKey::least(), &signing_key).context(RepliesTokenSnafu)?;
 
     let mut first = collection_id.clone();
     first.set_query(Some(&format!("page={token}")));
@@ -862,8 +931,11 @@ async fn make_replies_page(
     id.set_query(Some(&format!("page={pagination_token}")));
 
     debug!("Pagination token: {pagination_token}");
-    let sort_key: RepliesSortKey =
-        from_token(pagination_token, &signing_key).context(RepliesTokenSnafu)?;
+    let sort_key: RepliesSortKey = if format!("{pagination_token}") == "first" {
+        RepliesSortKey::least()
+    } else {
+        from_token(pagination_token, &signing_key).context(RepliesTokenSnafu)?
+    };
     debug!("make_replies_page: Sort key: {sort_key:#?}");
 
     let stream = state

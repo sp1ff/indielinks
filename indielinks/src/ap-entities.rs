@@ -378,7 +378,7 @@ pub fn make_user_share_id(username: &Username, shareid: &ShareId, origin: &Origi
 
 pub fn make_post_reply_first(username: &Username, postid: &PostId, origin: &Origin) -> Result<Url> {
     Url::parse(&format!(
-        "{origin}/users/{username}/posts/{postid}/replies?page=true"
+        "{origin}/users/{username}/posts/{postid}/replies?page=first"
     ))
     .context(UrlParseSnafu)
 }
@@ -397,7 +397,7 @@ pub fn make_reply_reply_first(
     origin: &Origin,
 ) -> Result<Url> {
     Url::parse(&format!(
-        "{origin}/users/{username}/posts/{postid}/replies?page=true"
+        "{origin}/users/{username}/posts/{postid}/replies?page=first"
     ))
     .context(UrlParseSnafu)
 }
@@ -408,7 +408,7 @@ pub fn make_share_reply_first(
     origin: &Origin,
 ) -> Result<Url> {
     Url::parse(&format!(
-        "{origin}/users/{username}/posts/{postid}/replies?page=true"
+        "{origin}/users/{username}/posts/{postid}/replies?page=first"
     ))
     .context(UrlParseSnafu)
 }

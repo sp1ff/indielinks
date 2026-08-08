@@ -402,19 +402,16 @@
 //! we visualize their dependencies as a graph, it should be acyclic. Here are the layers as of the
 //! time of this writing:
 //!
-//! - 0: (webfinger users scylla ops metrics_task grpc serde_hash_string delicious client bookmarklets actor)
-//! - 1: (app_logic)
-//! - 2: (pagination indielinks activity_pub)
-//! - 3: (configuration recent_posts_lists popular_items outboxes)
-//! - 4: (dynamodb)
-//! - 5: (background_tasks)
-//! - 6: (home_timeline)
-//! - 7: (client_types ap_resolution)
-//! - 8: (cache http authn ap_entities)
-//! - 9: (protobuf protobuf_interop token storage sanitized_html)
-//! - 10: (signing_keys entities acct)
-//! - 11: (peppers)
-//! - 12: (util)
+//! - 0: webfinger users scylla ops metrics_task grpc serde_hash_string dynamodb delicious client bookmarklets actor
+//! - 1: authn app_logic
+//! - 2: token pagination indielinks activity_pub
+//! - 3: signing_keys recent_posts_lists popular_items outboxes http background_tasks
+//! - 4: home_timeline
+//! - 5: client_types ap_resolution storage
+//! - 6: cache ap_entities
+//! - 7: protobuf protobuf_interop sanitized_html entities
+//! - 8: peppers acct
+//! - 9: util
 //!
 //! You can re-generate this with the `check-dependencies` script in the `admin` folder.
 //!

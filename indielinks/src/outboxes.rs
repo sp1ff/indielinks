@@ -68,7 +68,7 @@
 //!   "id": "https://indiemark.net/users/sp1ff/outbox",
 //!   "type": "OrderedCollection",
 //!   "totalItems": 115,
-//!   "first": "https://indiemark.net/users/sp1ff/outbox?page=true",
+//!   "first": "https://indiemark.net/users/sp1ff/outbox?page=first",
 //! }
 //! ```
 //!
