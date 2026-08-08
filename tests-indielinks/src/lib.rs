@@ -87,7 +87,7 @@ pub async fn test_healthcheck(url: Url) -> Result<(), Failed> {
         .await?
         .text()
         .await?;
-    assert!("GOOD" == response_text);
+    assert!("GOOD" == response_text || "READY" == response_text);
     Ok(())
 }
 

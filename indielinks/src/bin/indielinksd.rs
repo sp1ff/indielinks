@@ -49,7 +49,7 @@ use chrono::Duration;
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use errno::Errno;
 use governor::Quota;
-use http::{HeaderName, HeaderValue};
+use http::{HeaderName, HeaderValue, StatusCode};
 use lazy_static::lazy_static;
 use libc::{c_int, SIGPIPE, SIG_IGN};
 use nonzero::nonzero;
@@ -805,8 +805,24 @@ async fn otel_middleware_local(
     response
 }
 
-async fn healthcheck() -> &'static str {
-    "GOOD"
+/// Check this instance's status
+///
+/// This is [indielinksd]'s implementation of the venerable "healthcheck" endpoint: an HTTP endpoint
+/// load balancers, proxies, deployment scripts and operators can scrape to determine the instance's
+/// status. Since this is meant to be hit by shell scripts via `curl`, the API is very simple:
+///
+/// [indielinksd]: crate
+///
+/// - if the instance is up & taking requests, we'll return status 201 Created and a response body
+///   consisting of the string "GOOD"
+/// - if the cluster to which this instance belongs has been initialized, we'll return status
+///   202 Accepted, and a response body of "READY"
+async fn healthcheck(State(state): State<Arc<Indielinks>>) -> (http::StatusCode, String) {
+    if state.cache_node.initialized().await.is_some() {
+        (StatusCode::ACCEPTED, "READY".to_owned())
+    } else {
+        (StatusCode::CREATED, "GOOD".to_owned())
+    }
 }
 
 async fn metrics(State(state): State<Arc<Indielinks>>) -> String {
