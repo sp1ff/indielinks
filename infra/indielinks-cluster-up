@@ -209,12 +209,12 @@ cd $here/../indielinks
 port_0=$(parse_public_port "${config_base}0.toml")
 port_1=$(parse_public_port "${config_base}1.toml")
 port_2=$(parse_public_port "${config_base}2.toml")
-if [ "${num_nodes}" == "5" ]; then
-    port_3=$(parse_public_port "${config_base}3.toml")
-    port_4=$(parse_public_port "${config_base}4.toml")
-fi
+port_3=$(parse_public_port "${config_base}3.toml")
+port_4=$(parse_public_port "${config_base}4.toml")
 
-# emit an haproxy config file based on that & 3/5 nodes
+# emit an haproxy config file based on that & 5 nodes-- if we only bring-up 3,
+# NBD-- the final two will never healthcheck & so will never be included in the
+# rotation.
 haproxy_config=/tmp/haproxy.${haproxy_id}.conf
 cat > ${haproxy_config} <<EOF
 global
@@ -245,14 +245,9 @@ backend be_servers
     server s1 127.0.0.1:${port_0} check inter 2s fall 3 rise 2
     server s2 127.0.0.1:${port_1} check inter 2s fall 3 rise 2
     server s3 127.0.0.1:${port_2} check inter 2s fall 3 rise 2
-EOF
-
-if [ "${num_nodes}" == "5" ]; then
-    cat >> ${haproxy_config} <<EOF
     server s4 127.0.0.1:${port_3} check inter 2s fall 3 rise 2
     server s5 127.0.0.1:${port_4} check inter 2s fall 3 rise 2
 EOF
-fi
 
 rust_log="${RUST_LOG:-debug,aws_config=warn,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,aws_smithy_http_client=info,aws_sdk_dynamodb=info,hyper=info,scylla=info,openraft=info,h2::codec=info,h2::proto=info,hyper_util=info,tower::buffer=info}"
 

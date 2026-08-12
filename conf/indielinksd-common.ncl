@@ -87,14 +87,14 @@ let peppers = import "peppers.ncl" in
         default-timeout = { secs = 5, nanos = 0 },
         max-concurrent-tasks = 16,
         sleep-duration = { secs = 1, nanos = 0 },
-        shutdown-timeout = { secs = 0, nanos = 500000000 },
+        shutdown-timeout = { secs = 0, nanos = 500000000 }, # 500ms
         pickup-timeout = { secs = 1, nanos = 0 }
     },
     raft-config = {
         cluster-name = "indielinks",
-        heartbeat-interval = { secs = 0, nanos = 500000000 },
-        election-timeout-min = { secs = 0, nanos = 1500000000 },
-        election-timeout-max = { secs = 0, nanos = 3000000000 }
+        heartbeat-interval = { secs = 0, nanos = 50000000 },    # 50ms
+        election-timeout-min = { secs = 0, nanos = 150000000 }, # 150ms
+        election-timeout-max = { secs = 0, nanos = 300000000 }  # 300ms
     },
     client-exponential-backoff = {
         jitter = 10,

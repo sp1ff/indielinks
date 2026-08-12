@@ -27,7 +27,10 @@ use axum::{
     Router,
 };
 use http::{header::CONTENT_TYPE, HeaderValue, StatusCode};
-use indielinks_shared::entities::{Post, Tagname, UserId};
+use indielinks_shared::{
+    api::RaftState,
+    entities::{Post, Tagname, UserId},
+};
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, Snafu};
 use tap::{Conv, Pipe, TryConv};
@@ -672,6 +675,16 @@ async fn set_slots(
     }
 }
 
+async fn get_state(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
+    info!("Retrieving the current Raft state on this ndoe.");
+    let (hash_ring, slots) = state.cache_node.current_state().await;
+    Json(RaftState {
+        hash_ring,
+        slots: slots.to_vec(),
+    })
+    .into_response()
+}
+
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
     // Should probably add logging, maybe request ID?
     Router::new()
@@ -680,6 +693,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route("/add-learner", post(add_learner))
         .route("/membership", post(change_membership))
         .route("/slots", post(set_slots))
+        .route("/state", get(get_state))
         .layer(SetResponseHeaderLayer::if_not_present(
             CONTENT_TYPE,
             HeaderValue::from_static("text/json; charset=utf-8"),

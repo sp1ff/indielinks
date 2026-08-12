@@ -1,0 +1,61 @@
+[domain]
+alternator-config-base = "../target/conf/cloud/indielinksd-alternator-"
+haproxy-id = "cloud"
+haproxy-port = 20755
+indielinks = "http://indiemark.local:20755"
+local-state-base = "/tmp/indielinksd-cloud-"
+scylla-config-base = "../target/conf/cloud/indielinksd-scylla-"
+scylla-env-file = "cloud.env"
+
+[domain.dynamo]
+location = [
+    "http://127.0.0.1:8055",
+    "http://127.0.0.1:8056",
+    "http://127.0.0.1:8057",
+]
+
+[domain.raft-nodes]
+0 = [
+    { addr = "127.0.0.1:20742" },
+    "http://localhost:20741",
+]
+1 = [
+    { addr = "127.0.0.1:20745" },
+    "http://localhost:20744",
+]
+2 = [
+    { addr = "127.0.0.1:20748" },
+    "http://localhost:20747",
+]
+3 = [
+    { addr = "127.0.0.1:20751" },
+    "http://localhost:20750",
+]
+4 = [
+    { addr = "127.0.0.1:20754" },
+    "http://localhost:20753",
+]
+
+[domain.scylla]
+hosts = ["127.0.0.1:9055"]
+translations = [
+    [
+    "172.15.0.2:9055",
+    "127.0.0.1:9055",
+],
+    [
+    "172.15.0.3:9055",
+    "127.0.0.1:9056",
+],
+    [
+    "172.15.0.4:9055",
+    "127.0.0.1:9057",
+],
+]
+
+[runner]
+enforce-single-threaded = true
+log-level = "DEBUG"
+logging = true
+no-setup = false
+no-teardown = true

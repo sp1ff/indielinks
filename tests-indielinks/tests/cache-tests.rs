@@ -19,8 +19,10 @@
 //! in a cluster as a distributed cache baed on [openraft].
 
 use std::{
+    borrow::Borrow,
     collections::HashMap,
     env, fs,
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::ExitCode,
     result::Result as StdResult,
@@ -37,13 +39,17 @@ use serde::Deserialize;
 use snafu::{IntoError, ResultExt, Snafu};
 use tap::Pipe;
 use tracing::debug;
+use url::Url;
 
-use indielinks::cache::Backend as CacheBackend;
+use indielinks::{
+    cache::Backend as CacheBackend, dynamodb::Location, scylla::Session, util::Credentials,
+};
 
 use tests_indielinks::{
     cache::{openraft_test_suite, raft_ops},
     helper::{DynamoConfig, ScyllaConfig},
     recent_posts::recent_posts,
+    run::run,
     top_k_tags::smoke_test_top_k_tags,
 };
 
@@ -52,19 +58,19 @@ use tests_support::{
     SyncIntegrationTest, TestConfiguration,
 };
 
-use common::run;
-use url::Url;
-
-mod common;
-
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Failed to create a DynamoDB session: {source}"))]
     Client { source: indielinks::dynamodb::Error },
     #[snafu(display("Failed to run {cmd}: {source}"))]
-    Command { cmd: String, source: common::Error },
+    Command {
+        cmd: String,
+        source: Box<tests_indielinks::run::Error>,
+    },
     #[snafu(display("Error obtaining test configuration: {source}"))]
-    Configuration { source: common::Error },
+    Configuration {
+        source: tests_indielinks::run::Error,
+    },
     #[snafu(display("Failed to parse {pth}: {source}"))]
     De {
         pth: String,
@@ -81,6 +87,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to read {pth}: {source}"))]
     Read { pth: String, source: std::io::Error },
+    #[snafu(display("While creating a Scylla client, {source}"))]
+    ScyllaClient { source: indielinks::scylla::Error },
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -91,7 +99,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 // A collection of little functions for standing-up & tearing-down associated services.
 
-fn setup_indielinks_cluster_alternator(
+fn setup_indielinks_cluster(
     config_base: &str,
     local_state_dir_base: &str,
     haproxy_id: &str,
@@ -154,8 +162,8 @@ fn teardown_scylla(scylla_env_file: Option<&Path>) -> Result<()> {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialOrd, PartialEq)]
 pub enum FixtureId {
     ScyllaSingleNode,
-    SycllaCluster,
-    SycllaClusterPreConfigured,
+    ScyllaCluster,
+    ScyllaClusterPreConfigured,
     DynamoDBSingleNode,
     DynamoDBCluster,
     DynamoDBClusterPreConfigured,
@@ -167,8 +175,8 @@ impl FromStr for FixtureId {
     fn from_str(s: &str) -> StdResult<Self, Self::Err> {
         match s {
             "scylla-single-node" => Ok(FixtureId::ScyllaSingleNode),
-            "scylla-cluster" => Ok(FixtureId::SycllaCluster),
-            "scylla-cluster-pre-configured" => Ok(FixtureId::SycllaClusterPreConfigured),
+            "scylla-cluster" => Ok(FixtureId::ScyllaCluster),
+            "scylla-cluster-pre-configured" => Ok(FixtureId::ScyllaClusterPreConfigured),
             "dynamodb-single-node" => Ok(FixtureId::DynamoDBSingleNode),
             "dynamodb-cluster" => Ok(FixtureId::DynamoDBCluster),
             "dynamodb-cluster-pre-configured" => Ok(FixtureId::DynamoDBClusterPreConfigured),
@@ -183,8 +191,6 @@ impl FromStr for FixtureId {
 pub struct Configuration {
     /// A network location at which the indielinks API can be reached
     pub indielinks: Url,
-    /// The network location at which an operational interface can be reached
-    pub ops: Url,
     /// .env file for ScyllaDB docker compose cluster
     #[serde(rename = "scylla-env-file")]
     pub scylla_env_file: Option<PathBuf>,
@@ -203,9 +209,9 @@ pub struct Configuration {
     /// Port on which haproxy should listen
     #[serde(rename = "haproxy-port")]
     pub haproxy_port: u16,
-    /// gRPC endpoints for Raft configuration nodes, when run in cluster mode
+    /// gRPC endpoints for Raft configuration nodes & ops endpoints, when run in cluster mode
     #[serde(rename = "raft-nodes", deserialize_with = "de_raft_nodes::deserialize")]
-    pub raft_nodes: HashMap<NodeId, ClusterNode>,
+    pub raft_nodes: HashMap<NodeId, (ClusterNode, Url)>,
     pub scylla: ScyllaConfig,
     pub dynamo: DynamoConfig,
 }
@@ -216,22 +222,25 @@ mod de_raft_nodes {
     use indielinks_cache::types::{ClusterNode, NodeId};
     use serde::{Deserialize, Deserializer};
     use tap::Pipe;
+    use url::Url;
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<NodeId, ClusterNode>, D::Error>
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<NodeId, (ClusterNode, Url)>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        HashMap::<String, ClusterNode>::deserialize(deserializer)?
+        HashMap::<String, (ClusterNode, Url)>::deserialize(deserializer)?
             .into_iter()
             .map(|(k, v)| k.parse::<NodeId>().map(|i| (i, v)))
-            .collect::<Result<Vec<(NodeId, ClusterNode)>, ParseIntError>>()
+            .collect::<Result<Vec<(NodeId, (ClusterNode, Url))>, ParseIntError>>()
             .map_err(|err| {
                 serde::de::Error::custom(format!(
                     "Found a key that couldn't be parsed as a NodeId: {err}"
                 ))
             })?
             .into_iter()
-            .collect::<HashMap<NodeId, ClusterNode>>()
+            .collect::<HashMap<NodeId, (ClusterNode, Url)>>()
             .pipe(Ok)
     }
 }
@@ -262,7 +271,6 @@ impl Default for Configuration {
     fn default() -> Self {
         Configuration {
             indielinks: known_good!(Url::parse("http://indiemark.local:20673")),
-            ops: known_good!(Url::parse("http://127.0.0.1:20680")),
             scylla_env_file: None,
             local_state_base: "/tmp/indielinksd-master-".to_owned(),
             alternator_config_base: "../target/conf/master/indielinksd-alternator-".to_owned(),
@@ -270,17 +278,124 @@ impl Default for Configuration {
             haproxy_id: "0".to_owned(),
             haproxy_port: 20673,
             raft_nodes: HashMap::from([
-                (0, known_good!("127.0.0.1:20681".parse())),
-                (1, known_good!("127.0.0.1:20684".parse())),
-                (2, known_good!("127.0.0.1:20687".parse())),
-                (3, known_good!("127.0.0.1:20690".parse())),
-                (4, known_good!("127.0.0.1:20693".parse())),
+                (
+                    0,
+                    (
+                        known_good!("127.0.0.1:20681".parse()),
+                        known_good!("http://127.0.0.1:20680".parse()),
+                    ),
+                ),
+                (
+                    1,
+                    (
+                        known_good!("127.0.0.1:20684".parse()),
+                        known_good!("http://127.0.0.1:20683".parse()),
+                    ),
+                ),
+                (
+                    2,
+                    (
+                        known_good!("127.0.0.1:20687".parse()),
+                        known_good!("http://127.0.0.1:20686".parse()),
+                    ),
+                ),
+                (
+                    3,
+                    (
+                        known_good!("127.0.0.1:20690".parse()),
+                        known_good!("http://127.0.0.1:20689".parse()),
+                    ),
+                ),
+                (
+                    4,
+                    (
+                        known_good!("127.0.0.1:20693".parse()),
+                        known_good!("http://127.0.0.1:20692".parse()),
+                    ),
+                ),
             ]),
             scylla: ScyllaConfig::default(),
             dynamo: DynamoConfig::default(),
         }
     }
 }
+
+/// Functionality all cache-tests backends must provide
+pub trait TestBackend {
+    fn get_client(&self) -> Arc<dyn CacheBackend + Send + Sync>;
+    fn configuration_base(&self) -> &str;
+}
+
+/// Backend for fixtures using Alternator/DynamoDB
+pub struct AlternatorBackend {
+    client: indielinks::dynamodb::Client,
+    configuration_base: String,
+}
+
+impl AlternatorBackend {
+    pub async fn new(
+        location: &Location,
+        credentials: Option<&Credentials>,
+        configuration_base: &str,
+    ) -> Result<Self> {
+        Ok(Self {
+            // Passing a Node ID here seems suspcicious, but, at the time of this writing, the only
+            // place this cleint will be used is for the openraft-provided test suite, for which it
+            // doesn't matter.
+            client: indielinks::dynamodb::Client::new(location, &(credentials.cloned()), 0)
+                .await
+                .context(ClientSnafu)?,
+            configuration_base: configuration_base.to_owned(),
+        })
+    }
+}
+
+impl TestBackend for AlternatorBackend {
+    fn get_client(&self) -> Arc<dyn CacheBackend + Send + Sync> {
+        Arc::new(self.client.clone())
+    }
+    fn configuration_base(&self) -> &str {
+        self.configuration_base.as_ref()
+    }
+}
+
+/// Backend for fixtures using ScyllaDB
+pub struct ScyllaBackend {
+    client: Arc<indielinks::scylla::Session>,
+    configuration_base: String,
+}
+
+impl ScyllaBackend {
+    pub async fn new(
+        hosts: impl IntoIterator<Item = impl Borrow<SocketAddr>>,
+        credentials: Option<&Credentials>,
+        translations: Option<impl IntoIterator<Item = (SocketAddr, SocketAddr)>>,
+        configuration_base: &str,
+    ) -> Result<Self> {
+        Ok(Self {
+            client: Arc::new(
+                Session::new(hosts, credentials, 0, translations)
+                    .await
+                    .context(ScyllaClientSnafu)?,
+            ),
+            configuration_base: configuration_base.to_owned(),
+        })
+    }
+}
+
+impl TestBackend for ScyllaBackend {
+    fn get_client(&self) -> Arc<dyn CacheBackend + Send + Sync> {
+        self.client.clone()
+    }
+
+    fn configuration_base(&self) -> &str {
+        &self.configuration_base.as_ref()
+    }
+}
+
+// Nb. I haven't implemented a Scylla-based backend because `CacheBackend` is only implemented on
+// `indielinks::scylla::Session`, which takes a Raft node ID (?). Until I figure-out why that is
+// used, I'm just not going to support the Scylla-backed fixtures, here.
 
 #[derive(Debug)]
 pub struct CacheFixture {
@@ -293,7 +408,7 @@ impl Fixture for CacheFixture {
     type Error = Error;
     // Both the DDB & Scylla clients implement `CacheBackend`, so for now we just use a type-erased
     // reference to one or the other, as appropriate for the particular fixture instance.
-    type Backend = Arc<dyn CacheBackend + Send + Sync>;
+    type Backend = Arc<dyn TestBackend + Send + Sync>;
     type Configuration = Configuration;
     type Id = FixtureId;
 
@@ -309,10 +424,29 @@ impl Fixture for CacheFixture {
         &self,
         cfg: &Self::Configuration,
     ) -> StdResult<Self::Backend, Self::Error> {
-        indielinks::dynamodb::Client::new(&cfg.dynamo.location, &cfg.dynamo.credentials, 0)
-            .await
-            .context(ClientSnafu)
-            .map(|x| Arc::new(x) as Arc<dyn CacheBackend + Send + Sync>) // Unsize coercion
+        match self.id {
+            FixtureId::DynamoDBSingleNode
+            | FixtureId::DynamoDBCluster
+            | FixtureId::DynamoDBClusterPreConfigured => Ok(Arc::new(
+                AlternatorBackend::new(
+                    &cfg.dynamo.location,
+                    cfg.dynamo.credentials.as_ref(),
+                    &cfg.alternator_config_base,
+                )
+                .await?,
+            )),
+            FixtureId::ScyllaSingleNode
+            | FixtureId::ScyllaCluster
+            | FixtureId::ScyllaClusterPreConfigured => Ok(Arc::new(
+                ScyllaBackend::new(
+                    &cfg.scylla.hosts,
+                    cfg.scylla.credentials.as_ref(),
+                    cfg.scylla.translations.clone(),
+                    &cfg.scylla_config_base,
+                )
+                .await?,
+            )),
+        }
     }
 
     async fn setup(&self, configuration: &Self::Configuration) -> StdResult<(), Self::Error> {
@@ -320,13 +454,24 @@ impl Fixture for CacheFixture {
             FixtureId::DynamoDBCluster => {
                 debug!("DynamoDBCluster setup...");
                 setup_scylla(configuration.scylla_env_file.as_deref())?;
-                setup_indielinks_cluster_alternator(
+                setup_indielinks_cluster(
                     &configuration.alternator_config_base,
                     &configuration.local_state_base,
                     &configuration.haproxy_id,
                     configuration.haproxy_port,
                 )?;
                 debug!("DynamoDBCluster setup...done.");
+            }
+            FixtureId::ScyllaCluster => {
+                debug!("ScyllaCluster setup...");
+                setup_scylla(configuration.scylla_env_file.as_deref())?;
+                setup_indielinks_cluster(
+                    &configuration.scylla_config_base,
+                    &configuration.local_state_base,
+                    &configuration.haproxy_id,
+                    configuration.haproxy_port,
+                )?;
+                debug!("ScyllaCluster setup...done.");
             }
             _ => unimplemented!(),
         }
@@ -344,6 +489,15 @@ impl Fixture for CacheFixture {
                 teardown_scylla(configuration.scylla_env_file.as_deref())?;
                 debug!("DynamoDBCluster teardown...done");
             }
+            FixtureId::ScyllaCluster => {
+                debug!("ScyllaCluster teardown...");
+                teardown_indielinks_cluster(
+                    &configuration.local_state_base,
+                    &configuration.haproxy_id,
+                )?;
+                teardown_scylla(configuration.scylla_env_file.as_deref())?;
+                debug!("ScyllaCluster teardown...done");
+            }
             _ => unimplemented!(),
         }
         Ok(())
@@ -352,10 +506,15 @@ impl Fixture for CacheFixture {
 
 inventory::collect!(CacheFixture);
 
-// This is kinda lame-- I've only built-out one fixture, so far.
+// This is kinda lame-- I've only built-out two fixtures, so far.
 inventory::submit!(CacheFixture {
     id: FixtureId::DynamoDBCluster,
     name: "Alternator (cluster)"
+});
+
+inventory::submit!(CacheFixture {
+    id: FixtureId::ScyllaCluster,
+    name: "Scylla (cluster)"
 });
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -378,7 +537,7 @@ struct SyncTest {
     // We need a layer of indirection between the API we present to [tests-support] (i.e. just
     // getting the configuration & the test helper) and that exposed by our actual testing logic in
     // the `/src` directory.
-    pub test_fn: fn(Configuration, Arc<dyn CacheBackend + Send + Sync>) -> StdResult<(), Failed>,
+    pub test_fn: fn(Configuration, Arc<dyn TestBackend + Send + Sync>) -> StdResult<(), Failed>,
     // None => run this test in all fixtures; Some<vec![a, b]> => only run in fixtures a & b
     pub fixtures: Option<&'static [FixtureId]>,
 }
@@ -411,7 +570,7 @@ struct AsyncTest {
     // See comments RE this field in `SyncTest`.
     pub test_fn: fn(
         Configuration,
-        Arc<dyn CacheBackend + Send + Sync>,
+        Arc<dyn TestBackend + Send + Sync>,
     ) -> BoxFuture<'static, StdResult<(), Failed>>,
     // None => run this test in all fixtures; Some<vec![a, b]> => only run in fixtures a & b
     pub fixtures: Option<&'static [FixtureId]>,
@@ -443,21 +602,28 @@ inventory::collect!(AsyncTest);
 
 inventory::submit!(SyncTest {
     name: "001openraft_test_suite",
-    test_fn: |_, backend| openraft_test_suite(backend),
+    test_fn: |_, backend| openraft_test_suite(backend.get_client()),
     // Makes no sense to run this more than once
     fixtures: Some(&[FixtureId::DynamoDBCluster])
 });
 
 inventory::submit!(SyncTest {
     name: "010raft_ops",
-    test_fn: |cfg, _| raft_ops(cfg.ops, cfg.raft_nodes),
-    fixtures: Some(&[FixtureId::SycllaCluster, FixtureId::DynamoDBCluster])
+    test_fn: |cfg, backend| raft_ops(
+        cfg.raft_nodes,
+        &cfg.local_state_base,
+        backend.configuration_base(),
+        &cfg.indielinks
+    ),
+    fixtures: Some(&[FixtureId::ScyllaCluster, FixtureId::DynamoDBCluster])
 });
+
+// Nb. that async tests will run in a different fixture instance than the synchronous tests.
 
 inventory::submit!(AsyncTest {
     name: "201recent_posts",
-    test_fn: |cfg, _| { Box::pin(recent_posts(cfg.ops, cfg.raft_nodes)) },
-    fixtures: Some(&[FixtureId::SycllaCluster, FixtureId::DynamoDBCluster])
+    test_fn: |cfg, _| { Box::pin(recent_posts(cfg.raft_nodes[&0].1.clone(), cfg.raft_nodes)) },
+    fixtures: Some(&[FixtureId::ScyllaCluster, FixtureId::DynamoDBCluster])
 });
 
 inventory::submit!(AsyncTest {
@@ -465,11 +631,11 @@ inventory::submit!(AsyncTest {
     test_fn: |cfg, _| {
         Box::pin(smoke_test_top_k_tags(
             cfg.indielinks,
-            cfg.ops,
+            cfg.raft_nodes[&0].1.clone(),
             cfg.raft_nodes,
         ))
     },
-    fixtures: Some(&[FixtureId::SycllaCluster, FixtureId::DynamoDBCluster])
+    fixtures: Some(&[FixtureId::ScyllaCluster, FixtureId::DynamoDBCluster])
 });
 
 fn main() -> Result<ExitCode> {
@@ -482,6 +648,16 @@ fn main() -> Result<ExitCode> {
         inventory::iter::<SyncTest>,
     )
     .context(IntegrationTestSnafu)?;
+
+    // The number of environment variables in use here is concerning; at what point do I give-up on
+    // `libtest_mimic` and take-over responsibility for parsing?
+    if env::var("INDIELINKS_CACHE_TESTS_NO_ASYNC").is_ok() {
+        return Ok(if sync_exit_code == ExitCode::SUCCESS {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(101)
+        });
+    }
 
     let async_exit_code = async_integration_test(
         TestConfiguration::<CacheFixture>::new_or_default("INDIELINKS_CACHE_TESTS_CONFIG")

@@ -21,14 +21,18 @@
 //!
 //! [IntegrationTest]: ../tests_support/trait.IntegrationTest.html
 
-use std::sync::Arc;
+use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, time::Duration};
 
+use http::StatusCode;
+use indielinks_shared::api::{RaftState, TopKTagsRequest};
 use libtest_mimic::Failed;
+use nonempty_collections::NEVec;
 use reqwest::{blocking::Client, Url};
-use tracing::{debug, error};
+use tap::{Conv, Pipe};
+use tracing::{debug, error, info};
 
 use indielinks_cache::{
-    raft::StorageError,
+    raft::{Metrics as RaftMetrics, StorageError},
     types::{ClusterNode, NodeId},
 };
 
@@ -36,13 +40,15 @@ use indielinks::{
     cache::{Backend, LogStore, SLOT_RECENT_POSTS, SLOT_TOP_K_TAGS},
     grpc::InitClusterRequest,
 };
+use waitpid_any::WaitHandle;
+
+use crate::run::run;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                           Scaffolding for the `openraft` test suite                            //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct Dropper {
-    // backend: Arc<RwLock<dyn Backend + Send + Sync>>,
     backend: Arc<dyn Backend + Send + Sync>,
 }
 
@@ -85,6 +91,21 @@ impl indielinks_cache::raft::test::StoreBuilder<LogStore, Dropper> for Builder {
     }
 }
 
+fn kill_instance(local_state_base: &str, node_id: usize) -> Result<(), Failed> {
+    let node_pid = format!("{local_state_base}{node_id}/indielinksd.pid")
+        .conv::<PathBuf>()
+        .pipe(fs::read)?
+        .pipe(String::from_utf8)?
+        .parse::<i32>()?;
+    let mut wait_handle = WaitHandle::open(node_pid).expect("WaitHandle should succeed");
+    unsafe {
+        libc::kill(node_pid, libc::SIGKILL);
+    }
+    // Slight race condition here: what if node 1 terminates and the PID is reused?
+    assert!(wait_handle.wait_timeout(Duration::from_secs(2))?.is_some());
+    Ok(())
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       integration tests                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -101,19 +122,32 @@ pub fn openraft_test_suite(backend: Arc<dyn Backend + Send + Sync>) -> Result<()
     Ok(())
 }
 
-/// Cache smoke test; stubbed for now, but will be the integration test for managing the Raft
-/// cluster; initializing, driving, adding learners & so on.
+/// Cache smoke test; integration test for managing the Raft cluster; initializing, driving, adding
+/// learners & so on.
 pub fn raft_ops(
-    ops_endpoint: Url,
-    nodes: impl IntoIterator<Item = (NodeId, ClusterNode)>,
+    nodes: impl IntoIterator<Item = (NodeId, (ClusterNode, Url))> + Clone,
+    local_state_base: &str,
+    config_base: &str,
+    indielinks: &Url,
 ) -> Result<(), Failed> {
-    debug!("Executing test raft_ops (ops is {ops_endpoint})");
-
     let client = Client::builder()
         .user_agent("indielinks-test/raft-ops 0.0.1 (+sp1ff@pobox.com)")
         .build()?;
 
-    let mut all_nodes = nodes.into_iter().collect::<Vec<(NodeId, ClusterNode)>>();
+    let mut ops_endpoints: Vec<(NodeId, (ClusterNode, Url))> = nodes
+        .clone()
+        .into_iter()
+        .collect::<Vec<(NodeId, (ClusterNode, Url))>>();
+    ops_endpoints.sort_by_key(|lhs| lhs.0);
+    let ops_endpoints: NEVec<Url> = ops_endpoints
+        .into_iter()
+        .map(|(_, (_, ops))| ops)
+        .collect::<Vec<Url>>()
+        .try_into()?;
+
+    let mut all_nodes = nodes
+        .into_iter()
+        .collect::<Vec<(NodeId, (ClusterNode, Url))>>();
     all_nodes.sort_by_key(|lhs| lhs.0);
 
     assert!(
@@ -124,11 +158,11 @@ pub fn raft_ops(
     let first_three = all_nodes
         .iter()
         .take(3)
-        .cloned()
+        .map(|(node_id, (cluster_node, _))| (*node_id, cluster_node.clone()))
         .collect::<Vec<(NodeId, ClusterNode)>>();
 
     // Make the lowest-id node (node 0, after the sort above) responsible for the cluster's "recent
-    // posts" list, so the `003recent_posts` test that runs after us has a known owner.
+    // posts" list.
     let request = InitClusterRequest {
         slots: vec![
             (*SLOT_RECENT_POSTS, first_three[0].0),
@@ -140,20 +174,7 @@ pub fn raft_ops(
     // Let's start by initializing a three-node cluster:
     assert_eq!(
         client
-            .post(ops_endpoint.join("ops/cache/init-cluster")?)
-            .json(&request)
-            .send()
-            .expect("Failed to send first init-cluster request")
-            .error_for_status()
-            .expect("Error response to first init-cluster request")
-            .content_length(),
-        Some(0)
-    );
-
-    // Should be able to call it again with no error
-    assert_eq!(
-        client
-            .post(ops_endpoint.join("ops/cache/init-cluster")?)
+            .post(ops_endpoints.first().join("ops/cache/init-cluster")?)
             .json(&request)
             .send()?
             .error_for_status()?
@@ -161,9 +182,131 @@ pub fn raft_ops(
         Some(0)
     );
 
-    // Would be nice to be able to test the cache facility, here.
+    // Should be able to call it again with no error
+    assert_eq!(
+        client
+            .post(ops_endpoints.first().join("ops/cache/init-cluster")?)
+            .json(&request)
+            .send()?
+            .error_for_status()?
+            .content_length(),
+        Some(0)
+    );
 
-    debug!("Completed test raft_ops-- returning success.");
+    // Shoot instance 1 in the head; this should leave the cluster with quorum, so it can still make
+    // progress, but any requests routed to instance 1 will fail.
+    kill_instance(local_state_base, 1)?;
+
+    info!("Node one should be down, at this point.");
+
+    // Request the "top-k" tags; should fail
+    let status = client
+        .get(indielinks.join("/api/v1/users/top-k-tags")?)
+        .json(&TopKTagsRequest { num_items: None })
+        .send()?
+        .status();
+    assert!(
+        status == StatusCode::INTERNAL_SERVER_ERROR || status == StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    // Observe the hash ring, should be the same
+    let raft_state = client
+        .get(ops_endpoints.first().join("/ops/cache/state")?)
+        .send()?
+        .error_for_status()?
+        .json::<RaftState>()?;
+
+    debug!("Got {raft_state:#?}");
+
+    let cache_nodes = raft_state
+        .hash_ring
+        .iter()
+        .map(|(_, (node, _))| *node)
+        .collect::<HashSet<u64>>();
+    assert_eq!(cache_nodes, HashSet::from_iter(vec![0, 1, 2]));
+
+    // Move responsibility for slot 0/recent posts to node 2
+    let status = client
+        .post(ops_endpoints.first().join("/ops/cache/slots")?)
+        .json(&vec![(*SLOT_RECENT_POSTS, 2), (*SLOT_TOP_K_TAGS, 1)])
+        .send()?
+        .status();
+    assert_eq!(status, StatusCode::OK);
+
+    // Re-start instance 1; it should "catch-up", but I'm not sure how to observe that.
+    run(
+        "../infra/indielinks-cluster-node-up",
+        ["-L", local_state_base, "-C", config_base, "1"]
+            .into_iter()
+            .map(str::to_owned),
+    )?;
+
+    info!("Re-started instance 1.");
+
+    // In testing, once up, a debug build took ~500ms to catch-up.
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let node_0_metrics = client
+        .get(ops_endpoints[0].join("/ops/cache/metrics")?)
+        .send()?
+        .error_for_status()?
+        .json::<RaftMetrics>()?;
+    let node_0_last_applied = node_0_metrics.raft.last_applied;
+
+    let node_1_last_applied = client
+        .get(ops_endpoints[1].join("/ops/cache/metrics")?)
+        .send()?
+        .error_for_status()?
+        .json::<RaftMetrics>()?
+        .raft
+        .last_applied;
+
+    assert_eq!(node_0_last_applied, node_1_last_applied);
+
+    // Now shoot instance 0 in head; cluster still has quorum, but we've lost everything that node
+    // had in memory.
+    kill_instance(local_state_base, 0)?;
+
+    // Add instance 3 as a learner. To do this, I need to figure-out who's the new leader.
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let leader = client
+        .get(ops_endpoints[1].join("/ops/cache/metrics")?)
+        .send()?
+        .error_for_status()?
+        .json::<RaftMetrics>()?
+        .raft
+        .current_leader
+        .unwrap();
+
+    debug!("The new leader is {leader}");
+
+    let status = client
+        .post(ops_endpoints[leader as usize].join("/ops/cache/add-learner")?)
+        .json(&(3, all_nodes[3].1 .0.addr))
+        .send()?
+        .status();
+    assert_eq!(StatusCode::OK, status);
+
+    // Change the membership: remove instace 0 and add instance 3
+    let status = client
+        .post(ops_endpoints[leader as usize].join("/ops/cache/membership")?)
+        .json(&vec![1, 2, 3])
+        .send()?
+        .status();
+    assert_eq!(StatusCode::OK, status);
+
+    // The cluster should now be 1(slot 1/top-k tags), 2 (slot 0/recent posts), 3.
+    // Should be healthy.
+    let current_metrics = client
+        .get(ops_endpoints[leader as usize].join("/ops/cache/metrics")?)
+        .send()?
+        .error_for_status()?
+        .json::<RaftMetrics>()?;
+
+    debug!("Cluster metrics: {current_metrics:#?}");
+
+    assert!(node_0_metrics.raft.current_term < current_metrics.raft.current_term);
 
     Ok(())
 }

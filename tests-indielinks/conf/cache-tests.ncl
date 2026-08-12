@@ -30,7 +30,6 @@ fun stack => {
     runner = runner-record,
     domain = {
         indielinks = "http://indiemark.local:%{stack.haproxy-port}",
-        ops = "http://localhost:%{stack.private-port}",
         scylla-env-file = "%{stack.stack-name}.env",
         local-state-base = "/tmp/indielinksd-%{stack.stack-name}-",
         alternator-config-base = "../target/conf/%{stack.stack-name}/indielinksd-alternator-",
@@ -38,11 +37,11 @@ fun stack => {
         haproxy-id = "%{stack.stack-name}",
         haproxy-port = stack.haproxy-port,
         raft-nodes = {
-            "0" = { addr = "127.0.0.1:%{stack.grpc-port}"      },
-            "1" = { addr = "127.0.0.1:%{stack.grpc-port +  3}" },
-            "2" = { addr = "127.0.0.1:%{stack.grpc-port +  6}" },
-            "3" = { addr = "127.0.0.1:%{stack.grpc-port +  9}" },
-            "4" = { addr = "127.0.0.1:%{stack.grpc-port + 12}" },
+            "0" = [{ addr = "127.0.0.1:%{stack.grpc-port}"      }, "http://localhost:%{stack.private-port}"     ],
+            "1" = [{ addr = "127.0.0.1:%{stack.grpc-port +  3}" }, "http://localhost:%{stack.private-port +  3}"],
+            "2" = [{ addr = "127.0.0.1:%{stack.grpc-port +  6}" }, "http://localhost:%{stack.private-port +  6}"],
+            "3" = [{ addr = "127.0.0.1:%{stack.grpc-port +  9}" }, "http://localhost:%{stack.private-port +  9}"],
+            "4" = [{ addr = "127.0.0.1:%{stack.grpc-port + 12}" }, "http://localhost:%{stack.private-port + 12}"],
         },
         scylla = mk-scylla-backend stack,
         dynamo = mk-alternator-backend stack

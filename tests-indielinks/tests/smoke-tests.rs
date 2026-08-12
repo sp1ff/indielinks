@@ -94,14 +94,11 @@ use tests_indielinks::{
     home_timeline::{timeline_before, timeline_empty, timeline_initial},
     outboxes::outbox_smoke_test,
     post_reply_timeline::{post_replies_endpoint, post_reply_timeline},
+    run::run,
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
 };
-
-use common::run;
-
-mod common;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Error type                                           //
@@ -117,7 +114,10 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to run {cmd}: {source}"))]
-    Command { cmd: String, source: common::Error },
+    Command {
+        cmd: String,
+        source: Box<tests_indielinks::run::Error>,
+    },
     #[snafu(display("While obtaining test configuration, {source}"))]
     Configuration {
         #[snafu(source(from(tests_support::Error<Fixture>, Box::new)))]

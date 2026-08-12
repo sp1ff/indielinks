@@ -55,11 +55,13 @@ pub enum Error {}
 pub async fn smoke_test_top_k_tags(
     _indielinks: Url,
     ops_endpoint: Url,
-    nodes: impl IntoIterator<Item = (NodeId, ClusterNode)>,
+    nodes: impl IntoIterator<Item = (NodeId, (ClusterNode, Url))>,
 ) -> Result<(), Failed> {
     debug!("Executing test smoke_test_top_k_tags (ops is {ops_endpoint})");
 
-    let mut all_nodes = nodes.into_iter().collect::<Vec<(NodeId, ClusterNode)>>();
+    let mut all_nodes = nodes
+        .into_iter()
+        .collect::<Vec<(NodeId, (ClusterNode, Url))>>();
     all_nodes.sort_by_key(|lhs| lhs.0);
     assert!(
         all_nodes.len() >= 3,
@@ -69,9 +71,9 @@ pub async fn smoke_test_top_k_tags(
     // Node 1 owns the "top-k" tags collection (set by raft_ops). Distribute adds around the
     // cluster: an add sent to a non-owner is proxied over gRPC to the owner, so they all accumulate
     // on node 1.
-    let mut c0 = GrpcClient::new(all_nodes[0].0, all_nodes[0].1.addr);
-    let mut c1 = GrpcClient::new(all_nodes[1].0, all_nodes[1].1.addr);
-    let mut c2 = GrpcClient::new(all_nodes[2].0, all_nodes[2].1.addr);
+    let mut c0 = GrpcClient::new(all_nodes[0].0, all_nodes[0].1 .0.addr);
+    let mut c1 = GrpcClient::new(all_nodes[1].0, all_nodes[1].1 .0.addr);
+    let mut c2 = GrpcClient::new(all_nodes[2].0, all_nodes[2].1 .0.addr);
 
     async fn add_tags<T: IntoIterator<Item = &'static str>>(
         client: &mut GrpcClient,

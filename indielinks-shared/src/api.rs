@@ -535,3 +535,14 @@ pub struct PostRepliesRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_size: Option<NonZero<usize>>,
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         local methods                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RaftState {
+    #[serde(rename = "hash-ring")]
+    pub hash_ring: Vec<(u64, (u64, usize))>,
+    pub slots: Vec<Option<u64>>,
+}

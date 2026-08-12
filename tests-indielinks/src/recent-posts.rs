@@ -68,11 +68,13 @@ fn make_post(slug: &str, title: &str) -> Post {
 /// different fxiture, we need to initialize the cluster here.
 pub async fn recent_posts(
     ops_endpoint: Url,
-    nodes: impl IntoIterator<Item = (NodeId, ClusterNode)>,
+    nodes: impl IntoIterator<Item = (NodeId, (ClusterNode, Url))>,
 ) -> Result<(), Failed> {
     debug!("Executing test recent_posts (ops is {ops_endpoint})");
 
-    let mut all_nodes = nodes.into_iter().collect::<Vec<(NodeId, ClusterNode)>>();
+    let mut all_nodes = nodes
+        .into_iter()
+        .collect::<Vec<(NodeId, (ClusterNode, Url))>>();
     all_nodes.sort_by_key(|lhs| lhs.0);
     assert!(
         all_nodes.len() >= 3,
@@ -86,7 +88,7 @@ pub async fn recent_posts(
     let first_three = all_nodes
         .iter()
         .take(3)
-        .cloned()
+        .map(|(node_id, (cluster_node, _))| (*node_id, cluster_node.clone()))
         .collect::<Vec<(NodeId, ClusterNode)>>();
 
     // Make the lowest-id node (node 0, after the sort above) responsible for the cluster's "recent
@@ -116,9 +118,9 @@ pub async fn recent_posts(
     // Node 0 owns SLOT_RECENT_POSTS (set by raft_ops). Distribute adds around the cluster: an
     // add sent to a non-owner is proxied over gRPC to the owner, so they all accumulate on
     // node 0.
-    let mut c0 = GrpcClient::new(all_nodes[0].0, all_nodes[0].1.addr);
-    let mut c1 = GrpcClient::new(all_nodes[1].0, all_nodes[1].1.addr);
-    let mut c2 = GrpcClient::new(all_nodes[2].0, all_nodes[2].1.addr);
+    let mut c0 = GrpcClient::new(all_nodes[0].0, all_nodes[0].1 .0.addr);
+    let mut c1 = GrpcClient::new(all_nodes[1].0, all_nodes[1].1 .0.addr);
+    let mut c2 = GrpcClient::new(all_nodes[2].0, all_nodes[2].1 .0.addr);
 
     // Sequential awaits ⇒ deterministic, monotonically increasing owner-side timestamps.
     c0.add_post(&make_post("1", "Post 1"))

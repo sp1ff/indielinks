@@ -35,8 +35,8 @@ use itertools::iproduct;
 use non_zero::non_zero;
 use nonzero::nonzero;
 use openraft::{
-    Entry, LogId, OptionalSend, Raft, RaftMetrics, RaftSnapshotBuilder, Snapshot, SnapshotMeta,
-    StorageIOError, StoredMembership,
+    Entry, LogId, OptionalSend, Raft, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageIOError,
+    StoredMembership,
     error::{ClientWriteError, InstallSnapshotError, RaftError},
     raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
@@ -381,6 +381,17 @@ impl StateMachineInner {
     pub fn node_for_slot(&self, fin: SlotIndex) -> Option<NodeId> {
         self.slots[fin.get()]
     }
+    /// Retrieve the current hash ring & slot allocations
+    // Mostly here for testing purposes, hence allowing the lint:
+    #[allow(clippy::type_complexity)]
+    pub fn current_state(
+        &self,
+    ) -> (
+        Vec<(u64, (NodeId, usize))>,
+        [Option<NodeId>; NUMBER_OF_CACHE_SLOTS::USIZE],
+    ) {
+        (self.ring.clone(), self.slots)
+    }
 }
 
 /// State machine state that actually gets persisted as a snapshot
@@ -520,7 +531,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                         iproduct!(nodes.iter(), 0..sm.num_virtual.get())
                             .map(|(node_id, m)| (sm.hasher.hash_node(node_id, m), (*node_id, m))),
                     );
-                    sm.ring.retain(|x| remove.contains(x));
+                    sm.ring.retain(|x| !remove.contains(x));
                     Ok(Response(()))
                 }
                 Request::SetSlots { slots } => {
@@ -736,9 +747,8 @@ impl ConfigurationBuilder {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Metrics {
     pub id: NodeId,
-    pub raft: RaftMetrics<NodeId, ClusterNode>,
+    pub raft: openraft::metrics::RaftMetrics<NodeId, ClusterNode>,
 }
-
 // I originally couldn't see a case where you'd want more than one "cluster node" in a process, and
 // setup an `AtomicBool` that would record the first instance creation, and had the `CacheNode` ctor
 // check it & fail on the second invocation. Since then, however, I realized there _is_ a quite
@@ -1010,6 +1020,14 @@ where
             .context(RaftWriteSnafu)
             .map(|_| ())
     }
+    pub async fn current_state(
+        &self,
+    ) -> (
+        Vec<(u64, (NodeId, usize))>,
+        [Option<NodeId>; NUMBER_OF_CACHE_SLOTS::USIZE],
+    ) {
+        self.state.inner.read().await.current_state()
+    }
 }
 
 /// A Clonable representation of this process' node in the [indielinks-cache] cluster
@@ -1136,6 +1154,14 @@ where
         U: IntoIterator<Item = (SlotIndex, NodeId)>,
     {
         self.inner.write().await.initialize(nodes, slots).await
+    }
+    pub async fn current_state(
+        &self,
+    ) -> (
+        Vec<(u64, (NodeId, usize))>,
+        [Option<NodeId>; NUMBER_OF_CACHE_SLOTS::USIZE],
+    ) {
+        self.inner.read().await.current_state().await
     }
     /// Return a [SocketAddr](std::net::SocketAddr) given a [NodeId]
     pub async fn socket_addr_for_id(&self, id: NodeId) -> Result<std::net::SocketAddr> {

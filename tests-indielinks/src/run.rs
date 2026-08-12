@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -10,15 +10,10 @@
 // even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // General Public License for more details.
 //
-// You should have received a copy of the GNU General Public License along with mpdpopm.  If not,
+// You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! # The indielinks Integration Test Framework
-//!
-//! # Introduction
-//!
-//! Code common to the indielinks integration test framework goes here. See [indielinks_test] for a
-//! full description.
+// This probably just belongs in the `tests-support` crate.
 use std::{ffi::OsStr, process::Command};
 
 use snafu::{prelude::*, Backtrace};
@@ -42,7 +37,7 @@ pub enum Error {
     },
 }
 
-type Result<T> = std::result::Result<T, Error>;
+type Result<T> = std::result::Result<T, Box<Error>>;
 
 pub fn run<I, S>(cmd: &str, args: I) -> Result<()>
 where
@@ -69,12 +64,14 @@ where
     if output.status.success() {
         Ok(())
     } else {
-        CommandSnafu {
-            command: cmd.to_string(),
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout),
-            stderr: String::from_utf8_lossy(&output.stderr),
-        }
-        .fail()
+        Err(Box::new(
+            CommandSnafu {
+                command: cmd.to_string(),
+                code: output.status.code(),
+                stdout: String::from_utf8_lossy(&output.stdout),
+                stderr: String::from_utf8_lossy(&output.stderr),
+            }
+            .build(),
+        ))
     }
 }

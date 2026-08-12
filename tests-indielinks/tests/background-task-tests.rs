@@ -53,18 +53,18 @@ use tests_support::{async_integration_test, TestConfiguration};
 use tests_indielinks::{
     background::first_background,
     helper::{DynamoConfig, ScyllaConfig},
+    run::run,
 };
-
-use common::run;
-
-mod common;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Failed to create a DynamoDB session: {source}"))]
     Client { source: indielinks::dynamodb::Error },
     #[snafu(display("Failed to run {cmd}: {source}"))]
-    Command { cmd: String, source: common::Error },
+    Command {
+        cmd: String,
+        source: Box<tests_indielinks::run::Error>,
+    },
     #[snafu(display("While obtaining test configuration, {source}"))]
     Configuration {
         #[snafu(source(from(tests_support::Error<Fixture>, Box::new)))]
