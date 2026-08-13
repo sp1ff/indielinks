@@ -222,7 +222,6 @@ pub fn to_storage_io_err(
 // them.
 #[derive(Clone)]
 pub struct LogStore {
-    // storage: Arc<RwLock<dyn Backend + Send + Sync>>,
     storage: Arc<dyn Backend + Send + Sync>,
 }
 
