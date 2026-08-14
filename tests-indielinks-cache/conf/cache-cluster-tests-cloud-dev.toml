@@ -1,0 +1,9 @@
+[domain]
+base-port = 20820
+
+[runner]
+enforce-single-threaded = true
+log-level = "INFO"
+logging = true
+no-setup = false
+no-teardown = false

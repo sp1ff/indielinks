@@ -40,7 +40,7 @@ use tracing::{debug, error, info};
 use indielinks_cache::{
     cache::Cache,
     network::{AppendEntriesRequest, InstallSnapshotRequest, RaftError, VoteRequest},
-    raft::CacheNode,
+    raft::SharedCacheNode,
     types::{ClusterNode, NodeId, SlotIndex, TypeConfig},
 };
 use url::Url;
@@ -83,7 +83,7 @@ pub enum Error {
 type StdResult<T, E> = std::result::Result<T, E>;
 
 pub struct GrpcService {
-    cache_node: CacheNode<GrpcClientFactory>,
+    cache_node: SharedCacheNode<GrpcClientFactory>,
     actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
     notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
     handles: Arc<Cache<GrpcClientFactory, Account, Actor>>,
@@ -92,7 +92,7 @@ pub struct GrpcService {
 
 impl GrpcService {
     pub fn new(
-        cache_node: CacheNode<GrpcClientFactory>,
+        cache_node: SharedCacheNode<GrpcClientFactory>,
         actors: Arc<Cache<GrpcClientFactory, Url, Actor>>,
         notes: Arc<Cache<GrpcClientFactory, Url, Note>>,
         handles: Arc<Cache<GrpcClientFactory, Account, Actor>>,
@@ -127,6 +127,8 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         req: tonic::Request<protobuf::AppendEntriesRequest>,
     ) -> StdResult<tonic::Response<protobuf::AppendEntriesResponse>, tonic::Status> {
         self.cache_node
+            .write()
+            .await
             .append_entries(
                 AppendEntriesRequest::<TypeConfig>::try_from(req.into_inner()).map_err(to_tonic)?,
             )
@@ -142,6 +144,8 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         req: tonic::Request<protobuf::InstallSnapshotRequest>,
     ) -> StdResult<tonic::Response<protobuf::InstallSnapshotResponse>, tonic::Status> {
         self.cache_node
+            .write()
+            .await
             .install_snapshot(
                 InstallSnapshotRequest::<TypeConfig>::try_from(req.into_inner())
                     .map_err(to_tonic)?,
@@ -158,6 +162,8 @@ impl protobuf::grpc_service_server::GrpcService for GrpcService {
         req: tonic::Request<protobuf::VoteRequest>,
     ) -> StdResult<tonic::Response<protobuf::VoteResponse>, tonic::Status> {
         self.cache_node
+            .read()
+            .await
             .vote(VoteRequest::<NodeId>::try_from(req.into_inner()).map_err(to_tonic)?)
             .await
             .map_err(to_tonic)?
@@ -579,7 +585,13 @@ async fn init_cluster(
     );
     // This implementation seems awfully chatty, but I need to drill down into the `Err` variant in
     // case we just failed because the cluster is already initialized.
-    match state.cache_node.initialize(nodes, slots).await {
+    match state
+        .cache_node
+        .write()
+        .await
+        .initialize(nodes, slots)
+        .await
+    {
         Ok(_) => {
             info!("Successfully initialized your Raft cluster");
             (StatusCode::OK).into_response()
@@ -610,7 +622,7 @@ async fn init_cluster(
 }
 
 async fn metrics(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
-    Json(state.cache_node.metrics().await).into_response()
+    Json(state.cache_node.read().await.metrics()).into_response()
 }
 
 async fn add_learner(
@@ -620,6 +632,8 @@ async fn add_learner(
     info!("Adding Node ({id}, {addr}) in state 'learning' to the cluster");
     match state
         .cache_node
+        .write()
+        .await
         .add_learner(id, ClusterNode { addr }, true)
         .await
     {
@@ -642,7 +656,13 @@ async fn change_membership(
     Json(req): Json<Vec<NodeId>>,
 ) -> axum::response::Response {
     info!("Changing Raft cluster membership to {:?}", req);
-    match state.cache_node.change_membership(req, false).await {
+    match state
+        .cache_node
+        .write()
+        .await
+        .change_membership(req, false)
+        .await
+    {
         Ok(rsp) => {
             info!("Successfully changed membership");
             (StatusCode::OK, Json(rsp)).into_response()
@@ -662,7 +682,7 @@ async fn set_slots(
     Json(request): Json<Vec<(SlotIndex, Option<NodeId>)>>,
 ) -> axum::response::Response {
     info!("Updating Raft slot information with: {request:?}");
-    match state.cache_node.set_slots(request).await {
+    match state.cache_node.write().await.set_slots(request).await {
         Ok(_) => {
             info!("Successfully updated the Raft slots.");
             StatusCode::OK.into_response()
@@ -677,7 +697,7 @@ async fn set_slots(
 
 async fn get_state(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
     info!("Retrieving the current Raft state on this ndoe.");
-    let (hash_ring, slots) = state.cache_node.current_state().await;
+    let (hash_ring, slots) = state.cache_node.read().await.current_state().await;
     Json(RaftState {
         hash_ring,
         slots: slots.to_vec(),

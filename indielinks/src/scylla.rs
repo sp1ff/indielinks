@@ -46,14 +46,17 @@ use futures::{
     Stream,
 };
 use futures::{StreamExt, TryStreamExt};
-use indielinks_cache::types::{NodeId, TypeConfig};
+use indielinks_cache::{
+    raft::{LogEntryIterator, StoredSnapshot, StoredSnapshotRef},
+    types::{ClusterNode, NodeId, TypeConfig},
+};
 use indielinks_shared::instance_state::InstanceStateV0;
 use indielinks_shared::nonempty_string::NonEmptyString;
 use itertools::Itertools;
 use num_bigint::BigInt;
 use openraft::{
-    Entry, ErrorSubject, ErrorVerb, LogId, LogState, RaftLogId, StorageError as RaftStorageError,
-    StorageIOError, Vote,
+    Entry, ErrorSubject, ErrorVerb, LogId, LogState, RaftLogId, Snapshot, SnapshotMeta,
+    StorageError as RaftStorageError, StorageIOError, Vote,
 };
 use pin_project::pin_project;
 use rmp_serde::{from_slice, to_vec};
@@ -78,11 +81,11 @@ use scylla::{
 
 use indielinks_shared::entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username};
 
+use indielinks_cache::raft::{to_storage_io_err, Backend as CacheBackend};
+
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BackgroundTaskError, FlatTask},
-    cache::{
-        to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
-    },
+    cache::{Flavor, LogIndex, RaftLog, RaftMetadata, NID},
     entities::{
         ApiKeys, FollowId, Follower, FollowerId, Following, IncomingLike, IncomingLikeReplyShare,
         IncomingLikeReplyShareRef, IncomingReply, IncomingShare, LikeReplyShare, LikeReplyShareRef,
@@ -264,6 +267,16 @@ pub enum Error {
     #[snafu(display("Expected a single row; {source}"))]
     SingleRow {
         source: scylla::errors::SingleRowError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to deserialize an openraft Snapshot: {source}"))]
+    SnapshotDe {
+        source: rmp_serde::decode::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to serialize an openraft Snapshot: {source}"))]
+    SnapshotSer {
+        source: rmp_serde::encode::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to deserialize a tag count: {source}"))]
@@ -1224,16 +1237,16 @@ impl Session {
             "select count(*) from followers where user_id = ?", // CountFollowers
             "select count(*) from following where user_id = ?", // CountFollowing
             "select count(*) from following where actor_id = ?", // CountFollowingByActor
-            "insert into raft_log (node_id, log_id, entry) values (?, ?, ?)",
-            "truncate raft_log",
-            "truncate raft_metadata",
-            "select * from raft_metadata where node_id = ? and flavor = ?",
-            "select * from raft_log where node_id = ? order by log_id desc limit 1",
-            "delete from raft_log where node_id = ? and log_id <= ?",
-            "select * from raft_metadata where node_id=? and flavor=?",
-            "insert into raft_metadata (node_id, flavor, data) values (?, ?, ?)",
-            "delete from raft_log where node_id = ? and log_id >= ?",
-            "select * from raft_log where node_id = ? and log_id >= ? and log_id <= ?",
+            "insert into raft_log (node_id, log_id, entry) values (?, ?, ?)", // InsertIntoRaftLog
+            "truncate raft_log", // TruncateRaftLog
+            "truncate raft_metadata", // TruncateRaftMeta
+            "select * from raft_metadata where node_id = ? and flavor = ?", // SelectRaftMeta1
+            "select * from raft_log where node_id = ? order by log_id desc limit 1", // SelectRaftLog1
+            "delete from raft_log where node_id = ? and log_id <= ?", // DeleteRaftLog1
+            "select * from raft_metadata where node_id=? and flavor=?", // SelectRaftMeta2
+            "insert into raft_metadata (node_id, flavor, data) values (?, ?, ?)", // InsertRaftMeta1
+            "delete from raft_log where node_id = ? and log_id >= ?", // DeleteRaftLog2
+            "select * from raft_log where node_id = ? and log_id >= ? and log_id <= ?", // GetRaftLogEntries1
             "select * from raft_log where node_id = ? and log_id >= ? and log_id < ?",
             "select * from raft_log where node_id = ? and log_id >= ?",
             "select * from raft_log where node_id = ? and log_id > ? and log_id <= ?",
@@ -1241,7 +1254,7 @@ impl Session {
             "select * from raft_log where node_id = ? and log_id > ?",
             "select * from raft_log where node_id = ? and log_id <= ?",
             "select * from raft_log where node_id = ? and log_id < ?",
-            "select * from raft_log where node_id = ?",
+            "select * from raft_log where node_id = ?", // GetRaftLogEntries9
             "update users set api_keys=? where id=?",
             "insert into likes_replies_shares (user_id, posted, id, content, in_reply_to, sort, visibility) values (?, ?, ?, ?, ?, ?, ?) if not exists", // AddOutgoingLikeReplyShare
             "insert into incoming_likes_replies_shares (sort, user_id, received, ap_id, attributed_to, in_reply_to_sort, in_reply_to, visibility, content, replies, shares) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) if not exists", // AddIncomingLikeReplyShare,
@@ -2402,6 +2415,8 @@ impl TasksBackend for Session {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                       implementation of indielinks-cache::raft::Backend                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // In the implementation of `CacheBackend`, we need to convert a variety of `Error`s into
 // `StorageError<NodeId>`. The natural move is to implement `From<...> for StorageError<NodeId`.
@@ -2412,7 +2427,6 @@ impl TasksBackend for Session {
 // conversion. Later on, it might make sense to define a new trait (say, `IntoStorageError`) or,
 // perhaps better, if I wind-up keeping `CacheBackend` around, define it in terms of an error type
 // defined in the `cache` module.
-
 fn from_vec_error(
     log_id: LogId<NodeId>,
     err: rmp_serde::encode::Error,
@@ -2429,11 +2443,10 @@ fn from_vec_error(
 #[async_trait]
 impl CacheBackend for Session {
     /// Append log entries
-    #[tracing::instrument(skip(self))]
     #[allow(clippy::result_large_err)]
     async fn append(
         &self,
-        entries: Vec<Entry<TypeConfig>>,
+        entries: &mut dyn LogEntryIterator,
     ) -> StdResult<(), RaftStorageError<NodeId>> {
         // Make one pass; produce both a vector of `BatchStatement` and a vector of tuples
         let (batch, logs): (Vec<BatchStatement>, Vec<RaftLog>) = entries
@@ -2463,7 +2476,6 @@ impl CacheBackend for Session {
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Write, &err))
     }
     /// Truncate the `raft_log` & `raft_metadata` tables
-    #[tracing::instrument(skip(self))]
     async fn drop_all_rows(&self) -> StdResult<(), RaftStorageError<NodeId>> {
         self.session
             .execute_unpaged(
@@ -2485,7 +2497,6 @@ impl CacheBackend for Session {
             .map(|_| ())
     }
     /// Returns the last deleted log id and the last log id
-    #[tracing::instrument(skip(self))]
     async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, RaftStorageError<NodeId>> {
         async fn get_log_state1(
             session: &InnerSession,
@@ -2548,7 +2559,6 @@ impl CacheBackend for Session {
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
     }
     /// Purge logs upto log_id, inclusive
-    #[tracing::instrument(skip(self))]
     async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), RaftStorageError<NodeId>> {
         async fn purge1(
             session: &InnerSession,
@@ -2566,8 +2576,10 @@ impl CacheBackend for Session {
                 )
                 .await
                 .context(ExecutionSnafu)?;
-            // This is kind of lame, since if the next write fails, we can't undo the delete-- I
-            // guess we could keep it in memory?
+            // A few problems, here:
+            // 1. This is kind of lame, since if the next write fails, we can't undo the delete-- I
+            //    guess we could keep it in memory?
+            // 2. Why isn't this statement prepared? I guess it *is* infrequently invoked
             session
                 .query_unpaged(
                     "insert into raft_metadata (node_id, flavor, data) values (?, ?, ?)",
@@ -2591,8 +2603,48 @@ impl CacheBackend for Session {
         .await
         .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))
     }
+    /// Read a [StoredSnapshot] to storage, if it exists
+    async fn read_snapshot(
+        &self,
+    ) -> StdResult<Option<Snapshot<TypeConfig>>, RaftStorageError<NodeId>> {
+        async fn read_snapshot1(
+            session: &InnerSession,
+            prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
+            node_id: NodeId,
+        ) -> Result<Option<Snapshot<TypeConfig>>> {
+            session
+                .execute_unpaged(
+                    &prepared_statements[PreparedStatements::SelectRaftMeta2],
+                    (Into::<BigInt>::into(node_id), Flavor::Snapshot),
+                )
+                .await
+                .context(ExecutionSnafu)?
+                .into_rows_result()
+                .context(IntoRowsResultSnafu)?
+                .rows::<RaftMetadata>()
+                .context(TypedRowsSnafu)?
+                .collect::<StdResult<Vec<RaftMetadata>, _>>()
+                .context(RaftMetaDeSnafu)?
+                .into_iter()
+                .at_most_one()
+                .map_err(|_| AtMostOneRowSnafu.build())?
+                .map(|meta| from_slice::<StoredSnapshot>(&meta.data).context(SnapshotDeSnafu))
+                .transpose()?
+                .map(|snapshot| snapshot.into())
+                .pipe(Ok)
+        }
+
+        read_snapshot1(&self.session, &self.prepared_statements, self.node_id)
+            .await
+            .map_err(|err| {
+                to_storage_io_err(
+                    ErrorSubject::<NodeId>::Snapshot(None),
+                    ErrorVerb::Read,
+                    &err,
+                )
+            })
+    }
     /// Return the last saved vote by [Self::save_vote] (if any)
-    #[tracing::instrument(skip(self))]
     async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, RaftStorageError<NodeId>> {
         async fn read_vote1(
             session: &InnerSession,
@@ -2624,8 +2676,50 @@ impl CacheBackend for Session {
             .await
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err))
     }
+    /// Save a [StoredSnapshot] to storage
+    async fn save_snapshot(
+        &self,
+        meta: &SnapshotMeta<NodeId, ClusterNode>,
+        snapshot_bytes: &[u8],
+    ) -> StdResult<(), RaftStorageError<NodeId>> {
+        async fn save_snapshot1(
+            session: &InnerSession,
+            prepared_statements: &EnumMap<PreparedStatements, PreparedStatement>,
+            node_id: NodeId,
+            meta: &SnapshotMeta<NodeId, ClusterNode>,
+            snapshot: &[u8],
+        ) -> Result<()> {
+            session
+                .execute_unpaged(
+                    &prepared_statements[PreparedStatements::InsertRaftMeta1],
+                    RaftMetadata {
+                        node_id: NID(node_id),
+                        flavor: Flavor::Snapshot,
+                        data: to_vec(&StoredSnapshotRef { meta, snapshot })
+                            .context(SnapshotSerSnafu)?,
+                    },
+                )
+                .await
+                .context(ExecutionSnafu)
+                .map(|_| ())
+        }
+        save_snapshot1(
+            &self.session,
+            &self.prepared_statements,
+            self.node_id,
+            meta,
+            snapshot_bytes,
+        )
+        .await
+        .map_err(|err| {
+            to_storage_io_err(
+                ErrorSubject::<NodeId>::Snapshot(None),
+                ErrorVerb::Write,
+                &err,
+            )
+        })
+    }
     /// Save vote to storage
-    #[tracing::instrument(skip(self))]
     async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), RaftStorageError<NodeId>> {
         async fn save_vote1(
             session: &InnerSession,
@@ -2652,7 +2746,6 @@ impl CacheBackend for Session {
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))
     }
     /// Truncate logs since log_id, inclusive
-    #[tracing::instrument(skip(self))]
     async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), RaftStorageError<NodeId>> {
         self.session
             .execute_unpaged(
@@ -2667,7 +2760,6 @@ impl CacheBackend for Session {
             .map(|_| ())
     }
     /// Get a series of log entries from storage.
-    #[tracing::instrument(skip(self))]
     async fn try_get_log_entries(
         &self,
         lower_bound: Bound<&u64>,

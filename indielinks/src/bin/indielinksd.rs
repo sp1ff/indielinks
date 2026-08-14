@@ -87,7 +87,7 @@ use indielinks_shared::{
 
 use indielinks_cache::{
     cache::Cache,
-    raft::{CacheNode, Configuration as RaftConfiguration},
+    raft::{make_shared_cache_node, Backend as CacheBackend, Configuration as RaftConfiguration},
     types::NodeId,
 };
 
@@ -98,7 +98,7 @@ use indielinks::{
     ap_resolution::ApResolver,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
     bookmarklets::make_router as make_bookmarklets_router,
-    cache::{Backend as CacheBackend, GrpcClientFactory, LogStore, SLOT_TOP_K_TAGS},
+    cache::{GrpcClientFactory, SLOT_TOP_K_TAGS},
     client::make_client,
     define_metric,
     delicious::{
@@ -818,7 +818,7 @@ async fn otel_middleware_local(
 /// - if the cluster to which this instance belongs has been initialized, we'll return status
 ///   202 Accepted, and a response body of "READY"
 async fn healthcheck(State(state): State<Arc<Indielinks>>) -> (http::StatusCode, String) {
-    if state.cache_node.initialized().await.is_some() {
+    if state.cache_node.read().await.initialized().await.is_some() {
         (StatusCode::ACCEPTED, "READY".to_owned())
     } else {
         (StatusCode::CREATED, "GOOD".to_owned())
@@ -1168,13 +1168,9 @@ async fn serve(
             .context(SchemaCheckSnafu)?;
 
         // This will need to be re-thought as the number (and types) of caches grows, but for now:
-        let cache_node = CacheNode::<GrpcClientFactory>::new(
-            &cfg.raft_config,
-            GrpcClientFactory,
-            LogStore::new(cache),
-        )
-        .await
-        .context(CacheNodeSnafu)?;
+        let cache_node = make_shared_cache_node(cache.clone(), &cfg.raft_config, GrpcClientFactory)
+            .await
+            .context(CacheNodeSnafu)?;
 
         // Alright-- setup shared state for the web service itself:
         let actors = Arc::new(Cache::<GrpcClientFactory, Url, Actor>::new(

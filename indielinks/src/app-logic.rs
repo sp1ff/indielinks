@@ -36,11 +36,14 @@ use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::debug;
 use url::Url;
 
-use indielinks_cache::{raft::CacheNode, types::NodeId};
+use indielinks_cache::{
+    raft::{CacheNode, SharedCacheNode},
+    types::NodeId,
+};
 use indielinks_shared::{
     api::{
         ClusterStatsResponse, OutboxToken, RecentPostsPage, RecentPostsRequest,
@@ -249,15 +252,17 @@ pub enum TimelineRsp {
 }
 
 async fn this_node_is_responsible(
-    cache_node: CacheNode<GrpcClientFactory>,
+    cache_node: Arc<RwLock<CacheNode<GrpcClientFactory>>>,
     user: &User,
 ) -> Result<Option<NodeId>> {
     let responsible_node = cache_node
+        .read()
+        .await
         .node_for_key(user.id())
         .await
         .context(NodeHashSnafu { userid: *user.id() })?;
 
-    Ok((cache_node.id().await != responsible_node).then_some(responsible_node))
+    Ok((cache_node.read().await.id() != responsible_node).then_some(responsible_node))
 }
 
 /// Execute a home timeline request on this node
@@ -366,8 +371,9 @@ async fn redirect_timeline(
 ) -> Result<TimelineRsp> {
     let addr = state
         .cache_node
-        .socket_addr_for_id(responsible_node)
+        .read()
         .await
+        .socket_addr_for_id(responsible_node)
         .context(SocketAddrSnafu {
             node_id: responsible_node,
         })?;
@@ -418,8 +424,9 @@ async fn redirect_timeline_insert(
 ) -> Result<()> {
     let addr = state
         .cache_node
-        .socket_addr_for_id(responsible_node)
+        .read()
         .await
+        .socket_addr_for_id(responsible_node)
         .context(SocketAddrSnafu {
             node_id: responsible_node,
         })?;
@@ -458,13 +465,14 @@ pub async fn handle_timeline_drop(home_timelines: Arc<Mutex<HomeTimelines>>, use
 }
 
 async fn redirect_timeline_drop(
-    cache_node: CacheNode<GrpcClientFactory>,
+    cache_node: SharedCacheNode<GrpcClientFactory>,
     user: &User,
     responsible_node: NodeId,
 ) -> Result<()> {
     let addr = cache_node
-        .socket_addr_for_id(responsible_node)
+        .read()
         .await
+        .socket_addr_for_id(responsible_node)
         .context(SocketAddrSnafu {
             node_id: responsible_node,
         })?;
@@ -482,7 +490,7 @@ async fn redirect_timeline_drop(
 
 /// Drop a timeline
 pub async fn handle_timeline_drop_or_redirect(
-    cache_node: CacheNode<GrpcClientFactory>,
+    cache_node: SharedCacheNode<GrpcClientFactory>,
     home_timelines: Arc<Mutex<HomeTimelines>>,
     user: &User,
 ) -> Result<()> {
@@ -630,8 +638,9 @@ async fn redirect_outbox(
 ) -> Result<OutboxResponse> {
     let addr = state
         .cache_node
-        .socket_addr_for_id(responsible_node)
+        .read()
         .await
+        .socket_addr_for_id(responsible_node)
         .context(SocketAddrSnafu {
             node_id: responsible_node,
         })?;
@@ -702,8 +711,9 @@ async fn redirect_outbox_insert(
 ) -> Result<()> {
     let addr = state
         .cache_node
-        .socket_addr_for_id(responsible_node)
+        .read()
         .await
+        .socket_addr_for_id(responsible_node)
         .context(SocketAddrSnafu {
             node_id: responsible_node,
         })?;
@@ -1144,12 +1154,12 @@ pub async fn get_cluster_stats(state: Arc<Indielinks>) -> Result<ClusterStatsRes
         num_users,
         num_posts,
     } = state.storage.as_ref().counts().await.context(CountsSnafu)?;
-    let metrics = state.cache_node.metrics().await;
+    let metrics = state.cache_node.read().await.metrics();
     Ok(ClusterStatsResponse {
         origin: state.origin.clone(),
         num_users,
         num_posts,
-        raft_initialized: state.cache_node.initialized().await,
+        raft_initialized: state.cache_node.read().await.initialized().await,
         raft_term: metrics.raft.current_term,
         raft_leader: metrics.raft.current_leader,
     })

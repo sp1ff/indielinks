@@ -39,9 +39,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use either::Either;
 use futures::{stream::BoxStream, Stream};
-use indielinks_cache::types::{NodeId, TypeConfig};
+use indielinks_cache::{
+    raft::{LogEntryIterator, StoredSnapshot, StoredSnapshotRef},
+    types::{ClusterNode, NodeId, TypeConfig},
+};
 use itertools::Itertools;
-use openraft::{Entry, ErrorSubject, ErrorVerb, LogId, LogState, StorageError, Vote};
+use openraft::{
+    Entry, ErrorSubject, ErrorVerb, LogId, LogState, Snapshot, SnapshotMeta, StorageError, Vote,
+};
 use pin_project::pin_project;
 use rmp_serde::{from_slice, to_vec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -72,11 +77,11 @@ use indielinks_shared::{
     nonempty_string::NonEmptyString,
 };
 
+use indielinks_cache::raft::{to_storage_io_err, Backend as CacheBackend};
+
 use crate::{
     background_tasks::{Backend as TasksBackend, Error as BckError, FlatTask},
-    cache::{
-        to_storage_io_err, Backend as CacheBackend, Flavor, LogIndex, RaftLog, RaftMetadata, NID,
-    },
+    cache::{Flavor, LogIndex, RaftLog, RaftMetadata, NID},
     entities::{
         ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShare,
         IncomingLikeReplyShareRef, IncomingReply, IncomingShare, LikeReplyShare, LikeReplyShareRef,
@@ -312,6 +317,18 @@ pub enum Error {
         keys: Box<ApiKeys>,
         #[snafu(source(from(serde_dynamo::Error, Box::new)))]
         source: Box<serde_dynamo::Error>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to read a snapshot from the database: {source}"))]
+    SnapshotGet {
+        #[snafu(source(from(SdkError<GetItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<GetItemError, HttpResponse>>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to write a snapshot to the database: {source}"))]
+    SnapshotPut {
+        #[snafu(source(from(SdkError<PutItemError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<PutItemError, HttpResponse>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to serialize to an AttributeValue: {source}"))]
@@ -2306,16 +2323,20 @@ impl TasksBackend for Client {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                   The DynamoDB Client can act as an indielinks-cache Backend                   //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[async_trait]
 impl CacheBackend for Client {
     /// Append log entries
-    #[tracing::instrument(skip(self))]
-    async fn append(&self, entries: Vec<Entry<TypeConfig>>) -> StdResult<(), StorageError<NodeId>> {
+    async fn append(
+        &self,
+        entries: &mut dyn LogEntryIterator,
+    ) -> StdResult<(), StorageError<NodeId>> {
         async fn append1(
             client: &::aws_sdk_dynamodb::Client,
             node_id: NodeId,
-            entries: Vec<Entry<TypeConfig>>,
+            entries: &mut dyn LogEntryIterator,
         ) -> Result<()> {
             // Map `entries` to a `Vec<WriteRequest>` which we'll submit below:
             let mut write_reqs = entries
@@ -2359,7 +2380,6 @@ impl CacheBackend for Client {
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Write, &err))
     }
     /// Drop all rows in `raft_log` and `raft_metadata`
-    #[tracing::instrument(skip(self))]
     async fn drop_all_rows(&self) -> StdResult<(), StorageError<NodeId>> {
         // DynamoDB doesn't have a truncate operation, so I'll just scan & batch write
         // (again, not atomic) At this point, this is only for use with testing, so maybe not a big
@@ -2421,7 +2441,7 @@ impl CacheBackend for Client {
                         .delete_request(
                             DeleteRequest::builder()
                                 .key("node_id", AttributeValue::N(log.node_id.to_string()))
-                                .key("flavor", AttributeValue::S(log.flavor.to_string()))
+                                .key("flavor", AttributeValue::N(format!("{}", log.flavor as i8)))
                                 .build()
                                 .context(OpBuildSnafu)?,
                         )
@@ -2449,7 +2469,6 @@ impl CacheBackend for Client {
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::None, ErrorVerb::Delete, &err))
     }
     /// Returns the last deleted log id and the last log id.
-    #[tracing::instrument(skip(self))]
     async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
         async fn get_log_state1(
             client: &::aws_sdk_dynamodb::Client,
@@ -2462,7 +2481,10 @@ impl CacheBackend for Client {
                 .get_item()
                 .table_name("raft_metadata")
                 .key("node_id", AttributeValue::N(node_id.to_string()))
-                .key("flavor", AttributeValue::S(Flavor::LastPurged.to_string()))
+                .key(
+                    "flavor",
+                    AttributeValue::N(format!("{}", Flavor::LastPurged as i8)),
+                )
                 .send()
                 .await
                 .context(LastPurgedGetSnafu)?
@@ -2512,7 +2534,6 @@ impl CacheBackend for Client {
     }
     /// Purge logs upto log_id, inclusive
     // This is particularly painful because, AFAIK, DDB offers no "range delete" operation
-    #[tracing::instrument(skip(self))]
     async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
         async fn purge1(
             client: &::aws_sdk_dynamodb::Client,
@@ -2592,7 +2613,45 @@ impl CacheBackend for Client {
             .await
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))
     }
-    #[tracing::instrument(skip(self))]
+    /// Read a [StoredSnapshot] to storage, if it exists
+    async fn read_snapshot(&self) -> StdResult<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
+        async fn read_snapshot1(
+            client: &::aws_sdk_dynamodb::Client,
+            node_id: NodeId,
+        ) -> Result<Option<Snapshot<TypeConfig>>> {
+            client
+                .get_item()
+                .table_name("raft_metadata")
+                .key("node_id", AttributeValue::N(node_id.to_string()))
+                .key(
+                    "flavor",
+                    AttributeValue::N(format!("{}", Flavor::Snapshot as i8)),
+                )
+                .send()
+                .await
+                .context(SnapshotGetSnafu)?
+                .item
+                .map(from_item)
+                .transpose()
+                .context(RaftMetaDeSnafu)?
+                .map(|meta: RaftMetadata| {
+                    from_slice::<StoredSnapshot>(meta.data.as_slice()).context(RaftMetaDecodeSnafu)
+                })
+                .transpose()?
+                .map(|snapshot| snapshot.into())
+                .pipe(Ok)
+        }
+
+        read_snapshot1(&self.client, self.node_id)
+            .await
+            .map_err(|err| {
+                to_storage_io_err(
+                    ErrorSubject::<NodeId>::Snapshot(None),
+                    ErrorVerb::Read,
+                    &err,
+                )
+            })
+    }
     async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
         async fn read_vote1(
             client: &::aws_sdk_dynamodb::Client,
@@ -2602,7 +2661,7 @@ impl CacheBackend for Client {
                 .get_item()
                 .table_name("raft_metadata")
                 .key("node_id", AttributeValue::N(node_id.to_string()))
-                .key("flavor", AttributeValue::S("Vote".to_owned()))
+                .key("flavor", AttributeValue::N("0".to_owned()))
                 .send()
                 .await
                 .context(VoteGetSnafu)?
@@ -2621,8 +2680,47 @@ impl CacheBackend for Client {
             .await
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err))
     }
+    /// Save a [StoredSnapshot] to storage
+    async fn save_snapshot(
+        &self,
+        meta: &SnapshotMeta<NodeId, ClusterNode>,
+        snapshot_bytes: &[u8],
+    ) -> StdResult<(), StorageError<NodeId>> {
+        async fn save_snapshot1(
+            client: &::aws_sdk_dynamodb::Client,
+            node_id: NodeId,
+            meta: &SnapshotMeta<NodeId, ClusterNode>,
+            snapshot: &[u8],
+        ) -> Result<()> {
+            client
+                .put_item()
+                .table_name("raft_metadata")
+                .set_item(Some(
+                    to_item(&RaftMetadata {
+                        node_id: NID(node_id),
+                        flavor: Flavor::Snapshot,
+                        data: to_vec(&StoredSnapshotRef { meta, snapshot })
+                            .context(RaftMetaEncodeSnafu)?,
+                    })
+                    .context(RaftMetaSerSnafu)?,
+                ))
+                .send()
+                .await
+                .map(|_| ())
+                .context(SnapshotPutSnafu)
+        }
+
+        save_snapshot1(&self.client, self.node_id, meta, snapshot_bytes)
+            .await
+            .map_err(|err| {
+                to_storage_io_err(
+                    ErrorSubject::<NodeId>::Snapshot(None),
+                    ErrorVerb::Write,
+                    &err,
+                )
+            })
+    }
     /// Save vote to storage
-    #[tracing::instrument(skip(self))]
     async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
         async fn save_vote1(
             client: &::aws_sdk_dynamodb::Client,

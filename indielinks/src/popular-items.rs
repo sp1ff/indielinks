@@ -64,7 +64,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use indielinks_cache::{
     network::ClientFactory as CacheClientFactory,
-    raft::CacheNode,
+    raft::SharedCacheNode,
     types::{NodeId, SlotIndex},
 };
 use indielinks_shared::known_good;
@@ -374,7 +374,7 @@ where
     slot: SlotIndex,
     factory: F,
     clients: HashMap<NodeId, F::Client>,
-    cache_node: CacheNode<CCF>,
+    cache_node: SharedCacheNode<CCF>,
     items: PopularItems<Item>,
 }
 
@@ -389,7 +389,7 @@ where
     pub fn new(
         slot: SlotIndex,
         factory: F,
-        cache_node: CacheNode<CCF>,
+        cache_node: SharedCacheNode<CCF>,
         max_len: NonZero<usize>,
     ) -> Self {
         Self {
@@ -443,17 +443,20 @@ where
     async fn responsible(&self) -> Result<Option<(NodeId, SocketAddr)>> {
         let owner = self
             .cache_node
+            .read()
+            .await
             .node_for_slot(self.slot)
             .await
             .context(UninitializedSnafu)?;
-        if owner == self.cache_node.id().await {
+        if owner == self.cache_node.read().await.id() {
             Ok(None)
         } else {
             Ok(Some((
                 owner,
                 self.cache_node
-                    .socket_addr_for_id(owner)
+                    .read()
                     .await
+                    .socket_addr_for_id(owner)
                     .context(NetLocSnafu)?,
             )))
         }

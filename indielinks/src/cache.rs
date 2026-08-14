@@ -17,22 +17,13 @@
 //!
 //! The [indielinks](crate) interface to [indielinks-cache].
 
-use std::{
-    fmt::Debug,
-    ops::{Bound, RangeBounds},
-    sync::Arc,
-};
+use std::fmt::Debug;
 
 use async_trait::async_trait;
 use indielinks_shared::known_good;
 use lazy_static::lazy_static;
 use num_bigint::BigInt;
-use openraft::{
-    error::NetworkError,
-    storage::{LogFlushed, RaftLogStorage},
-    Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader, StorageError,
-    StorageIOError, Vote,
-};
+use openraft::error::NetworkError;
 use scylla::{
     cluster::metadata::ColumnType,
     deserialize::{value::DeserializeValue, FrameSlice},
@@ -43,7 +34,7 @@ use scylla::{
     },
     DeserializeRow, SerializeRow,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Pipe, TryConv};
 use tonic::Code;
@@ -114,11 +105,12 @@ lazy_static! {
 //                                          Raft support                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(i8)]
 pub enum Flavor {
     Vote = 0,
     LastPurged = 1,
+    Snapshot = 2,
 }
 
 impl std::fmt::Display for Flavor {
@@ -129,8 +121,36 @@ impl std::fmt::Display for Flavor {
             match self {
                 Flavor::Vote => "Vote",
                 Flavor::LastPurged => "LastPurged",
+                Flavor::Snapshot => "Snapshot",
             }
         )
+    }
+}
+
+// If we derive `Serialize`, values of type `Visibility` will be written as strings (i.e. "Vote",
+// "LastPurged", and so forth). I'd prefer to write them as `i8`.
+impl Serialize for Flavor {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_i8(*self as i8)
+    }
+}
+
+impl<'de> Deserialize<'de> for Flavor {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match <i8 as Deserialize>::deserialize(deserializer)? {
+            0 => Ok(Flavor::Vote),
+            1 => Ok(Flavor::LastPurged),
+            2 => Ok(Flavor::Snapshot),
+            i => Err(serde::de::Error::custom(format!(
+                "Invalid Flavor encoding {i}"
+            ))),
+        }
     }
 }
 
@@ -145,6 +165,7 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for Flavor {
         match <i8 as DeserializeValue>::deserialize(typ, v)? {
             0 => Ok(Flavor::Vote),
             1 => Ok(Flavor::LastPurged),
+            2 => Ok(Flavor::Snapshot),
             n => Err(DeserializationError::new(FlavorDeSnafu { n }.build())),
         }
     }
@@ -157,142 +178,6 @@ impl SerializeValue for Flavor {
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
         SerializeValue::serialize(&(*self as i8), typ, writer)
-    }
-}
-
-/// Object-safe trait abstracting over the storage backend for operations required by [LogStore]
-///
-/// The [LogStore] will write [Raft] log messages and so on to the [indielinks](crate) storage
-/// backend, which in production may be ScyllaDB or DynamoDB. This trait is intended to be
-/// implemented by either of the corresponding backends, and an implementation given to the log
-/// store.
-///
-/// [Raft]: https://raft.github.io/raft.pdf
-#[async_trait]
-pub trait Backend {
-    async fn append(&self, entries: Vec<Entry<TypeConfig>>) -> StdResult<(), StorageError<NodeId>>;
-    async fn drop_all_rows(&self) -> StdResult<(), StorageError<NodeId>>;
-    async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>>;
-    async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>>;
-    async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>>;
-    async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>>;
-    async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>>;
-    async fn try_get_log_entries(
-        &self,
-        lower_bound: Bound<&u64>,
-        upper_bound: Bound<&u64>,
-    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>>;
-}
-
-pub fn to_storage_io_err(
-    subject: ErrorSubject<NodeId>,
-    verb: ErrorVerb,
-    source: impl Into<openraft::AnyError>,
-) -> StorageError<NodeId> {
-    StorageError::<NodeId>::IO {
-        source: StorageIOError::<NodeId>::new(subject, verb, source),
-    }
-}
-
-/// The [indielinks](crate) [Raft] log storage
-///
-/// [Raft]: https://raft.github.io/raft.pdf
-// In my samples, the log storage is `Clone` via wrapping a non-clonable inner, as are the
-// [openraft] samples I've perused. That said, I couldn't see why it should be: once constructed we
-// just move it into the `Raft`. This is unlike the state machine: there, we need to give a
-// reference to the `Raft` while (likely) we keep a reference for the application so that it can
-// read state.
-//
-// The answer is found in [RaftLogStorage::get_log_reader]; you wouldn't think so-- the name and
-// signature suggests that we're returning a separate, new type. However, `RaftLogStorage` is
-// contrained to itself implement `RaftLogReader`, which, I suppose, is why every sample I've seen
-// just clones itself.
-//
-// This also complicates the approach of just implementing `RaftLogReader` and `RaftLogStorage`
-// directly on my backend implementations; i.e. just dispensing with `LogStore` altogether.
-// `scylla::Session` isn't `Clone` (at this time), and so implmeneting `get_log_reader()` would be
-// tough. We could pretty easily make it clone (by wrapping the native `scylla`) session field in a
-// reference & a guard, but I'd rather not take on that effort and performane hit if I don't have
-// to.
-//
-// This has gotten really irritating: this implementation really does nothing except instantiate a
-// few generic parameters & then forward every call to the `Backend` implementation. Once I have
-// this working (and tested!), I'd like to experiment with making `dynamodb::Client` and
-// `scylla::Session` both `Clone`, and then just implement `RaftLogStorage` directly on each of
-// them.
-#[derive(Clone)]
-pub struct LogStore {
-    storage: Arc<dyn Backend + Send + Sync>,
-}
-
-impl LogStore {
-    // pub fn new(storage: Arc<RwLock<dyn Backend + Send + Sync>>) -> LogStore {
-    pub fn new(storage: Arc<dyn Backend + Send + Sync>) -> LogStore {
-        LogStore { storage }
-    }
-}
-
-impl RaftLogReader<TypeConfig> for LogStore {
-    async fn try_get_log_entries<R>(
-        &mut self,
-        range: R,
-    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>>
-    where
-        R: RangeBounds<u64> + Clone + Debug + OptionalSend,
-    {
-        self.storage
-            // .read()
-            // .await
-            .try_get_log_entries(range.start_bound(), range.end_bound())
-            .await
-    }
-}
-
-impl RaftLogStorage<TypeConfig> for LogStore {
-    type LogReader = Self;
-
-    async fn get_log_state(&mut self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
-        self.storage./*read().await.*/get_log_state().await
-    }
-
-    async fn get_log_reader(&mut self) -> Self::LogReader {
-        self.clone()
-    }
-
-    async fn save_vote(&mut self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
-        self.storage./*read().await.*/save_vote(vote).await
-    }
-
-    async fn read_vote(&mut self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
-        self.storage./*read().await.*/read_vote().await
-    }
-
-    async fn append<I>(
-        &mut self,
-        entries: I,
-        callback: LogFlushed<TypeConfig>,
-    ) -> StdResult<(), StorageError<NodeId>>
-    where
-        I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
-        I::IntoIter: OptionalSend,
-    {
-        self.storage
-            // .read()
-            // .await
-            // This is particularly galling: since we can't use generic parameters in a dyn-safe
-            // trait, we need to make this completely useless copy:
-            .append(entries.into_iter().collect::<Vec<Entry<TypeConfig>>>())
-            .await?;
-        callback.log_io_completed(Ok(()));
-        Ok(())
-    }
-
-    async fn truncate(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
-        self.storage./*read().await.*/truncate(log_id).await
-    }
-
-    async fn purge(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
-        self.storage./*read().await.*/purge(log_id).await
     }
 }
 

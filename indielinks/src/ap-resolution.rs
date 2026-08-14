@@ -23,7 +23,7 @@
 //!
 //! [indielinks](crate) frequently needs to resolve an [ActivityPub] identifier (i.e. an URL naming
 //! some AP entity) to either the entire entity (a [Note], say), or to some attribute of that entity
-//! (given an URL naming an [Actor], return the location of the actor's inbox, say). So as to avoid
+//! (given an URL naming an [Actor], return the  location of the actor's inbox, say). So as to avoid
 //! excessive, unecessary network round trips, I've setup a caching service, built on top of the
 //! [Cache] mechanism.
 
@@ -291,7 +291,8 @@ mod test {
     use bytes::Bytes;
     use either::Either::Right;
     use indielinks_cache::{
-        network::null_client::NullClientFactory, raft::CacheNode, types::InMemoryLogStore,
+        network::null_client::NullClientFactory,
+        raft::{make_shared_cache_node, InMemoryBackend},
     };
     use indielinks_shared::{
         entities::generate_rsa_keypair,
@@ -347,14 +348,16 @@ mod test {
     async fn make_resolver(
         client: MockHttpClient,
     ) -> ApResolver<NullClientFactory, MockHttpClient> {
-        let cache_node = CacheNode::<NullClientFactory>::new(
+        let cache_node = make_shared_cache_node::<NullClientFactory>(
+            Arc::new(InMemoryBackend::default()),
             &Default::default(),
             NullClientFactory,
-            InMemoryLogStore::default(),
         )
         .await
         .unwrap();
         cache_node
+            .write()
+            .await
             .initialize([(0, Default::default())], vec![])
             .await
             .unwrap();

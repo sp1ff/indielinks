@@ -41,9 +41,9 @@ use tap::Pipe;
 use tracing::debug;
 use url::Url;
 
-use indielinks::{
-    cache::Backend as CacheBackend, dynamodb::Location, scylla::Session, util::Credentials,
-};
+use indielinks_cache::raft::Backend as CacheBackend;
+
+use indielinks::{dynamodb::Location, scylla::Session, util::Credentials};
 
 use tests_indielinks::{
     cache::{openraft_test_suite, raft_ops},

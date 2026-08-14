@@ -32,12 +32,14 @@ use tap::{Conv, Pipe};
 use tracing::{debug, error, info};
 
 use indielinks_cache::{
-    raft::{Metrics as RaftMetrics, StorageError},
+    raft::Metrics as RaftMetrics,
     types::{ClusterNode, NodeId},
 };
 
+use indielinks_cache::raft::Backend;
+
 use indielinks::{
-    cache::{Backend, LogStore, SLOT_RECENT_POSTS, SLOT_TOP_K_TAGS},
+    cache::{SLOT_RECENT_POSTS, SLOT_TOP_K_TAGS},
     grpc::InitClusterRequest,
 };
 use waitpid_any::WaitHandle;
@@ -45,51 +47,6 @@ use waitpid_any::WaitHandle;
 use crate::run::run;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                           Scaffolding for the `openraft` test suite                            //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-struct Dropper {
-    backend: Arc<dyn Backend + Send + Sync>,
-}
-
-impl Drop for Dropper {
-    #[allow(clippy::result_large_err)]
-    fn drop(&mut self) {
-        let backend = self.backend.clone();
-        let result = tokio::task::block_in_place(move || {
-            tokio::runtime::Handle::current().block_on(async move {
-                backend./*read().await.*/drop_all_rows().await
-            })
-        });
-        if result.is_err() {
-            error!("Failed to cleanup Raft storage: {result:#?}");
-            panic!();
-        }
-    }
-}
-
-struct Builder {
-    // backend: Arc<RwLock<dyn Backend + Send + Sync>>,
-    backend: Arc<dyn Backend + Send + Sync>,
-}
-
-impl Builder {
-    // pub fn new(backend: Arc<RwLock<dyn Backend + Send + Sync>>) -> Builder {
-    pub fn new(backend: Arc<dyn Backend + Send + Sync>) -> Builder {
-        Builder { backend }
-    }
-}
-
-impl indielinks_cache::raft::test::StoreBuilder<LogStore, Dropper> for Builder {
-    async fn build(&self) -> Result<(Dropper, LogStore), StorageError<NodeId>> {
-        Ok((
-            Dropper {
-                backend: self.backend.clone(),
-            },
-            LogStore::new(self.backend.clone()),
-        ))
-    }
-}
 
 fn kill_instance(local_state_base: &str, node_id: usize) -> Result<(), Failed> {
     let node_pid = format!("{local_state_base}{node_id}/indielinksd.pid")
@@ -114,7 +71,7 @@ fn kill_instance(local_state_base: &str, node_id: usize) -> Result<(), Failed> {
 ///
 /// [openraft]: https://docs.rs/openraft/latest/openraft/index.html
 pub fn openraft_test_suite(backend: Arc<dyn Backend + Send + Sync>) -> Result<(), Failed> {
-    let result = indielinks_cache::raft::test::test_storage(Builder::new(backend));
+    let result = indielinks_cache::raft::test_backend_implementations::test_backend(backend);
     if let Err(ref err) = result {
         error!("{err:#?}");
     }

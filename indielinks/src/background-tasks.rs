@@ -76,7 +76,7 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use indielinks_cache::raft::CacheNode;
+use indielinks_cache::raft::SharedCacheNode;
 use pin_project::pin_project;
 use scylla::DeserializeRow;
 use serde::{Deserialize, Serialize};
@@ -603,7 +603,7 @@ pub struct Context {
     pub local_client: crate::client_types::ClientType,
     pub general_purpose_client: crate::client_types::ClientType,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
-    pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
+    pub cache_node: SharedCacheNode<crate::cache::GrpcClientFactory>,
     pub ap_resolver: Arc<Mutex<ApResolver>>,
     pub home_timelines: Arc<Mutex<HomeTimelines>>,
 }

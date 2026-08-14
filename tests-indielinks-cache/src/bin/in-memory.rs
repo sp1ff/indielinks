@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -58,8 +58,8 @@ use indielinks_cache::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotError, InstallSnapshotRequest,
         InstallSnapshotResponse, RPCError, RPCOption, RaftError, VoteRequest, VoteResponse,
     },
-    raft::{CacheNode, Configuration},
-    types::{CacheId, ClusterNode, InMemoryLogStore, NodeId, SlotIndex, TypeConfig},
+    raft::{Configuration, InMemoryBackend, SharedCacheNode, make_shared_cache_node},
+    types::{CacheId, ClusterNode, NodeId, SlotIndex, TypeConfig},
 };
 
 use tests_indielinks_cache::{
@@ -291,28 +291,6 @@ impl indielinks_cache::network::Client for Client {
     }
 }
 
-#[cfg(test)]
-mod test {
-    use openraft::StorageError;
-
-    use super::*;
-
-    struct Builder;
-
-    impl indielinks_cache::raft::test::StoreBuilder<InMemoryLogStore> for Builder {
-        async fn build(&self) -> StdResult<((), InMemoryLogStore), StorageError<NodeId>> {
-            Ok(((), InMemoryLogStore::default()))
-        }
-    }
-
-    #[test_log::test]
-    fn test_log_store() {
-        let res = indielinks_cache::raft::test::test_storage(Builder);
-        debug!("openraft :=> {res:#?}");
-        assert!(res.is_ok());
-    }
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                   Raft API -- this is the Raft nodes talking to one another                    //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -322,7 +300,7 @@ async fn raft_append(
     Json(req): Json<AppendEntriesRequest<TypeConfig>>,
 ) -> axum::response::Response {
     // Serialize the entire `Result`
-    Json(state.node.append_entries(req).await).into_response()
+    Json(state.node.write().await.append_entries(req).await).into_response()
 }
 
 async fn raft_install(
@@ -330,7 +308,7 @@ async fn raft_install(
     Json(req): Json<InstallSnapshotRequest<TypeConfig>>,
 ) -> axum::response::Response {
     // Serialize the entire `Result`
-    Json(state.node.install_snapshot(req).await).into_response()
+    Json(state.node.write().await.install_snapshot(req).await).into_response()
 }
 
 async fn raft_vote(
@@ -338,7 +316,7 @@ async fn raft_vote(
     Json(req): Json<VoteRequest<NodeId>>,
 ) -> axum::response::Response {
     // Serialize the entire `Result`
-    Json(state.node.vote(req).await).into_response()
+    Json(state.node.write().await.vote(req).await).into_response()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -461,6 +439,8 @@ async fn admin_init(
 
         state
             .node
+            .write()
+            .await
             .initialize(BTreeMap::from_iter(nodes), slots)
             .await
             .tap(|result| info!("Initialization of the Raft yielded: {:?}", result))
@@ -485,7 +465,7 @@ async fn admin_init(
 }
 
 async fn admin_metrics(State(state): State<AppState>) -> axum::response::Response {
-    Json(state.node.metrics().await).into_response()
+    Json(state.node.read().await.metrics()).into_response()
 }
 
 /// Add a node to the cluster
@@ -500,6 +480,8 @@ async fn admin_add_learner(
             state
                 .node
                 // Imma try setting `blocking` to true for now
+                .write()
+                .await
                 .add_learner(node_id, ClusterNode { addr }, true)
                 .await,
         )
@@ -515,7 +497,7 @@ async fn admin_change_membership(
     State(state): State<AppState>,
     Json(req): Json<Vec<NodeId>>,
 ) -> axum::response::Response {
-    match state.node.change_membership(req, false).await {
+    match state.node.write().await.change_membership(req, false).await {
         Ok(rsp) => Json(rsp).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#?}")).into_response(),
     }
@@ -528,7 +510,7 @@ async fn get_slot(
     (
         StatusCode::OK,
         Json(GetSlotResponse {
-            slot: state.node.node_for_slot(slot).await,
+            slot: state.node.write().await.node_for_slot(slot).await,
         }),
     )
         .into_response()
@@ -538,7 +520,7 @@ async fn set_slots(
     State(state): State<AppState>,
     Json(SetSlotsRequest { slots }): Json<SetSlotsRequest>,
 ) -> axum::response::Response {
-    match state.node.set_slots(slots).await {
+    match state.node.write().await.set_slots(slots).await {
         Ok(_) => StatusCode::ACCEPTED,
         Err(err) => {
             error!("{err:?}");
@@ -574,7 +556,7 @@ fn options() -> impl Parser<Options> {
 struct AppState {
     id: NodeId,
     addr: SocketAddrV4,
-    node: CacheNode<ClientFactory>,
+    node: SharedCacheNode<ClientFactory>,
     cache: Arc<RwLock<Cache<ClientFactory, String, usize>>>,
 }
 
@@ -609,9 +591,10 @@ async fn main() {
         .election_timeout_min(Duration::from_millis(1500))
         .election_timeout_max(Duration::from_millis(3000))
         .build();
-    let this_node = CacheNode::new(&config, ClientFactory, InMemoryLogStore::default())
-        .await
-        .expect("Failed to create this process' indielinks-cache node");
+    let this_node =
+        make_shared_cache_node(Arc::new(InMemoryBackend::default()), &config, ClientFactory)
+            .await
+            .expect("Failed to create this process' indielinks-cache node");
 
     let state = AppState {
         id: opts.id,

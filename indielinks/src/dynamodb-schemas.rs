@@ -390,7 +390,7 @@ async fn create_tables(client: &Client) -> Result<()> {
         client = client,
         table_name = "raft_metadata",
         attr_defn = ("node_id", N),
-        attr_defn = ("flavor", S),
+        attr_defn = ("flavor", N),
         pk = "node_id",
         sk = "flavor"
     )?;

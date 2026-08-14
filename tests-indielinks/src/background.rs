@@ -36,7 +36,10 @@ use uuid::Uuid;
 
 use indielinks_shared::origin::Origin;
 
-use indielinks_cache::{cache::Cache, raft::CacheNode, types::InMemoryLogStore};
+use indielinks_cache::{
+    cache::Cache,
+    raft::{make_shared_cache_node, InMemoryBackend},
+};
 
 use indielinks::{
     acct::Account,
@@ -182,14 +185,16 @@ pub async fn first_background(
                                 &Default::default())
         .unwrap(/* known good */);
 
-    let cache_node = CacheNode::new(
+    let cache_node = make_shared_cache_node(
+        Arc::new(InMemoryBackend::default()),
         &Default::default(),
         GrpcClientFactory,
-        InMemoryLogStore::default(),
     )
     .await
     .unwrap();
     cache_node
+        .write()
+        .await
         .initialize([(0, Default::default())], vec![])
         .await
         .unwrap();
