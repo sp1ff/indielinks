@@ -1364,6 +1364,7 @@ where
                 heartbeat_interval: config.heartbeat_interval.as_millis() as u64,
                 election_timeout_min: config.election_timeout_min.as_millis() as u64,
                 election_timeout_max: config.election_timeout_max.as_millis() as u64,
+                snapshot_policy: config.snapshot_policy.clone(),
                 ..Default::default()
             }
             .validate()

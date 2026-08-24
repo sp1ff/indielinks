@@ -27,6 +27,7 @@ use http::StatusCode;
 use indielinks_shared::api::{RaftState, TopKTagsRequest};
 use libtest_mimic::Failed;
 use nonempty_collections::NEVec;
+use openraft::{log_id::LogId, CommittedLeaderId};
 use reqwest::{blocking::Client, Url};
 use tap::{Conv, Pipe};
 use tracing::{debug, error, info};
@@ -264,6 +265,163 @@ pub fn raft_ops(
     debug!("Cluster metrics: {current_metrics:#?}");
 
     assert!(node_0_metrics.raft.current_term < current_metrics.raft.current_term);
+
+    Ok(())
+}
+
+/// Snapshots tests-- force a snapshot or two to be taken, then re-start the cluster
+pub fn raft_snapshot(
+    nodes: impl IntoIterator<Item = (NodeId, (ClusterNode, Url))> + Clone,
+    local_state_base: &str,
+    config_base: &str,
+) -> Result<(), Failed> {
+    let client = Client::builder()
+        .user_agent("indielinks-test/raft-ops 0.0.1 (+sp1ff@pobox.com)")
+        .build()?;
+
+    let mut ops_endpoints: Vec<(NodeId, (ClusterNode, Url))> = nodes
+        .clone()
+        .into_iter()
+        .collect::<Vec<(NodeId, (ClusterNode, Url))>>();
+    ops_endpoints.sort_by_key(|lhs| lhs.0);
+    let ops_endpoints: NEVec<Url> = ops_endpoints
+        .into_iter()
+        .map(|(_, (_, ops))| ops)
+        .collect::<Vec<Url>>()
+        .try_into()?;
+
+    let mut all_nodes = nodes
+        .into_iter()
+        .collect::<Vec<(NodeId, (ClusterNode, Url))>>();
+    all_nodes.sort_by_key(|lhs| lhs.0);
+
+    assert!(
+        all_nodes.len() >= 3,
+        "raft_snapshot requires a cluster of at least three nodes"
+    );
+
+    let first_three = all_nodes
+        .iter()
+        .take(3)
+        .map(|(node_id, (cluster_node, _))| (*node_id, cluster_node.clone()))
+        .collect::<Vec<(NodeId, ClusterNode)>>();
+
+    let request = InitClusterRequest {
+        slots: vec![
+            (*SLOT_RECENT_POSTS, first_three[0].0),
+            (*SLOT_TOP_K_TAGS, first_three[1].0),
+        ],
+        nodes: first_three.clone(),
+    };
+
+    // Let's start by initializing a three-node cluster:
+    assert_eq!(
+        client
+            .post(ops_endpoints.first().join("ops/cache/init-cluster")?)
+            .json(&request)
+            .send()?
+            .error_for_status()?
+            .content_length(),
+        Some(0)
+    );
+
+    // Now, let's force some Raft logging, enough to trigger a snapshot
+    assert_eq!(
+        client
+            .post(ops_endpoints.first().join("ops/cache/slots")?)
+            .json(&vec![
+                (*SLOT_RECENT_POSTS, first_three[1].0),
+                (*SLOT_TOP_K_TAGS, first_three[2].0)
+            ])
+            .send()?
+            .error_for_status()?
+            .content_length(),
+        Some(0)
+    );
+
+    assert_eq!(
+        client
+            .post(ops_endpoints.first().join("ops/cache/slots")?)
+            .json(&vec![
+                (*SLOT_RECENT_POSTS, first_three[0].0),
+                (*SLOT_TOP_K_TAGS, first_three[1].0)
+            ])
+            .send()?
+            .error_for_status()?
+            .content_length(),
+        Some(0)
+    );
+
+    assert_eq!(
+        client
+            .post(ops_endpoints.first().join("ops/cache/slots")?)
+            .json(&vec![
+                (*SLOT_RECENT_POSTS, first_three[1].0),
+                (*SLOT_TOP_K_TAGS, first_three[2].0)
+            ])
+            .send()?
+            .error_for_status()?
+            .content_length(),
+        Some(0)
+    );
+
+    kill_instance(local_state_base, 2)?;
+    kill_instance(local_state_base, 1)?;
+    kill_instance(local_state_base, 0)?;
+
+    std::thread::sleep(Duration::from_millis(1500));
+
+    run(
+        "../infra/indielinks-cluster-node-up",
+        ["-L", local_state_base, "-C", config_base, "0"]
+            .into_iter()
+            .map(str::to_owned),
+    )?;
+    run(
+        "../infra/indielinks-cluster-node-up",
+        ["-L", local_state_base, "-C", config_base, "1"]
+            .into_iter()
+            .map(str::to_owned),
+    )?;
+    run(
+        "../infra/indielinks-cluster-node-up",
+        ["-L", local_state_base, "-C", config_base, "2"]
+            .into_iter()
+            .map(str::to_owned),
+    )?;
+
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let leader = client
+        .get(ops_endpoints[1].join("/ops/cache/metrics")?)
+        .send()?
+        .error_for_status()?
+        .json::<RaftMetrics>()?
+        .raft
+        .current_leader
+        .unwrap();
+
+    debug!("The new leader is {leader}");
+
+    let current_metrics = client
+        .get(ops_endpoints[leader as usize].join("/ops/cache/metrics")?)
+        .send()?
+        .error_for_status()?
+        .json::<RaftMetrics>()?;
+
+    debug!("Cluster metrics: {current_metrics:#?}");
+
+    assert_eq!(
+        // openraft::metrics::RaftMetrics<NodeId, ClusterNode>
+        current_metrics.raft.snapshot, // Option<LogId<NID>>
+        Some(LogId::<NodeId> {
+            leader_id: CommittedLeaderId::<NodeId> {
+                term: 1,
+                node_id: 0,
+            },
+            index: 3, // <===
+        })
+    );
 
     Ok(())
 }

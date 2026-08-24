@@ -1,10 +1,12 @@
 [domain]
 alternator-config-base = "../target/conf/cloud/indielinksd-alternator-"
+alternator-snapshot-config-base = "../target/conf/cloud/indielinksd-snapshot-alternator-"
 haproxy-id = "cloud"
 haproxy-port = 20755
 indielinks = "http://indiemark.local:20755"
 local-state-base = "/tmp/indielinksd-cloud-"
 scylla-config-base = "../target/conf/cloud/indielinksd-scylla-"
+scylla-snapshot-config-base = "../target/conf/cloud/indielinksd-snapshot-scylla-"
 scylla-env-file = "cloud.env"
 
 [domain.dynamo]

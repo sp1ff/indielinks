@@ -46,7 +46,7 @@ use indielinks_cache::raft::Backend as CacheBackend;
 use indielinks::{dynamodb::Location, scylla::Session, util::Credentials};
 
 use tests_indielinks::{
-    cache::{openraft_test_suite, raft_ops},
+    cache::{openraft_test_suite, raft_ops, raft_snapshot},
     helper::{DynamoConfig, ScyllaConfig},
     recent_posts::recent_posts,
     run::run,
@@ -164,9 +164,11 @@ pub enum FixtureId {
     ScyllaSingleNode,
     ScyllaCluster,
     ScyllaClusterPreConfigured,
+    ScyllaClusterSnapshot,
     DynamoDBSingleNode,
     DynamoDBCluster,
     DynamoDBClusterPreConfigured,
+    DynamoDBClusterSnapshot,
 }
 
 impl FromStr for FixtureId {
@@ -177,9 +179,11 @@ impl FromStr for FixtureId {
             "scylla-single-node" => Ok(FixtureId::ScyllaSingleNode),
             "scylla-cluster" => Ok(FixtureId::ScyllaCluster),
             "scylla-cluster-pre-configured" => Ok(FixtureId::ScyllaClusterPreConfigured),
+            "scylla-cluster-snapshot" => Ok(FixtureId::ScyllaClusterSnapshot),
             "dynamodb-single-node" => Ok(FixtureId::DynamoDBSingleNode),
             "dynamodb-cluster" => Ok(FixtureId::DynamoDBCluster),
             "dynamodb-cluster-pre-configured" => Ok(FixtureId::DynamoDBClusterPreConfigured),
+            "dynamodb-cluster-snapshot" => Ok(FixtureId::DynamoDBClusterSnapshot),
             _ => Err(FixtureIdSnafu { text: s.to_owned() }.build()),
         }
     }
@@ -203,6 +207,12 @@ pub struct Configuration {
     /// Prefix for Scylla indielinks configuration files for all cluster members
     #[serde(rename = "scylla-config-base")]
     pub scylla_config_base: String,
+    /// Prefix for Alternator indielinks "snapshot" configuration files for all cluster members
+    #[serde(rename = "alternator-snapshot-config-base")]
+    pub alternator_snapshot_config_base: String,
+    /// Prefix for Scylla indielinks "snapshot" configuration files for all cluster members
+    #[serde(rename = "scylla-snapshot-config-base")]
+    pub scylla_snapshot_config_base: String,
     /// Arbitrary identifier to distinguish the haproxy instance from others that may be running
     #[serde(rename = "haproxy-id")]
     pub haproxy_id: String,
@@ -275,6 +285,10 @@ impl Default for Configuration {
             local_state_base: "/tmp/indielinksd-master-".to_owned(),
             alternator_config_base: "../target/conf/master/indielinksd-alternator-".to_owned(),
             scylla_config_base: "../target/conf/master/indielinksd-scylla-".to_owned(),
+            alternator_snapshot_config_base:
+                "../target/conf/master/indielinksd-snapshot-alternator-".to_owned(),
+            scylla_snapshot_config_base: "../target/conf/master/indielinksd-snapshot-scylla-"
+                .to_owned(),
             haproxy_id: "0".to_owned(),
             haproxy_port: 20673,
             raft_nodes: HashMap::from([
@@ -427,7 +441,8 @@ impl Fixture for CacheFixture {
         match self.id {
             FixtureId::DynamoDBSingleNode
             | FixtureId::DynamoDBCluster
-            | FixtureId::DynamoDBClusterPreConfigured => Ok(Arc::new(
+            | FixtureId::DynamoDBClusterPreConfigured
+            | FixtureId::DynamoDBClusterSnapshot => Ok(Arc::new(
                 AlternatorBackend::new(
                     &cfg.dynamo.location,
                     cfg.dynamo.credentials.as_ref(),
@@ -437,7 +452,8 @@ impl Fixture for CacheFixture {
             )),
             FixtureId::ScyllaSingleNode
             | FixtureId::ScyllaCluster
-            | FixtureId::ScyllaClusterPreConfigured => Ok(Arc::new(
+            | FixtureId::ScyllaClusterPreConfigured
+            | FixtureId::ScyllaClusterSnapshot => Ok(Arc::new(
                 ScyllaBackend::new(
                     &cfg.scylla.hosts,
                     cfg.scylla.credentials.as_ref(),
@@ -461,6 +477,17 @@ impl Fixture for CacheFixture {
                     configuration.haproxy_port,
                 )?;
                 debug!("DynamoDBCluster setup...done.");
+            }
+            FixtureId::DynamoDBClusterSnapshot => {
+                debug!("DynamoDBClusterSnapshot setup...");
+                setup_scylla(configuration.scylla_env_file.as_deref())?;
+                setup_indielinks_cluster(
+                    &configuration.alternator_snapshot_config_base,
+                    &configuration.local_state_base,
+                    &configuration.haproxy_id,
+                    configuration.haproxy_port,
+                )?;
+                debug!("DynamoDBClusterSnapshot setup...done.");
             }
             FixtureId::ScyllaCluster => {
                 debug!("ScyllaCluster setup...");
@@ -489,6 +516,15 @@ impl Fixture for CacheFixture {
                 teardown_scylla(configuration.scylla_env_file.as_deref())?;
                 debug!("DynamoDBCluster teardown...done");
             }
+            FixtureId::DynamoDBClusterSnapshot => {
+                debug!("DynamoDBClusterSnapshot teardown...");
+                teardown_indielinks_cluster(
+                    &configuration.local_state_base,
+                    &configuration.haproxy_id,
+                )?;
+                teardown_scylla(configuration.scylla_env_file.as_deref())?;
+                debug!("DynamoDBClusterSnapshot teardown...done");
+            }
             FixtureId::ScyllaCluster => {
                 debug!("ScyllaCluster teardown...");
                 teardown_indielinks_cluster(
@@ -506,10 +542,15 @@ impl Fixture for CacheFixture {
 
 inventory::collect!(CacheFixture);
 
-// This is kinda lame-- I've only built-out two fixtures, so far.
+// This is kinda lame-- I haven't built-out all the clusters, yet.
 inventory::submit!(CacheFixture {
     id: FixtureId::DynamoDBCluster,
     name: "Alternator (cluster)"
+});
+
+inventory::submit!(CacheFixture {
+    id: FixtureId::DynamoDBClusterSnapshot,
+    name: "Alternator (cluster/snapshot)"
 });
 
 inventory::submit!(CacheFixture {
@@ -616,6 +657,16 @@ inventory::submit!(SyncTest {
         &cfg.indielinks
     ),
     fixtures: Some(&[FixtureId::ScyllaCluster, FixtureId::DynamoDBCluster])
+});
+
+inventory::submit!(SyncTest {
+    name: "020raft_snapshot",
+    test_fn: |cfg, backend| raft_snapshot(
+        cfg.raft_nodes,
+        &cfg.local_state_base,
+        backend.configuration_base(),
+    ),
+    fixtures: Some(&[FixtureId::DynamoDBClusterSnapshot])
 });
 
 // Nb. that async tests will run in a different fixture instance than the synchronous tests.

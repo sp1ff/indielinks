@@ -52,7 +52,7 @@ use rmp_serde::{from_slice, to_vec};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
-use tracing::error;
+use tracing::{debug, error};
 use url::Url;
 use uuid::Uuid;
 
@@ -2686,6 +2686,7 @@ impl CacheBackend for Client {
         meta: &SnapshotMeta<NodeId, ClusterNode>,
         snapshot_bytes: &[u8],
     ) -> StdResult<(), StorageError<NodeId>> {
+        debug!("Saving snapshot");
         async fn save_snapshot1(
             client: &::aws_sdk_dynamodb::Client,
             node_id: NodeId,
@@ -2751,6 +2752,7 @@ impl CacheBackend for Client {
     /// Truncate logs since log_id, inclusive
     #[tracing::instrument(skip(self))]
     async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        debug!("Truncating log to {log_id}");
         async fn truncate1(
             client: &::aws_sdk_dynamodb::Client,
             node_id: NodeId,

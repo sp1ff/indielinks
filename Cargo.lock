@@ -7468,6 +7468,7 @@ dependencies = [
  "nonempty-collections",
  "nonzero",
  "once_cell",
+ "openraft",
  "picky",
  "regex",
  "reqwest",

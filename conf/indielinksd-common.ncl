@@ -95,7 +95,7 @@ let peppers = import "peppers.ncl" in
         heartbeat-interval = { secs = 0, nanos = 50000000 },    # 50ms
         election-timeout-min = { secs = 0, nanos = 150000000 }, # 150ms
         election-timeout-max = { secs = 0, nanos = 300000000 }, # 300ms
-        snapshot-policy = { LogsSinceLast = 100 }
+        snapshot-policy | default = { LogsSinceLast = 5000 }
     },
     client-exponential-backoff = {
         jitter = 10,
