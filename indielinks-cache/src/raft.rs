@@ -664,6 +664,9 @@ impl StateMachineStorage {
         data.ring.sort();
     }
 
+    // Clippy is complaining about the size of the return value on nighly, but I don't controll this
+    // signature.
+    #[allow(clippy::result_large_err)]
     async fn process_entry(
         &self,
         entry: Entry<TypeConfig>,
@@ -729,6 +732,9 @@ impl StateMachineStorage {
         debug!("My local slots are now: {:#?}", data.slots);
     }
 
+    // Clippy is complaining about the size of the return value on nighly, but I don't controll this
+    // signature.
+    #[allow(clippy::result_large_err)]
     async fn update_membership(
         &self,
         log_id: LogId<NodeId>,
