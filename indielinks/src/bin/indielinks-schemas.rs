@@ -57,6 +57,9 @@
 //!
 //! [here]: https://github.com/scylladb/care-pet/blob/master/rust/src/database/migrate/mod.rs
 
+// Cf. <https://github.com/rust-lang/rust/issues/159228>
+#![recursion_limit = "256"]
+
 use std::{fmt::Display, io, net::SocketAddr, ops::Deref, sync::Arc};
 
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
