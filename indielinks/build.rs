@@ -35,6 +35,7 @@ fn export_cluster_toml(
     ctx: &mut nickel_lang::Context,
     stack: &str,
     source_ncl: &str,
+    stem: &str,
     backend: &str,
     target_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -52,11 +53,8 @@ fn export_cluster_toml(
             ctx.expr_to_toml(&expr)
                 .map_err(|err| format!("{err:#?}"))
                 .and_then(|toml| {
-                    std::fs::write(
-                        format!("{target_dir}/indielinksd-{backend}-{i}.toml"),
-                        &toml,
-                    )
-                    .map_err(|err| format!("{err:#?}"))
+                    std::fs::write(format!("{target_dir}/{stem}-{backend}-{i}.toml"), &toml)
+                        .map_err(|err| format!("{err:#?}"))
                 })
         })
         .collect::<Result<Vec<_>, _>>()
@@ -88,6 +86,7 @@ fn configure_stack(
         ctx,
         stack,
         "indielinksd-cluster-scylla.ncl",
+        "indielinksd",
         "scylla",
         &target_directory,
     )?;
@@ -95,6 +94,23 @@ fn configure_stack(
         ctx,
         stack,
         "indielinksd-cluster-alternator.ncl",
+        "indielinksd",
+        "alternator",
+        &target_directory,
+    )?;
+    export_cluster_toml(
+        ctx,
+        stack,
+        "indielinksd-cluster-snapshot-scylla.ncl",
+        "indielinksd-snapshot",
+        "scylla",
+        &target_directory,
+    )?;
+    export_cluster_toml(
+        ctx,
+        stack,
+        "indielinksd-cluster-snapshot-alternator.ncl",
+        "indielinksd-snapshot",
         "alternator",
         &target_directory,
     )
@@ -132,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = nickel_lang::Context::new().with_added_import_paths(vec!["../conf".into()]);
     // It's a bit irritating to have the list of stacks hard-coded; we should drive this off of,
     // well, off of a configuration file.
-    ["master", "bugfix", "front-end", "pre-alpha"]
+    ["master", "bugfix", "front-end", "pre-alpha", "cloud"]
         .into_iter()
         .map(|stack| configure_stack(&mut ctx, stack))
         .collect::<Result<Vec<_>, _>>()

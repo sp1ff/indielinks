@@ -17,7 +17,7 @@
 //!
 //! Backend-agnostic test logic for the user API goes here.
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use libtest_mimic::Failed;
 use reqwest::{Client, StatusCode, Url};
@@ -32,32 +32,56 @@ use indielinks::http::ErrorResponseBody;
 
 use crate::helper::Helper;
 
+async fn timed_request<F, OP>(f: OP, description: &str) -> F::Output
+where
+    OP: FnOnce() -> F,
+    F: Future,
+{
+    let start = std::time::Instant::now();
+    let result = f().await;
+    tracing::debug!(elapsed = ?start.elapsed(), description);
+    result
+}
+
 /// Test `/user/signup`
-pub async fn test_signup(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Result<(), Failed> {
+pub async fn test_signup(
+    url: Url,
+    ops: Url,
+    utils: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
     // Cleanup the test user we'll create if he's around from a previous test
     let _ = utils.remove_user(&Username::new("johndoe").unwrap()).await;
 
     let client = Client::new();
 
-    let rsp = client
-        .post(url.join("/api/v1/users/signup")?)
-        .json(
-            &json!({"username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"}),
-        )
-        .send()
-        .await?;
+    let rsp = timed_request(
+        || {
+            client
+                .post(ops.join("/ops/users/signup").expect("join should be valid"))
+                .json(&json!({
+                    "username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"
+                }))
+                .send()
+        },
+        "First user signup call",
+    )
+    .await;
+    let rsp = rsp.expect("/ops/users/signup should be successful");
     assert_eq!(StatusCode::CREATED, rsp.status());
 
     let body = rsp.json::<SignupRsp>().await?;
     assert_eq!("Welcome to indielinks!", body.greeting);
 
-    let rsp = client
-        .post(url.join("/api/v1/users/signup")?)
-        .json(
-            &json!({"username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"}),
-        )
-        .send()
-        .await?;
+    let rsp = timed_request(|| {
+        client
+            .post(ops.join("/ops/users/signup").expect("Join should be valid"))
+            .json(
+                &json!({"username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"}),
+            )
+            .send()
+    },
+    "Second user signup call").await;
+    let rsp = rsp.expect("/ops/users/signup (duplicate username) should be successful");
     assert_eq!(StatusCode::BAD_REQUEST, rsp.status());
 
     let body = rsp.json::<ErrorResponseBody>().await?;
@@ -75,20 +99,28 @@ pub async fn test_signup(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Resu
 }
 
 /// Test `/users/mint-key`
-pub async fn test_mint_key(url: Url, utils: Arc<dyn Helper + Send + Sync>) -> Result<(), Failed> {
+pub async fn test_mint_key(
+    url: Url,
+    ops: Url,
+    utils: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
     // Cleanup the test user we'll create if he's around from a previous test
     let _ = utils.remove_user(&Username::new("johndoe").unwrap()).await;
 
     let client = Client::new();
 
     // Alright-- let's create a user...
-    let rsp = client
-        .post(url.join("/api/v1/users/signup")?)
-        .json(
-            &json!({"username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"}),
-        )
-        .send()
-        .await?;
+    let rsp = timed_request(|| {
+        client
+            .post(ops.join("/ops/users/signup").expect("join should be valid"))
+            .json(
+                &json!({"username": "johndoe", "password":"f00 b@r sp1at", "email": "jdoe@gmail.com"}),
+            )
+            .send()
+    },
+                            "mint-key signup request")
+        .await;
+    let rsp = rsp.expect("/ops/users/signup (mint-key) should be successful");
     assert_eq!(StatusCode::CREATED, rsp.status());
     let body = rsp.json::<SignupRsp>().await?;
     assert_eq!("Welcome to indielinks!", body.greeting);

@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -89,7 +89,7 @@ use nonzero::nonzero;
 use serde::{Serialize, de::DeserializeOwned};
 use snafu::{Backtrace, ResultExt, Snafu};
 
-use crate::{network::ClientFactory, raft::CacheNode, types::CacheId};
+use crate::{network::ClientFactory, raft::SharedCacheNode, types::CacheId};
 
 use std::error::Error as StdError;
 
@@ -140,7 +140,7 @@ pub type StdResult<T, E> = std::result::Result<T, E>;
 // I believe to be foldhash.
 pub struct Cache<F: ClientFactory, K, V> {
     id: CacheId,
-    node: CacheNode<F>, // Cheaply clonable
+    node: SharedCacheNode<F>,
     /// This node's partitions' storage. The [Mutex] is regrettable, but, I suppose, not surprising,
     /// given that we are using an LRU cache. Even a fetch will mutate the datastructure, and in a
     /// way in which it would be tough to provide some kind of per-entry locking. I have a task to
@@ -155,34 +155,50 @@ where
     K: Clone + Eq + std::hash::Hash + Serialize + Send + Sync + Debug,
     V: Clone + DeserializeOwned + Serialize + Send + Sync,
 {
-    pub fn new(id: CacheId, node: impl Into<CacheNode<F>>) -> Cache<F, K, V> {
+    pub fn new(id: CacheId, node: SharedCacheNode<F>) -> Cache<F, K, V> {
         Cache {
             id,
-            node: node.into(),
+            node,
             map: Mutex::new(LruCache::new(nonzero!(256usize))),
         }
     }
     pub async fn get(&self, k: &K) -> StdResult<Option<V>, Error<F::CacheClient>> {
         // I need to hash `k`, get the responsible node from our Raft, and, if it's not this node,
         // send a message to that node.
-        let nodeid = self.node.node_for_key(k).await.context(UninitSnafu)?;
-        if self.node.id().await == nodeid {
+        let nodeid = self
+            .node
+            .read()
+            .await
+            .node_for_key(k)
+            .await
+            .context(UninitSnafu)?;
+        if self.node.read().await.id() == nodeid {
             Ok(self.map.lock().expect("Mutex poisoned").get(k).cloned())
         } else {
             Ok(self
                 .node
+                .write()
+                .await
                 .cache_lookup::<K, V>(nodeid, self.id, k.clone())
                 .await
                 .context(LookupSnafu)?)
         }
     }
     pub async fn insert(&self, k: K, v: V) -> StdResult<(), Error<F::CacheClient>> {
-        let nodeid = self.node.node_for_key(&k).await.context(UninitSnafu)?;
-        if self.node.id().await == nodeid {
+        let nodeid = self
+            .node
+            .read()
+            .await
+            .node_for_key(&k)
+            .await
+            .context(UninitSnafu)?;
+        if self.node.read().await.id() == nodeid {
             self.map.lock().expect("Mutex poisoned").put(k, v);
             Ok(())
         } else {
             self.node
+                .write()
+                .await
                 .cache_insert::<K, V>(nodeid, self.id, k, v)
                 .await
                 .context(InsertSnafu)?;
@@ -197,16 +213,23 @@ where
 #[cfg(test)]
 mod test {
 
-    use crate::{network::null_client::NullClientFactory, types::InMemoryLogStore};
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
+    use crate::{
+        network::null_client::NullClientFactory,
+        raft::{CacheNode, InMemoryBackend},
+    };
 
     use super::*;
 
     #[tokio::test]
     async fn test_trivial_cache() {
         let cache_node = CacheNode::<NullClientFactory>::new(
+            Arc::new(InMemoryBackend::default()),
             &Default::default(),
             NullClientFactory,
-            InMemoryLogStore::default(),
         )
         .await
         .unwrap();
@@ -214,6 +237,9 @@ mod test {
             .initialize([(0, Default::default())], vec![])
             .await
             .unwrap();
+
+        let cache_node = Arc::new(RwLock::new(cache_node));
+
         let cache: Cache<NullClientFactory, String, usize> = Cache::new(0, cache_node);
         let key = "Hello".to_owned();
         cache.insert(key.clone(), 11).await.unwrap();

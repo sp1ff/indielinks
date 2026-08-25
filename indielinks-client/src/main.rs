@@ -113,6 +113,10 @@ enum Error {
         source: Box<indielinks_client::import_onetab::Error>,
         backtrace: Backtrace,
     },
+    #[snafu(display(
+        "The ops API origin must be specified, either in config or on the command line"
+    ))]
+    Ops,
     #[snafu(display("Failed to find the next ',' or ']'"))]
     Parse,
     #[snafu(display("While prompting for a password, {source}"))]
@@ -187,6 +191,8 @@ struct ConfigV1 {
     pub token: Option<SecretString>,
     // alright, well for these *two* items...
     pub api: Option<Origin>,
+    // alright, well, for these *three* items...
+    pub ops: Option<Origin>,
     /// Rate limit for requests to indielinks
     #[serde(rename = "rate-limit")]
     pub rate_limit: RateLimit,
@@ -203,6 +209,15 @@ impl ConfigV1 {
             None => self,
         }
     }
+    pub fn set_ops(self, ops: Option<&Origin>) -> Self {
+        match ops {
+            Some(ops) => ConfigV1 {
+                ops: Some(ops.clone()),
+                ..self
+            },
+            None => self,
+        }
+    }
     pub fn set_token(self, token: Option<&SecretString>) -> Self {
         match token {
             Some(token) => ConfigV1 {
@@ -214,6 +229,9 @@ impl ConfigV1 {
     }
     pub fn api(&self) -> Option<&Origin> {
         self.api.as_ref()
+    }
+    pub fn ops(&self) -> Option<&Origin> {
+        self.ops.as_ref()
     }
     pub fn token(&self) -> Option<&SecretString> {
         self.token.as_ref()
@@ -238,6 +256,11 @@ impl Configuration {
             Configuration::V1(config_v1) => Configuration::V1(config_v1.set_api(api)),
         }
     }
+    pub fn set_ops(self, ops: Option<&Origin>) -> Self {
+        match self {
+            Configuration::V1(config_v1) => Configuration::V1(config_v1.set_ops(ops)),
+        }
+    }
     pub fn set_token(self, token: Option<&SecretString>) -> Self {
         match self {
             Configuration::V1(config_v1) => Configuration::V1(config_v1.set_token(token)),
@@ -246,6 +269,11 @@ impl Configuration {
     pub fn api(&self) -> Option<&Origin> {
         match self {
             Configuration::V1(config_v1) => config_v1.api(),
+        }
+    }
+    pub fn ops(&self) -> Option<&Origin> {
+        match self {
+            Configuration::V1(config_v1) => config_v1.ops(),
         }
     }
     pub fn targets(&self) -> &HashMap<String, Target> {
@@ -357,6 +385,15 @@ sub-command is 'import', but it will be built-out as circumstances warrant.",
                 .value_parser(value_parser!(Origin))
                 .env("INDIC_API")
                 .help("Specify the location of the indielinks API to which you wish to speak")
+        )
+        .arg(
+            Arg::new("ops")
+                .short('O')
+                .long("ops")
+                .num_args(1)
+                .value_parser(value_parser!(Origin))
+                .env("INDIC_OPS")
+                .help("Specify the location of the indielinks operationals API to which you wish to speak")
         )
         .arg(
             Arg::new("config")
@@ -646,6 +683,7 @@ to be escaped; the implementation will handle that.")
 
     // Patch-up our configuration, if we got any of these on the command line:
     cfg = cfg.set_api(matches.get_one::<Origin>("api"));
+    cfg = cfg.set_ops(matches.get_one::<Origin>("ops"));
     cfg = cfg.set_token(matches.get_one::<SecretString>("token"));
 
     let client = make_indielinks_client(
@@ -765,6 +803,7 @@ to be escaped; the implementation will handle that.")
             let api_key = add_user(
                 client,
                 cfg.api().context(ApiSnafu)?,
+                cfg.ops().context(OpsSnafu)?,
                 username,
                 &password,
                 email,

@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -23,10 +23,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Debug,
-    fs::{DirEntry, File},
-    io::{self, ErrorKind},
+    fs::{DirEntry, File, create_dir, read_dir, remove_dir_all, remove_file},
+    io::{self, Cursor, ErrorKind},
     net::{SocketAddr, SocketAddrV4},
-    ops::RangeBounds,
+    ops::{Bound, RangeBounds},
     path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
@@ -43,14 +43,13 @@ use axum::{
 use bpaf::{Parser, construct};
 use http::StatusCode;
 use openraft::{
-    AnyError, Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogId,
-    RaftLogReader, StorageError, StorageIOError, Vote,
+    AnyError, Entry, ErrorSubject, ErrorVerb, LogId, LogState, RaftLogId, Snapshot, SnapshotMeta,
+    StorageError, StorageIOError, Vote,
     error::{NetworkError, RemoteError, Unreachable},
-    storage::{LogFlushed, RaftLogStorage},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{from_value, to_value};
-use snafu::{Backtrace, ResultExt, Snafu};
+use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Pipe, Tap};
 use tokio::{
     net::TcpListener,
@@ -68,7 +67,10 @@ use indielinks_cache::{
         InstallSnapshotRequest, InstallSnapshotResponse, RPCError, RPCOption, RaftError,
         VoteRequest, VoteResponse,
     },
-    raft::{CacheNode, Configuration},
+    raft::{
+        Backend as CacheBackend, Configuration, LogEntryIterator, SharedCacheNode,
+        make_shared_cache_node,
+    },
     types::{CacheId, ClusterNode, NodeId, SlotIndex, TypeConfig},
 };
 use tests_indielinks_cache::{
@@ -103,6 +105,18 @@ pub enum Error {
     #[snafu(display("Cache RPC response with an error status code: {source}"))]
     CacheRpcStatus {
         source: reqwest::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("while cleaning-up extant storage directory {p:?}; {source}"))]
+    InitialCleanup {
+        p: PathBuf,
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("while creating the storage directory {p:?}; {source}"))]
+    InitialCreate {
+        p: PathBuf,
+        source: std::io::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("While deserializing from a JSON value: {source}"))]
@@ -304,24 +318,44 @@ impl network::Client for Client {
 // I'm pretty-sure I need to serialize all these methods; I'm going to try to do so by wrapping our
 // state (the storage directory) in a lock.
 #[derive(Clone)]
-struct LogStore {
+struct Backend {
     store: Arc<Mutex<PathBuf>>,
+}
+
+impl Drop for Backend {
+    fn drop(&mut self) {
+        remove_dir_all(self.store.lock().expect("Poisoned mutex").as_path())
+            .expect("Failed to cleanup on-disk backend");
+    }
 }
 
 // Weirdly (to me), the openraft examples use the log *index* as a unique identifier when
 // serializing entries. For instance, the in-memory implementation indexes its map using the index,
 // not the entire `LogId`. The RocksDB implementation only persists the index, not the entire ID.
 // This all despite the fact that `LogId` implements `Ord`.
-impl LogStore {
-    pub fn new(p: PathBuf) -> LogStore {
-        LogStore {
+impl Backend {
+    pub fn new(p: PathBuf) -> Result<Self> {
+        debug!("Creating a backend backed by {p:?}");
+        // Remove anything laying around from a previous invocation...
+        match remove_dir_all(&p) {
+            Err(err) if err.kind() != ErrorKind::NotFound => {
+                return Err(InitialCleanupSnafu { p: p.clone() }.into_error(err));
+            }
+            _ => (),
+        };
+        // then create the backing directory fresh & clean:
+        create_dir(&p).context(InitialCreateSnafu { p: p.clone() })?;
+        Ok(Self {
             store: Arc::new(Mutex::new(p)),
-        }
+        })
     }
     /// Convert an arbitrary error to a [StorageError]
     ///
     /// This is handy when invoking fallible operations in the implementation of [RaftLogReader] or
     /// [RaftLogStorage].
+    ///
+    /// [RaftLogReader]: openraft::storage::RaftLogReader
+    /// [RaftLogStorage]: openraft::storage::RaftLogStorage
     fn to_err(
         subject: ErrorSubject<NodeId>,
         verb: ErrorVerb,
@@ -364,64 +398,73 @@ impl LogStore {
     #[allow(clippy::result_large_err)]
     fn read_entry<P: AsRef<Path>>(path: P) -> StdResult<Entry<TypeConfig>, StorageError<NodeId>> {
         let file = File::open(path)
-            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?;
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?;
         serde_json::from_reader::<File, Entry<TypeConfig>>(file)
-            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
     }
 }
 
-impl RaftLogReader<TypeConfig> for LogStore {
-    async fn try_get_log_entries<R>(
-        &mut self,
-        range: R,
-    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>>
-    where
-        R: RangeBounds<u64> + Clone + Debug + OptionalSend,
-    {
+#[async_trait]
+impl CacheBackend for Backend {
+    #[allow(clippy::result_large_err)]
+    async fn append(
+        &self,
+        entries: &mut dyn LogEntryIterator,
+    ) -> StdResult<(), StorageError<NodeId>> {
         let store = self.store.lock().expect("Poisoned mutex");
-
-        LogStore::log_entries(&*store)
-            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?
-            .iter()
-            .filter_map(|path| {
-                if range.contains(
-                    &path.to_str().unwrap(/* known good */).parse::<u64>().unwrap(/* known good*/),
-                ) {
-                    Some(LogStore::read_entry(store.join(path)))
-                } else {
-                    None
-                }
+        entries
+            .into_iter()
+            .map(|entry| {
+                // Super-lame, but in order to get the filenames to compare correctly (e.g. we want
+                // "9" to be less than "10"), we need to zero-pad the names.
+                assert!(entry.log_id.index < 100000);
+                std::fs::File::create(store.join(format!("{:05}", entry.log_id.index)))
+                    .map_err(|err| {
+                        Self::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
+                    })
+                    .and_then(|file| {
+                        serde_json::to_writer(file, &entry).map_err(|err| {
+                            Self::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
+                        })
+                    })
             })
-            .collect::<StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>>>()
+            .collect::<StdResult<Vec<()>, StorageError<NodeId>>>()?;
+        Ok(())
     }
-}
 
-impl RaftLogStorage<TypeConfig> for LogStore {
-    type LogReader = LogStore;
+    async fn drop_all_rows(&self) -> StdResult<(), StorageError<NodeId>> {
+        read_dir(self.store.lock().expect("Poisoned mutex").as_path())
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Store, ErrorVerb::Read, &err))?
+            .collect::<StdResult<Vec<DirEntry>, _>>()
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Store, ErrorVerb::Read, &err))?
+            .into_iter()
+            .map(|dirent| remove_file(dirent.path()))
+            .collect::<StdResult<Vec<_>, _>>()
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Store, ErrorVerb::Delete, &err))
+            .map(|_| ())
+    }
 
     #[allow(clippy::result_large_err)]
-    async fn get_log_state(&mut self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
+    async fn get_log_state(&self) -> StdResult<LogState<TypeConfig>, StorageError<NodeId>> {
         let store = self.store.lock().expect("Poisoned mutex");
 
         let last_purged_log_id = match std::fs::File::open(store.join("last-purged")) {
             Ok(file) => serde_json::from_reader::<std::fs::File, LogId<NodeId>>(file)
                 .map(Some)
-                .map_err(|err| {
-                    LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err)
-                }),
+                .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err)),
             Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(LogStore::to_err(
+            Err(err) => Err(Self::to_err(
                 ErrorSubject::<NodeId>::Vote,
                 ErrorVerb::Read,
                 &err,
             )),
         }?;
 
-        let last_log_id = LogStore::log_entries(&*store)
-            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?
+        let last_log_id = Self::log_entries(&*store)
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?
             .iter()
             .next_back()
-            .map(|path| LogStore::read_entry(store.join(path)))
+            .map(|path| Self::read_entry(store.join(path)))
             .transpose()?
             .map(|entry| *entry.get_log_id())
             .or(last_purged_log_id);
@@ -433,87 +476,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             last_log_id,
         })
     }
-    async fn get_log_reader(&mut self) -> Self::LogReader {
-        self.clone()
-    }
-    async fn save_vote(&mut self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
-        let store = self.store.lock().expect("Poisoned mutex");
-        let file = std::fs::File::create(store.join("v")).map_err(|err| {
-            LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
-        })?;
-        serde_json::to_writer(file, vote)
-            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))
-    }
-    async fn read_vote(&mut self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
-        let store = self.store.lock().expect("Poisoned mutex");
-        match std::fs::File::open(store.join("v")) {
-            Ok(file) => serde_json::from_reader::<std::fs::File, Vote<NodeId>>(file)
-                .map(Some)
-                .map_err(|err| {
-                    LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err)
-                }),
-            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(LogStore::to_err(
-                ErrorSubject::<NodeId>::Vote,
-                ErrorVerb::Read,
-                &err,
-            )),
-        }
-    }
-    #[allow(clippy::result_large_err)]
-    async fn append<I>(
-        &mut self,
-        entries: I,
-        callback: LogFlushed<TypeConfig>,
-    ) -> StdResult<(), StorageError<NodeId>>
-    where
-        I: IntoIterator<Item = Entry<TypeConfig>> + OptionalSend,
-        I::IntoIter: OptionalSend,
-    {
-        let store = self.store.lock().expect("Poisoned mutex");
-        entries
-            .into_iter()
-            .map(|entry| {
-                // Super-lame, but in order to get the filenames to compare correctly (e.g. we want
-                // "9" to be less than "10"), we need to zero-pad the names.
-                assert!(entry.log_id.index < 100000);
-                std::fs::File::create(store.join(format!("{:05}", entry.log_id.index)))
-                    .map_err(|err| {
-                        LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
-                    })
-                    .and_then(|file| {
-                        serde_json::to_writer(file, &entry).map_err(|err| {
-                            LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
-                        })
-                    })
-            })
-            .collect::<StdResult<Vec<()>, StorageError<NodeId>>>()?;
-        callback.log_io_completed(Ok(()));
-        Ok(())
-    }
-    /// Remove log entry `log_id` and later (inclusive)
-    ///
-    /// The trait [docs] indicate that this operation must "not leave a *hole* in the logs", but I don't
-    /// see how that could occur.
-    ///
-    /// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.truncate
-    #[allow(clippy::result_large_err)]
-    async fn truncate(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
-        info!("truncate: {log_id:?}");
-        let store = self.store.lock().expect("Poisoned mutex");
-        let log_id = PathBuf::from(format!("{:05}", log_id.index));
-        LogStore::log_entries(&*store)
-            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))?
-            .into_iter()
-            .filter(|pth| *pth >= log_id)
-            .map(|pth| {
-                std::fs::remove_file(store.join(pth)).map_err(|err| {
-                    LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
-                })
-            })
-            .collect::<StdResult<Vec<()>, StorageError<NodeId>>>()
-            .map(|_| ())
-    }
+
     /// Remove log entries up to `log_id` (inclusive)
     ///
     /// The trait [docs] indicate that this operation must "not leave a *hole* in the logs", but I don't
@@ -521,75 +484,191 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     ///
     /// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.purge
     #[allow(clippy::result_large_err)]
-    async fn purge(&mut self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+    async fn purge(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
         info!("purge: {log_id:?}");
         let store = self.store.lock().expect("Poisoned mutex");
 
-        let file = std::fs::File::create(store.join("last-purged")).map_err(|err| {
-            LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
-        })?;
-        serde_json::to_writer(file, &log_id).map_err(|err| {
-            LogStore::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err)
-        })?;
+        let file = std::fs::File::create(store.join("last-purged"))
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))?;
+        serde_json::to_writer(file, &log_id)
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))?;
 
         let log_id = PathBuf::from(format!("{:05}", log_id.index));
-        LogStore::log_entries(&*store)
-            .map_err(|err| LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))?
+        Self::log_entries(&*store)
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))?
             .into_iter()
             .filter(|pth| *pth <= log_id)
             .map(|pth| {
                 std::fs::remove_file(store.join(&pth)).map_err(|err| {
-                    LogStore::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
+                    Self::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
                 })
             })
             .collect::<StdResult<Vec<()>, StorageError<NodeId>>>()
             .map(|_| ())
     }
+
+    /// Read a [Snapshot] to storage, if it exists
+    ///
+    /// [Snapshot]: openraft::storage::Snapshot
+    async fn read_snapshot(&self) -> StdResult<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
+        let store = self.store.lock().expect("Poisoned mutex");
+
+        let meta = match std::fs::File::open(store.join("sm")) {
+            Ok(file) => {
+                serde_json::from_reader::<std::fs::File, SnapshotMeta<NodeId, ClusterNode>>(file)
+                    .map_err(|err| {
+                        Self::to_err(
+                            ErrorSubject::<NodeId>::Snapshot(None),
+                            ErrorVerb::Read,
+                            &err,
+                        )
+                    })?
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                debug!("Request for non-existent snapshot-- returning Ok(None)");
+                return Ok(None);
+            }
+            Err(err) => {
+                debug!("Error while requesting snapshot: {err:#?}");
+                return Err(Self::to_err(
+                    ErrorSubject::<NodeId>::Snapshot(None),
+                    ErrorVerb::Read,
+                    &err,
+                ));
+            }
+        };
+
+        let data = std::fs::read(store.join("sd")).map_err(|err| {
+            Self::to_err(
+                ErrorSubject::<NodeId>::Snapshot(None),
+                ErrorVerb::Read,
+                &err,
+            )
+        })?;
+
+        Ok(Some(Snapshot {
+            meta,
+            snapshot: Box::new(Cursor::new(data)),
+        }))
+    }
+
+    async fn read_vote(&self) -> StdResult<Option<Vote<NodeId>>, StorageError<NodeId>> {
+        let store = self.store.lock().expect("Poisoned mutex");
+        match std::fs::File::open(store.join("v")) {
+            Ok(file) => serde_json::from_reader::<std::fs::File, Vote<NodeId>>(file)
+                .map(Some)
+                .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Read, &err)),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(Self::to_err(
+                ErrorSubject::<NodeId>::Vote,
+                ErrorVerb::Read,
+                &err,
+            )),
+        }
+    }
+
+    /// Save a [Snapshot] to storage
+    async fn save_snapshot(
+        &self,
+        meta: &SnapshotMeta<NodeId, ClusterNode>,
+        snapshot_bytes: &[u8],
+    ) -> StdResult<(), StorageError<NodeId>> {
+        let store = self.store.lock().expect("Poisoned mutex");
+        let file = std::fs::File::create(store.join("sm")).map_err(|err| {
+            Self::to_err(
+                ErrorSubject::<NodeId>::Snapshot(None),
+                ErrorVerb::Write,
+                &err,
+            )
+        })?;
+        serde_json::to_writer(file, meta).map_err(|err| {
+            Self::to_err(
+                ErrorSubject::<NodeId>::Snapshot(None),
+                ErrorVerb::Write,
+                &err,
+            )
+        })?;
+
+        std::fs::write(store.join("sd"), snapshot_bytes).map_err(|err| {
+            Self::to_err(
+                ErrorSubject::<NodeId>::Snapshot(None),
+                ErrorVerb::Write,
+                &err,
+            )
+        })
+    }
+
+    async fn save_vote(&self, vote: &Vote<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        let store = self.store.lock().expect("Poisoned mutex");
+        let file = std::fs::File::create(store.join("v"))
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))?;
+        serde_json::to_writer(file, vote)
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Vote, ErrorVerb::Write, &err))
+    }
+
+    /// Remove log entry `log_id` and later (inclusive)
+    ///
+    /// The trait [docs] indicate that this operation must "not leave a *hole* in the logs", but I don't
+    /// see how that could occur.
+    ///
+    /// [docs]: https://docs.rs/openraft/latest/openraft/storage/trait.RaftLogStorage.html#tymethod.truncate
+    #[allow(clippy::result_large_err)]
+    async fn truncate(&self, log_id: LogId<NodeId>) -> StdResult<(), StorageError<NodeId>> {
+        let store = self.store.lock().expect("Poisoned mutex");
+        let log_id = PathBuf::from(format!("{:05}", log_id.index));
+        Self::log_entries(&*store)
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err))?
+            .into_iter()
+            .filter(|pth| *pth >= log_id)
+            .map(|pth| {
+                std::fs::remove_file(store.join(pth)).map_err(|err| {
+                    Self::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Delete, &err)
+                })
+            })
+            .collect::<StdResult<Vec<()>, StorageError<NodeId>>>()
+            .map(|_| ())
+    }
+
+    async fn try_get_log_entries(
+        &self,
+        lower_bound: Bound<&u64>,
+        upper_bound: Bound<&u64>,
+    ) -> StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>> {
+        let range = (lower_bound, upper_bound);
+        let store = self.store.lock().expect("Poisoned mutex");
+
+        Self::log_entries(&*store)
+            .map_err(|err| Self::to_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))?
+            .iter()
+            .filter_map(|path| {
+                if <(Bound<&u64>, Bound<&u64>) as RangeBounds<u64>>::contains(
+                    &range,
+                    &path.to_str().unwrap(/* known good */).parse::<u64>().unwrap(/* known good*/),
+                ) {
+                    Some(Self::read_entry(store.join(path)))
+                } else {
+                    None
+                }
+            })
+            .collect::<StdResult<Vec<Entry<TypeConfig>>, StorageError<NodeId>>>()
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use openraft::StorageError;
-
     use super::*;
 
-    struct Dropper {
-        pth: PathBuf,
-    }
-
-    impl Dropper {
-        pub fn new<P: AsRef<Path>>(p: P) -> Dropper {
-            Dropper::cleanup(&p);
-            std::fs::create_dir(&p).expect("Failed to create test directory");
-            Dropper {
-                pth: p.as_ref().to_path_buf(),
-            }
-        }
-        fn cleanup<P: AsRef<Path>>(p: P) {
-            let _ = std::fs::remove_dir_all(p); // Ignore errors
-        }
-    }
-
-    impl std::ops::Drop for Dropper {
-        fn drop(&mut self) {
-            Dropper::cleanup(&self.pth)
-        }
-    }
-
-    struct Builder;
-
-    impl indielinks_cache::raft::test::StoreBuilder<LogStore, Dropper> for Builder {
-        async fn build(&self) -> StdResult<(Dropper, LogStore), StorageError<NodeId>> {
-            let pth =
-                PathBuf::from_str("/tmp/indielinks-unit-test-cfd4c84a-dfc0-4837-b56b-4ab782328e18")
-                    .unwrap();
-            Ok((Dropper::new(&pth), LogStore::new(pth)))
-        }
-    }
+    use indielinks_shared::known_good;
 
     #[test_log::test]
     fn test_log_store() {
-        let res = indielinks_cache::raft::test::test_storage(Builder);
+        debug!("test_log_store");
+        let res = indielinks_cache::raft::test_backend_implementations::test_backend(Arc::new(
+            Backend::new(known_good!(PathBuf::from_str(
+                "/tmp/indielinks-unit-test-cfd4c84a-dfc0-4837-b56b-4ab782328e18"
+            )))
+            .expect("The backing storage directory should be creatable under /tmp"),
+        ));
         info!("test_storage :=> {res:#?}");
         assert!(res.is_ok());
     }
@@ -604,7 +683,7 @@ async fn raft_append(
     Json(req): Json<AppendEntriesRequest<TypeConfig>>,
 ) -> axum::response::Response {
     // Serialize the entire `Result`
-    Json(state.node.append_entries(req).await).into_response()
+    Json(state.node.write().await.append_entries(req).await).into_response()
 }
 
 async fn raft_install(
@@ -612,7 +691,7 @@ async fn raft_install(
     Json(req): Json<InstallSnapshotRequest<TypeConfig>>,
 ) -> axum::response::Response {
     // Serialize the entire `Result`
-    Json(state.node.install_snapshot(req).await).into_response()
+    Json(state.node.write().await.install_snapshot(req).await).into_response()
 }
 
 async fn raft_vote(
@@ -620,7 +699,7 @@ async fn raft_vote(
     Json(req): Json<VoteRequest<NodeId>>,
 ) -> axum::response::Response {
     // Serialize the entire `Result`
-    Json(state.node.vote(req).await).into_response()
+    Json(state.node.write().await.vote(req).await).into_response()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -743,6 +822,8 @@ async fn admin_init(
 
         state
             .node
+            .write()
+            .await
             .initialize(BTreeMap::from_iter(nodes), slots)
             .await
             .tap(|result| info!("Initialization of the Raft yielded: {:?}", result))
@@ -773,7 +854,7 @@ async fn get_slot(
     (
         StatusCode::OK,
         Json(GetSlotResponse {
-            slot: state.node.node_for_slot(slot).await,
+            slot: state.node.read().await.node_for_slot(slot).await,
         }),
     )
         .into_response()
@@ -783,7 +864,7 @@ async fn set_slots(
     State(state): State<AppState>,
     Json(SetSlotsRequest { slots }): Json<SetSlotsRequest>,
 ) -> axum::response::Response {
-    match state.node.set_slots(slots).await {
+    match state.node.write().await.set_slots(slots).await {
         Ok(_) => StatusCode::ACCEPTED,
         Err(err) => {
             error!("{err:?}");
@@ -794,7 +875,7 @@ async fn set_slots(
 }
 
 async fn admin_metrics(State(state): State<AppState>) -> axum::response::Response {
-    Json(state.node.metrics().await).into_response()
+    Json(state.node.read().await.metrics()).into_response()
 }
 
 /// Add a node to the cluster
@@ -809,6 +890,8 @@ async fn admin_add_learner(
             state
                 .node
                 // Imma try setting `blocking` to true for now
+                .write()
+                .await
                 .add_learner(node_id, ClusterNode { addr }, true)
                 .await,
         )
@@ -824,7 +907,7 @@ async fn admin_change_membership(
     State(state): State<AppState>,
     Json(req): Json<Vec<NodeId>>,
 ) -> axum::response::Response {
-    match state.node.change_membership(req, false).await {
+    match state.node.write().await.change_membership(req, false).await {
         Ok(rsp) => Json(rsp).into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#?}")).into_response(),
     }
@@ -853,7 +936,7 @@ fn options() -> impl Parser<Options> {
 struct AppState {
     id: NodeId,
     addr: SocketAddrV4,
-    node: CacheNode<ClientFactory>,
+    node: SharedCacheNode<ClientFactory>,
     cache: Arc<RwLock<Cache<ClientFactory, String, usize>>>,
 }
 
@@ -888,12 +971,12 @@ async fn main() {
         .election_timeout_min(Duration::from_millis(1500))
         .election_timeout_max(Duration::from_millis(3000))
         .build();
-    let this_node = CacheNode::new(
+    let this_node = make_shared_cache_node(
+        Arc::new(Backend::new(
+            PathBuf::from_str(&format!("/tmp/on-disk-node-{}", opts.id)).unwrap(/* known good */),
+        ).expect("the backing directory should be creatable under /tmp")),
         &config,
         ClientFactory,
-        LogStore::new(
-            PathBuf::from_str(&format!("/tmp/on-disk-node-{}", opts.id)).unwrap(/* known good */),
-        ),
     )
     .await
     .expect("Failed to create this process' indielinks-cache node");

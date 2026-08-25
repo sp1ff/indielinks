@@ -15,30 +15,48 @@
 
 use std::{ops::Deref, result::Result as StdResult, sync::Arc};
 
-use axum::{extract::State, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use axum_extra::extract::Query;
 use http::{header::CONTENT_TYPE, HeaderValue, StatusCode};
-use indielinks_shared::entities::Username;
+use indielinks_shared::{
+    api::{SignupReq, SignupRsp},
+    entities::Username,
+};
 use serde::{ser::SerializeStruct, Deserialize};
-use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
+use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::{
-    app_logic::get_cluster_stats, home_timeline::HomeTimelines, http::ErrorResponseBody,
-    indielinks::Indielinks, outboxes::UserOutboxes,
+    app_logic::get_cluster_stats,
+    define_metric,
+    entities::{self, User},
+    home_timeline::HomeTimelines,
+    http::ErrorResponseBody,
+    indielinks::Indielinks,
+    outboxes::UserOutboxes,
+    storage::Backend as StorageBackend,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Failed to add user: {source}"))]
+    AddUser { source: crate::storage::Error },
     #[snafu(display("User {username} currently has no outbox"))]
     NoOutbox {
         username: Username,
         backtrace: Backtrace,
     },
+    #[snafu(display("{source}"))]
+    NoPepper { source: crate::peppers::Error },
     #[snafu(display("User {username} currently has no timeline"))]
     NoTimeline {
         username: Username,
@@ -59,6 +77,8 @@ pub enum Error {
         username: String,
         source: crate::storage::Error,
     },
+    #[snafu(display("Failed to create user: {source}"))]
+    UserSignup { source: entities::Error },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -327,12 +347,152 @@ async fn cluster_stats(State(state): State<Arc<Indielinks>>) -> axum::response::
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+define_metric! { "user.signups.successful", user_signups_successful, Sort::IntegralCounter }
+define_metric! { "user.signups.failures", user_signups_failures, Sort::IntegralCounter }
+
+/// Signup as a new user
+///
+/// Parameters:
+///
+/// - username: indielinks usernames consist of alphanumeric characters and '-', '_' & '.'; the
+///   username must be unique; if the request's `username` parameter is *not* unique, it will fail.
+///
+/// - password: indielinks passwords may be abitrary UTF-8 text; indielinks will not store passwords
+///   (it stores an Argon2id hash of the salted & peppered password)
+///
+/// - email: a contact e-mail for this user
+///
+/// - discoverable: a boolean indicating whether this user wants to be discoverable via webfinter
+///   (optional; defaults to true)
+///
+/// - display-name: the user's "display name" (generally intended to be used in user interfaces);
+///   unlike usernames, this may be arbitrary UTF-8 encoded text (optional, defaults to the
+///   username)
+///
+/// - summary: A short bio/blurb (optional; defaults to nothing); arbitrary UTF-8 text
+///
+/// Unlike other endpoints in this API, there is no authentication on this method.
+async fn signup(
+    State(state): State<Arc<Indielinks>>,
+    Json(signup_req): Json<SignupReq>,
+) -> axum::response::Response {
+    async fn signup1(signup_req: &SignupReq, state: Arc<Indielinks>) -> Result<SignupRsp> {
+        let (pepper_ver, pepper_key) = state.pepper.current_pepper().context(NoPepperSnafu)?;
+        use secrecy::ExposeSecret;
+        let user = User::new(
+            &pepper_ver,
+            &pepper_key,
+            &signup_req.username,
+            // Arrrgghhh!!!
+            &signup_req.password.expose_secret().0.clone().into(),
+            &signup_req.email,
+            None,
+            signup_req.discoverable,
+            signup_req.display_name.as_deref(),
+            signup_req.summary.as_deref(),
+        )
+        .context(UserSignupSnafu)?;
+        let storage: &(dyn StorageBackend + Send + Sync) = state.storage.as_ref();
+        storage.add_user(&user).await.context(AddUserSnafu)?;
+        Ok(SignupRsp {
+            greeting: "Welcome to indielinks!".to_owned(),
+        })
+    }
+
+    match signup1(&signup_req, state.clone()).await {
+        Ok(rsp) => {
+            info!("Created user {}", signup_req.username);
+            user_signups_successful.add(1, &[]);
+            (StatusCode::CREATED, Json(rsp)).into_response()
+        }
+        Err(Error::UserSignup { source }) => match source {
+            entities::Error::PasswordEntropy { feedback, .. } => {
+                info!(
+                    "password rejected due to insufficient strength: {}",
+                    feedback
+                );
+                user_signups_failures.add(1, &[]);
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponseBody {
+                        error: format!("Insufficient password strength: {feedback}"),
+                    }),
+                )
+                    .into_response()
+            }
+            entities::Error::PasswordWhitespace { .. } => {
+                info!("Password rejected due to leading and/or trailing whitespace");
+                user_signups_failures.add(1, &[]);
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponseBody {
+                        error: "Password rejected due to leading and/or trailing whitespace"
+                            .to_owned(),
+                    }),
+                )
+                    .into_response()
+            }
+            err => {
+                error!("{:#?}", err);
+                user_signups_failures.add(1, &[]);
+                let err = UserSignupSnafu.into_error(err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponseBody {
+                        error: format!("{err}"),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Err(Error::AddUser { source }) => match source {
+            crate::storage::Error::UsernameClaimed { username, .. } => {
+                info!("Username {} already claimed", username);
+                user_signups_failures.add(1, &[]);
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponseBody {
+                        error: format!("Username {username} is already claimed; sorry"),
+                    }),
+                )
+                    .into_response()
+            }
+            err => {
+                error!("{:#?}", err);
+                user_signups_failures.add(1, &[]);
+                let err = AddUserSnafu.into_error(err);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponseBody {
+                        error: format!("{err}"),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+        Err(err) => {
+            error!("{:#?}", err);
+            user_signups_failures.add(1, &[]);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponseBody {
+                    error: format!("{err}"),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
     Router::new()
         .route("/timelines/dump", get(dump_timelines))
         .route("/timelines/drop", get(drop_timelines))
         .route("/outboxes/dump", get(dump_outboxes))
         .route("/cluster-stats", get(cluster_stats))
+        .route("/users/signup", post(signup))
         .layer(SetResponseHeaderLayer::if_not_present(
             CONTENT_TYPE,
             HeaderValue::from_static("text/json; charset=utf-8"),

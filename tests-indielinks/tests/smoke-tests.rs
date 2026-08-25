@@ -60,7 +60,6 @@
 use std::{
     collections::HashMap,
     ffi::OsString,
-    iter::once,
     net::SocketAddr,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
@@ -76,7 +75,7 @@ use futures::future::BoxFuture;
 use indielinks_cache::types::ClusterNode;
 use indielinks_shared::entities::Username;
 use libtest_mimic::Failed;
-use nonempty_collections::{nev, NEVec};
+use nonempty_collections::{iter::once, nev, NEVec, NonEmptyIterator};
 use reqwest::Client;
 use serde::Deserialize;
 use snafu::{Backtrace, ResultExt, Snafu};
@@ -95,14 +94,11 @@ use tests_indielinks::{
     home_timeline::{timeline_before, timeline_empty, timeline_initial},
     outboxes::outbox_smoke_test,
     post_reply_timeline::{post_replies_endpoint, post_reply_timeline},
+    run::run,
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
 };
-
-use common::run;
-
-mod common;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Error type                                           //
@@ -118,7 +114,10 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to run {cmd}: {source}"))]
-    Command { cmd: String, source: common::Error },
+    Command {
+        cmd: String,
+        source: Box<tests_indielinks::run::Error>,
+    },
     #[snafu(display("While obtaining test configuration, {source}"))]
     Configuration {
         #[snafu(source(from(tests_support::Error<Fixture>, Box::new)))]
@@ -639,7 +638,7 @@ impl tests_support::Fixture for Fixture {
             FixtureId::ScyllaCluster => {
                 let backend = Arc::new(
                     ScyllaHelper::new(Url::parse(&format!("http://indiemark.local:{}", config.clustered.haproxy_port)).unwrap(/* known good */),
-                                      config.clustered.nodes.iter().cloned(),
+                                      config.clustered.nodes.nonempty_iter().cloned(),
                                       &config.scylla)
                         .await
                         .context(HelperSnafu)?,
@@ -670,7 +669,7 @@ impl tests_support::Fixture for Fixture {
             FixtureId::DynamoDBCluster => {
                 let backend = Arc::new(
                     DynamoDBHelper::new(Url::parse(&format!("http://indiemark.local:{}", config.clustered.haproxy_port)).unwrap(/* known good */),
-                                        config.clustered.nodes.iter().cloned(),
+                                        config.clustered.nodes.nonempty_iter().cloned(),
                                         &config.dynamo)
                         .await
                         .context(HelperSnafu)?,
@@ -878,7 +877,9 @@ inventory::submit!(Test {
 
 inventory::submit!(Test {
     name: "020user_test_signup",
-    test_fn: |_cfg: Configuration, helper| { Box::pin(test_signup(helper.indielinks(), helper)) },
+    test_fn: |_cfg: Configuration, helper| {
+        Box::pin(test_signup(helper.indielinks(), helper.ops(), helper))
+    },
     fixtures: None,
 });
 
@@ -946,7 +947,9 @@ inventory::submit!(Test {
 
 inventory::submit!(Test {
     name: "080user_test_mint_key",
-    test_fn: |_cfg: Configuration, helper| { Box::pin(test_mint_key(helper.indielinks(), helper)) },
+    test_fn: |_cfg: Configuration, helper| {
+        Box::pin(test_mint_key(helper.indielinks(), helper.ops(), helper))
+    },
     fixtures: None,
 });
 

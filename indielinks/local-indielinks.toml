@@ -78,6 +78,7 @@ this-node = 0
 heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
 election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
 election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
+snapshot-policy = { LogsSinceLast = 5000 }
 
 
 [client-exponential-backoff]
@@ -92,13 +93,44 @@ secs = 3
 nanos = 0
 
 [client-rate-limits]
-per-second = 16
 custom = []
-
-[local-rate-limits]
-per-second = 32
-custom = []
+per-hour = 5760
 
 [general-purpose-rate-limits]
-per-second = 8
 custom = []
+per-hour = 2880
+
+[local-rate-limits]
+custom = []
+per-hour = 8320
+
+[client-configuration]
+timeout = [
+    10,
+    0,
+]
+
+[client-configuration.rate-limits]
+custom = []
+per-hour = 5760
+
+[general-purpose-client-configuration]
+timeout = [
+    3,
+    0,
+]
+
+[general-purpose-client-configuration.rate-limits]
+custom = []
+per-hour = 2880
+
+[local-client-configuration]
+timeout = [
+    2,
+    0,
+]
+
+[local-client-configuration.rate-limits]
+custom = []
+per-hour = 8320
+

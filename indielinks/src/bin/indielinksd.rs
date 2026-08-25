@@ -49,9 +49,9 @@ use chrono::Duration;
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use errno::Errno;
 use governor::Quota;
-use http::{HeaderName, HeaderValue};
+use http::{HeaderName, HeaderValue, StatusCode};
 use lazy_static::lazy_static;
-use libc::c_int;
+use libc::{c_int, SIGPIPE, SIG_IGN};
 use nonzero::nonzero;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
@@ -87,7 +87,7 @@ use indielinks_shared::{
 
 use indielinks_cache::{
     cache::Cache,
-    raft::{CacheNode, Configuration as RaftConfiguration},
+    raft::{make_shared_cache_node, Backend as CacheBackend, Configuration as RaftConfiguration},
     types::NodeId,
 };
 
@@ -98,7 +98,7 @@ use indielinks::{
     ap_resolution::ApResolver,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
     bookmarklets::make_router as make_bookmarklets_router,
-    cache::{Backend as CacheBackend, GrpcClientFactory, LogStore, SLOT_TOP_K_TAGS},
+    cache::{GrpcClientFactory, SLOT_TOP_K_TAGS},
     client::make_client,
     define_metric,
     delicious::{
@@ -254,7 +254,7 @@ type StdResult<T, E> = std::result::Result<T, E>;
 
 static DEFAULT_LOCALSTATEDIR: &str = ".";
 
-static SCHEMA_VERSION: u32 = 3;
+static SCHEMA_VERSION: u32 = 0;
 
 /// The execution environment into which this instance has been deployed
 #[derive(Clone, Debug, Default)]
@@ -805,8 +805,24 @@ async fn otel_middleware_local(
     response
 }
 
-async fn healthcheck() -> &'static str {
-    "GOOD"
+/// Check this instance's status
+///
+/// This is [indielinksd]'s implementation of the venerable "healthcheck" endpoint: an HTTP endpoint
+/// load balancers, proxies, deployment scripts and operators can scrape to determine the instance's
+/// status. Since this is meant to be hit by shell scripts via `curl`, the API is very simple:
+///
+/// [indielinksd]: crate
+///
+/// - if the instance is up & taking requests, we'll return status 201 Created and a response body
+///   consisting of the string "GOOD"
+/// - if the cluster to which this instance belongs has been initialized, we'll return status
+///   202 Accepted, and a response body of "READY"
+async fn healthcheck(State(state): State<Arc<Indielinks>>) -> (http::StatusCode, String) {
+    if state.cache_node.read().await.initialized().await.is_some() {
+        (StatusCode::ACCEPTED, "READY".to_owned())
+    } else {
+        (StatusCode::CREATED, "GOOD".to_owned())
+    }
 }
 
 async fn metrics(State(state): State<Arc<Indielinks>>) -> String {
@@ -1152,13 +1168,9 @@ async fn serve(
             .context(SchemaCheckSnafu)?;
 
         // This will need to be re-thought as the number (and types) of caches grows, but for now:
-        let cache_node = CacheNode::<GrpcClientFactory>::new(
-            &cfg.raft_config,
-            GrpcClientFactory,
-            LogStore::new(cache),
-        )
-        .await
-        .context(CacheNodeSnafu)?;
+        let cache_node = make_shared_cache_node(cache.clone(), &cfg.raft_config, GrpcClientFactory)
+            .await
+            .context(CacheNodeSnafu)?;
 
         // Alright-- setup shared state for the web service itself:
         let actors = Arc::new(Cache::<GrpcClientFactory, Url, Actor>::new(
@@ -1585,6 +1597,7 @@ fn daemonize(local_statedir: &Path, no_chdir: bool, log_fd: RawFd) -> Result<()>
         for signum in 1..=libc::SIGSYS {
             if signum != SIGKILL
                 && signum != SIGSTOP
+                && signum != SIGPIPE // See below
                 && sigaction(signum, &sa, std::ptr::null_mut()) != 0
             {
                 return SigactionSnafu {
@@ -1593,6 +1606,27 @@ fn daemonize(local_statedir: &Path, no_chdir: bool, log_fd: RawFd) -> Result<()>
                 }
                 .fail();
             }
+        }
+
+        // I'm handling `SIGPIPE` a little differently, and I'm not sure how I feel about it. The
+        // default action is immediate termination, which seems bad (the process just disappears,
+        // with nothing in the log to indicate what happened). This will just restore the default
+        // Rust behavior (ignore it) (see <https://github.com/rust-lang/rust/pull/13158> and
+        // <https://github.com/rust-lang/rust/issues/62569>), although there is, at the time of this
+        // writing, a good bit of discussion about what the right thing to do is.
+        let ignore = sigaction {
+            sa_sigaction: SIG_IGN,
+            sa_mask: mask,
+            sa_flags: 0,
+            sa_restorer: None,
+        };
+
+        if sigaction(SIGPIPE, &ignore, std::ptr::null_mut()) != 0 {
+            return SigactionSnafu {
+                signum: SIGPIPE,
+                errno: errno(),
+            }
+            .fail();
         }
 
         let n = sigprocmask(SIG_SETMASK, &mask, std::ptr::null_mut());

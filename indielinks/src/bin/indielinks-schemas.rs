@@ -57,6 +57,9 @@
 //!
 //! [here]: https://github.com/scylladb/care-pet/blob/master/rust/src/database/migrate/mod.rs
 
+// Cf. <https://github.com/rust-lang/rust/issues/159228>
+#![recursion_limit = "256"]
+
 use std::{fmt::Display, io, net::SocketAddr, ops::Deref, sync::Arc};
 
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
@@ -76,11 +79,7 @@ use indielinks::{
         get_current_schema_version as get_current_dynamodb_schema_version,
         Location as DynamoLocation,
     },
-    dynamodb_schemas::{
-        create_schema as create_dynamodb_schema, schema_migration_1 as ddb_schema_migration_ver_1,
-        schema_migration_2 as ddb_schema_migration_ver_2,
-        schema_migration_3 as ddb_schema_migration_ver_3,
-    },
+    dynamodb_schemas::create_schema as create_dynamodb_schema,
     scylla::{
         create_client as create_scylla_client, create_schema as create_scylladb_schema,
         get_current_schema_version as get_current_scylla_schema_version,
@@ -189,7 +188,7 @@ fn configure_logging(debug: bool, verbose: bool, quiet: bool, plain: bool) -> Re
 //                                   schema version management                                    //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 0;
 
 // Each function is expected to update `schema_migrations` on successful completion
 // Can be implemented as:
@@ -207,27 +206,14 @@ const CQL_SCHEMAS: &[ScyllaDbSchemaUpdate] = &[
                 .context(CreateSchemaSnafu)
         })
     },
-    |session| {
-        Box::pin(async move {
-            create_scylladb_schema(session, include_str!("../../schemas/1.cql"), 1)
-                .await
-                .context(CreateSchemaSnafu)
-        })
-    },
-    |session| {
-        Box::pin(async move {
-            create_scylladb_schema(session, include_str!("../../schemas/2.cql"), 2)
-                .await
-                .context(CreateSchemaSnafu)
-        })
-    },
-    |session| {
-        Box::pin(async move {
-            create_scylladb_schema(session, include_str!("../../schemas/3.cql"), 3)
-                .await
-                .context(CreateSchemaSnafu)
-        })
-    },
+    // The next one will look like:
+    // |session| {
+    //     Box::pin(async move {
+    //         create_scylladb_schema(session, include_str!("../../schemas/1.cql"), 1)
+    //             .await
+    //             .context(CreateSchemaSnafu)
+    //     })
+    // },
 ];
 
 // Each function is expected to update `schema_versions` on successful completion
@@ -245,27 +231,14 @@ const DDB_FNS: &[DynamoDbSchemaUpdate] = &[
                 .context(DdbSchemaUpdateSnafu)
         })
     },
-    |client| {
-        Box::pin(async move {
-            ddb_schema_migration_ver_1(client)
-                .await
-                .context(DdbSchemaUpdateSnafu)
-        })
-    },
-    |client| {
-        Box::pin(async move {
-            ddb_schema_migration_ver_2(client)
-                .await
-                .context(DdbSchemaUpdateSnafu)
-        })
-    },
-    |client| {
-        Box::pin(async move {
-            ddb_schema_migration_ver_3(client)
-                .await
-                .context(DdbSchemaUpdateSnafu)
-        })
-    },
+    // The next one will look like:
+    // |client| {
+    //     Box::pin(async move {
+    //         ddb_schema_migration_ver_1(client)
+    //             .await
+    //             .context(DdbSchemaUpdateSnafu)
+    //     })
+    // },
 ];
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

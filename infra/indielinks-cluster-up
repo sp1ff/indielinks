@@ -209,12 +209,12 @@ cd $here/../indielinks
 port_0=$(parse_public_port "${config_base}0.toml")
 port_1=$(parse_public_port "${config_base}1.toml")
 port_2=$(parse_public_port "${config_base}2.toml")
-if [ "${num_nodes}" == "5" ]; then
-    port_3=$(parse_public_port "${config_base}3.toml")
-    port_4=$(parse_public_port "${config_base}4.toml")
-fi
+port_3=$(parse_public_port "${config_base}3.toml")
+port_4=$(parse_public_port "${config_base}4.toml")
 
-# emit an haproxy config file based on that & 3/5 nodes
+# emit an haproxy config file based on that & 5 nodes-- if we only bring-up 3,
+# NBD-- the final two will never healthcheck & so will never be included in the
+# rotation.
 haproxy_config=/tmp/haproxy.${haproxy_id}.conf
 cat > ${haproxy_config} <<EOF
 global
@@ -239,22 +239,17 @@ backend be_servers
     # Actively check /healthcheck; require 200 and body containing "GOOD"
     option httpchk GET /healthcheck HTTP/1.1
 
-    http-check expect status 200
-    http-check expect string GOOD
+    http-check expect status 202
+    http-check expect string READY
 
     server s1 127.0.0.1:${port_0} check inter 2s fall 3 rise 2
     server s2 127.0.0.1:${port_1} check inter 2s fall 3 rise 2
     server s3 127.0.0.1:${port_2} check inter 2s fall 3 rise 2
-EOF
-
-if [ "${num_nodes}" == "5" ]; then
-    cat >> ${haproxy_config} <<EOF
     server s4 127.0.0.1:${port_3} check inter 2s fall 3 rise 2
     server s5 127.0.0.1:${port_4} check inter 2s fall 3 rise 2
 EOF
-fi
 
-rust_log="${RUST_LOG:-debug,aws_config=warn,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,aws_smithy_http_client=info,aws_sdk_dynamodb=info,hyper=info,scylla=info,openraft=info,h2::codec=info,h2::proto=info,hyper_util=info,tower::buffer=info}"
+rust_log="${RUST_LOG:-debug,aws_config=warn,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,aws_smithy_http_client=info,aws_sdk_dynamodb=info,hyper=info,opentelemetry_sdk=info,scylla=info,openraft=info,h2::codec=info,h2::proto=info,hyper_util=info,tower::buffer=info}"
 
 # (Re-)create the local state directories for each instance
 test -d ${local_state_base}0 || mkdir ${local_state_base}0
@@ -268,11 +263,11 @@ fi
 # Run three or five copies of the `indielinksd` daemon. If I don't place each
 # `cargo run` invocation into a sub-shell, `Command::output()` hangs (?)
 (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}0 -c ${config_base}0.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
-(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}1 -c ${config_base}1.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
-(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}2 -c ${config_base}2.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}1 -c ${config_base}1.toml) > ${local_state_base}1/stdout.log 2>&1 < /dev/null &
+(RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}2 -c ${config_base}2.toml) > ${local_state_base}2/stdout.log 2>&1 < /dev/null &
 if [ "${num_nodes}" == "5" ]; then
-    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}3 -c ${config_base}3.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
-    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}4 -c ${config_base}4.toml) > ${local_state_base}0/stdout.log 2>&1 < /dev/null &
+    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}3 -c ${config_base}3.toml) > ${local_state_base}3/stdout.log 2>&1 < /dev/null &
+    (RUST_BACKTRACE=1 RUST_LOG="${rust_log}" cargo run --bin indielinksd -- -D -p -L ${local_state_base}4 -c ${config_base}4.toml) > ${local_state_base}4/stdout.log 2>&1 < /dev/null &
 fi
 
 # The problem with running these in subshells is that we arrive here with the

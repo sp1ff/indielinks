@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2024-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use indielinks_shared::{entities::Tagname, instance_state::InstanceStateV0, origin::Origin};
 
-use indielinks_cache::raft::CacheNode;
+use indielinks_cache::raft::SharedCacheNode;
 
 use crate::{
     ap_resolution::ApResolver, background_tasks::BackgroundTasks, cache::GrpcClientFactory,
@@ -53,7 +53,7 @@ pub struct Indielinks {
     pub collection_page_size: usize,
     pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,
-    pub cache_node: CacheNode<crate::cache::GrpcClientFactory>,
+    pub cache_node: SharedCacheNode<crate::cache::GrpcClientFactory>,
     // Shared, mutable access to the resolver needed, therefore we need an
     // `Arc<thing that can give a mutable borrow>`; `ApResolver`, being a cache, pretty-much always
     // requires a mutable borrow, so I used a `Mutex` instead of an `RwLock`.

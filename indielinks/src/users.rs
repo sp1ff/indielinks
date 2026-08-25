@@ -100,7 +100,7 @@ use nonzero::nonzero;
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use snafu::{prelude::*, Backtrace, IntoError};
+use snafu::{prelude::*, Backtrace};
 use tap::Pipe;
 use tokio::sync::Mutex;
 use tower_http::{
@@ -113,9 +113,9 @@ use url::Url;
 use indielinks_shared::{
     api::{
         FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, RecentPostsRequest,
-        ReplyRequest, SignupReq, SignupRsp, ThreadContextRequest, ThreadContextResponse,
-        TimelineReq, TopKTagsRequest, TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
-        REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
+        ReplyRequest, ThreadContextRequest, ThreadContextResponse, TimelineReq, TopKTagsRequest,
+        TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
+        REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::Username,
     origin::Origin,
@@ -137,7 +137,7 @@ use crate::{
     indielinks::Indielinks,
     peppers::{self, Peppers},
     signing_keys::{self, SigningKeys},
-    storage::{self, Backend as StorageBackend},
+    storage::Backend as StorageBackend,
     token::{self, mint_refresh_and_csrf_tokens, mint_token, refresh_token},
 };
 
@@ -154,8 +154,6 @@ pub enum Error {
         source: Box<entities::Error>,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to add user: {source}"))]
-    AddUser { source: storage::Error },
     #[snafu(display("ActivityPub request failed: {source}"))]
     Ap { source: crate::ap_entities::Error },
     #[snafu(display("The supplied API key couldn't be parsed"))]
@@ -286,8 +284,6 @@ pub enum Error {
         #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
         source: Box<indielinks_shared::entities::Error>,
     },
-    #[snafu(display("Failed to create user: {source}"))]
-    UserSignup { source: entities::Error },
 }
 
 impl Error {
@@ -480,123 +476,6 @@ async fn authenticate(
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        `/users/signup`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-define_metric! { "user.signups.successful", user_signups_successful, Sort::IntegralCounter }
-define_metric! { "user.signups.failures", user_signups_failures, Sort::IntegralCounter }
-
-/// Signup as a new user
-///
-/// Parameters:
-///
-/// - username: indielinks usernames consist of alphanumeric characters and '-', '_' & '.'; the
-///   username must be unique; if the request's `username` parameter is *not* unique, it will fail.
-///
-/// - password: indielinks passwords may be abitrary UTF-8 text; indielinks will not store passwords
-///   (it stores an Argon2id hash of the salted & peppered password)
-///
-/// - email: a contact e-mail for this user
-///
-/// - discoverable: a boolean indicating whether this user wants to be discoverable via webfinter
-///   (optional; defaults to true)
-///
-/// - display-name: the user's "display name" (generally intended to be used in user interfaces);
-///   unlike usernames, this may be arbitrary UTF-8 encoded text (optional, defaults to the
-///   username)
-///
-/// - summary: A short bio/blurb (optional; defaults to nothing); arbitrary UTF-8 text
-///
-/// Unlike other endpoints in this API, there is no authentication on this method.
-async fn signup(
-    State(state): State<Arc<Indielinks>>,
-    Json(signup_req): Json<SignupReq>,
-) -> axum::response::Response {
-    async fn signup1(signup_req: &SignupReq, state: Arc<Indielinks>) -> Result<SignupRsp> {
-        let (pepper_ver, pepper_key) = state.pepper.current_pepper().context(NoPepperSnafu)?;
-        use secrecy::ExposeSecret;
-        let user = User::new(
-            &pepper_ver,
-            &pepper_key,
-            &signup_req.username,
-            // Arrrgghhh!!!
-            &signup_req.password.expose_secret().0.clone().into(),
-            &signup_req.email,
-            None,
-            signup_req.discoverable,
-            signup_req.display_name.as_deref(),
-            signup_req.summary.as_deref(),
-        )
-        .context(UserSignupSnafu)?;
-        let storage: &(dyn StorageBackend + Send + Sync) = state.storage.as_ref();
-        storage.add_user(&user).await.context(AddUserSnafu)?;
-        Ok(SignupRsp {
-            greeting: "Welcome to indielinks!".to_owned(),
-        })
-    }
-
-    match signup1(&signup_req, state.clone()).await {
-        Ok(rsp) => {
-            info!("Created user {}", signup_req.username);
-            user_signups_successful.add(1, &[]);
-            (StatusCode::CREATED, Json(rsp)).into_response()
-        }
-        Err(Error::UserSignup { source }) => match source {
-            entities::Error::PasswordEntropy { feedback, .. } => {
-                info!(
-                    "password rejected due to insufficient strength: {}",
-                    feedback
-                );
-                user_signups_failures.add(1, &[]);
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponseBody {
-                        error: format!("Insufficient password strength: {feedback}"),
-                    }),
-                )
-                    .into_response()
-            }
-            entities::Error::PasswordWhitespace { .. } => {
-                info!("Password rejected due to leading and/or trailing whitespace");
-                user_signups_failures.add(1, &[]);
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponseBody {
-                        error: "Password rejected due to leading and/or trailing whitespace"
-                            .to_owned(),
-                    }),
-                )
-                    .into_response()
-            }
-            err => {
-                error!("{:#?}", err);
-                user_signups_failures.add(1, &[]);
-                UserSignupSnafu.into_error(err).into_response()
-            }
-        },
-        Err(Error::AddUser { source }) => match source {
-            storage::Error::UsernameClaimed { username, .. } => {
-                info!("Username {} already claimed", username);
-                user_signups_failures.add(1, &[]);
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponseBody {
-                        error: format!("Username {username} is already claimed; sorry"),
-                    }),
-                )
-                    .into_response()
-            }
-            err => {
-                error!("{:#?}", err);
-                user_signups_failures.add(1, &[]);
-                AddUserSnafu.into_error(err).into_response()
-            }
-        },
-        Err(err) => {
-            error!("{:#?}", err);
-            user_signups_failures.add(1, &[]);
-            err.into_response()
-        }
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        `/users/login`                                          //
@@ -1522,17 +1401,6 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         // perform this action by POSTing to it (they could retrieve a user via GETting
         // `user/users/:username`), but that model doesn't really map to the set of things one can
         // do via this API (how would we model minting a new API key, for instance? Or logging-in?)
-        .route(
-            "/users/signup",
-            post(signup)
-                .route_layer(from_fn_with_state(state.clone(), authenticate))
-                .layer(mk_cors(
-                    false,
-                    allow_headers.clone(),
-                    http::Method::POST,
-                    allow_origin.clone(),
-                )),
-        )
         .route(
             "/users/login",
             get(login)

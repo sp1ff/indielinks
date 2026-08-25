@@ -17,8 +17,9 @@ if [ $nproc -eq 0 ]; then
     nproc=1
 fi
 
-set -e
-cargo clippy -j ${nproc} -- --no-deps -Dwarnings
+# See <https://github.com/dtolnay/async-trait/issues/304>,
+# <https://github.com/rust-lang/rust-clippy/pull/16633>
+cargo clippy -j ${nproc} -- --no-deps -Dwarnings --allow clippy::double_must_use
 cargo fmt -- --check
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps -j ${nproc}
 # Need to address these two, plus a host of warnings

@@ -64,6 +64,7 @@ pub mod outboxes;
 pub mod post_reply_timeline;
 #[path = "recent-posts.rs"]
 pub mod recent_posts;
+pub mod run;
 #[path = "top-k-tags.rs"]
 pub mod top_k_tags;
 pub mod users;
@@ -87,7 +88,10 @@ pub async fn test_healthcheck(url: Url) -> Result<(), Failed> {
         .await?
         .text()
         .await?;
-    assert!("GOOD" == response_text);
+    assert!(
+        "GOOD" == response_text || "READY" == response_text,
+        "response_text is {response_text}"
+    );
     Ok(())
 }
 

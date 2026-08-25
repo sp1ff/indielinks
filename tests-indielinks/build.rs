@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .for_each(|ncl| println!("cargo:rerun-if-changed={ncl}"));
 
     let mut ctx = nickel_lang::Context::new().with_added_import_paths(vec!["../conf".into()]);
-    ["master", "bugfix", "front-end", "pre-alpha"]
+    ["master", "bugfix", "front-end", "pre-alpha", "cloud"]
         .into_iter()
         .map(|stack| configure_stack(&mut ctx, stack))
         .collect::<Result<Vec<_>, _>>()

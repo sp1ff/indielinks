@@ -436,7 +436,7 @@
 //! grew, the `/conf` directory (in the workspace root) collected more & more instances of that
 //! configuration. In order to work, the integration tests need to be configured with [indielinksd]
 //! ports, working directories, and so on, meaning that the same state had to be faithfully
-//! replicated a pair of configuration files. When I introduced the idea of integration testing
+//! replicated in a *pair* of configuration files. When I introduced the idea of integration testing
 //! stacks, the problem exploded.
 //!
 //! So, I burned some time moving the configuration to [nickel], a gradually-typed configuration

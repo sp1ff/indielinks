@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError, ResultExt};
 
 use indielinks_cache::{
-    network::ClientFactory as CacheClientFactory, raft::CacheNode, types::NodeId,
+    network::ClientFactory as CacheClientFactory, raft::SharedCacheNode, types::NodeId,
 };
 use indielinks_shared::{entities::Post, known_good};
 
@@ -181,7 +181,7 @@ const DEFAULT_PAGE_SIZE: NonZero<usize> = known_good!(NonZero::new(40));
 pub struct RecentPostsList<CCF: CacheClientFactory, F: ClientFactory> {
     factory: F,
     clients: HashMap<NodeId, F::Client>,
-    cache_node: CacheNode<CCF>,
+    cache_node: SharedCacheNode<CCF>,
     // Entries are stored from newest to oldest (i.e. we'll be popping from the back to maintain
     // list size)
     post_list: BTreeMap<PostKey, Post>,
@@ -195,7 +195,7 @@ where
     F: ClientFactory,
     <F as ClientFactory>::Client: Clone,
 {
-    pub fn new(cache_node: CacheNode<CCF>, max_len: NonZero<usize>, factory: F) -> Self {
+    pub fn new(cache_node: SharedCacheNode<CCF>, max_len: NonZero<usize>, factory: F) -> Self {
         Self {
             factory,
             clients: HashMap::new(),
@@ -305,17 +305,20 @@ where
     async fn responsible(&self) -> Result<Option<(NodeId, SocketAddr)>> {
         let owner = self
             .cache_node
+            .read()
+            .await
             .node_for_slot(*SLOT_RECENT_POSTS)
             .await
             .context(UninitializedSnafu)?;
-        if owner == self.cache_node.id().await {
+        if owner == self.cache_node.read().await.id() {
             Ok(None)
         } else {
             Ok(Some((
                 owner,
                 self.cache_node
-                    .socket_addr_for_id(owner)
+                    .read()
                     .await
+                    .socket_addr_for_id(owner)
                     .context(NetLocSnafu)?,
             )))
         }
@@ -390,14 +393,15 @@ impl Client for GrpcClient {
 
 #[cfg(test)]
 mod test {
-    use std::{convert::Infallible, net::SocketAddr};
+    use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
     use chrono::Utc;
     use nonzero::nonzero;
 
     use indielinks_cache::{
         network::null_client::NullClientFactory as CCFNull,
-        types::{ClusterNode, InMemoryLogStore, SlotIndex},
+        raft::{make_shared_cache_node, InMemoryBackend},
+        types::{ClusterNode, SlotIndex},
     };
     use indielinks_shared::known_good;
 
@@ -436,7 +440,12 @@ mod test {
     #[tokio::test]
     async fn smoke() {
         let cache_node = known_good!(
-            CacheNode::new(&Default::default(), CCFNull, InMemoryLogStore::default(),).await
+            make_shared_cache_node(
+                Arc::new(InMemoryBackend::default()),
+                &Default::default(),
+                CCFNull
+            )
+            .await
         );
         let mut posts =
             RecentPostsList::new(cache_node.clone(), nonzero!(2usize), NullClientFactory);
@@ -445,6 +454,8 @@ mod test {
         assert!(posts.get_recent_posts(None, None).await.is_err());
 
         cache_node
+            .write()
+            .await
             .initialize(
                 vec![(
                     0,
