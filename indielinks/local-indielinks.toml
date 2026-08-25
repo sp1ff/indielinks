@@ -78,6 +78,7 @@ this-node = 0
 heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
 election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
 election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
+snapshot-policy = { LogsSinceLast = 5000 }
 
 
 [client-exponential-backoff]
