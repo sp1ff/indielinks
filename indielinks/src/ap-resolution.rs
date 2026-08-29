@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -33,18 +33,25 @@ use either::Either;
 use http::{self, method::Method};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
+use tracing::debug;
 use url::Url;
 
-use indielinks_shared::{entities::UserPrivateKey, origin::Origin};
+use indielinks_shared::{
+    entities::{UserPrivateKey, Username},
+    origin::Origin,
+};
 
 use bytes::Bytes;
 use indielinks_cache::{cache::Cache, network::ClientFactory};
 
 use crate::{
     acct::Account,
-    ap_entities::{ap_request, Actor, Note, WebfingerResponse},
+    ap_entities::{
+        ap_request, username_and_postid_from_url, username_from_url, Actor, Note, WebfingerResponse,
+    },
     cache::{GrpcClient, GrpcClientFactory},
     entities::User,
+    storage::{get_note, user_for_username, Backend as StorageBackend},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -56,17 +63,41 @@ pub enum Error<FC: indielinks_cache::network::Client + 'static = GrpcClient>
 where
     FC::ErrorType: std::error::Error + std::fmt::Debug + 'static,
 {
+    #[snafu(display("Failed to produce an ActivityPub Actor from a User"))]
+    Actor { source: crate::ap_entities::Error },
     #[snafu(display("While sending an ActivityPub request, {source}"))]
     Ap { source: crate::ap_entities::Error },
     #[snafu(display("While making a Grpc call, {source}"))]
     Grpc {
         source: indielinks_cache::cache::Error<FC>,
     },
+    #[snafu(display("The handle username {username} isn't a valid indielinks username"))]
+    Handle {
+        username: crate::acct::Username,
+        source: indielinks_shared::entities::Error,
+    },
     #[snafu(display("No 'self' Link from a webfinger"))]
     NoSelf { backtrace: Backtrace },
     #[snafu(display("While forming an URL, {source}"))]
     Url {
         source: url::ParseError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to find a user named {username}"))]
+    User {
+        username: Username,
+        source: crate::storage::Error,
+    },
+    #[snafu(display("Failed to parse an indielinks username from {}", url.as_str()))]
+    Username {
+        url: Url,
+        source: crate::ap_entities::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to parse an indielinks username and post ID from {}", url.as_str()))]
+    UsernameAndPostId {
+        url: Url,
+        source: crate::ap_entities::Error,
         backtrace: Backtrace,
     },
 }
@@ -87,6 +118,7 @@ pub struct ApResolver<F: ClientFactory = GrpcClientFactory, C = crate::client_ty
     /// The origin for this [indielinks] instance (used to form AP key identifiers)
     origin: Origin,
     client: C,
+    storage: Arc<dyn StorageBackend + Send + Sync>,
     // We need to share ownership of each cache with the GRPC server; this list will grow
     // substantially
     actors: Arc<Cache<F, Url, Actor>>,
@@ -122,6 +154,7 @@ where
     pub fn new(
         origin: Origin,
         client: C,
+        storage: Arc<dyn StorageBackend + Send + Sync>,
         actors: Arc<Cache<F, Url, Actor>>,
         notes: Arc<Cache<F, Url, Note>>,
         handles: Arc<Cache<F, Account, Actor>>,
@@ -129,20 +162,49 @@ where
         ApResolver {
             origin,
             client,
+            storage,
             actors,
             notes,
             handles,
         }
     }
+
     pub async fn get_actor(
         &mut self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
     ) -> Result<Actor, F::CacheClient> {
         if let Some(actor) = self.actors.get(url).await.context(GrpcSnafu)? {
+            debug!("ApResolver cache hit: {} :=> {actor:?}", url.as_str());
+            actor
+        } else if self.origin.matches_url(url) {
+            // This Actor isn't in our cache, but it's an Actor hosted on *this* instance. Skip the
+            // HTTP hop & just grab it from storage.
+            debug!(
+                "ApResolver cache miss: {}. However this appears to be a local user.",
+                url
+            );
+
+            let username =
+                username_from_url(&self.origin, url).context(UsernameSnafu { url: url.clone() })?;
+            let user = user_for_username(self.storage.as_ref(), &username)
+                .await
+                .context(UserSnafu {
+                    username: username.clone(),
+                })?;
+            let actor = Actor::new(&user, &self.origin).context(ActorSnafu)?;
+
+            self.actors
+                .insert(url.clone(), actor.clone())
+                .await
+                .context(GrpcSnafu)?;
+
             actor
         } else {
-            // Cache miss
+            debug!(
+                "ApResolver cache miss: {}. This will require an HTTP call",
+                url.as_str()
+            );
             let actor: Actor = ap_request(
                 &mut self.client,
                 &self.origin,
@@ -198,7 +260,19 @@ where
     ) -> Result<Note, F::CacheClient> {
         // Check the cache, first:
         if let Some(note) = self.notes.get(url).await.context(GrpcSnafu)? {
+            debug!("Cache hit: {} :=> {note:?}", url.as_str());
             note
+        } else if self.origin.matches_url(url) {
+            debug!(
+                "Cache miss; however {} is hosted on this intance",
+                url.as_str()
+            );
+
+            let (username, postid) = username_and_postid_from_url(&self.origin, url)
+                .context(UsernameAndPostIdSnafu { url: url.clone() })?;
+            get_note(&self.origin, self.storage.as_ref(), &username, &postid)
+                .await
+                .unwrap()
         } else {
             // Cache miss
             ap_request(
@@ -229,6 +303,28 @@ where
         handle: &Account,
     ) -> Result<Actor, F::CacheClient> {
         if let Some(actor) = self.handles.get(handle).await.context(GrpcSnafu)? {
+            actor
+        } else if self.origin.matches_host(handle.host()) {
+            debug!(
+                "ApResolver cache miss: {}. However this appears to be a local user.",
+                handle
+            );
+
+            let username = Username::new(handle.user().as_ref()).context(HandleSnafu {
+                username: handle.user().clone(),
+            })?;
+            let user = user_for_username(self.storage.as_ref(), &username)
+                .await
+                .context(UserSnafu {
+                    username: username.clone(),
+                })?;
+            let actor = Actor::new(&user, &self.origin).context(ActorSnafu)?;
+
+            self.handles
+                .insert(handle.clone(), actor.clone())
+                .await
+                .context(GrpcSnafu)?;
+
             actor
         } else {
             // Cache miss-- webfinger this handle
@@ -281,24 +377,40 @@ where
 #[cfg(test)]
 mod test {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         convert::Infallible,
         future::{ready, Ready},
+        result::Result as StdResult,
         sync::Arc,
         task::Poll,
     };
 
+    use crate::{
+        entities::{
+            ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShare,
+            IncomingReply, IncomingShare, LikeReplyShare, OutgoingLike, OutgoingReply,
+            OutgoingShare,
+        },
+        storage::{self, Backend, Counts, DateRange},
+        util::UpToThree,
+    };
+    use async_trait::async_trait;
     use bytes::Bytes;
+    use chrono::{DateTime, Utc};
     use either::Either::Right;
+    use futures::stream::BoxStream;
     use indielinks_cache::{
         network::null_client::NullClientFactory,
         raft::{make_shared_cache_node, InMemoryBackend},
     };
     use indielinks_shared::{
-        entities::generate_rsa_keypair,
+        entities::{generate_rsa_keypair, Post, PostDay, PostId, StorUrl, Tagname, UserId},
+        instance_state::InstanceStateV0,
         known_good,
+        nonempty_string::NonEmptyString,
         origin::{Host, Protocol, RegName},
     };
+    use uuid::Uuid;
 
     use super::*;
 
@@ -345,6 +457,221 @@ mod test {
         }
     }
 
+    // An `unimplemented!()` storage backend for unit testing purposes. This is fine as things stand
+    // at the time of this writing, since none of the unit tests exercise a code path that requires
+    // it... which is probably not great.
+    struct TestBackend;
+
+    #[async_trait]
+    impl Backend for TestBackend {
+        async fn add_follower(
+            &self,
+            _user: &User,
+            _follower: &StorUrl,
+        ) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn add_following(
+            &self,
+            _user: &User,
+            _following: &StorUrl,
+            _id: &FollowId,
+        ) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn add_outgoing_like(&self, _like: &OutgoingLike) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn add_outgoing_reply(
+            &self,
+            _reply: &OutgoingReply,
+        ) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn add_outgoing_share(
+            &self,
+            _share: &OutgoingShare,
+        ) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn add_post_like(&self, _reply: &IncomingLike) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        #[allow(clippy::too_many_arguments)]
+        async fn add_post(
+            &self,
+            _user: &User,
+            _replace: bool,
+            _uri: &Url,
+            _id: &PostId,
+            _title: &str,
+            _dt: &DateTime<Utc>,
+            _notes: Option<&NonEmptyString>,
+            _shared: bool,
+            _to_read: bool,
+            _tags: &HashSet<Tagname>,
+        ) -> StdResult<bool, storage::Error> {
+            unreachable!()
+        }
+        async fn add_post_reply(&self, _reply: &IncomingReply) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn add_post_share(&self, _share: &IncomingShare) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn add_user(&self, _user: &User) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn confirm_following(
+            &self,
+            _user: &User,
+            _following: &StorUrl,
+        ) -> StdResult<bool, storage::Error> {
+            unreachable!()
+        }
+        async fn counts(&self) -> StdResult<Counts, storage::Error> {
+            unreachable!()
+        }
+        async fn delete_post(
+            &self,
+            _user: &User,
+            _url: &StorUrl,
+        ) -> StdResult<bool, storage::Error> {
+            unreachable!()
+        }
+        async fn delete_tag(&self, _user: &User, _tag: &Tagname) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn followers_for_actor(
+            &self,
+            _actor_id: &StorUrl,
+        ) -> StdResult<BoxStream<'static, StdResult<Following, storage::Error>>, storage::Error>
+        {
+            unreachable!()
+        }
+        async fn get_all_likes_replies_and_shares(
+            &self,
+            _user: &User,
+        ) -> StdResult<BoxStream<'static, StdResult<LikeReplyShare, storage::Error>>, storage::Error>
+        {
+            unreachable!()
+        }
+        // I considered using `TryStream`, but not sure I see the advantage, yet. Also, there's no handy
+        // type alias `BoxTryStream` (tho of course I could define it)
+        async fn get_followers<'a>(
+            &'a self,
+            _user: &User,
+        ) -> StdResult<BoxStream<'a, StdResult<Follower, storage::Error>>, storage::Error> {
+            unreachable!()
+        }
+        async fn get_following<'a>(
+            &'a self,
+            _user: &User,
+        ) -> StdResult<BoxStream<'a, StdResult<Following, storage::Error>>, storage::Error>
+        {
+            unreachable!()
+        }
+        async fn get_like_reply_share(
+            &self,
+            _id: &Uuid,
+        ) -> StdResult<Option<LikeReplyShare>, storage::Error> {
+            unreachable!()
+        }
+        async fn get_likes_replies_shares(
+            &self,
+            _id: &Uuid,
+        ) -> StdResult<
+            BoxStream<'static, StdResult<IncomingLikeReplyShare, storage::Error>>,
+            storage::Error,
+        > {
+            unreachable!()
+        }
+        async fn get_post(
+            &self,
+            _userid: &UserId,
+            _uri: &StorUrl,
+        ) -> StdResult<Option<Post>, storage::Error> {
+            unreachable!()
+        }
+        async fn get_post_by_id(&self, _id: &PostId) -> StdResult<Option<Post>, storage::Error> {
+            unreachable!()
+        }
+        async fn get_posts(
+            &self,
+            _user: &User,
+            _tags: &UpToThree<Tagname>,
+            _day: &PostDay,
+            _uri: &Option<StorUrl>,
+        ) -> StdResult<Vec<Post>, storage::Error> {
+            unreachable!()
+        }
+        async fn get_posts_by_day(
+            &self,
+            _user: &User,
+            _tags: &UpToThree<Tagname>,
+        ) -> StdResult<Vec<(PostDay, usize)>, storage::Error> {
+            unreachable!()
+        }
+        async fn get_all_posts(
+            &self,
+            _user: &User,
+            _tags: &UpToThree<Tagname>,
+            _dates: &DateRange,
+            _unread: bool,
+        ) -> StdResult<BoxStream<'static, StdResult<Post, storage::Error>>, storage::Error>
+        {
+            unreachable!()
+        }
+        async fn get_recent_posts(
+            &self,
+            _user: &User,
+            _tags: &UpToThree<Tagname>,
+            _count: usize,
+        ) -> StdResult<Vec<Post>, storage::Error> {
+            unreachable!()
+        }
+        async fn get_tag_cloud(
+            &self,
+            _user: &User,
+        ) -> StdResult<HashMap<Tagname, usize>, storage::Error> {
+            unreachable!()
+        }
+        async fn get_user_by_id(&self, _id: &UserId) -> StdResult<Option<User>, storage::Error> {
+            unreachable!()
+        }
+        async fn rename_tag(
+            &self,
+            _user: &User,
+            _from: &Tagname,
+            _to: &Tagname,
+        ) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn update_user_api_keys(
+            &self,
+            _user: &User,
+            _keys: &ApiKeys,
+        ) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn update_user_post_times(
+            &self,
+            _user: &User,
+            _dt: &DateTime<Utc>,
+        ) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn user_for_name(&self, _name: &str) -> StdResult<Option<User>, storage::Error> {
+            unreachable!()
+        }
+        async fn validate_schema_version(
+            &self,
+            _schema_version: u32,
+        ) -> StdResult<InstanceStateV0, storage::Error> {
+            unreachable!()
+        }
+    }
+
     async fn make_resolver(
         client: MockHttpClient,
     ) -> ApResolver<NullClientFactory, MockHttpClient> {
@@ -370,7 +697,14 @@ mod test {
             1234u16,
         )
             .into();
-        ApResolver::new(origin, client, actors, notes, handles)
+        ApResolver::new(
+            origin,
+            client,
+            Arc::new(TestBackend),
+            actors,
+            notes,
+            handles,
+        )
     }
 
     fn actor_response() -> http::Response<Bytes> {

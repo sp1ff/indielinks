@@ -206,6 +206,7 @@ pub async fn first_background(
     let ap_resolver = Arc::new(Mutex::new(ApResolver::new(
         origin.clone(),
         ap_client.clone(),
+        storage.clone(),
         Arc::new(actor_cache),
         Arc::new(note_cache),
         Arc::new(handle_cache),

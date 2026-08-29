@@ -24,12 +24,16 @@
 //!
 //! [indielinks]: ../indielinskd/index.html
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    result::Result as StdResult,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use snafu::{prelude::*, Backtrace, IntoError};
+use tap::Pipe;
 use url::Url;
 use uuid::Uuid;
 
@@ -37,9 +41,11 @@ use indielinks_shared::{
     entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
     instance_state::InstanceStateV0,
     nonempty_string::NonEmptyString,
+    origin::Origin,
 };
 
 use crate::{
+    ap_entities::Note,
     entities::{
         ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShare,
         IncomingReply, IncomingShare, LikeReplyShare, OutgoingLike, OutgoingReply, OutgoingShare,
@@ -55,11 +61,34 @@ use crate::{
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
 pub enum Error {
+    #[snafu(display("{id} is a Like"))]
+    IsALike {
+        username: Username,
+        id: Uuid,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While yielding the next row in a Stream over a paged result, {source}"))]
     NextRow {
         #[snafu(source(from(scylla::errors::NextRowError, Box::new)))]
         source: Box<scylla::errors::NextRowError>,
         backtrace: Backtrace,
+    },
+    #[snafu(display("User {username} has no post, reply or share with ID {id}"))]
+    NoPost {
+        username: Username,
+        id: Uuid,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("No user named {username}"))]
+    NoUser {
+        username: Username,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to convert entity {id} to a Note: {source}"))]
+    Note {
+        id: Uuid,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("Schema validation error"))]
     Schema { backtrace: Backtrace },
@@ -252,4 +281,91 @@ pub trait Backend {
     /// name.
     async fn user_for_name(&self, name: &str) -> Result<Option<User>, Error>;
     async fn validate_schema_version(&self, schema_version: u32) -> Result<InstanceStateV0, Error>;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                               Retrieve a `User` for a `Username`                               //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Retrieve a [User] for a [Username]
+///
+/// This will error-out if there _is_ no user by that name, so only invoke this when the user is
+/// expected to exist.
+// This logic has been duplicated all over the codebase; it was never quite complex enough to
+// justify my factoring it out, but I finally got tired of it.
+pub async fn user_for_username(
+    storage: &(dyn Backend + Send + Sync),
+    username: &Username,
+) -> StdResult<User, Error> {
+    storage
+        .user_for_name(username.as_ref())
+        .await?
+        .ok_or(
+            NoUserSnafu {
+                username: username.clone(),
+            }
+            .build(),
+        )?
+        .pipe(Ok)
+}
+
+/// Retrieve a [Note], whether a post or an ActivityPub like, reply or share
+pub async fn get_note(
+    origin: &Origin,
+    storage: &(dyn Backend + Send + Sync),
+    username: &Username,
+    entityid: &Uuid,
+) -> StdResult<Note, Error> {
+    let user = storage.user_for_name(username.as_ref()).await?.ok_or(
+        NoUserSnafu {
+            username: username.clone(),
+        }
+        .build(),
+    )?;
+
+    fn check_userid(user: &User, userid: &UserId, id: &Uuid) -> StdResult<(), Error> {
+        if user.id() != userid {
+            return NoPostSnafu {
+                username: user.username(),
+                id: *id,
+            }
+            .fail();
+        }
+        Ok(())
+    }
+
+    // Regrettably, there are two tables we need to search: `entityid` could name an
+    // indielinks post, or it could name a reply/share.
+    let note: Note = match storage.get_post_by_id(&entityid.into()).await? {
+        Some(post) => {
+            check_userid(&user, &post.user_id(), entityid)?;
+            Note::new(&post, username, origin).context(NoteSnafu { id: *entityid })?
+        }
+        None => match storage.get_like_reply_share(entityid).await? {
+            Some(LikeReplyShare::Like(_)) => {
+                return IsALikeSnafu {
+                    username: username.clone(),
+                    id: *entityid,
+                }
+                .fail();
+            }
+            Some(LikeReplyShare::Reply(reply)) => {
+                check_userid(&user, &reply.user_id(), entityid)?;
+                Note::from_reply(&reply, username, origin).context(NoteSnafu { id: *entityid })?
+            }
+            Some(LikeReplyShare::Share(share)) => {
+                check_userid(&user, &share.user_id(), entityid)?;
+                Note::from_share(&share, username, origin).context(NoteSnafu { id: *entityid })?
+            }
+            None => {
+                return NoPostSnafu {
+                    username: username.clone(),
+                    id: *entityid,
+                }
+                .fail();
+            }
+        },
+    };
+
+    Ok(note)
 }

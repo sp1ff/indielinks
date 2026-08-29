@@ -49,7 +49,7 @@ use uuid::Uuid;
 
 use indielinks_shared::{
     api::{PostRepliesRequest, UserOutboxRequest},
-    entities::{PostId, StorUrl, UserId, UserPrivateKey, Username},
+    entities::{PostId, StorUrl, UserPrivateKey, Username},
     origin::Origin,
 };
 
@@ -58,7 +58,7 @@ use crate::{
     ap_entities::{
         self, ap_request_no_response, make_user_followers, make_user_following,
         username_and_postid_from_url, Accept, Actor, Announce, AnnounceOrCreate, Create, Follow,
-        InboxPayload, InstanceActor, Item, Jld, Like, Note, Recipient, Share, ToJld, Undo,
+        InboxPayload, InstanceActor, Item, Jld, Like, Recipient, Share, ToJld, Undo,
     },
     ap_resolution::ApResolver,
     app_logic::{handle_outbox_or_redirect, OutboxResponse, RepliesResponse},
@@ -71,7 +71,7 @@ use crate::{
     home_timeline::HomeTimelines,
     http::ErrorResponseBody,
     indielinks::Indielinks,
-    storage::{self, Backend as StorageBackend},
+    storage::{self, get_note, user_for_username, Backend as StorageBackend},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -159,12 +159,6 @@ pub enum Error {
     IdIsLike { id: LikeId, backtrace: Backtrace },
     #[snafu(display("Failed to create the instance actor: {source}"))]
     InstanceActor { source: crate::ap_entities::Error },
-    #[snafu(display("{id} is a Like"))]
-    IsALike {
-        username: Username,
-        id: Uuid,
-        backtrace: Backtrace,
-    },
     #[snafu(display("Failed to append a query parameter to an URL: {source}"))]
     Join {
         source: url::ParseError,
@@ -184,12 +178,6 @@ pub enum Error {
     },
     #[snafu(display("An in-reply-to field was expected, but not found"))]
     NoInReplyTo { backtrace: Backtrace },
-    #[snafu(display("User {username} has no post, reply or share with ID {id}"))]
-    NoPost {
-        username: Username,
-        id: Uuid,
-        backtrace: Backtrace,
-    },
     #[snafu(display("No user named {username}"))]
     NoUser {
         username: Username,
@@ -206,18 +194,18 @@ pub enum Error {
         source: Box<ap_entities::Error>,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to convert entity {id} to a Note: {source}"))]
-    Note {
-        id: Uuid,
-        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
-        source: Box<crate::ap_entities::Error>,
-    },
     #[snafu(display("Exactly one Signature header expected"))]
     OneSignature { backtrace: Backtrace },
     #[snafu(display("While operating on a user outbox, {source}"))]
-    Outbox { source: crate::app_logic::Error },
+    Outbox {
+        #[snafu(source(from(crate::app_logic::Error, Box::new)))]
+        source: Box<crate::app_logic::Error>,
+    },
     #[snafu(display("While collecting post replies, {source}"))]
-    PostReplies { source: crate::app_logic::Error },
+    PostReplies {
+        #[snafu(source(from(crate::app_logic::Error, Box::new)))]
+        source: Box<crate::app_logic::Error>,
+    },
     #[snafu(display("No post {postid} for user {requested_username}"))]
     PostUserMismatch {
         postid: Uuid,
@@ -264,6 +252,11 @@ pub enum Error {
         source: axum::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Failed to lookup username {username}"))]
+    User {
+        username: Username,
+        source: crate::storage::Error,
+    },
     #[snafu(display("Failed to determine visibility: {source}"))]
     Visibility {
         #[snafu(source(from(crate::activity_pub::Error, Box::new)))]
@@ -295,7 +288,6 @@ impl Error {
                 (StatusCode::NOT_FOUND, format!("Unknown user {username}"))
             }
             Error::NonUtf8Signature { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
-            Error::Note { .. } => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
             Error::OneSignature { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
             Error::PostUserMismatch { .. } => (StatusCode::NOT_FOUND, format!("{self}")),
             Error::PublicKey { .. } => (StatusCode::UNAUTHORIZED, format!("{self}")),
@@ -693,11 +685,11 @@ async fn accept_create(
                 "The Note is (allegedly) in response to post/reply/share {} by user {}.",
                 id, username
             );
-            let user = storage
-                .user_for_name(username.as_ref())
+            let user = user_for_username(storage, &username)
                 .await
-                .context(StorageSnafu)?
-                .context(NoUserSnafu { username })?;
+                .context(UserSnafu {
+                    username: username.clone(),
+                })?;
             let in_reply = in_reply_for_uuid(storage, &id).await;
             if let Ok(in_reply) = in_reply {
                 storage
@@ -928,16 +920,11 @@ async fn actor(
         storage: &(dyn StorageBackend + Send + Sync),
         username: &Username,
     ) -> Result<Actor> {
-        let user = storage
-            .user_for_name(username.as_ref())
+        let user = user_for_username(storage, username)
             .await
-            .map_err(|err| StorageSnafu.into_error(err))?
-            .ok_or(
-                NoUserSnafu {
-                    username: username.clone(),
-                }
-                .build(),
-            )?;
+            .context(UserSnafu {
+                username: username.clone(),
+            })?;
         let actor = Actor::new(&user, origin).context(ActorSnafu)?;
 
         debug!("Serving Actor: {actor:?}");
@@ -1569,81 +1556,7 @@ async fn get_post(
     axum::extract::Path((username, entityid)): axum::extract::Path<(Username, Uuid)>,
     accept: AcceptHeader,
 ) -> axum::response::Response {
-    async fn get_post1(
-        origin: &Origin,
-        storage: &(dyn StorageBackend + Send + Sync),
-        username: &Username,
-        entityid: &Uuid,
-    ) -> Result<Note> {
-        let user = storage
-            .user_for_name(username.as_ref())
-            .await
-            .context(StorageSnafu)?
-            .ok_or(
-                NoUserSnafu {
-                    username: username.clone(),
-                }
-                .build(),
-            )?;
-
-        fn check_userid(user: &User, userid: &UserId, id: &Uuid) -> Result<()> {
-            if user.id() != userid {
-                return NoPostSnafu {
-                    username: user.username(),
-                    id: *id,
-                }
-                .fail();
-            }
-            Ok(())
-        }
-
-        // Regrettably, there are two tables we need to search: `entityid` could name an
-        // indielinks post, or it could name a reply/share.
-        let note: Note = match storage
-            .get_post_by_id(&entityid.into())
-            .await
-            .context(StorageSnafu)?
-        {
-            Some(post) => {
-                check_userid(&user, &post.user_id(), entityid)?;
-                Note::new(&post, username, origin).context(NoteSnafu { id: *entityid })?
-            }
-            None => match storage
-                .get_like_reply_share(entityid)
-                .await
-                .context(StorageSnafu)?
-            {
-                Some(LikeReplyShare::Like(_)) => {
-                    return IsALikeSnafu {
-                        username: username.clone(),
-                        id: *entityid,
-                    }
-                    .fail();
-                }
-                Some(LikeReplyShare::Reply(reply)) => {
-                    check_userid(&user, &reply.user_id(), entityid)?;
-                    Note::from_reply(&reply, username, origin)
-                        .context(NoteSnafu { id: *entityid })?
-                }
-                Some(LikeReplyShare::Share(share)) => {
-                    check_userid(&user, &share.user_id(), entityid)?;
-                    Note::from_share(&share, username, origin)
-                        .context(NoteSnafu { id: *entityid })?
-                }
-                None => {
-                    return NoPostSnafu {
-                        username: username.clone(),
-                        id: *entityid,
-                    }
-                    .fail();
-                }
-            },
-        };
-
-        Ok(note)
-    }
-
-    match get_post1(&state.origin, state.storage.as_ref(), &username, &entityid).await {
+    match get_note(&state.origin, state.storage.as_ref(), &username, &entityid).await {
         Ok(note) => match accept {
             AcceptHeader::ActivityPub => match note.as_jld(None) {
                 Ok(jld) => {
@@ -1660,7 +1573,7 @@ async fn get_post(
                 Err(err) => handle_err(err, posts_errors.deref()),
             },
         },
-        Err(err @ Error::NoPost { .. }) => {
+        Err(err @ crate::storage::Error::NoPost { .. }) => {
             error!("{}", err);
             posts_errors.add(1, &[KeyValue::new("username", username)]);
             StatusCode::NOT_FOUND.into_response()

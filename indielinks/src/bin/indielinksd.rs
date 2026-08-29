@@ -895,6 +895,8 @@ async fn serve(
     mut cfg: ConfigV1,
     log_file_hup: Option<mpsc::Sender<PathBuf>>,
 ) -> Result<()> {
+    std::panic::set_hook(Box::new(|info| error!("Panic detected: {info:#?}")));
+
     // Produce a future which can be used to signal graceful shutdown, below.
     async fn shutdown_signal(nfy: Arc<Notify>) {
         nfy.notified().await
@@ -1027,6 +1029,7 @@ async fn serve(
         let ap_resolver = Arc::new(TokioMutex::new(ApResolver::new(
             cfg.public_origin.clone(),
             ap_client.clone(),
+            storage.clone(),
             actors.clone(),
             notes.clone(),
             handles.clone(),

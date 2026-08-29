@@ -148,7 +148,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to get posts from backend: {source}"))]
     GetPosts {
-        source: crate::storage::Error,
+        #[snafu(source(from(crate::storage::Error, Box::new)))]
+        source: Box<crate::storage::Error>,
         backtrace: Backtrace,
     },
     #[snafu(display("An Authorization header had a non-textual value: {source}"))]
@@ -190,8 +191,8 @@ pub enum Error {
     },
     #[snafu(display("posts by day failed: {source}"))]
     PostsByDay {
-        source: storage::Error,
-        backtrace: Backtrace,
+        #[snafu(source(from(storage::Error, Box::new)))]
+        source: Box<storage::Error>,
     },
     #[snafu(display("Failed to fetch posts by URI {uri}: {source}"))]
     PostByUri {
@@ -233,13 +234,13 @@ pub enum Error {
     },
     #[snafu(display("Failed to update the user's post counts: {source}"))]
     UpdateUserPostCounts {
-        source: storage::Error,
-        backtrace: Backtrace,
+        #[snafu(source(from(storage::Error, Box::new)))]
+        source: Box<storage::Error>,
     },
     #[snafu(display("Failed to update the user's post times: {source}"))]
     UpdateUserPostTimes {
-        source: storage::Error,
-        backtrace: Backtrace,
+        #[snafu(source(from(storage::Error, Box::new)))]
+        source: Box<storage::Error>,
     },
     #[snafu(display("Failed to lookup user {username}: {source}"))]
     User {

@@ -106,7 +106,10 @@ use crate::{
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("While adding this post, {source}"))]
-    AddPost { source: crate::app_logic::Error },
+    AddPost {
+        #[snafu(source(from(crate::app_logic::Error, Box::new)))]
+        source: Box<crate::app_logic::Error>,
+    },
     #[snafu(display("While making the Pinboard request, {source}"))]
     Client {
         #[snafu(source(from(either::Either<std::convert::Infallible, BoxedError>, Box::new)))]

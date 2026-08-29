@@ -327,6 +327,14 @@ impl Origin {
             }),
         }
     }
+    /// Return `true` if `host` matches our own
+    pub fn matches_host(&self, host: &Host) -> bool {
+        self.host == *host
+    }
+    /// Return `true` if `url`'s origin matches this one
+    pub fn matches_url(&self, url: &Url) -> bool {
+        url.try_into().map(|other| *self == other).unwrap_or(false)
+    }
     pub fn port(&self) -> Option<u16> {
         self.port
     }

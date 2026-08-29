@@ -761,7 +761,8 @@ impl Timeline {
             .await
             .into_iter()
             .flatten()
-            .collect::<StdResult<Vec<Item>, _>>()?
+            .collect::<StdResult<Vec<Item>, _>>()
+            .inspect_err(|err| error!("While growing the timeline: {err:?}"))?
             .into_iter()
             .for_each(|item| {
                 self.items.insert(PostKey::new(&item), item);

@@ -443,8 +443,9 @@ pub fn username_from_url(origin: &Origin, url: &Url) -> Result<Username> {
 }
 
 lazy_static! {
-    static ref USER_POSTID_PATH: Regex =
-        Regex::new("^/users/([a-zA-Z][-_.a-zA-Z0-9]+)/posts/([-0-9a-fA-F]{36})$").unwrap(/* known good */);
+    static ref USER_POSTID_PATH: Regex = known_good!(Regex::new(
+        "^/users/([a-zA-Z][-_.a-zA-Z0-9]+)/posts/([-0-9a-fA-F]{36})$"
+    ));
 }
 
 /// Parse a [Username] & UUID from and indielinks post ID (as an [Url])

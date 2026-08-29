@@ -97,7 +97,8 @@ pub enum Error {
     AddFollowing {
         username: Username,
         actorid: Box<Url>,
-        source: crate::storage::Error,
+        #[snafu(source(from(crate::storage::Error, Box::new)))]
+        source: Box<crate::storage::Error>,
     },
     #[snafu(display("While adding the post internally, {source}"))]
     AddPost { source: crate::storage::Error },

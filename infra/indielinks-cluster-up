@@ -292,6 +292,7 @@ echo "$!" > /tmp/haproxy.${haproxy_id}.pid
 # figure-out that nodes 4 & 5 are down (if we were invoked with "3") and to
 # take them out of rotation.
 sleep 2.5
+hc ${haproxy_port} ${num_polls} || exit 1
 
 if test -z "${no_raft_init}"; then
     pport_0=$(parse_private_port "${config_base}0.toml")
@@ -304,7 +305,15 @@ if test -z "${no_raft_init}"; then
         grpc_p4=$(parse_grpc_port "${config_base}4.toml")
         payload="{\"nodes\":[[0,{\"addr\":\"127.0.0.1:$grpc_p0\"}],[1,{\"addr\":\"127.0.0.1:$grpc_p1\"}],[2,{\"addr\":\"127.0.0.1:$grpc_p2\"}],[3,{\"addr\":\"127.0.0.1:$grpc_p3\"}],[4,{\"addr\":\"127.0.0.1:$grpc_p4\"}]],\"slots\":[[0,0],[1,1]]}"
     fi
-    curl -v -H 'Content-Type: application/json' http://localhost:${pport_0}/ops/cache/init-cluster --data "${payload}"
+    status=$(curl -s -w "%{http_code}" -H 'Content-Type: application/json' http://localhost:${pport_0}/ops/cache/init-cluster --data "${payload}")
+    if [ $? -ne 0 ]; then
+        echo "curl failed" >&2
+        exit 1
+    fi
+    if [ "${status}" != "200" ]; then
+        echo "cluster initialization failed" >&2
+        exit 1
+    fi
 fi
 
 echo "indielinksd up & fronted by haproxy. The haproxy log file is at /tmp/haproxy.${haproxy_id}.log"
