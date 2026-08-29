@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2024-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -15,7 +15,7 @@
 
 //! # indielinks
 //!
-//! Bookmarks in the Fediverse.
+//! Bookmarking in the Fediverse.
 //!
 //! # Introduction
 //!
@@ -31,8 +31,6 @@ use std::{
     fs::{self, OpenOptions},
     future::IntoFuture,
     io,
-    net::SocketAddr,
-    num::NonZeroU32,
     os::fd::{AsFd, AsRawFd, RawFd},
     path::{Path, PathBuf},
     str::FromStr,
@@ -45,7 +43,6 @@ use std::{
 use axum::{
     extract::State, middleware::from_fn_with_state, response::IntoResponse, routing::get, Router,
 };
-use chrono::Duration;
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use errno::Errno;
 use governor::Quota;
@@ -56,14 +53,12 @@ use nonzero::nonzero;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
-use secrecy::SecretString;
-use serde::Deserialize;
-use snafu::{prelude::*, IntoError};
+use snafu::{prelude::*, IntoError, Report};
 use tap::Pipe;
 use tokio::{
     net::TcpListener,
     signal::unix::{signal, SignalKind},
-    sync::{mpsc, Mutex as TokioMutex, Notify, RwLock as TokioRwLock},
+    sync::{mpsc, Mutex as TokioMutex, Notify},
 };
 use tonic::transport::Server as TonicServer;
 use tower_http::{
@@ -80,14 +75,9 @@ use tracing_subscriber::{
 };
 use url::Url;
 
-use indielinks_shared::{
-    origin::{NetLoc, Origin},
-    service::ExponentialBackoffParameters,
-};
-
 use indielinks_cache::{
     cache::Cache,
-    raft::{make_shared_cache_node, Backend as CacheBackend, Configuration as RaftConfiguration},
+    raft::{make_shared_cache_node, Backend as CacheBackend},
     types::NodeId,
 };
 
@@ -98,14 +88,14 @@ use indielinks::{
     ap_resolution::ApResolver,
     background_tasks::{self, Backend as TasksBackend, BackgroundTasks, Context},
     bookmarklets::make_router as make_bookmarklets_router,
-    cache::{GrpcClientFactory, SLOT_TOP_K_TAGS},
+    cache::GrpcClientFactory,
     client::make_client,
+    configuration::{ConfigV1, Configuration, OtelExportConfig, StorageConfig},
     define_metric,
     delicious::{
         authenticate as authenticate_for_delicious, feed as atom_feed,
         make_router as make_delicious_router,
     },
-    dynamodb::Location as DynamoLocation,
     grpc::{
         make_router as make_cache_router, GrpcService, ACCOUNT_TO_ACTOR, ACTOR_ID_TO_ACTOR,
         NOTE_ID_TO_NOTE,
@@ -117,14 +107,9 @@ use indielinks::{
     metrics_task::produce_metrics,
     ops::make_router as make_ops_router,
     outboxes::UserOutboxes,
-    peppers::Peppers,
-    popular_items::CachedTopK,
     protobuf_interop::protobuf::grpc_service_server::GrpcServiceServer,
-    recent_posts_lists::RecentPostsList,
-    signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
-    users::{make_router as make_user_router, Configuration as UsersConfiguration},
-    util::Credentials,
+    users::make_router as make_user_router,
     webfinger::webfinger,
 };
 use uuid::Uuid;
@@ -164,6 +149,10 @@ use uuid::Uuid;
 /// type implementing Termination".
 #[derive(Snafu)]
 pub enum Error {
+    #[snafu(display("failed to assemble the application state prior to serving requests"))]
+    ApplicationState {
+        source: indielinks::indielinks::Error,
+    },
     #[snafu(display("While serving {asset:?}: {source}"))]
     Asset {
         asset: PathBuf,
@@ -244,7 +233,7 @@ pub enum Error {
 
 impl std::fmt::Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self::Display::fmt(&self, f)
+        write!(f, "{}", Report::from_error(self))
     }
 }
 
@@ -258,7 +247,7 @@ static SCHEMA_VERSION: u32 = 0;
 
 /// The execution environment into which this instance has been deployed
 #[derive(Clone, Debug, Default)]
-enum DeploymentEnvironment {
+pub enum DeploymentEnvironment {
     #[default]
     Development,
     /// Local installation
@@ -282,16 +271,8 @@ impl Display for DeploymentEnvironment {
     }
 }
 
-impl clap::builder::ValueParserFactory for DeploymentEnvironment {
-    type Parser = DeploymentEnvironmentParser;
-
-    fn value_parser() -> Self::Parser {
-        DeploymentEnvironmentParser
-    }
-}
-
 #[derive(Clone, Debug)]
-struct DeploymentEnvironmentParser;
+pub struct DeploymentEnvironmentParser;
 
 impl clap::builder::TypedValueParser for DeploymentEnvironmentParser {
     type Value = DeploymentEnvironment;
@@ -315,6 +296,14 @@ impl clap::builder::TypedValueParser for DeploymentEnvironmentParser {
             "prod" | "production" => Ok(DeploymentEnvironment::Production),
             _ => Err(clap::Error::new(ErrorKind::InvalidValue)),
         }
+    }
+}
+
+impl clap::builder::ValueParserFactory for DeploymentEnvironment {
+    type Parser = DeploymentEnvironmentParser;
+
+    fn value_parser() -> Self::Parser {
+        DeploymentEnvironmentParser
     }
 }
 
@@ -378,196 +367,6 @@ impl CliOpts {
                 .unwrap_or(Default::default()),
         })
     }
-}
-
-/// Indielinks datastore configuration
-///
-/// I want to hide the details of the backing datastore from application code to the greatest extent
-/// possible; even at the outset of the project, I'm torn between ScyllaDB & DynamoDB. The idea here
-/// is that most of indielinks will write to a generic API (albeit one that will likely encode the
-/// permitted styles of data access), but that at startup, a particular *implementation* of that API
-/// will be chosen, according to configuration. This configuration.
-// Nb that we can only deserialize (i.e. not serialize) due to the presence of secrets in the
-// struct
-#[derive(Clone, Debug, Deserialize)]
-pub enum StorageConfig {
-    /// Use ScyllaDB/CQL interface
-    Scylla {
-        /// ScyllaDB credentials, if authentication is to be used
-        credentials: Option<Credentials>,
-        /// ScyllaDB hosts; specify as "host:port" (or anything that can be parsed as a [SocketAddr])
-        hosts: Vec<SocketAddr>,
-        /// Optional address translation
-        translations: Option<Vec<(SocketAddr, SocketAddr)>>,
-    },
-    /// Use DyanmoDB or Scylla over the Alternator interface
-    Dynamo {
-        /// AWS credentials: key ID & secret key; you'll pretty-much always need to specify these
-        /// when running against DDB, but one could be talking to a local SycllaDB over the
-        /// Alternator interface locally and have the cluster be open
-        credentials: Option<Credentials>,
-        /// You can find DynamoDB in a few ways. If you're truly talking to DynamoDB in AWS, you can
-        /// give a region. You can also specify an URL (like
-        /// `https://dynamodb.us-west-2.amazonaws.com`). If you're talking to ScyllaDB over the
-        /// Alternator interface, we're going to have to handle load-balancing on the client-side,
-        /// so specify more than one.
-        location: DynamoLocation,
-    },
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        StorageConfig::Scylla {
-            credentials: None,
-            hosts: vec!["localhost:9042".parse::<SocketAddr>().unwrap(/* known good */)],
-            translations: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct SigningKeysConfig {
-    #[serde(rename = "token-lifetime")]
-    token_lifetime: Duration,
-    #[serde(rename = "refresh-token-lifetime")]
-    refresh_token_lifetime: Duration,
-    #[serde(rename = "signing-keys")]
-    signing_keys: SigningKeys,
-}
-
-impl Default for SigningKeysConfig {
-    fn default() -> Self {
-        SigningKeysConfig {
-            token_lifetime: Duration::minutes(5),
-            refresh_token_lifetime: Duration::hours(36),
-            signing_keys: SigningKeys::default(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct OtelExportConfig {
-    /// Endpoint that will receive metric data in OTLP format
-    endpoint: Url,
-    /// Interval at which metrics will be pushed to `endpoint`; defaults to 60 seconds
-    interval: Option<std::time::Duration>,
-}
-
-/// Rate-limit settings for indielinksd _clients_.
-///
-/// `per_hour` is the permissible number of requests per hour per network location (host +
-/// port). Non-default per-netloc quotas can be defined via `custom`.
-#[derive(Clone, Debug, Deserialize)]
-pub struct ClientRateLimits {
-    #[serde(rename = "per-hour")]
-    per_hour: NonZeroU32,
-    custom: Vec<(NetLoc, NonZeroU32)>,
-}
-
-impl Default for ClientRateLimits {
-    fn default() -> Self {
-        Self {
-            per_hour: nonzero!(2880u32), // 8/sec
-            custom: Default::default(),
-        }
-    }
-}
-
-/// Indielinks configuration, version one
-#[derive(Clone, Debug, Deserialize)]
-struct ConfigV1 {
-    /// The [indielinks] log file
-    #[serde(rename = "log-file")]
-    log_file: PathBuf,
-    /// OTLP export target; None means don't export
-    #[serde(rename = "otlp-export")]
-    otlp_export: Option<OtelExportConfig>,
-    /// Local address at which to listen for public requests; specify as "address:port". This
-    /// is the address to which [indielinks] will bind a listening socket for its public API.
-    #[serde(rename = "public-address")]
-    public_address: SocketAddr,
-    /// Address at which to listen for private requests; specify as "address:port"
-    // See note above RE `SocketAddr`.
-    #[serde(rename = "private-address")]
-    private_address: SocketAddr,
-    /// Address at which to listen for Raft-related gRPC messages
-    #[serde(rename = "raft-grpc-address")]
-    raft_grpc_address: SocketAddr,
-    #[serde(rename = "storage-config")]
-    storage_config: StorageConfig,
-    /// The address at which this [indielinks] instance may be reached from the public internet
-    #[serde(rename = "public-origin")]
-    public_origin: Origin,
-    pepper: Peppers,
-    #[serde(rename = "signing-keys")]
-    signing_keys: SigningKeysConfig,
-    #[serde(rename = "users-config")]
-    users_config: UsersConfiguration,
-    #[serde(rename = "user-agent")]
-    user_agent: String,
-    #[serde(rename = "client-exponential-backoff")]
-    client_exponential_backoff: ExponentialBackoffParameters,
-    #[serde(rename = "client-rate-limits")]
-    client_rate_limits: ClientRateLimits,
-    #[serde(rename = "local-rate-limits")]
-    local_rate_limits: ClientRateLimits,
-    #[serde(rename = "general-purpose-rate-limits")]
-    general_purpose_rate_limits: ClientRateLimits,
-    #[serde(rename = "collection-page-size")]
-    collection_page_size: usize,
-    assets: Option<PathBuf>,
-    #[serde(rename = "background-tasks")]
-    background_tasks: background_tasks::Config,
-    #[serde(rename = "raft-config")]
-    raft_config: RaftConfiguration,
-    #[serde(rename = "pinboard-token")]
-    pinboard_token: Option<SecretString>,
-}
-
-impl ConfigV1 {
-    pub fn public_address(&self) -> &SocketAddr {
-        &self.public_address
-    }
-    pub fn private_address(&self) -> &SocketAddr {
-        &self.private_address
-    }
-    pub fn background_tasks(&self) -> &background_tasks::Config {
-        &self.background_tasks
-    }
-}
-
-impl Default for ConfigV1 {
-    fn default() -> Self {
-        ConfigV1 {
-            log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(/* known good */),
-            otlp_export: None,
-            public_address: "0.0.0.0:20679".parse::<SocketAddr>().unwrap(/* known good */),
-            private_address: "127.0.0.1:20680".parse::<SocketAddr>().unwrap(/* known good */),
-            raft_grpc_address: "0.0.0.0:20681".parse::<SocketAddr>().unwrap(/* known good */),
-            storage_config: StorageConfig::default(),
-            public_origin: "http://localhost:20679".parse::<Origin>().unwrap(/* known good */),
-            pepper: Peppers::default(),
-            signing_keys: SigningKeysConfig::default(),
-            users_config: UsersConfiguration::default(),
-            user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
-            client_exponential_backoff: Default::default(),
-            client_rate_limits: Default::default(),
-            local_rate_limits: Default::default(),
-            general_purpose_rate_limits: Default::default(),
-            collection_page_size: 12, // Copied from Mastodon
-            assets: None,
-            background_tasks: background_tasks::Config::default(),
-            raft_config: RaftConfiguration::default(),
-            pinboard_token: None,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "version")] // tag "internally"
-enum Configuration {
-    #[serde(rename = "1")]
-    V1(ConfigV1),
 }
 
 /// Parse the indielinks configuration file
@@ -1226,42 +1025,25 @@ async fn serve(
             handles.clone(),
         ));
 
-        let state = Arc::new(Indielinks {
-            origin: cfg.public_origin.clone(),
-            instance_id: opts.instance_id,
-            instance_state,
-            storage,
-            exporter: exporter.clone(),
-            pepper: cfg.pepper.clone(),
-            token_lifetime: cfg.signing_keys.token_lifetime,
-            refresh_token_lifetime: cfg.signing_keys.refresh_token_lifetime,
-            signing_keys: cfg.signing_keys.signing_keys.clone(),
-            pinboard_token: cfg.pinboard_token.clone(),
-            users_same_site: cfg.users_config.same_site.clone(),
-            users_secure_cookies: cfg.users_config.secure_cookies,
-            allowed_origins: cfg.users_config.allowed_origins.clone(),
-            ap_client,
-            local_client,
-            general_purpose_client,
-            collection_page_size: cfg.collection_page_size,
-            assets: cfg.assets.clone().unwrap_or(PathBuf::from("assets")),
-            task_sender,
-            cache_node: cache_node.clone(),
-            ap_resolver,
-            home_timelines,
-            user_outboxes,
-            recent_posts_list: TokioRwLock::new(RecentPostsList::new(
+        let state = Arc::new(
+            Indielinks::new(
+                opts.instance_id,
+                instance_state,
+                storage,
+                exporter.clone(),
+                ap_client,
+                local_client,
+                general_purpose_client,
+                task_sender,
                 cache_node.clone(),
-                nonzero!(256usize),
-                GrpcClientFactory,
-            )),
-            top_k_tags: TokioRwLock::new(CachedTopK::new(
-                *SLOT_TOP_K_TAGS,
-                GrpcClientFactory,
-                cache_node.clone(),
-                nonzero!(64usize),
-            )),
-        });
+                ap_resolver,
+                home_timelines,
+                user_outboxes,
+                &cfg,
+            )
+            .await
+            .context(ApplicationStateSnafu)?,
+        );
 
         let world_nfy = Arc::new(Notify::new());
         let local_nfy = Arc::new(Notify::new());

@@ -38,6 +38,7 @@ pub mod cache;
 pub mod client;
 #[path = "client-types.rs"]
 pub mod client_types;
+pub mod configuration;
 pub mod delicious;
 pub mod dynamodb;
 #[path = "dynamodb-schemas.rs"]

@@ -15,6 +15,7 @@ async-trait = "0.1.83"
 atom_syndication = { version = "0.12.7", features = ["with-serde"] }
 aws-config = { version = "1.5.12", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1.57.0"
+aws-sdk-ssm = "1.110.0"
 aws-smithy-async = { version = "1.2.5", features = ["rt-tokio"] }
 aws-smithy-runtime-api = { version = "1.7.3", features = ["client"] }
 axum = { version = "0.8.1", features = ["macros", "tracing"] }

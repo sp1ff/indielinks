@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2024-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -360,6 +360,34 @@
 //!
 //! [anyhow]: https://docs.rs/anyhow/latest/anyhow
 //!
+//! ## Secrets Management
+//!
+//! [indielinks] implements a simple chained approach to injecting secrets into the [indielinks]
+//! process:
+//!
+//! - environment variable
+//! - configuration file
+//! - AWS SSM Parameter Store
+//!
+//! If either of the environment variables `INDIELINKS_PEPPERS` or `INDIELINKS_SIGNING_KEYS` are
+//! specified, their values will be interpreted as JSON encodings of the salient secret. Here are
+//! two examples using development secrets:
+//!
+//! ```json
+//! INDIELINKS_PEPPERS='{"peppers":{"pepper-ver:20250213":[178,145,72,52,77,95,211,126,89,113,87,145,221,0,50,146,98,233,25,119,109,174,75,91,106,171,0,103,14,140,244,54]}}'
+//! ```
+//!
+//! ```json
+//! INDIELINKS_SIGNING_KEYS='{"keys":{"keyid:20250214":[207,30,37,178,222,42,68,222,209,206,199,250,219,94,3,163,30,21,161,140,1,170,140,187,185,228,47,177,215,11,196,152,221,128,208,77,104,247,28,178,207,241,6,239,71,11,22,221,105,152,60,109,121,214,201,12,252,96,19,160,95,124,100,234]}}
+//! ```
+//!
+//! If either or both environment variables are not set, they will next be resolved from the
+//! indielinks configuration file. The operator may choose to simply store them on disk, presumably
+//! protecting the file appropriately.
+//!
+//! Finally, [indielinks] will reach-out to AWS SSM Parameter Store for the secrets, if they are
+//! found in neither the relevant environment variable nor on disk.
+//!
 //! # Developers' Documentation
 //!
 //! I spent the best part of a year (on & off) "picking at" the problem of implementing an
@@ -374,17 +402,19 @@
 //! we visualize their dependencies as a graph, it should be acyclic. Here are the layers as of the
 //! time of this writing:
 //!
-//! - 0: (webfinger users scylla ops metrics_task grpc serde_hash_string dynamodb delicious client bookmarklets actor)
+//! - 0: (webfinger users scylla ops metrics_task grpc serde_hash_string delicious client bookmarklets actor)
 //! - 1: (app_logic)
 //! - 2: (pagination indielinks activity_pub)
-//! - 3: (recent_posts_lists popular_items outboxes background_tasks)
-//! - 4: (home_timeline)
-//! - 5: (client_types ap_resolution)
-//! - 6: (cache http authn ap_entities)
-//! - 7: (protobuf protobuf_interop token storage sanitized_html)
-//! - 8: (signing_keys entities acct)
-//! - 9: (peppers)
-//! - 10: (util)
+//! - 3: (configuration recent_posts_lists popular_items outboxes)
+//! - 4: (dynamodb)
+//! - 5: (background_tasks)
+//! - 6: (home_timeline)
+//! - 7: (client_types ap_resolution)
+//! - 8: (cache http authn ap_entities)
+//! - 9: (protobuf protobuf_interop token storage sanitized_html)
+//! - 10: (signing_keys entities acct)
+//! - 11: (peppers)
+//! - 12: (util)
 //!
 //! You can re-generate this with the `check-dependencies` script in the `admin` folder.
 //!

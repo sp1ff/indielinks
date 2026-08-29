@@ -99,7 +99,6 @@ use itertools::Itertools;
 use nonzero::nonzero;
 use opentelemetry::KeyValue;
 use secrecy::SecretString;
-use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace};
 use tap::Pipe;
 use tokio::sync::Mutex;
@@ -133,7 +132,7 @@ use crate::{
     client_types::ClientType,
     define_metric,
     entities::{self, FollowId, LikeId, User},
-    http::{ErrorResponseBody, SameSite},
+    http::ErrorResponseBody,
     indielinks::Indielinks,
     peppers::{self, Peppers},
     signing_keys::{self, SigningKeys},
@@ -327,40 +326,6 @@ impl axum::response::IntoResponse for Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                         Configuration                                          //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// I suppose I could pull-in the `cookie` crate... but c'mon: it's a few cookies.
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Configuration {
-    #[serde(rename = "same-site")]
-    pub same_site: SameSite,
-    #[serde(rename = "secure-cookies")]
-    pub secure_cookies: bool,
-    #[serde(rename = "allowed-origins")]
-    pub allowed_origins: Vec<Origin>,
-}
-
-/// Return a configuration suitable for non-same-origin, http
-impl Default for Configuration {
-    fn default() -> Self {
-        Configuration {
-            same_site: SameSite::None,
-            secure_cookies: false,
-            allowed_origins: vec![
-                Origin::try_from("http://localhost:18080".to_owned()).unwrap(/* known good */),
-                Origin::try_from("http://localhost:20676".to_owned()).unwrap(/* known good */),
-                Origin::try_from("http://127.0.0.1:18080".to_owned()).unwrap(/* known good */),
-                Origin::try_from("http://127.0.0.1:20676".to_owned()).unwrap(/* known good */),
-                Origin::try_from("http://localhost:18443".to_owned()).unwrap(/* known good */),
-                Origin::try_from("http://127.0.0.1:18443".to_owned()).unwrap(/* known good */),
-            ],
-        }
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         Authorization                                          //
