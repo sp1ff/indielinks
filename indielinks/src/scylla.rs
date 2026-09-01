@@ -50,8 +50,8 @@ use indielinks_cache::{
     raft::{LogEntryIterator, StoredSnapshot, StoredSnapshotRef},
     types::{ClusterNode, NodeId, TypeConfig},
 };
-use indielinks_shared::instance_state::InstanceStateV0;
 use indielinks_shared::nonempty_string::NonEmptyString;
+use indielinks_shared::{api::CleanupTasksRequest, instance_state::InstanceStateV0};
 use itertools::Itertools;
 use num_bigint::BigInt;
 use openraft::{
@@ -1105,6 +1105,10 @@ enum PreparedStatements {
     CountLikesRepliesShares,
     CountAllUsers,
     CountAllPosts,
+
+    SelectDoneTasks,
+    SelectDoneTasksOlderThan,
+    DeleteOneTask,
 }
 
 /// `indielinks`-specific ScyllaDB Session type
@@ -1263,6 +1267,9 @@ impl Session {
             "select count(*) from likes_replies_shares where user_id = ?", // CountLikesRepliesShares
             "select count(*) from users allow filtering",
             "select count(*) from posts allow filtering",
+            "select * from tasks where done = true allow filtering", // SelectDoneTasks
+            "select * from tasks where done = true and lease_expires < ? allow filtering", // SelectDoneTasksOlderThan
+            "delete from tasks where id = ?", // DeleteOneTask,
         ])
             // Then (see what I did there?), we actually prepare them with the Scylla database to
             // get futures yielding `Result<PreparedStatement>`...
@@ -1279,7 +1286,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 95] = prepared_statements
+        let prepared_statements: [PreparedStatement; 98] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -1621,6 +1628,68 @@ impl storage::Backend for Session {
             }
             .fail()
         }
+    }
+
+    async fn cleanup_tasks(&self, request: &CleanupTasksRequest) -> StdResult<(), StorageError> {
+        // Unfortunately, unless we're deleting a particular task, this will require a full table
+        // scan. That's not terrible, since this is intended to be invoked by operators, and isn't
+        // on the hot path. However, CQL doesn't permit `allow filtering` on delete statements: the
+        // only option I can see is to query for the matching tasks, then do a second batch delete
+        // for the results. Which is pretty much what we have to do over in the `dynamodb.rs`
+        // implementation.
+
+        let task_ids_to_delete = match request {
+            CleanupTasksRequest::Done => {
+                make_streaming_response::<FlatTask, _>(
+                    &self.session,
+                    self.prepared_statements[PreparedStatements::SelectDoneTasks].clone(),
+                    (),
+                )
+                .await
+                .map_err(StorageError::new)?
+                .map_ok(|task| task.id)
+                .collect::<Vec<StdResult<Uuid, _>>>()
+                .await
+            }
+            CleanupTasksRequest::DoneOlderThan { days } => {
+                make_streaming_response::<FlatTask, _>(
+                    &self.session,
+                    self.prepared_statements[PreparedStatements::SelectDoneTasksOlderThan].clone(),
+                    (Utc::now() - Duration::days(days.get() as i64),),
+                )
+                .await
+                .map_err(StorageError::new)?
+                .map_ok(|task| task.id)
+                .collect::<Vec<StdResult<Uuid, _>>>()
+                .await
+            }
+            CleanupTasksRequest::SingleTask { id } => {
+                self.session
+                    .execute_unpaged(
+                        &self.prepared_statements[PreparedStatements::DeleteOneTask],
+                        (id,),
+                    )
+                    .await?;
+
+                return Ok(());
+            }
+        }
+        .into_iter()
+        .collect::<StdResult<Vec<Uuid>, _>>()?;
+
+        let mut batch = Batch::default();
+        let mut batch_values: Vec<(Uuid,)> = Vec::new();
+
+        task_ids_to_delete.into_iter().for_each(|id| {
+            batch.append_statement(
+                self.prepared_statements[PreparedStatements::DeleteOneTask].clone(),
+            );
+            batch_values.push((id,));
+        });
+
+        self.session.batch(&batch, batch_values).await?;
+
+        Ok(())
     }
 
     async fn confirm_following(

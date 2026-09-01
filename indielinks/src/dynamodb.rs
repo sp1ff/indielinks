@@ -60,8 +60,12 @@ use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use aws_sdk_dynamodb::{
     config::Region as AwsSdkRegion,
     operation::{
-        batch_write_item::BatchWriteItemError, get_item::GetItemError, put_item::PutItemError,
-        query::QueryOutput, scan::ScanOutput, update_item::UpdateItemError,
+        batch_write_item::BatchWriteItemError,
+        get_item::GetItemError,
+        put_item::PutItemError,
+        query::QueryOutput,
+        scan::{builders::ScanFluentBuilder, ScanOutput},
+        update_item::UpdateItemError,
     },
     types::{AttributeValue, DeleteRequest, PutRequest, ReturnValue, Select, WriteRequest},
 };
@@ -72,6 +76,7 @@ use serde_dynamo::{
 };
 
 use indielinks_shared::{
+    api::CleanupTasksRequest,
     entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
     instance_state::InstanceStateV0,
     nonempty_string::NonEmptyString,
@@ -311,6 +316,12 @@ pub enum Error {
         source: Box<SdkError<ScanError, HttpResponse>>,
         backtrace: Backtrace,
     },
+    #[snafu(display("failed to scan the tasks table"))]
+    ScanTasks {
+        #[snafu(source(from(SdkError<ScanError, HttpResponse>, Box::new)))]
+        source: Box<SdkError<ScanError, HttpResponse>>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to serialize API keys {keys:?} for {user:?}: {source}"))]
     SerApiKeys {
         user: Box<User>,
@@ -334,6 +345,18 @@ pub enum Error {
     #[snafu(display("Failed to serialize to an AttributeValue: {source}"))]
     TAV {
         source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("couldn't parse ID text as a task ID"))]
+    TaskIdFormat {
+        source: uuid::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("while scanning the tasks table, got an item with no ID key"))]
+    TaskIdKey { backtrace: Backtrace },
+    #[snafu(display("expected an S attribute for task ID, got {attribute_value:?}"))]
+    TaskIdType {
+        attribute_value: AttributeValue,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to update post counts: {source}"))]
@@ -1356,6 +1379,113 @@ impl storage::Backend for Client {
             }
             .fail()
         }
+    }
+
+    async fn cleanup_tasks(&self, request: &CleanupTasksRequest) -> StdResult<(), StorError> {
+        // Regrettably, unless we're deleting a single task, this will require a full table scan.
+        // That's not terrible, since this is intended to be invoked by operators, and isn't on the
+        // hot path. However, there's no "bulk delete": the only way I can see to do this is to do
+        // the scan once to get the IDs of all the tasks to be deleted, then do a bulk write to
+        // delete them in a separate stem.
+        fn mk_builder(client: &aws_sdk_dynamodb::Client) -> ScanFluentBuilder {
+            client
+                .scan()
+                .table_name("tasks")
+                .projection_expression("id")
+                .select(Select::SpecificAttributes)
+        }
+
+        // We expect a key "id" that maps to a string that can be parsed as a Uuid.
+        fn task_id_for_item(item: HashMap<String, AttributeValue>) -> Result<Uuid> {
+            item.get("id")
+                .context(TaskIdKeySnafu)?
+                .pipe(|attribute_value| {
+                    if let AttributeValue::S(text) = attribute_value {
+                        Ok(text.clone())
+                    } else {
+                        TaskIdTypeSnafu {
+                            attribute_value: attribute_value.clone(),
+                        }
+                        .fail()
+                    }
+                })
+                .and_then(|text| text.try_into().context(TaskIdFormatSnafu))
+        }
+
+        // `Done` & `DoneOlderThan` require slightly different variants of the same query.
+        // `SingleTask` requires a completely different query.
+        let mut delete_requests = match request {
+            CleanupTasksRequest::Done => mk_builder(&self.client)
+                .filter_expression("done = :t")
+                .expression_attribute_values(":t", AttributeValue::Bool(true)),
+            CleanupTasksRequest::DoneOlderThan { days } => mk_builder(&self.client)
+                .filter_expression("done = :t AND lease_expires < :d")
+                .expression_attribute_values(":t", AttributeValue::Bool(true))
+                .expression_attribute_values(
+                    ":d",
+                    AttributeValue::S(
+                        (Utc::now() - Duration::days(days.get() as i64))
+                            .to_rfc3339()
+                            .to_string(),
+                    ),
+                ),
+            CleanupTasksRequest::SingleTask { id } => {
+                return self
+                    .client
+                    .delete_item()
+                    .table_name("tasks")
+                    .key("id", AttributeValue::S(id.to_string()))
+                    .send()
+                    .await?
+                    .pipe(Ok)
+                    .map(|_| ());
+            }
+        }
+        .send()
+        .await?
+        .items()
+        .to_vec()
+        .into_iter()
+        .map(task_id_for_item)
+        .collect::<Result<Vec<Uuid>>>()
+        .map_err(StorError::new)?
+        .into_iter()
+        .map(|id| {
+            WriteRequest::builder()
+                .delete_request(
+                    DeleteRequest::builder()
+                        .key("id", AttributeValue::S(id.to_string()))
+                        .build()
+                        .context(OpBuildSnafu)?,
+                )
+                .build()
+                .pipe(Ok)
+        })
+        .collect::<Result<Vec<WriteRequest>>>()
+        .map_err(StorError::new)?;
+
+        // Wheh! After all that, if we made it this far, `delete_requests` is a `Vec` of delete
+        // requests. Nb that `BatchWrite` can only handle 25 items at a time.
+        while !delete_requests.is_empty() {
+            let this_batch: Vec<_> = delete_requests
+                .drain(..min(delete_requests.len(), 25))
+                .collect();
+            let batch_write_item_output = self
+                .client
+                .batch_write_item()
+                .request_items("tasks", this_batch)
+                .send()
+                .await?;
+            // In the absence of an explicit error, I can only assume that all the
+            // deletes were successful. The only bit of information that we have that might
+            // be intersting is `unprocessed_items`.
+            debug!(
+                "cleanup_tasks unprocessed items: {:?}",
+                batch_write_item_output.unprocessed_items
+            );
+        }
+
+        Ok(())
     }
 
     async fn confirm_following(

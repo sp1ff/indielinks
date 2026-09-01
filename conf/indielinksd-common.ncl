@@ -92,9 +92,11 @@ let peppers = import "peppers.ncl" in
     },
     raft-config = {
         cluster-name = "indielinks",
-        heartbeat-interval = { secs = 0, nanos = 50000000 },    # 50ms
-        election-timeout-min = { secs = 0, nanos = 150000000 }, # 150ms
-        election-timeout-max = { secs = 0, nanos = 300000000 }, # 300ms
+        # These are 4x the defaults-- setting the heartbeat interval to 50ms
+        # makes for *very* chatty logs when openraft logging is turned on.
+        heartbeat-interval = { secs = 0, nanos = 200000000 },   # 200ms
+        election-timeout-min = { secs = 0, nanos = 600000000 }, # 600ms
+        election-timeout-max = { secs = 1, nanos = 200000000 }, # 1.2s
         snapshot-policy | default = { LogsSinceLast = 5000 }
     },
     client-exponential-backoff = {

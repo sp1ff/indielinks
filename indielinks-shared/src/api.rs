@@ -24,6 +24,7 @@ use nonempty_collections::NEVec;
 use secrecy::{CloneableSecret, SecretBox, SerializableSecret, zeroize::Zeroize};
 use serde::{Deserialize, Serialize};
 use url::Url;
+use uuid::Uuid;
 
 use crate::{
     entities::{Post, PostDay, StorUrl, Tagname, UserEmail, Username},
@@ -545,4 +546,14 @@ pub struct RaftState {
     #[serde(rename = "hash-ring")]
     pub hash_ring: Vec<(u64, (u64, usize))>,
     pub slots: Vec<Option<u64>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum CleanupTasksRequest {
+    /// Just remove all tasks marked "done"
+    Done,
+    /// Done tasks older than a given number of days
+    DoneOlderThan { days: NonZero<i32> },
+    /// A particular task, named by ID
+    SingleTask { id: Uuid },
 }

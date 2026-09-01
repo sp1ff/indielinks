@@ -226,7 +226,7 @@ pub fn raft_ops(
     kill_instance(local_state_base, 0)?;
 
     // Add instance 3 as a learner. To do this, I need to figure-out who's the new leader.
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(3000));
 
     let leader = client
         .get(ops_endpoints[1].join("/ops/cache/metrics")?)
@@ -238,6 +238,8 @@ pub fn raft_ops(
         .unwrap();
 
     debug!("The new leader is {leader}");
+
+    assert!(leader != 0, "The leader should no longer be node zero!");
 
     let status = client
         .post(ops_endpoints[leader as usize].join("/ops/cache/add-learner")?)

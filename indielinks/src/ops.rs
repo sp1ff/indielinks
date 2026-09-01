@@ -24,11 +24,11 @@ use axum::{
 use axum_extra::extract::Query;
 use http::{header::CONTENT_TYPE, HeaderValue, StatusCode};
 use indielinks_shared::{
-    api::{SignupReq, SignupRsp},
+    api::{CleanupTasksRequest, SignupReq, SignupRsp},
     entities::Username,
 };
 use serde::{ser::SerializeStruct, Deserialize};
-use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
+use snafu::{Backtrace, IntoError, OptionExt, Report, ResultExt, Snafu};
 use tap::Pipe;
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info};
@@ -45,40 +45,48 @@ use crate::{
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       module Error type                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("Failed to add user: {source}"))]
-    AddUser { source: crate::storage::Error },
-    #[snafu(display("User {username} currently has no outbox"))]
+    #[snafu(display("failed to add user {username}"))]
+    AddUser {
+        username: Username,
+        source: crate::storage::Error,
+    },
+    #[snafu(display("user {username} currently has no outbox"))]
     NoOutbox {
         username: Username,
         backtrace: Backtrace,
     },
-    #[snafu(display("{source}"))]
+    #[snafu(display("unable to retrieve the password pepper"))]
     NoPepper { source: crate::peppers::Error },
-    #[snafu(display("User {username} currently has no timeline"))]
+    #[snafu(display("user {username} currently has no timeline"))]
     NoTimeline {
         username: Username,
         backtrace: Backtrace,
     },
-    #[snafu(display("While serializing a Timeline to JSON, {source}"))]
+    #[snafu(display("failed to serialize the requested Timeline to JSON"))]
     Ser {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("There is no user named {username}"))]
+    #[snafu(display("there is no user named {username}"))]
     User {
         username: Username,
         backtrace: Backtrace,
     },
-    #[snafu(display("While looking up user {username}, {source}"))]
+    #[snafu(display("failed to lookup user {username}"))]
     UserLookup {
         username: String,
         source: crate::storage::Error,
     },
-    #[snafu(display("Failed to create user: {source}"))]
-    UserSignup { source: entities::Error },
+    #[snafu(display("failed to create user {username}"))]
+    UserSignup {
+        username: Username,
+        source: entities::Error,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -86,6 +94,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       Operator interface                                       //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+fn handle_err<E: std::error::Error>(err: E) -> axum::response::Response {
+    let report = Report::from_error(err);
+    error!("{report:#?}");
+    Json(ErrorResponseBody {
+        error: report.to_string(),
+    })
+    .into_response()
+}
 
 // General-purpose request to dump a datastructure that is maintained on a per-user basis; if the
 // username is omitted, dump everything.
@@ -130,7 +147,7 @@ impl<'a> serde::ser::Serialize for HomeTimelinesJsonRepr<'a> {
 /// Dump the home timelines, perhaps filtering by user
 async fn dump_timelines(
     State(state): State<Arc<Indielinks>>,
-    Query(dump_req): Query<DumpRequest>,
+    Query(dump_request): Query<DumpRequest>,
 ) -> axum::response::Response {
     async fn dump_timelines1(
         state: Arc<Indielinks>,
@@ -173,15 +190,9 @@ async fn dump_timelines(
         }
     }
 
-    match dump_timelines1(state.clone(), dump_req).await {
+    match dump_timelines1(state.clone(), dump_request).await {
         Ok(response) => response,
-        Err(err) => {
-            error!("{err:#?}");
-            Json(ErrorResponseBody {
-                error: format!("{err}"),
-            })
-            .into_response()
-        }
+        Err(err) => handle_err(err),
     }
 }
 
@@ -194,7 +205,7 @@ pub struct DropRequest {
 /// Drop the home timelines, or just the timeline for a particular user
 async fn drop_timelines(
     State(state): State<Arc<Indielinks>>,
-    Query(drop_req): Query<DropRequest>,
+    Query(drop_request): Query<DropRequest>,
 ) -> axum::response::Response {
     async fn drop_timelines1(state: Arc<Indielinks>, name: Option<Username>) -> Result<()> {
         match name {
@@ -226,15 +237,9 @@ async fn drop_timelines(
         Ok(())
     }
 
-    match drop_timelines1(state, drop_req.user).await {
+    match drop_timelines1(state, drop_request.user).await {
         Ok(_) => http::StatusCode::ACCEPTED.into_response(),
-        Err(err) => {
-            error!("{err:#?}");
-            Json(ErrorResponseBody {
-                error: format!("{err}"),
-            })
-            .into_response()
-        }
+        Err(err) => handle_err(err),
     }
 }
 
@@ -273,7 +278,7 @@ impl<'a> serde::ser::Serialize for UserOutboxesJsonRepr<'a> {
 /// Dump the user outboxes, perhaps filtering by user
 async fn dump_outboxes(
     State(state): State<Arc<Indielinks>>,
-    Query(dump_req): Query<DumpRequest>,
+    Query(dump_request): Query<DumpRequest>,
 ) -> axum::response::Response {
     async fn dump_outboxes1(
         state: Arc<Indielinks>,
@@ -318,15 +323,9 @@ async fn dump_outboxes(
         }
     }
 
-    match dump_outboxes1(state.clone(), dump_req).await {
+    match dump_outboxes1(state.clone(), dump_request).await {
         Ok(response) => response,
-        Err(err) => {
-            error!("{err:#?}");
-            Json(ErrorResponseBody {
-                error: format!("{err}"),
-            })
-            .into_response()
-        }
+        Err(err) => handle_err(err),
     }
 }
 
@@ -335,16 +334,12 @@ async fn dump_outboxes(
 async fn cluster_stats(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
     match get_cluster_stats(state).await {
         Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
-        Err(err) => {
-            error!("{err:#?}");
-            Json(ErrorResponseBody {
-                error: format!("{err}"),
-            })
-            .into_response()
-        }
+        Err(err) => handle_err(err),
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                signup endpoint (local for now)                                 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 define_metric! { "user.signups.successful", user_signups_successful, Sort::IntegralCounter }
@@ -374,38 +369,42 @@ define_metric! { "user.signups.failures", user_signups_failures, Sort::IntegralC
 /// Unlike other endpoints in this API, there is no authentication on this method.
 async fn signup(
     State(state): State<Arc<Indielinks>>,
-    Json(signup_req): Json<SignupReq>,
+    Json(signup_request): Json<SignupReq>,
 ) -> axum::response::Response {
-    async fn signup1(signup_req: &SignupReq, state: Arc<Indielinks>) -> Result<SignupRsp> {
+    async fn signup1(signup_request: &SignupReq, state: Arc<Indielinks>) -> Result<SignupRsp> {
         let (pepper_ver, pepper_key) = state.pepper.current_pepper().context(NoPepperSnafu)?;
         use secrecy::ExposeSecret;
         let user = User::new(
             &pepper_ver,
             &pepper_key,
-            &signup_req.username,
+            &signup_request.username,
             // Arrrgghhh!!!
-            &signup_req.password.expose_secret().0.clone().into(),
-            &signup_req.email,
+            &signup_request.password.expose_secret().0.clone().into(),
+            &signup_request.email,
             None,
-            signup_req.discoverable,
-            signup_req.display_name.as_deref(),
-            signup_req.summary.as_deref(),
+            signup_request.discoverable,
+            signup_request.display_name.as_deref(),
+            signup_request.summary.as_deref(),
         )
-        .context(UserSignupSnafu)?;
+        .context(UserSignupSnafu {
+            username: signup_request.username.clone(),
+        })?;
         let storage: &(dyn StorageBackend + Send + Sync) = state.storage.as_ref();
-        storage.add_user(&user).await.context(AddUserSnafu)?;
+        storage.add_user(&user).await.context(AddUserSnafu {
+            username: signup_request.username.clone(),
+        })?;
         Ok(SignupRsp {
             greeting: "Welcome to indielinks!".to_owned(),
         })
     }
 
-    match signup1(&signup_req, state.clone()).await {
+    match signup1(&signup_request, state.clone()).await {
         Ok(rsp) => {
-            info!("Created user {}", signup_req.username);
+            info!("Created user {}", signup_request.username);
             user_signups_successful.add(1, &[]);
             (StatusCode::CREATED, Json(rsp)).into_response()
         }
-        Err(Error::UserSignup { source }) => match source {
+        Err(Error::UserSignup { username, source }) => match source {
             entities::Error::PasswordEntropy { feedback, .. } => {
                 info!(
                     "password rejected due to insufficient strength: {}",
@@ -435,7 +434,7 @@ async fn signup(
             err => {
                 error!("{:#?}", err);
                 user_signups_failures.add(1, &[]);
-                let err = UserSignupSnafu.into_error(err);
+                let err = UserSignupSnafu { username }.into_error(err);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponseBody {
@@ -445,7 +444,10 @@ async fn signup(
                     .into_response()
             }
         },
-        Err(Error::AddUser { source }) => match source {
+        Err(Error::AddUser {
+            username: _,
+            source,
+        }) => match source {
             crate::storage::Error::UsernameClaimed { username, .. } => {
                 info!("Username {} already claimed", username);
                 user_signups_failures.add(1, &[]);
@@ -460,7 +462,10 @@ async fn signup(
             err => {
                 error!("{:#?}", err);
                 user_signups_failures.add(1, &[]);
-                let err = AddUserSnafu.into_error(err);
+                let err = AddUserSnafu {
+                    username: signup_request.username.clone(),
+                }
+                .into_error(err);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponseBody {
@@ -485,12 +490,31 @@ async fn signup(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                 background task table grooming                                 //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[axum::debug_handler]
+async fn clean_tasks(
+    State(state): State<Arc<Indielinks>>,
+    Json(cleanup_request): Json<CleanupTasksRequest>,
+) -> axum::response::Response {
+    match state.storage.as_ref().cleanup_tasks(&cleanup_request).await {
+        Ok(_) => {
+            info!("Background task(s) successfully cleaned.");
+            StatusCode::OK.into_response()
+        }
+        Err(err) => handle_err(err),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
     Router::new()
         .route("/timelines/dump", get(dump_timelines))
         .route("/timelines/drop", get(drop_timelines))
         .route("/outboxes/dump", get(dump_outboxes))
+        .route("/tasks/cleanup", post(clean_tasks))
         .route("/cluster-stats", get(cluster_stats))
         .route("/users/signup", post(signup))
         .layer(SetResponseHeaderLayer::if_not_present(

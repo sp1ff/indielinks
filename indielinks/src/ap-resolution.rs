@@ -404,6 +404,7 @@ mod test {
         raft::{make_shared_cache_node, InMemoryBackend},
     };
     use indielinks_shared::{
+        api::CleanupTasksRequest,
         entities::{generate_rsa_keypair, Post, PostDay, PostId, StorUrl, Tagname, UserId},
         instance_state::InstanceStateV0,
         known_good,
@@ -520,6 +521,12 @@ mod test {
             unreachable!()
         }
         async fn add_user(&self, _user: &User) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn cleanup_tasks(
+            &self,
+            _request: &CleanupTasksRequest,
+        ) -> StdResult<(), storage::Error> {
             unreachable!()
         }
         async fn confirm_following(

@@ -38,6 +38,7 @@ use url::Url;
 use uuid::Uuid;
 
 use indielinks_shared::{
+    api::CleanupTasksRequest,
     entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
     instance_state::InstanceStateV0,
     nonempty_string::NonEmptyString,
@@ -199,6 +200,8 @@ pub trait Backend {
     async fn add_post_share(&self, share: &IncomingShare) -> Result<(), Error>;
     /// Add a new user
     async fn add_user(&self, user: &User) -> Result<(), Error>;
+    /// Remove tasks
+    async fn cleanup_tasks(&self, request: &CleanupTasksRequest) -> Result<(), Error>;
     /// Confirm a follow for a user
     async fn confirm_following(&self, user: &User, following: &StorUrl) -> Result<bool, Error>;
     /// Retrieve counts of assorted entities
