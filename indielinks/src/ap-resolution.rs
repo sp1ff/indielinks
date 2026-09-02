@@ -74,7 +74,8 @@ where
     #[snafu(display("The handle username {username} isn't a valid indielinks username"))]
     Handle {
         username: crate::acct::Username,
-        source: indielinks_shared::entities::Error,
+        #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
+        source: Box<indielinks_shared::entities::Error>,
     },
     #[snafu(display("No 'self' Link from a webfinger"))]
     NoSelf { backtrace: Backtrace },
@@ -91,14 +92,14 @@ where
     #[snafu(display("Failed to parse an indielinks username from {}", url.as_str()))]
     Username {
         url: Url,
-        source: crate::ap_entities::Error,
-        backtrace: Backtrace,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
     #[snafu(display("Failed to parse an indielinks username and post ID from {}", url.as_str()))]
     UsernameAndPostId {
         url: Url,
-        source: crate::ap_entities::Error,
-        backtrace: Backtrace,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
     },
 }
 

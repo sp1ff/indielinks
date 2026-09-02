@@ -85,7 +85,8 @@ pub enum Error {
     #[snafu(display("failed to create user {username}"))]
     UserSignup {
         username: Username,
-        source: entities::Error,
+        #[snafu(source(from(entities::Error, Box::new)))]
+        source: Box<entities::Error>,
     },
 }
 
@@ -404,7 +405,7 @@ async fn signup(
             user_signups_successful.add(1, &[]);
             (StatusCode::CREATED, Json(rsp)).into_response()
         }
-        Err(Error::UserSignup { username, source }) => match source {
+        Err(Error::UserSignup { username, source }) => match *source {
             entities::Error::PasswordEntropy { feedback, .. } => {
                 info!(
                     "password rejected due to insufficient strength: {}",
