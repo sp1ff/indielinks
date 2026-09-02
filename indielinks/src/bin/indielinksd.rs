@@ -40,9 +40,8 @@ use std::{
     },
 };
 
-use axum::{
-    extract::State, middleware::from_fn_with_state, response::IntoResponse, routing::get, Router,
-};
+use axum::{extract::State, response::IntoResponse, routing::get, Router};
+use chrono::Duration;
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use errno::Errno;
 use governor::Quota;
@@ -92,10 +91,8 @@ use indielinks::{
     client::make_client,
     configuration::{ConfigV1, Configuration, HeaderBlacklist, OtelExportConfig, StorageConfig},
     define_metric,
-    delicious::{
-        authenticate as authenticate_for_delicious, feed as atom_feed,
-        make_router as make_delicious_router,
-    },
+    delicious::make_router as make_delicious_router,
+    dynamodb::Location as DynamoLocation,
     grpc::{
         make_router as make_cache_router, GrpcService, ACCOUNT_TO_ACTOR, ACTOR_ID_TO_ACTOR,
         NOTE_ID_TO_NOTE,
@@ -772,13 +769,6 @@ fn make_world_router(state: Arc<Indielinks>, header_blacklist: Option<&HeaderBla
         .route(
             "/.well-known/webfinger",
             get(webfinger).layer(CorsLayer::permissive()),
-        )
-        .route(
-            "/feed",
-            get(atom_feed).layer(from_fn_with_state(
-                state.clone(),
-                authenticate_for_delicious,
-            )),
         )
         .merge(make_actor_router(state.clone()))
         .nest("/api/v1", make_delicious_router(state.clone()))

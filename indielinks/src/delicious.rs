@@ -30,14 +30,8 @@
 //! I've chosen to have all the handlers just return an [axum::response::Response] so that I can use
 //! different structures to represent responses. This has resulted in a little more boilerplate.
 
-use std::{
-    backtrace::Backtrace,
-    collections::{HashMap, HashSet},
-    string::FromUtf8Error,
-    sync::Arc,
-};
+use std::{backtrace::Backtrace, collections::HashMap, string::FromUtf8Error, sync::Arc};
 
-use atom_syndication::{Entry, FeedBuilder, Text, TextType};
 use axum::{
     extract::{Json, State},
     http::{header::CONTENT_TYPE, HeaderValue, StatusCode},
@@ -59,7 +53,7 @@ use tracing::{debug, error};
 
 use indielinks_shared::{
     api::{
-        FeedRequest, PostAddReq, PostsAllReq, PostsAllRsp, PostsDate, PostsDatesReq, PostsDatesRsp,
+        PostAddReq, PostsAllReq, PostsAllRsp, PostsDate, PostsDatesReq, PostsDatesRsp,
         PostsDeleteReq, PostsGetReq, PostsGetRsp, PostsRecentReq, PostsRecentRsp, TagsDeleteReq,
         TagsGetRsp, TagsRenameReq, UpdateRsp,
     },
@@ -73,7 +67,7 @@ use crate::{
     background_tasks::BackgroundTasks,
     define_metric,
     entities::User,
-    http::ErrorResponseBody,
+    http::{feed_from_posts, parse_tag_parameter, ErrorResponseBody},
     indielinks::Indielinks,
     peppers::Peppers,
     signing_keys::SigningKeys,
@@ -114,12 +108,6 @@ pub enum Error {
         username: Username,
         source: storage::Error,
     },
-    #[snafu(display("Bad tag name: {source}"))]
-    BadTagName {
-        #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
-        source: Box<indielinks_shared::entities::Error>,
-        backtrace: Backtrace,
-    },
     #[snafu(display("{username} is not a valid username"))]
     BadUsername {
         username: String,
@@ -141,8 +129,10 @@ pub enum Error {
         source: Box<storage::Error>,
         backtrace: Backtrace,
     },
-    #[snafu(display("While forming an Atom feed, {source}"))]
-    Feed {
+    #[snafu(display("failed to build an atom feed"))]
+    Feed { source: crate::http::Error },
+    #[snafu(display("failed to serialize the atom feed"))]
+    FeedWrite {
         source: atom_syndication::Error,
         backtrace: Backtrace,
     },
@@ -223,6 +213,11 @@ pub enum Error {
         source: Box<storage::Error>,
         backtrace: Backtrace,
     },
+    #[snafu(display("failed to parse {parameter:?} as a tag parameter"))]
+    TagParameter {
+        parameter: Option<String>,
+        source: crate::http::Error,
+    },
     #[snafu(display("Unauthorized: {source}"))]
     Unauthorized { source: crate::http::Error },
     #[snafu(display("Unknown username {username}"))]
@@ -266,11 +261,6 @@ impl Error {
                 StatusCode::BAD_REQUEST,
                 format!("Bad base64 encoding {text}: {source}"),
             ),
-            Error::BadTagName { .. } => (
-                StatusCode::BAD_REQUEST,
-                "Tag names may be up to 255 characters, and may not contain whitespace or commas"
-                    .to_string(),
-            ),
             Error::InvalidAuthHeaderValue { value, source, .. } => (
                 StatusCode::BAD_REQUEST,
                 format!("Bad Authorization header {value:?}: {source}"),
@@ -296,6 +286,12 @@ impl Error {
             Error::NotUtf8 { source, .. } => (
                 StatusCode::BAD_REQUEST,
                 format!("Bad UTF-8 encoding: {source:?}"),
+            ),
+            Error::TagParameter {
+                parameter, source, ..
+            } => (
+                StatusCode::BAD_REQUEST,
+                format!("Bad tag paramter {parameter:?}: {source:?}"),
             ),
             ////////////////////////////////////////////////////////////////////////////////////////
             // Authorization failure-- don't tell a potential attacker the way in which they failed
@@ -341,7 +337,11 @@ impl Error {
             ),
             Error::Feed { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to serialize Atom feed: {source}"),
+                format!("Failed to form the atom feed: {source}"),
+            ),
+            Error::FeedWrite { source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to serialize the atom feed: {source}"),
             ),
             Error::GetPosts { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -534,20 +534,6 @@ pub struct GenericRsp {
     pub result_code: String,
 }
 
-/// Parse a `tag` parameter into a [HashSet] of [Tagname]s
-fn parse_tag_parameter(tags: &Option<String>) -> Result<HashSet<Tagname>> {
-    tags.as_ref()
-        .map(|tags| {
-            tags.split(',')
-                .map(|s| Tagname::new(s.trim()))
-                .collect::<StdResult<HashSet<Tagname>, _>>()
-        })
-        .transpose()
-        .context(BadTagNameSnafu)?
-        .unwrap_or(HashSet::new())
-        .pipe(Ok)
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        `/posts/update`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -620,7 +606,9 @@ async fn add_post(
     ) -> Result<bool> {
         // Pull the `tag` parameter out of the request, separate the individual tags by comma, and
         // check that they're all legit `Tagname`s:
-        let tags = parse_tag_parameter(&req.tags)?;
+        let tags = parse_tag_parameter(&req.tags).context(TagParameterSnafu {
+            parameter: req.tags.clone(),
+        })?;
         let shared = req.shared.unwrap_or(false);
         inner_add_post(
             state,
@@ -787,8 +775,12 @@ async fn get_posts(
                 posts: Vec::new(),
             }),
             Some(dt) => {
-                let tags = UpToThree::new(parse_tag_parameter(&posts_get_req.tag)?)
-                    .context(NoMoreThanThreeTagsSnafu)?;
+                let tags = UpToThree::new(parse_tag_parameter(&posts_get_req.tag).context(
+                    TagParameterSnafu {
+                        parameter: posts_get_req.tag.clone(),
+                    },
+                )?)
+                .context(NoMoreThanThreeTagsSnafu)?;
                 let posts = storage
                     .get_posts(&user, &tags, &dt.into(), &posts_get_req.uri)
                     .await
@@ -838,8 +830,12 @@ async fn get_recent(
         user: User,
         posts_recent_req: PostsRecentReq,
     ) -> Result<PostsRecentRsp> {
-        let tags = UpToThree::new(parse_tag_parameter(&posts_recent_req.tag)?)
-            .context(NoMoreThanThreeTagsSnafu)?;
+        let tags = UpToThree::new(parse_tag_parameter(&posts_recent_req.tag).context(
+            TagParameterSnafu {
+                parameter: posts_recent_req.tag.clone(),
+            },
+        )?)
+        .context(NoMoreThanThreeTagsSnafu)?;
         let count = posts_recent_req.count.unwrap_or(10);
         let update_time = user.last_update().context(NoPostsSnafu {
             username: user.username().clone(),
@@ -883,8 +879,12 @@ async fn posts_dates(
         user: User,
         posts_dates_req: PostsDatesReq,
     ) -> Result<PostsDatesRsp> {
-        let tags = UpToThree::new(parse_tag_parameter(&posts_dates_req.tag)?)
-            .context(NoMoreThanThreeTagsSnafu)?;
+        let tags = UpToThree::new(parse_tag_parameter(&posts_dates_req.tag).context(
+            TagParameterSnafu {
+                parameter: posts_dates_req.tag.clone(),
+            },
+        )?)
+        .context(NoMoreThanThreeTagsSnafu)?;
         Ok(PostsDatesRsp {
             user: user.username().clone(),
             tag: posts_dates_req.tag.unwrap_or("".to_string()),
@@ -970,23 +970,6 @@ async fn apply_pagination(
     }
 }
 
-fn make_title(tags: UpToThree<Tagname>) -> Text {
-    Text {
-        value: format!(
-            "Recent indielinks posts{}",
-            match tags {
-                UpToThree::None => "".to_owned(),
-                UpToThree::One(t) => format!(" tagged {t}"),
-                UpToThree::Two(t0, t1) => format!(" tagged {t0} and {t1}"),
-                UpToThree::Three(t0, t1, t2) => format!(" tagged {t0}, {t1} & {t2}"),
-            }
-        ),
-        base: None,
-        lang: None,
-        r#type: TextType::Text,
-    }
-}
-
 /// Retrieve all of a user's posts.
 ///
 /// The user may filter in a few ways:
@@ -1023,12 +1006,15 @@ async fn all_posts(
         storage: &(dyn StorageBackend + Send + Sync),
         user: &User,
         posts_all_req: &PostsAllReq,
-    ) -> Result<(
-        impl IntoIterator<Item = Post, IntoIter: Clone>,
-        UpToThree<Tagname>,
-    )> {
-        let tags = UpToThree::new(parse_tag_parameter(&posts_all_req.tag)?)
-            .context(NoMoreThanThreeTagsSnafu)?;
+        accept: Accept,
+        origin: &Origin,
+    ) -> Result<axum::response::Response> {
+        let tags = UpToThree::new(parse_tag_parameter(&posts_all_req.tag).context(
+            TagParameterSnafu {
+                parameter: posts_all_req.tag.clone(),
+            },
+        )?)
+        .context(NoMoreThanThreeTagsSnafu)?;
         let posts = apply_pagination(
             storage
                 .get_all_posts(
@@ -1043,134 +1029,54 @@ async fn all_posts(
             posts_all_req.results,
         )
         .await?;
-        Ok((posts, tags))
-    }
 
-    match all_posts1(state.storage.as_ref(), &user, &posts_all_req).await {
-        Ok((posts, tags)) => {
-            // Convert `posts`, whatever it is, into an iterator yielding `Post`:
-            let posts = posts.into_iter();
-            // now, because we've guaranteed that the iterator is `Clone`, we can clone it and
-            // consume the clone to get the count:
-            delicious_posts_all.add(
-                posts.clone().count() as u64,
-                &[KeyValue::new("username", user.username().to_string())],
-            );
-            // Now-- are we returning a del.ico.us-style response, or an Atom feed?
-            match accept {
-                Accept::Atom => {
-                    match FeedBuilder::default()
-                        // Would be nice to build-out the feed
-                        .title(make_title(tags))
-                        // .updated()
-                        // .author()
-                        // .categories()
-                        // .generator()
-                        // .link()
-                        .entries(posts.map(Entry::from).collect::<Vec<Entry>>())
-                        .build()
-                        .write_to(Vec::new())
-                    {
-                        Ok(feed) => {
-                            let mut response = (StatusCode::OK, feed).into_response();
-                            response.headers_mut().insert(
-                                CONTENT_TYPE,
-                                HeaderValue::from_static("application/atom+xml"),
-                            );
-                            response
-                        }
-                        Err(err) => {
-                            error!("{err:#?}");
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(GenericRsp {
-                                    result_code: format!("{err}"),
-                                }),
-                            )
-                                .into_response()
-                        }
-                    }
-                }
-                Accept::Json => (
-                    StatusCode::OK,
-                    Json(PostsAllRsp {
-                        user: user.username().clone(),
-                        tag: posts_all_req.tag.unwrap_or("".to_string()),
-                        posts: posts.collect(),
-                    }),
-                )
-                    .into_response(),
+        // Convert `posts`, whatever it is, into an iterator yielding `Post`:
+        let posts = posts.into_iter();
+        // now, because we've guaranteed that the iterator is `Clone`, we can clone it and
+        // consume the clone to get the count:
+        delicious_posts_all.add(
+            posts.clone().count() as u64,
+            &[KeyValue::new("username", user.username().to_string())],
+        );
+
+        match accept {
+            Accept::Atom => {
+                let feed = feed_from_posts(posts, user.username(), tags, origin)
+                    .context(FeedSnafu)?
+                    .write_to(Vec::new())
+                    .context(FeedWriteSnafu)?;
+                let mut response = (StatusCode::OK, feed).into_response();
+                response.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/atom+xml"),
+                );
+                Ok(response)
             }
-        }
-        Err(err) => {
-            error!("{err:#?}");
-            let (status, msg) = err.as_status_and_msg();
-            (status, Json(GenericRsp { result_code: msg })).into_response()
-        }
-    }
-}
-
-define_metric! { "delicious.feed.successes", delicious_feed_successes, Sort::IntegralCounter }
-define_metric! { "delicious.feed.failures", delicious_feed_failures, Sort::IntegralCounter }
-
-pub async fn feed(
-    State(state): State<Arc<Indielinks>>,
-    Query(request): Query<FeedRequest>,
-    Extension(user): Extension<User>,
-) -> axum::response::Response {
-    // As per usual, fit as many fallible operations as possible in here:
-    async fn feed1(
-        request: &FeedRequest,
-        storage: &(dyn StorageBackend + Send + Sync),
-        user: &User,
-    ) -> Result<String> {
-        let tags = UpToThree::new(parse_tag_parameter(&request.tags)?)
-            .context(NoMoreThanThreeTagsSnafu)?;
-        let posts = storage
-            .get_all_posts(
-                user,
-                &tags,
-                &DateRange::None,
-                request.unread.unwrap_or(true),
+            Accept::Json => (
+                StatusCode::OK,
+                Json(PostsAllRsp {
+                    user: user.username().clone(),
+                    tag: posts_all_req.tag.clone().unwrap_or("".to_string()),
+                    posts: posts.collect(),
+                }),
             )
-            .await
-            .context(AllPostsSnafu)?
-            .take(request.num.unwrap_or(32))
-            .collect::<Vec<StdResult<_, _>>>()
-            .await
-            .into_iter()
-            .collect::<StdResult<Vec<Post>, _>>()
-            .context(AllPostsSnafu)?;
-
-        let buf = FeedBuilder::default()
-            // Would be nice to build-out the feed
-            .title(make_title(tags))
-            // .updated()
-            // .author()
-            // .categories()
-            // .generator()
-            // .link()
-            .entries(posts.into_iter().map(Entry::from).collect::<Vec<Entry>>())
-            .build()
-            .write_to(Vec::new())
-            .context(FeedSnafu)?;
-        Ok(String::from_utf8_lossy(&buf).into_owned())
+                .into_response()
+                .pipe(Ok),
+        }
     }
 
-    let kv = KeyValue::new("username", user.username().to_string());
-    match feed1(&request, state.storage.as_ref(), &user).await {
-        Ok(body) => {
-            delicious_feed_successes.add(1, &[kv]);
-            let mut response = (StatusCode::OK, body).into_response();
-            response.headers_mut().insert(
-                CONTENT_TYPE,
-                HeaderValue::from_static("application/atom+xml"),
-            );
-            response
-        }
+    match all_posts1(
+        state.storage.as_ref(),
+        &user,
+        &posts_all_req,
+        accept,
+        &state.origin,
+    )
+    .await
+    {
+        Ok(response) => response,
         Err(err) => {
             error!("{err:#?}");
-            delicious_feed_failures.add(1, &[kv]);
             let (status, msg) = err.as_status_and_msg();
             (status, Json(GenericRsp { result_code: msg })).into_response()
         }

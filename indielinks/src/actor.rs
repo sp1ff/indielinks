@@ -18,7 +18,7 @@
 //! This module implements per-user actor endpoints, along with their inboxes, outboxes & so forth.
 //! It also implements the instance shared inbox.
 
-use std::{ops::Deref, sync::Arc, time::Duration};
+use std::{ops::Deref, result::Result as StdResult, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
@@ -33,22 +33,23 @@ use axum_accept::AcceptExtractor;
 use axum_extra::extract::Query;
 use chrono::Utc;
 use either::Either::{self, Left, Right};
-use futures::{stream::iter, StreamExt};
-use http::{HeaderName, Method};
+use futures::{future, stream::iter, StreamExt, TryStreamExt};
+use http::{HeaderName, HeaderValue, Method};
 use itertools::Itertools;
 use nonzero::nonzero;
 use opentelemetry::KeyValue;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
+use snafu::{Backtrace, IntoError, OptionExt, Report, ResultExt, Snafu};
 use tap::Pipe;
 use tokio::sync::Mutex;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{debug, error, info, warn};
 use url::Url;
 use uuid::Uuid;
 
 use indielinks_shared::{
-    api::{PostRepliesRequest, UserOutboxRequest},
+    api::{FeedRequest, PostRepliesRequest, UserOutboxRequest},
     entities::{PostId, StorUrl, UserPrivateKey, Username},
     origin::Origin,
 };
@@ -69,9 +70,10 @@ use crate::{
         Follower, Following, InReply, IncomingLike, IncomingReply, LikeId, LikeReplyShare, User,
     },
     home_timeline::HomeTimelines,
-    http::ErrorResponseBody,
+    http::{feed_from_posts, parse_tag_parameter, ErrorResponseBody},
     indielinks::Indielinks,
-    storage::{self, get_note, user_for_username, Backend as StorageBackend},
+    storage::{self, get_note, user_for_username, Backend as StorageBackend, DateRange},
+    util::UpToThree,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -98,6 +100,8 @@ pub enum Error {
         payload: Box<Url>,
         backtrace: Backtrace,
     },
+    #[snafu(display("/posts/all failed; {source}"))]
+    AllPosts { source: storage::Error },
     #[snafu(display("Failed to create an ActivityPub ID: {source}"))]
     ApId { source: crate::ap_entities::Error },
     #[snafu(display("ActivityPub resolution error {source}"))]
@@ -140,6 +144,17 @@ pub enum Error {
     Cavage2323 { source: crate::authn::Error },
     #[snafu(display("Mismatch in the content digest: {source}"))]
     ContentDigest { source: crate::authn::Error },
+    #[snafu(display("failed to form the feed"))]
+    Feed {
+        #[snafu(source(from(crate::http::Error, Box::new)))]
+        source: Box<crate::http::Error>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("failed to serialize the feed"))]
+    FeedWrite {
+        source: atom_syndication::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While serving /following, failed to obtain a stream: {source}"))]
     FollowGetStream { source: storage::Error },
     #[snafu(display("While computing following, our stream yielded: {source}"))]
@@ -178,6 +193,11 @@ pub enum Error {
     },
     #[snafu(display("An in-reply-to field was expected, but not found"))]
     NoInReplyTo { backtrace: Backtrace },
+    #[snafu(display("No more than three tags may be given"))]
+    NoMoreThanThreeTags {
+        source: crate::util::NoMoreThanThree,
+        backtrace: Backtrace,
+    },
     #[snafu(display("No user named {username}"))]
     NoUser {
         username: Username,
@@ -241,6 +261,11 @@ pub enum Error {
     Signing { source: crate::authn::Error },
     #[snafu(display("Storage backend error: {source}"))]
     Storage { source: storage::Error },
+    #[snafu(display("failed to parse {parameter:?} as a tags parameter"))]
+    TagParameter {
+        parameter: Option<String>,
+        source: crate::http::Error,
+    },
     #[snafu(display("Failed to send a background task: {source}"))]
     TaskSend {
         #[snafu(source(from(crate::background_tasks::Error, Box::new)))]
@@ -306,8 +331,6 @@ impl axum::response::IntoResponse for Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
-
-type StdResult<T, E> = std::result::Result<T, E>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                     assorted utilities                                         //
@@ -514,7 +537,7 @@ fn handle_err<E: std::error::Error>(
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponseBody {
-            error: format!("{err}"),
+            error: Report::from_error(err).to_string(),
         }),
     )
         .into_response()
@@ -1674,6 +1697,70 @@ async fn instance_actor(State(state): State<Arc<Indielinks>>) -> axum::response:
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                      per-user Atom feeds                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "delicious.feed.successes", delicious_feed_successes, Sort::IntegralCounter }
+define_metric! { "delicious.feed.failures", delicious_feed_failures, Sort::IntegralCounter }
+
+/// `/users/{username}/feed` handler-- retrieve an Atom feed of a user's public posts
+pub async fn atom_feed(
+    State(state): State<Arc<Indielinks>>,
+    axum::extract::Path(username): axum::extract::Path<Username>,
+    Query(request): Query<FeedRequest>,
+) -> axum::response::Response {
+    // As per usual, fit as many fallible operations as possible in here. Return the response body.
+    // Content-Type header will be set in a layer applied in `make_router()`, below.
+    async fn feed1(
+        request: &FeedRequest,
+        storage: &(dyn StorageBackend + Send + Sync),
+        username: &Username,
+        origin: &Origin,
+    ) -> Result<Vec<u8>> {
+        let user = user_for_username(storage, username)
+            .await
+            .context(UserSnafu {
+                username: username.clone(),
+            })?;
+
+        let tags = UpToThree::new(parse_tag_parameter(&request.tags).context(
+            TagParameterSnafu {
+                parameter: request.tags.clone(),
+            },
+        )?)
+        .context(NoMoreThanThreeTagsSnafu)?;
+
+        let posts = storage
+            .get_all_posts(
+                &user,
+                &tags,
+                &DateRange::None,
+                request.unread.unwrap_or(true),
+            )
+            .await
+            .context(AllPostsSnafu)?
+            .try_filter(|post| future::ready(post.public()))
+            .take(request.num.unwrap_or(32))
+            .try_collect::<Vec<_>>()
+            .await
+            .context(AllPostsSnafu)?;
+
+        feed_from_posts(posts, username, tags, origin)
+            .context(FeedSnafu)?
+            .write_to(Vec::new())
+            .context(FeedWriteSnafu)
+    }
+
+    match feed1(&request, state.storage.as_ref(), &username, &state.origin).await {
+        Ok(body) => {
+            delicious_feed_successes.add(1, &[KeyValue::new("username", username.to_string())]);
+            (StatusCode::OK, body).into_response()
+        }
+        Err(err) => handle_err(err, delicious_feed_failures.deref()),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1716,6 +1803,13 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/users/{username}/posts/{postid}/replies",
             get(get_post_replies),
+        )
+        .route(
+            "/users/{username}/feed",
+            get(atom_feed).route_layer(SetResponseHeaderLayer::overriding(
+                CONTENT_TYPE,
+                HeaderValue::from_static("application/atom+xml"),
+            )),
         )
         .route("/actor", get(instance_actor))
         .with_state(state)

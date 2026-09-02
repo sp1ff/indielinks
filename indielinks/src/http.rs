@@ -18,16 +18,24 @@
 //! This is a low-level module containing assorted HTTP-related utilities that don't depend on much
 //! of anything else.
 
-use std::{collections::HashSet, convert::Infallible, ops::Deref, time::Duration};
+use std::{
+    collections::HashSet, convert::Infallible, ops::Deref, result::Result as StdResult,
+    time::Duration,
+};
 
+use atom_syndication::{Entry, Feed, FeedBuilder, Generator, Person, Text, TextType};
 use axum::Json;
+use chrono::{DateTime, FixedOffset};
 use http::{header::HOST, HeaderMap, HeaderName, Request};
-use indielinks_shared::origin::NetLoc;
+use indielinks_shared::{
+    entities::{Post, Tagname, Username},
+    origin::{NetLoc, Origin},
+};
 use itertools::Itertools;
 use opentelemetry::KeyValue;
 use pin_project::pin_project;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, Snafu};
+use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tower::{Layer, Service};
 use tower_gcra::keyed::KeyExtractor;
@@ -37,7 +45,7 @@ use tower_http::{
 };
 use tracing::{debug, error, Level, Span};
 
-use crate::define_metric;
+use crate::{define_metric, util::UpToThree};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        Error Responses                                         //
@@ -64,6 +72,7 @@ impl axum::response::IntoResponse for ErrorResponseBody {
     }
 }
 
+// This seems weird...
 #[allow(type_alias_bounds)]
 pub type Result<T: axum::response::IntoResponse> = std::result::Result<T, ErrorResponseBody>;
 
@@ -73,7 +82,13 @@ pub type Result<T: axum::response::IntoResponse> = std::result::Result<T, ErrorR
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("Failed to interpret a header value as a UTF-8 string: {source}"))]
+    #[snafu(display("Bad tag name"))]
+    BadTagName {
+        #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
+        source: Box<indielinks_shared::entities::Error>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("Failed to interpret a header value as a UTF-8 string"))]
     HeaderValue {
         source: http::header::ToStrError,
         backtrace: Backtrace,
@@ -103,6 +118,84 @@ impl std::fmt::Display for SameSite {
             }
         )
     }
+}
+
+/// Parse a `tag` parameter into a [HashSet] of [Tagname]s
+pub fn parse_tag_parameter(tags: &Option<String>) -> StdResult<HashSet<Tagname>, Error> {
+    tags.as_ref()
+        .map(|tags| {
+            tags.split(',')
+                .map(|s| Tagname::new(s.trim()))
+                .collect::<StdResult<HashSet<Tagname>, _>>()
+        })
+        .transpose()
+        .context(BadTagNameSnafu)?
+        .unwrap_or(HashSet::new())
+        .pipe(Ok)
+}
+
+pub fn make_feed_title(username: &Username, origin: &Origin, tags: UpToThree<Tagname>) -> Text {
+    Text {
+        value: format!(
+            "Recent indielinks posts from {}@{}{}",
+            username,
+            origin,
+            match tags {
+                UpToThree::None => "".to_owned(),
+                UpToThree::One(t) => format!(" tagged {t}"),
+                UpToThree::Two(t0, t1) => format!(" tagged {t0} and {t1}"),
+                UpToThree::Three(t0, t1, t2) => format!(" tagged {t0}, {t1} & {t2}"),
+            }
+        ),
+        base: None,
+        lang: None,
+        r#type: TextType::Text,
+    }
+}
+
+pub fn make_feed_author(username: &Username, origin: &Origin) -> Person {
+    Person {
+        name: username.to_string(),
+        email: None,
+        uri: Some(format!("{}/users/{}", origin, username)),
+        extensions: Default::default(),
+    }
+}
+
+pub fn make_feed_generator(origin: &Origin) -> Generator {
+    Generator {
+        value: "indielinks".to_owned(),
+        uri: Some(origin.to_string()),
+        version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+    }
+}
+
+pub fn feed_from_posts<I>(
+    posts: I,
+    username: &Username,
+    tags: UpToThree<Tagname>,
+    origin: &Origin,
+) -> StdResult<Feed, Error>
+where
+    I: IntoIterator<Item = Post>,
+    I::IntoIter: Clone,
+{
+    let posts = posts.into_iter();
+    let updated: Option<DateTime<FixedOffset>> =
+        posts.clone().next().map(|post| post.posted().into());
+
+    let mut builder = FeedBuilder::default()
+        .title(make_feed_title(username, origin, tags))
+        .author(make_feed_author(username, origin))
+        .generator(make_feed_generator(origin))
+        .entries(posts.into_iter().map(Entry::from).collect::<Vec<Entry>>())
+        .to_owned();
+
+    if let Some(updated) = updated {
+        builder = builder.updated(updated).to_owned();
+    }
+
+    Ok(builder.build())
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
