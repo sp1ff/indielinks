@@ -41,7 +41,6 @@ use std::{
 };
 
 use axum::{extract::State, response::IntoResponse, routing::get, Router};
-use chrono::Duration;
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use errno::Errno;
 use governor::Quota;
@@ -92,7 +91,6 @@ use indielinks::{
     configuration::{ConfigV1, Configuration, HeaderBlacklist, OtelExportConfig, StorageConfig},
     define_metric,
     delicious::make_router as make_delicious_router,
-    dynamodb::Location as DynamoLocation,
     grpc::{
         make_router as make_cache_router, GrpcService, ACCOUNT_TO_ACTOR, ACTOR_ID_TO_ACTOR,
         NOTE_ID_TO_NOTE,

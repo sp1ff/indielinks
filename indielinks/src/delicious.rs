@@ -43,6 +43,7 @@ use axum_accept::AcceptExtractor;
 use axum_extra::extract::Query;
 use chrono::Utc;
 use futures::{stream::BoxStream, StreamExt};
+use http::uri::{Parts, PathAndQuery};
 use itertools::Itertools;
 use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
@@ -162,6 +163,18 @@ pub enum Error {
     MissingQueryParams { backtrace: Backtrace },
     #[snafu(display("Multiple Authorization headers were supplied; only one is accepted."))]
     MultipleAuthnHeaders,
+    #[snafu(display(
+        "while removing the auth_token parameter, failed to build the new query string"
+    ))]
+    NewPathAndQuery {
+        source: http::uri::InvalidUri,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("while removing the auth_token parameter, failed to build the new Uri"))]
+    NewUri {
+        source: http::uri::InvalidUriParts,
+        backtrace: Backtrace,
+    },
     #[snafu(display("No authorization token found in the query string"))]
     NoAuthToken { backtrace: Backtrace },
     #[snafu(display("No more than three tags may be given"))]
@@ -347,6 +360,14 @@ impl Error {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch posts: {source}"),
             ),
+            Error::NewPathAndQuery { source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("while removing the auth_token parameter: {source}"),
+            ),
+            Error::NewUri { source, .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("while removing the auth_token parameter: {source}"),
+            ),
             Error::PostsByDay { source, .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Failed to fetch posts by day: {source}"),
@@ -409,6 +430,48 @@ type StdResult<T, E> = std::result::Result<T, E>;
 define_metric! { "delicious.auth.successes", delicious_auth_success, Sort::IntegralCounter }
 define_metric! { "delicious.auth.failures", delicious_auth_failures, Sort::IntegralCounter }
 
+fn remove_auth_token(request: &mut axum::extract::Request) -> Result<()> {
+    let new_query_string = request
+        .uri()
+        .query()
+        .map(|q| {
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(
+                    form_urlencoded::parse(q.as_bytes()).filter(|(k, _)| k != "auth_token"),
+                )
+                .finish()
+        })
+        .unwrap_or(String::new());
+
+    // This seems really ugly, but the `http` `Uri` API isn't very ergonomic when it comes to
+    // building up new instances...
+    let Parts {
+        scheme,
+        authority,
+        path_and_query,
+        ..
+    } = request.uri().clone().into_parts();
+
+    if let Some(path_and_query) = path_and_query {
+        let path_and_query = if new_query_string.is_empty() {
+            path_and_query
+        } else {
+            format!("{}?{}", path_and_query.path(), new_query_string)
+                .parse::<PathAndQuery>()
+                .context(NewPathAndQuerySnafu)?
+        };
+
+        let mut parts = Parts::default();
+        parts.scheme = scheme;
+        parts.authority = authority;
+        parts.path_and_query = Some(path_and_query);
+
+        *request.uri_mut() = http::Uri::from_parts(parts).context(NewUriSnafu)?;
+    }
+
+    Ok(())
+}
+
 /// Authenticate a request to the del.icio.us API
 ///
 /// # Introduction
@@ -453,6 +516,7 @@ pub async fn authenticate(
     // `OptionExt` and generally write idiomatically; then have the outer implementation handle
     // converting that to an axum Response.
     async fn authenticate1(
+        request: &mut axum::extract::Request,
         headers: axum::http::HeaderMap,
         params: HashMap<String, String>,
         storage: &(dyn StorageBackend + Send + Sync),
@@ -475,6 +539,9 @@ pub async fn authenticate(
                 .context(InvalidAuthHeaderValueSnafu { value: header_val })?,
             None => match params.get("auth_token") {
                 Some(value) => {
+                    // Strip this out of the query string, so it doesn't interfere with
+                    // deserialization downstream.
+                    remove_auth_token(request)?;
                     AuthnScheme::from_api_key(value).context(InvalidQueryTokenSnafu { value })?
                 }
                 None => {
@@ -501,6 +568,7 @@ pub async fn authenticate(
     }
 
     match authenticate1(
+        &mut request,
         headers,
         params,
         state.storage.as_ref(),

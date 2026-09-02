@@ -32,6 +32,7 @@ dashmap = "6.1.0"
 either = { version = "1.13.0", features = ["serde"] }
 enum-map = "2.7.3"
 errno = "0.3.10"
+form_urlencoded = "1.2.2"
 futures = "0.3.31"
 governor = { version = "=0.10.4", git = "https://github.com/sp1ff/governor.git", branch = "issue-193" }
 hex = "0.4.3"

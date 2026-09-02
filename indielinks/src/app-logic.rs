@@ -298,6 +298,7 @@ pub async fn handle_timeline(
 
     match request {
         TimelineReq::Initial { max_posts } => {
+            debug!("In receipt of a TimelineReq::Initial request with max posts {max_posts:?}");
             match timeline.begin(max_posts).await.context(HomeTimelineSnafu {
                 username: user.username().clone(),
             })? {
@@ -319,6 +320,7 @@ pub async fn handle_timeline(
             }
         }
         TimelineReq::Since { since, max_posts } => {
+            debug!("In receipt of a TimelineReq::Since request with since {since:?} and {max_posts:?} max posts");
             match timeline
                 .since(
                     from_token(&since, &key).context(UnpackPaginationTokenSnafu)?,
@@ -338,6 +340,7 @@ pub async fn handle_timeline(
             }
         }
         TimelineReq::Before { before, max_posts } => {
+            debug!("In receipt of a TimelineReq::Before request with before {before:?} and {max_posts:?} max posts");
             match timeline
                 .before(
                     from_token(&before, &key).context(UnpackPaginationTokenSnafu)?,
