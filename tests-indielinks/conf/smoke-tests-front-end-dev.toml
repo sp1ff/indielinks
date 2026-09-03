@@ -28,7 +28,7 @@ domain.clustered.nodes = [["http://indiemark.local:20694", "http://127.0.0.1:206
                           ["http://indiemark.local:20697", "http://127.0.0.1:20698", "127.0.0.1:20699"],
                           ["http://indiemark.local:20700", "http://127.0.0.1:20701", "127.0.0.1:20702"]]
 domain.clustered.cluster-size = 3
-domain.clustered.haproxy-id = 1
+domain.clustered.haproxy-id = 2
 domain.clustered.haproxy-port = 20674
 
 domain.username = "sp1ff"

@@ -158,7 +158,7 @@ function hc() {
     # curl can fail if the server isn't up, yet
     status=$(curl -s http://localhost:${port}/healthcheck || true)
     ntries=1
-    while [ "${status}" != "GOOD" ]; do
+    while [ "${status}" != "GOOD" -a "${status}" != "READY" ]; do
         sleep 1.0
         status=$(curl -s http://localhost:${port}/healthcheck || true)
         ntries=$(($ntries+1))
@@ -221,13 +221,16 @@ global
     maxconn 256
     stats socket /tmp/haproxy.${haproxy_id}.sock mode 600 level admin
     log stdout format raw local0
+    log-send-hostname
 
 defaults
+    log global
     mode http
+    option httplog
+    option dontlognull
     timeout connect 3s
     timeout client  30s
     timeout server  30s
-    option httplog
 
 frontend fe_http
     bind :${haproxy_port}
@@ -236,17 +239,17 @@ frontend fe_http
 backend be_servers
     balance roundrobin
 
-    # Actively check /healthcheck; require 200 and body containing "GOOD"
+    # Actively check /healthcheck
     option httpchk GET /healthcheck HTTP/1.1
 
-    http-check expect status 202
-    http-check expect string READY
+    http-check expect rstatus ^(201|202)$
+    http-check expect rstring ^(GOOD|READY)$
 
-    server s1 127.0.0.1:${port_0} check inter 2s fall 3 rise 2
-    server s2 127.0.0.1:${port_1} check inter 2s fall 3 rise 2
-    server s3 127.0.0.1:${port_2} check inter 2s fall 3 rise 2
-    server s4 127.0.0.1:${port_3} check inter 2s fall 3 rise 2
-    server s5 127.0.0.1:${port_4} check inter 2s fall 3 rise 2
+    server s1 127.0.0.1:${port_0} check inter 1s fall 1 rise 1
+    server s2 127.0.0.1:${port_1} check inter 1s fall 1 rise 1
+    server s3 127.0.0.1:${port_2} check inter 1s fall 1 rise 1
+    server s4 127.0.0.1:${port_3} check inter 1s fall 1 rise 1
+    server s5 127.0.0.1:${port_4} check inter 1s fall 1 rise 1
 EOF
 
 rust_log="${RUST_LOG:-debug,aws_config=warn,aws_runtime=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,aws_smithy_http_client=info,aws_sdk_dynamodb=info,hyper=info,opentelemetry_sdk=info,scylla=info,openraft=info,h2::codec=info,h2::proto=info,hyper_util=info,tower::buffer=info}"
@@ -285,7 +288,10 @@ fi
 # `haproxy` invocation into a sub-shell, `Command::output()` hangs.
 (haproxy -f ${haproxy_config}) > /tmp/haproxy.${haproxy_id}.log 2>&1 < /dev/null &
 echo "$!" > /tmp/haproxy.${haproxy_id}.pid
-sleep 0.5
+# This should be enough time, given the settings above, for haproxy to
+# figure-out that nodes 4 & 5 are down (if we were invoked with "3") and to
+# take them out of rotation.
+sleep 2.5
 
 if test -z "${no_raft_init}"; then
     pport_0=$(parse_private_port "${config_base}0.toml")

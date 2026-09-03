@@ -6,7 +6,7 @@ username = "sp1ff"
 [domain.clustered]
 cluster-local-state-base = "/tmp/indielinksd-cloud-"
 cluster-size = 3
-haproxy-id = 3
+haproxy-id = 4
 haproxy-port = 20755
 indielinks-alternator-cluster-config-base = "../target/conf/cloud/indielinksd-alternator-"
 indielinks-scylla-cluster-config-base = "../target/conf/cloud/indielinksd-scylla-"

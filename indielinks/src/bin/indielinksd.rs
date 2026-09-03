@@ -1543,9 +1543,10 @@ async fn go_async(
 
             // At this point we have logging-- huzzah!
             info!(
-                "indielinks version {}, instance {} starting.",
+                "indielinks version {}, instance {} starting. RUST_LOG is {:?}",
                 crate_version!(),
-                opts.instance_id
+                opts.instance_id,
+                std::env::var("RUST_LOG")
             );
 
             serve(opts, cfg, log_file_hup).await
