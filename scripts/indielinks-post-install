@@ -249,7 +249,7 @@ echo "done."
 # file will be left with ownership `root:root`. So, we touch-up ownership after
 # installing the secrets into the file.
 echo -n "Generating instance secrets if needed..."
-RUST_LOG=${rust_log} sudo -E indielinks-schemas -p secrets ${indielinks_config}
+RUST_LOG=${rust_log} sudo -E PATH=$PATH indielinks-schemas -p secrets ${indielinks_config}
 sudo chown ${indielinks_user}:${indielinks_group} /etc/indielinks.toml
 echo "done."
 
