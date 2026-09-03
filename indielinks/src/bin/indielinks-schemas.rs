@@ -60,12 +60,22 @@
 // Cf. <https://github.com/rust-lang/rust/issues/159228>
 #![recursion_limit = "256"]
 
-use std::{fmt::Display, io, net::SocketAddr, ops::Deref, sync::Arc};
+use std::{
+    fs, io,
+    net::SocketAddr,
+    ops::Deref,
+    path::{Path, PathBuf},
+    result::Result as StdResult,
+    sync::Arc,
+};
 
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use futures::{future::BoxFuture, stream::iter, StreamExt};
-use snafu::{prelude::*, Backtrace};
+use indielinks_shared::known_good;
+use serde::Serialize;
+use snafu::{prelude::*, Backtrace, Report};
 use tap::Pipe;
+use tempfile::NamedTempFile;
 use tracing::{info, Level};
 use tracing_subscriber::{
     fmt::{self},
@@ -80,10 +90,12 @@ use indielinks::{
         Location as DynamoLocation,
     },
     dynamodb_schemas::create_schema as create_dynamodb_schema,
+    peppers::Peppers,
     scylla::{
         create_client as create_scylla_client, create_schema as create_scylladb_schema,
         get_current_schema_version as get_current_scylla_schema_version,
     },
+    signing_keys::SigningKeys,
     util::{exactly_two, Credentials},
 };
 
@@ -94,6 +106,12 @@ use indielinks::{
 /// Application error type
 #[derive(Snafu)]
 pub enum Error {
+    #[snafu(display("failed to canonicalize {path:?}"))]
+    Canonicalize {
+        path: PathBuf,
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While creating the schema, {source}"))]
     CreateSchema { source: indielinks::scylla::Error },
     #[snafu(display("When creating the DDB client, {source}"))]
@@ -114,27 +132,59 @@ pub enum Error {
     NoEndpoints { backtrace: Backtrace },
     #[snafu(display("No sub-command given; try --help"))]
     NoSubCommand,
+    #[snafu(display("failed to find the parent directory of {path:?}"))]
+    Parent { path: PathBuf, backtrace: Backtrace },
+    #[snafu(display("failed to serialize the pepper to TOML"))]
+    Pepper {
+        source: toml::ser::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("failed to read the configuration file {path:?}"))]
+    ReadConfig {
+        path: PathBuf,
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("failed to rename the temporary file to the new configuration file"))]
+    Rename {
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("When creating the Scylla client, {source}"))]
     ScyllaClient { source: indielinks::scylla::Error },
     #[snafu(display("While updating the schema, {source:#?}"))]
     ScyllaSchemaUpdate { source: indielinks::scylla::Error },
     #[snafu(display("While fetching the current schema version, {source:#?}"))]
     ScyllaSchemaVersion { source: indielinks::scylla::Error },
+    #[snafu(display("failed to serialize the signing keys to TOML"))]
+    SigningKeys {
+        source: toml::ser::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to set the tracing subscriber: {source}"))]
     Subscriber {
         source: tracing::subscriber::SetGlobalDefaultError,
+    },
+    #[snafu(display("failed to create a temporary file next to {path:?}"))]
+    TempFile {
+        path: PathBuf,
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("failed to write the temporary file"))]
+    WriteTempFile {
+        source: std::io::Error,
+        backtrace: Backtrace,
     },
 }
 
 impl std::fmt::Debug for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self::Display::fmt(&self, f)
+        write!(f, "{}", Report::from_error(self))
     }
 }
 
 type Result<T> = std::result::Result<T, Error>;
-
-type StdResult<T, E> = std::result::Result<T, E>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -285,6 +335,71 @@ impl clap::builder::TypedValueParser for TranslationParser {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       Secrets Generation                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Throwaway struct to make the output structure mimic that of the configuration file
+#[derive(Clone, Debug, Serialize)]
+struct Pepper {
+    pepper: Peppers,
+}
+
+// Ditto:
+#[derive(Clone, Debug, Serialize)]
+struct SigningKeysInner {
+    #[serde(rename = "signing-keys")]
+    signing_keys: SigningKeys,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SigningKeysOuter {
+    #[serde(rename = "signing-keys")]
+    signing_keys: SigningKeysInner,
+}
+
+fn generate_secrets<P: AsRef<Path>>(path: P) -> Result<()> {
+    // The `Default` implementations of these two types generate new values-- I know, I know...
+    // don't judge me.
+    let peppers = toml::to_string(&Pepper {
+        pepper: Peppers::default(),
+    })
+    .context(PepperSnafu)?;
+
+    let signing_keys = toml::to_string(&SigningKeysOuter {
+        signing_keys: SigningKeysInner {
+            signing_keys: SigningKeys::default(),
+        },
+    })
+    .context(SigningKeysSnafu)?;
+
+    let tmpfile = NamedTempFile::new_in(
+        path.as_ref()
+            .canonicalize()
+            .context(CanonicalizeSnafu {
+                path: path.as_ref().to_path_buf(),
+            })?
+            .parent()
+            .context(ParentSnafu {
+                path: path.as_ref().to_path_buf(),
+            })?,
+    )
+    .context(TempFileSnafu {
+        path: path.as_ref().to_path_buf(),
+    })?;
+
+    fs::read_to_string(path.as_ref())
+        .context(ReadConfigSnafu {
+            path: path.as_ref().to_path_buf(),
+        })?
+        .replace("PEPPER", &peppers)
+        .replace("SIGNINGKEYS", &signing_keys)
+        .pipe(|text| fs::write(&tmpfile, &text))
+        .context(WriteTempFileSnafu)?;
+
+    fs::rename(tmpfile, path).context(RenameSnafu)
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                              main                                              //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -388,6 +503,16 @@ For each node in the cluster, give this argument once, specify it as local/inter
                         .value_parser(value_parser!(SocketAddr))
                         .required(true))
         )
+        .subcommand(
+            Command::new("secrets")
+                .about("Create secrets for this installation; store them in the confguration file")
+                .arg(
+                    Arg::new("file")
+                        .help("Path to configuration file containing replacement parameters PEPPERS and SIGNINGKEYS")
+                        .value_parser(value_parser!(PathBuf))
+                        .required(true)
+                )
+        )
         .get_matches();
 
     configure_logging(
@@ -448,6 +573,13 @@ For each node in the cluster, give this argument once, specify it as local/inter
                     .into_iter()
                     .collect::<StdResult<Vec<_>, _>>()?;
                 info!("ScyllaDB configured.");
+                Ok(())
+            }
+            "secrets" => {
+                // Known good because the argument is marked as required.
+                let configuration_file = known_good!(matches.remove_one::<PathBuf>("file"));
+                generate_secrets(&configuration_file)?;
+                info!("Secrets generated & installed.");
                 Ok(())
             }
             _ => unimplemented!(/* impossible */),

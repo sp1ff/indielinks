@@ -49,7 +49,7 @@ use std::{collections::BTreeMap, fmt::Display, result::Result as StdResult, str:
 
 use lazy_static::lazy_static;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, Snafu};
 
 use crate::util::Key;
@@ -111,7 +111,7 @@ lazy_static! {
 }
 
 // We don't write-down `KeyId`s in the database, so no need to implement Scylla traits on it
-#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, PartialOrd, Ord, Serialize)]
 pub struct KeyId(String);
 
 impl KeyId {
@@ -155,7 +155,7 @@ impl From<KeyId> for String {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// A refined type enforcing a key length (of 64 octets)
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct SigningKey(Key);
 
@@ -188,7 +188,7 @@ impl AsRef<Key> for SigningKey {
 //                                          SigningKeys                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SigningKeys {
     keys: BTreeMap<KeyId, SigningKey>,
 }

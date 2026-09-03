@@ -3702,6 +3702,7 @@ dependencies = [
  "sha2 0.10.9",
  "snafu 0.8.9",
  "tap",
+ "tempfile",
  "time",
  "tokio",
  "toml 0.8.23",

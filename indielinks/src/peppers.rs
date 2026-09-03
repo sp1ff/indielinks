@@ -156,7 +156,7 @@ impl SerializeValue for Version {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// A [Pepper] is a 32-octet key
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct Pepper(Key);
 
@@ -203,7 +203,7 @@ impl From<Pepper> for Key {
 //                                            Peppers                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Peppers {
     peppers: BTreeMap<Version, Pepper>,
 }

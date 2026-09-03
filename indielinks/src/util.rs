@@ -22,7 +22,7 @@ use std::{fmt::Display, ops::Deref};
 
 use either::Either;
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_bytes::ByteBuf;
 use tap::{Conv, Pipe};
 
@@ -163,6 +163,17 @@ impl<'de> Deserialize<'de> for Key {
             .conv::<SecretSlice<u8>>()
             .pipe(Key)
             .pipe(Ok)
+    }
+}
+
+// It may seem strange to implement `Serialize` for something secret, but it is handy-- for the
+// `indielinks-schemas secrets` sub-command, for instace. Caller beware.
+impl Serialize for Key {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(self.0.expose_secret())
     }
 }
 
