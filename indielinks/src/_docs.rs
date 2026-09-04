@@ -13,6 +13,31 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
+//! # User Documentation
+//!
+//! User-facing documentation goes here. It's a bit of a grab bag at this point. This stuff will
+//! probably end-up in a manual or other user-facing documentation of some sort.
+//!
+//! ## RSS Feeds
+//!
+//! indielinks provides RSS feeds in Atom 1.0 format in two ways:
+//!
+//! 1. public feeds
+//! 2. private, per-user feeds
+//!
+//! In the first case, anyone can get an Atom feed of a user's public posts by sending a `GET` to
+//! `/users/{username}/feed`. The caller can specify up to three comma-separated tags in the `tags`
+//! query parameter, request only unread posts by specifying the `unread` parameter, and optionally
+//! specify the number of desired posts with the `num` parameter.
+//!
+//! In the second, indielinks users can get an Atom feed of their *own* posts (public & private) at
+//! `/api/v1/posts/all` by setting the Accept header in their request to `application/atom+xml`. All
+//! the query parameters from the old del.icio.us API apply. As with the rest of the del.icio.us
+//! API, the user can authenticate in a number of ways:
+//!
+//! - including an API key in the query string as the `auth_token` parameter
+//! - including one of HTTP basic authentication, an API key, or a login token in an Autorization header
+//!
 //! # General indielinks Documentation
 //!
 //! General (i.e. not documenting a particular struct or a method) documentation goes here. It's
