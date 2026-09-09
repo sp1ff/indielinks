@@ -271,6 +271,8 @@ pub async fn handle_timeline(
     user: &User,
     request: TimelineReq,
 ) -> Result<TimelineRsp> {
+    debug!("Handling a Timeline request for user {}", user.username());
+
     let (_, key) = state.signing_keys.current().context(NoSigningKeysSnafu)?;
 
     // `LruCache::try_get_or_insert_mut()` would be preferrable, here, but creating a new `Timeline`
@@ -280,6 +282,7 @@ pub async fn handle_timeline(
     let mut timelines = state.home_timelines.lock().await;
 
     if !timelines.contains(user.id()) {
+        debug!("Instantiating a new Timeline for this user. This will result in HTTP requests for each of the actors this user follows");
         let timeline = Timeline::new(
             user,
             &state.origin,

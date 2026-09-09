@@ -581,10 +581,20 @@ impl Timeline {
                 .await
             }
         })
-        .collect::<Vec<StdResult<_, _>>>()
+        // Log the errors...
+        .inspect(|item| {
+            if let Err(err) = item {
+                error!("{err:?}")
+            }
+        })
+        .collect::<Vec<_>>()
         .await
         .into_iter()
-        .collect::<Result<Vec<_>>>()?;
+        // & drop the failures. TODO(sp1ff): this is a bug: if a call to a federated server fails
+        // here, we'll never check again. I need to somehow note which ones failed & find a way
+        // to retry.
+        .filter_map(|item| item.ok()) // :=> `Option<Outbox>`
+        .collect::<Vec<_>>();
 
         let streams = follows
             .iter_mut()
@@ -706,6 +716,10 @@ impl Timeline {
         after: PostKey,
         page_size: Option<NonZero<usize>>,
     ) -> Option<(NEVec<Item>, PostKey)> {
+        debug!(
+            "Looking for Timeline posts more recent than {}",
+            after.timestamp
+        );
         let mut items = self
             .items
             .range(RangeBelow { start: &after })
