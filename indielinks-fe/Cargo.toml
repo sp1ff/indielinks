@@ -6,37 +6,37 @@ edition = "2024"
 # Only the pure theme model (`theme::model`) compiles off-wasm; everything else is a browser
 # dependency and is declared in the wasm32 target section below.
 [dependencies]
-snafu = "0.8.6"
+snafu = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-chrono = { version = "0.4.41", features = ["serde"] }
+chrono = { workspace = true, features = ["serde"] }
 console_error_panic_hook = "0.1.7"
-futures = "0.3.31"
+futures = { workspace = true }
 gloo-net = { version = "0.6.0", features = ["http"] }
-indielinks-shared = { path = "../indielinks-shared" }
-itertools = "0.14.0"
+gloo-timers = { version = "0.4.0", features = ["futures"] }
+icondata = "0.7.0"
+indielinks-shared = { workspace = true }
+itertools = { workspace = true }
 leptos = { version = "0.8.6", features = ["csr"] }
 leptos_router = "0.8.6"
-nonempty-collections = { version = "1.3.0", features = ["serde"] }
-serde = { version = "1.0.219", features = ["derive"] }
-serde_urlencoded = "0.7.1"
+nonempty-collections = { workspace = true, features = ["serde"] }
+nonzero = { workspace = true }
+reactive_stores = "0.4.2"
+secrecy = { workspace = true, features = ["serde"] }
+send_wrapper = "0.6.0"
+serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = "0.6"
-tap = "1.0.1"
+serde_urlencoded = { workspace = true }
+tap = { workspace = true }
 thaw = { git = "https://github.com/thaw-ui/thaw", branch = "thaw/v0.5", features = ["csr"] }
-tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 tracing-subscriber-wasm = "0.1.0"
-url = { version = "2.5.4", features = ["serde"] }
-uuid = { version = "1.17.0", features = ["v4", "serde"] }
+url = { workspace = true, features = ["serde"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
 wasm-bindgen = "0.2.100"
 wasm-cookies = "0.2.1"
 web-sys = { version = "0.3.77", features = ["Document", "Element", "EventTarget", "MediaQueryList", "MediaQueryListEvent", "Storage", "Window"] }
-reactive_stores = "0.4.2"
-send_wrapper = "0.6.0"
-secrecy = { version = "0.10.3", features = ["serde"] }
-gloo-timers = { version = "0.4.0", features = ["futures"] }
-icondata = "0.7.0"
-nonzero = "0.2.0"
 
 [build-dependencies]
 url = "2.5.4"
