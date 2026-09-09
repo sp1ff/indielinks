@@ -590,9 +590,8 @@ impl Timeline {
         .collect::<Vec<_>>()
         .await
         .into_iter()
-        // & drop the failures. TODO(sp1ff): this is a bug: if a call to a federated server fails
-        // here, we'll never check again. I need to somehow note which ones failed & find a way
-        // to retry.
+        // & drop the failures. This is a bug: if a call to a federated server fails here, we'll
+        // never check again. I need to somehow note which ones failed & find a way to retry.
         .filter_map(|item| item.ok()) // :=> `Option<Outbox>`
         .collect::<Vec<_>>();
 
