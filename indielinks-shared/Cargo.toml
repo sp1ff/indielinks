@@ -12,7 +12,7 @@ either = { workspace = true }
 email_address = { workspace = true }
 # `getrandom` is really a transitive dependency, but we need the "js"
 # feature for indielinks-fe builds (indielinks-fe depends on this
-# crate).
+# crate). This is required despite what `cargo outdated` may say.
 getrandom = { workspace = true, features = ["js"] }
 hex = { workspace = true }
 http = { workspace = true }
