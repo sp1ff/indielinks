@@ -230,7 +230,7 @@ pub fn AddLink() -> impl IntoView {
         <div class="pt-[32px]">
 
             <form
-                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center w-full max-w-lg min-w-64 mx-auto border border-solid border-sky-100 p-8 text-gray-600"
+                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center w-full max-w-lg min-w-64 mx-auto border border-solid border-subtle p-8 text-muted"
                 on:submit = move |ev| {
                     debug!("Got an {ev:?}");
                     ev.prevent_default();
@@ -244,7 +244,7 @@ pub fn AddLink() -> impl IntoView {
                 ////////////////////////////////////////////////////////////////////////////////////
                 <label for="url" class="">"Url:"</label>
                 <input autofocus required
-                       class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
+                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
                        type="text" id="url" name="url"
                        placeholder="URL to be saved"
                        node_ref=elements.url
@@ -255,7 +255,7 @@ pub fn AddLink() -> impl IntoView {
                 ////////////////////////////////////////////////////////////////////////////////////
                 <label for="title" class="">"Title:"</label>
                 <input required
-                       class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
+                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
                        type="text" id="title" name="title"
                        placeholder="Page title"
                        node_ref=elements.title
@@ -267,7 +267,7 @@ pub fn AddLink() -> impl IntoView {
                 <label for="notes" class="self-start">"Notes:"</label>
                 <textarea
                     rows="4"
-                    class="bg-transparent border-0 border-b border-r outline-none focus:border-sky-600"
+                    class="bg-transparent border-0 border-b border-r outline-none focus:border-focus"
                     placeholder="Optional free-form notes..."
                     id="notes" name="notes"
                     bind:value=form.notes >
@@ -277,7 +277,7 @@ pub fn AddLink() -> impl IntoView {
                 // Tags
                 ////////////////////////////////////////////////////////////////////////////////////
                 <label for="tags" class="">"Tags:"</label>
-                <input class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
+                <input class="bg-transparent border-0 border-b outline-none focus:border-focus"
                        type="text"
                        id="tags" name="tags"
                        placeholder="Comma-delimited tags..."
@@ -307,7 +307,7 @@ pub fn AddLink() -> impl IntoView {
                         "add another"
                     </label>
                     <input
-                      class="bg-transparent border px-4 py-2 hover:bg-sky-300 hover:text-gray-900 transition-colors cursor-pointer focus:bg-sky-300"
+                      class="bg-transparent border px-4 py-2 hover:bg-brand-subtle hover:text-ink transition-colors cursor-pointer focus:bg-brand-subtle"
                       type="submit"
                       value="save"/>
                 </div>

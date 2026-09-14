@@ -78,7 +78,7 @@ fn TopKTagsNav(refresh: ArcTrigger) -> impl IntoView {
     view! {
         <div class="mx-auto flex items-center gap-2 p-2">
             <span class="text-lg">"Most Popular Tags "</span>
-            <Icon icon=icondata::IoRefresh class="text-gray-400"
+            <Icon icon=icondata::IoRefresh class="text-muted"
                   on_click=move |_| {
                       refresh.notify()
                   }
@@ -200,13 +200,13 @@ pub fn TopKTags() -> impl IntoView {
                             }),
                             None => match token.get() {
                                 Some(_) => EitherOf3::B(view! {
-                                    <div class="mx-auto max-w-md m-8 text-gray-600 p-2">
-                                        <p>"This instance doesn't have any tags, yet. Click "<a href="/a" class="text-blue-600 underline hover:text-blue-800 visited:text-purple-600">"here"</a>" to start adding some."</p>
+                                    <div class="mx-auto max-w-md m-8 text-muted p-2">
+                                        <p>"This instance doesn't have any tags, yet. Click "<a href="/a" class="text-link underline hover:text-link-hover visited:text-link-visited">"here"</a>" to start adding some."</p>
                                     </div>
                                 }),
                                 None => EitherOf3::C(view! {
-                                    <div class="mx-auto max-w-md m-8 text-gray-600 p-2">
-                                        <p>"This instance doesn't have any tags, yet. "<a href="/s" class="text-blue-600 underline hover:text-blue-800 visited:text-purple-600">"Sign-in"</a>" to start adding some."</p>
+                                    <div class="mx-auto max-w-md m-8 text-muted p-2">
+                                        <p>"This instance doesn't have any tags, yet. "<a href="/s" class="text-link underline hover:text-link-hover visited:text-link-visited">"Sign-in"</a>" to start adding some."</p>
                                     </div>
                                 })
                             }
@@ -229,7 +229,7 @@ fn RecentPostsNav(refresh: ArcTrigger) -> impl IntoView {
     view! {
         <div class="mx-auto flex items-center gap-2 p-2">
             <span class="text-lg">"Most Recent Public Posts "</span>
-            <Icon icon=icondata::IoRefresh class="text-gray-400"
+            <Icon icon=icondata::IoRefresh class="text-muted"
                   on_click=move |_| {
                       refresh.notify()
                   }
@@ -256,11 +256,11 @@ fn RecentPostsList(posts: NEVec<Post>) -> impl IntoView {
                 <div class="p-1">
                     // The link itself (larger, more prominent)
                     <div class="text-lg">
-                        <a href={ url.to_string() } class="text-blue-600 underline hover:text-blue-800"> { title }</a>
+                        <a href={ url.to_string() } class="text-link underline hover:text-link-hover visited:text-link-visited"> { title }</a>
                     </div>
                     // The post time & tags (smaller, gray text)
                     <div class="flex">
-                    <div class="flex-[0 0 auto] text-gray-400"> { posted } </div>
+                    <div class="flex-[0 0 auto] text-muted"> { posted } </div>
                     <div class="flex px-2 gap-1">
                     {
                         post
@@ -375,13 +375,13 @@ pub fn RecentPosts() -> impl IntoView {
                             }),
                             None => match token.get() {
                                 Some(_) => EitherOf3::B(view! {
-                                    <div class="mx-auto max-w-md m-8 text-gray-600 p-2">
-                                        <p>"This instance doesn't have any posts, yet. Click "<a href="/a" class="text-blue-600 underline hover:text-blue-800 visited:text-purple-600">"here"</a>" to start adding some."</p>
+                                    <div class="mx-auto max-w-md m-8 text-muted p-2">
+                                        <p>"This instance doesn't have any posts, yet. Click "<a href="/a" class="text-link underline hover:text-link-hover visited:text-link-visited">"here"</a>" to start adding some."</p>
                                     </div>
                                 }),
                                 None => EitherOf3::C(view! {
-                                    <div class="mx-auto max-w-md m-8 text-gray-600 p-2">
-                                        <p>"This instance doesn't have any posts, yet. "<a href="/s" class="text-blue-600 underline hover:text-blue-800 visited:text-purple-600">"Sign-in"</a>" to start adding some."</p>
+                                    <div class="mx-auto max-w-md m-8 text-muted p-2">
+                                        <p>"This instance doesn't have any posts, yet. "<a href="/s" class="text-link underline hover:text-link-hover visited:text-link-visited">"Sign-in"</a>" to start adding some."</p>
                                     </div>
                                 })
                             }
@@ -457,7 +457,7 @@ fn ClusterStats() -> impl IntoView {
                             },
                         };
                         view! {
-                            <div class="text-gray-400">
+                            <div class="text-muted">
                                 { verbiage }
                             </div>
                         }
@@ -505,7 +505,7 @@ fn Verbiage() -> impl IntoView {
                     let stats = stats.get().transpose()?;
                     Ok(stats.map(|stats| {
                         view! {
-                            <div class="text-gray-600">
+                            <div class="text-muted">
                                 "This is "{ format!("{}", stats.origin) }", an indielinks instance. Think of it as del.icio.us on the fediverse. Contact "<a href="mailto:sp1ff@pobox.com">"sp1ff@pobox.com"</a>" for an account!"
                             </div>
                         }
@@ -530,19 +530,19 @@ pub fn Instance() -> impl IntoView {
     view! {
         // I think I'm going to allow each component to handle its own errors; why give-up rendering
         // the entire page when only one component has a problem?
-        <div class="grid grid-rows-[auto_1fr_auto] h-screen gap-2 p-4  text-gray-600">
+        <div class="grid grid-rows-[auto_1fr_auto] h-screen gap-2 p-4  text-muted">
             <div>
               <Verbiage />
             </div>
           <div class="flex justify-between">
-            <div class="min-w-64 border border-solid border-sky-100 overflow-y-auto">
+            <div class="min-w-64 border border-solid border-subtle overflow-y-auto">
                 <RecentPosts />
             </div>
-            <div class="min-w-48 border border-solid border-sky-100 overflow-y-auto">
+            <div class="min-w-48 border border-solid border-subtle overflow-y-auto">
                 <TopKTags />
             </div>
           </div>
-          <div class="border border-solid border-sky-100">
+          <div class="border border-solid border-subtle">
             <ClusterStats />
           </div>
         </div>

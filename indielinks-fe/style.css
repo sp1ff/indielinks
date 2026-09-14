@@ -1,147 +1,94 @@
-@import url('https://fonts.googleapis.com/css2?family=Bona+Nova:ital,wght@0,400;0,700;1,400&family=Kanit:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Cormorant:ital,wght@0,300..700;1,300..700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300..700;1,300..700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Brygada+1918:ital,wght@0,400..700;1,400..700&family=Cormorant+Garamond:ital,wght@0,300..700;1,300..700&display=swap');
-/* Shows-up nicely at smaller sizes */
-@import url('https://fonts.googleapis.com/css2?family=Bitter:ital,wght@0,100..900;1,100..900&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Martel:wght@200;300;400;600;700;800;900&display=swap');
-
 @import "tailwindcss";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@theme inline {
+    --font-sans: var(--fontFamilyBase);
+    --font-header: var(--fontFamilyBase);
 
-@theme {
-    --font-header: "Cormorant Garamond", serif;
-    /* --font-header: "Brygada 1918", serif; */
-    /* --font-header-actions: "Bitter", serif; */
+    --color-canvas: var(--colorNeutralBackground3);
+    --color-surface: var(--colorNeutralBackground1);
+    --color-surface-subtle: var(--colorNeutralBackground4);
+    --color-brand: var(--colorBrandBackground);
+    --color-brand-hover: var(--colorBrandBackgroundHover);
+    --color-brand-subtle: var(--colorBrandBackground2);
+    --color-ink: var(--colorNeutralForeground1);
+    --color-muted: var(--colorNeutralForeground2);
+    --color-disabled: var(--colorNeutralForeground4);
+    --color-on-brand: var(--colorNeutralForegroundOnBrand);
+    --color-link: var(--colorBrandForegroundLink);
+    --color-link-hover: var(--colorBrandForegroundLinkHover);
+    --color-link-visited: var(--indielinks-color-link-visited);
+    --color-border-subtle: var(--colorNeutralStroke2);
+    --color-focus: var(--colorStrokeFocus2);
+    --color-heritage: var(--indielinks-color-heritage);
+
+    --text-metadata: 12px;
+    --text-metadata--line-height: 16px;
+    --text-control: 14px;
+    --text-control--line-height: 20px;
+    --text-body: 15px;
+    --text-body--line-height: 22px;
+    --text-link-title: 16px;
+    --text-link-title--line-height: 22px;
+    --text-section-title: 20px;
+    --text-section-title--line-height: 26px;
+    --text-page-title: 24px;
+    --text-page-title--line-height: 30px;
+    --text-wordmark: 28px;
+    --text-wordmark--line-height: 32px;
+
+    --radius-tag: 4px;
+    --radius-control: 6px;
+    --radius-overlay: 8px;
+    --shadow-floating: var(--shadow16);
 }
 
-/* .auth-actions { */
-/*     color: #f5f5ff; */
-/*     margin-left: auto; */
-/*     padding-right: 8px; */
-/* } */
+:root {
+    color-scheme: light;
+    --indielinks-color-link-visited: #6d4aff;
+    --indielinks-color-heritage: #0000ff;
+    --indielinks-duration-interaction: 150ms;
+}
 
-/* .auth-actions a { */
-/*     color: inherit; */
-/* } */
+html,
+body {
+    min-height: 100%;
+    margin: 0;
+    background-color: var(--colorNeutralBackground3, #f4f6f8);
+}
 
-/* .auth-actions a:visited { */
-/*     color: inherit; */
-/* } */
+.indielinks-app {
+    min-height: 100vh;
+    background-color: var(--colorNeutralBackground3);
+    color: var(--colorNeutralForeground1);
+    font-family: var(--fontFamilyBase);
+    font-size: 15px;
+    line-height: 22px;
+}
 
-/* .posts-view { */
-/*     flex: 0 0 61%; */
-/*     margin: 6px; */
-/*     border: 1px solid #ccc; */
-/* } */
+:where(a, button, input, textarea, select, [tabindex]) {
+    transition-duration: var(--indielinks-duration-interaction);
+    transition-property: color, background-color, border-color, outline-color, box-shadow;
+    transition-timing-function: ease;
+}
 
-/* .post-list { */
-/*     display: flex; */
-/*     flex-direction: column; */
-/*     align-items: stretch; */
-/*     margin-top: 6px; */
-/* } */
+:where(a, button, input, textarea, select, [tabindex]):focus-visible {
+    outline: 2px solid var(--colorStrokeFocus2);
+    outline-offset: 2px;
+}
 
-/* .post { */
-/*     margin: 4px; */
-/*     padding: 6px; */
-/*     border: 1px solid #ddd; */
-/*     display: flex; */
-/*     flex-direction: column; */
-/* } */
+@media (pointer: coarse) {
+    :where(button, input[type="button"], input[type="reset"], input[type="submit"], select) {
+        min-height: 44px;
+    }
+}
 
-/* .post-title { */
-/*     font-size: large; */
-/* } */
-
-/* .post-title > a:color { */
-/*     color: #007199; */
-/* } */
-
-/* .post-title > a:visited { */
-/*     color: #007eab; */
-/* } */
-
-/* .post-info { */
-/*     display: flex; */
-/* } */
-
-/* .post-info-left { */
-/*     font-size: smaller; */
-/*     flex: 0 0 auto; /\* no grow, no shrink; "content-width" *\/ */
-/*     padding: 0.5rem; */
-/* } */
-
-/* .post-info-right { */
-/*     font-size: smaller; */
-/*     padding: 0.5rem; */
-/*     color: #276173; */
-/* } */
-
-/* .post-controls { */
-/*     font-size: smaller; */
-/*     text-align: right; */
-/* } */
-
-/* .add-post { */
-/*     margin: 4px; */
-/*     padding: 6px; */
-/*     border: 1px solid #ddd; */
-/*     display: flex; */
-/*     flex-direction: column; */
-/*     /\* align-items: flex-start; *\/ */
-/* } */
-
-/* .feeds-sidebar { */
-/*     width: clamp(150px, 12%, 300px); */
-/*     margin: 6px; */
-/*     border: 1px solid #cccccc; */
-/* } */
-
-/* .feeds-content { */
-/*     margin: 6px; */
-/*     border: 1px solid #cccccc; */
-/*     flex: 1; */
-/*     display: flex; */
-/* } */
-
-/* .feed { */
-/*     flex: 1; */
-/*     margin: 4px; */
-/*     border: 1px solid #cccccc; */
-/*     padding: 4px; */
-/*     display: flex; */
-/*     flex-direction: column; */
-/* } */
-
-/* .feed-title { */
-/*     margin: 4px; */
-/*     border: 1px solid #cccccc; */
-/*     padding: 4px; */
-/* } */
-
-/* .feed-item { */
-/*     margin: 4px; */
-/*     border: 1px solid #bbbbbb; */
-/*     padding: 4px; */
-/* } */
-
-/* .feed-item-actions { */
-/*     font-size: 0.85rem; */
-/* } */
-
-/* .feed-item-reply { */
-/*     font-size: 0.85rem; */
-/*     design: flex; */
-/*     flex-direction: column; */
-/*     height: 100%; */
-/* } */
-
-/* .feed-nav { */
-/*     margin: 4px; */
-/*     border: 1px solid #bbbbbb; */
-/*     padding: 4px; */
-/* } */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+    }
+}

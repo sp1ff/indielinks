@@ -36,10 +36,10 @@ use crate::{feeds::ItemFeedOuter, home::LinkFeed};
 pub fn Personal() -> impl IntoView {
     view! {
         <div class="flex w-full">
-            <div class="flex-60 min-w-64 m-[8px] p-[4px] border border-solid border-sky-100 h-[80vh] overflow-y-auto">
+            <div class="flex-60 min-w-64 m-[8px] p-[4px] border border-solid border-subtle h-[80vh] overflow-y-auto">
               <LinkFeed />
             </div>
-            <div class="flex-40 min-w-48 m-[8px] p-[4px] border border-solid border-sky-100 h-[80vh] overflow-y-auto">
+            <div class="flex-40 min-w-48 m-[8px] p-[4px] border border-solid border-subtle h-[80vh] overflow-y-auto">
               <ItemFeedOuter />
             </div>
         </div>

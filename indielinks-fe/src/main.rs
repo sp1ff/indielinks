@@ -94,6 +94,7 @@ use indielinks_fe::{
     instance::Instance,
     personal::Personal,
     signin::SignIn,
+    theme,
     types::{Api, Base, PageSize, Token, USER_AGENT},
 };
 
@@ -143,6 +144,7 @@ fn App() -> impl IntoView {
     let token = expect_context::<Token>();
 
     let selected_value = RwSignal::new(String::new());
+    let visual_theme = RwSignal::new(theme::light());
 
     // If I don't use a `LocalResource`; if I, say, just call `refresh_token()` directly in an
     // `Await` below, I get pages of warnings about the future not being Send (?)
@@ -175,7 +177,7 @@ fn App() -> impl IntoView {
     });
 
     view! {
-        <ConfigProvider> // Required by `ToasterProvider`
+        <ConfigProvider theme=visual_theme class="indielinks-app"> // Required by `ToasterProvider`
             <ToasterProvider> // Needed to show toast in child components.
                 // I thought to use the `Await` component while waiting for the token refresh to
                 // complete, but the future it demands must be send, and ultimately, the future
@@ -199,9 +201,9 @@ fn App() -> impl IntoView {
                                             }.to_owned());
                                         }
                                     }
-                                    <LayoutHeader class="w-full text-sky-100 flex bg-sky-600 items-baseline">
+                                    <LayoutHeader class="w-full text-on-brand flex bg-brand items-baseline">
 
-                                        <div class="text-sky-100 font-header font-bold text-6xl pt-[6px] pb-[6px] pl-[12px] pr-[28px]">indielinks</div>
+                                        <div class="text-on-brand font-header font-bold text-6xl pt-[6px] pb-[6px] pl-[12px] pr-[28px]">indielinks</div>
 
                                         // Tab list running across the top when logged in:
                                         <Show when=move || token.get().is_some() >
@@ -210,10 +212,10 @@ fn App() -> impl IntoView {
                                                     // Regrettably, we have to style the text here, because Thaw
                                                     // sets these properties (the `ConfigProvider` component,
                                                     // specifically).
-                                                    <A href=p.get_untracked()  attr:class="font-header font-medium text-2xl text-sky-100">"popular"</A>
+                                                    <A href=p.get_untracked()  attr:class="font-header font-medium text-2xl text-on-brand">"popular"</A>
                                                 </Tab>
                                                 <Tab value="home" >
-                                                    <A href=h.get_untracked() attr:class="font-header font-medium text-2xl text-sky-100">"home"</A>
+                                                    <A href=h.get_untracked() attr:class="font-header font-medium text-2xl text-on-brand">"home"</A>
                                                 </Tab>
                                             </TabList>
                                         </Show>

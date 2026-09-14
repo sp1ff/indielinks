@@ -24,4 +24,5 @@ pub mod http;
 pub mod instance;
 pub mod personal;
 pub mod signin;
+pub mod theme;
 pub mod types;

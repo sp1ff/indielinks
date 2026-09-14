@@ -15,5 +15,6 @@
 
 #![cfg(target_arch = "wasm32")]
 
+pub mod brand;
 pub mod dropdown;
 pub mod post;

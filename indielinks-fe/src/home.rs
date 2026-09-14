@@ -244,10 +244,10 @@ fn BackButton() -> Result<impl IntoView> {
         .get_untracked()
         .unwrap_or_default();
     match query_params.qs_for_decremented_page()? {
-        None => Ok(view! { <Icon icon=icondata::VsChevronLeft class="text-gray-400"/> }),
+        None => Ok(view! { <Icon icon=icondata::VsChevronLeft class="text-muted"/> }),
         Some(qs) => Ok(view! {
             <Icon icon=icondata::VsChevronLeft
-                class="text-gray-800"
+                class="text-ink"
                 on_click=move |_| {
                     navigate(&format!("/h?{qs}"), Default::default())
                 }/>
@@ -266,7 +266,7 @@ fn ToggleButton() -> Result<impl IntoView> {
     if toggled {
         Ok(view! {
             <Button
-                class="!font-normal !text-gray-600"
+                class="!font-normal !text-muted"
                 appearance=ButtonAppearance::Transparent
                 on_click=move |_| { navigate(&format!("/h?{qs}"), Default::default()) }
             >
@@ -276,7 +276,7 @@ fn ToggleButton() -> Result<impl IntoView> {
     } else {
         Ok(view! {
             <Button
-                class="!font-normal !text-gray-600"
+                class="!font-normal !text-muted"
                 appearance=ButtonAppearance::Transparent
                 on_click=move |_| { navigate(&format!("/h?{qs}"), Default::default()) }
             >
@@ -293,11 +293,11 @@ fn ForwardButton(last: bool) -> Result<impl IntoView> {
         .get_untracked()
         .unwrap_or_default();
     if last {
-        Ok(view! { <Icon icon=icondata::VsChevronRight class="text-gray-400"/> })
+        Ok(view! { <Icon icon=icondata::VsChevronRight class="text-muted"/> })
     } else {
         let qs = query_params.qs_for_incremented_page()?;
         Ok(view! { <Icon icon=icondata::VsChevronRight
-        class="text-gray-800"
+        class="text-ink"
         on_click=move |_| {
             navigate(&format!("/h?{qs}"), Default::default())
         } />})
@@ -319,7 +319,7 @@ fn Nav(last: bool) -> Result<impl IntoView> {
             {
                 let query_params = query_params.get_untracked().unwrap_or_default();
                 view! {
-                    <div class="inline-block px-[12px] py-[5px] font-normal text-gray-600">
+                    <div class="inline-block px-[12px] py-[5px] font-normal text-muted">
                         "page "{query_params.page.unwrap_or(0)}
                     </div>
                 }
@@ -519,11 +519,11 @@ fn ViewPost(
     view! {
         // The link itself (larger, more prominent)
         <div class="text-lg">
-            <a href={ url.to_string() } class="text-blue-600 underline hover:text-blue-800"> { title }</a>
+            <a href={ url.to_string() } class="text-link underline hover:text-link-hover visited:text-link-visited"> { title }</a>
         </div>
         // The post time & tags (smaller, gray text)
         <div class="flex">
-            <div class="flex-[0 0 auto] text-gray-400"> { posted } </div>
+            <div class="flex-[0 0 auto] text-muted"> { posted } </div>
             <div class="px-2">
             {
                 post
@@ -542,12 +542,12 @@ fn ViewPost(
             // overriding the styles it sets unconditionally.
             <Button
               appearance=ButtonAppearance::Transparent
-              class="!text-sm !text-gray-600 !px-1 !py-0 !min-w-0 !font-normal">
+              class="!text-sm !text-muted !px-1 !py-0 !min-w-0 !font-normal">
                 "conversation"
             </Button>
             <Button
               appearance=ButtonAppearance::Transparent
-              class="!text-sm !text-gray-600 !px-1 !py-0 !min-w-0 !font-normal"
+              class="!text-sm !text-muted !px-1 !py-0 !min-w-0 !font-normal"
               on_click={
                     let api = api.clone();
                     let post = post.clone();
@@ -560,7 +560,7 @@ fn ViewPost(
             </Button>
             <Button
               appearance=ButtonAppearance::Transparent
-              class="!text-sm !text-gray-600 !px-1 !py-0 !min-w-0 !font-normal"
+              class="!text-sm !text-muted !px-1 !py-0 !min-w-0 !font-normal"
               // `on_edit` is going to be *moved* out into the Leptos runtime, if not into the DOM
               // itself. As such, needs to implement `Fn` (i.e. not `FnOnce` or `FnMut`).
               on_click={
@@ -576,7 +576,7 @@ fn ViewPost(
             </Button>
             <Button
               appearance=ButtonAppearance::Transparent
-              class="!text-sm !text-gray-600 !px-1 !py-0 !min-w-0 !font-normal"
+              class="!text-sm !text-muted !px-1 !py-0 !min-w-0 !font-normal"
               on_click={
                   let api = api.clone();
                   let url = url.clone();
@@ -735,7 +735,7 @@ fn EditPost(
 
     view! {
         <div>
-            <form class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 items-center w-full text-gray-600"
+            <form class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 items-center w-full text-muted"
                   on:submit=move |ev| {
                       ev.prevent_default();
                       on_submit.dispatch(());
@@ -746,7 +746,7 @@ fn EditPost(
                 ////////////////////////////////////////////////////////////////////////////////////
                 <label for="url">"Url:"</label>
                 <input required
-                       class="bg-transparent border-0 border-b outline-none focus:borkder-sky-600"
+                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
                        type="text" id="url" name="url"
                        node_ref=elements.url
                        bind:value=form.url />
@@ -756,7 +756,7 @@ fn EditPost(
                 ////////////////////////////////////////////////////////////////////////////////////
                 <label for="title">"Title:"</label>
                 <input required
-                       class="bg-transparent border-0 border-b outline-none focus:borkder-sky-600"
+                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
                        type="text" id="title" name="title"
                        node_ref=elements.title
                        bind:value=form.title />
@@ -766,7 +766,7 @@ fn EditPost(
                 ////////////////////////////////////////////////////////////////////////////////////
                 <label for="notes" class="self-start">"Notes:"</label>
                 <textarea
-                    class="bg-transparent border-0 border-b border-r outline-none focus:borkder-sky-600"
+                    class="bg-transparent border-0 border-b border-r outline-none focus:border-focus"
                     rows="4"
                     placeholder="Optional free-form notes..."
                     id="notes" name="notes"
@@ -778,7 +778,7 @@ fn EditPost(
                 ////////////////////////////////////////////////////////////////////////////////////
                 <label for="tags" class="">"Tags:"</label>
                 <input type="text"
-                       class="bg-transparent border-0 border-b outline-none focus:borkder-sky-600"
+                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
                        id="tags" name="tags"
                        placeholder="Comma-delimited tags..."
                        node_ref=elements.tags
@@ -797,9 +797,9 @@ fn EditPost(
                 </div>
 
                 <div class="col-span-full items-center flex gap-x-4">
-                    <input class="bg-transparent cursor-pointer focus:bg-sky-300"
+                    <input class="bg-transparent cursor-pointer focus:bg-brand-subtle"
                            type="submit" value="save"/>
-                    <input class="bg-transparent cursor-pointer focus:bg-sky-300"
+                    <input class="bg-transparent cursor-pointer focus:bg-brand-subtle"
                            type="button" value="cancel"
                            on:click=move |_| { set_editing.set(None); } />
                 </div>
@@ -822,7 +822,7 @@ fn Links(posts: Vec<Post>, rerender: ArcTrigger) -> impl IntoView {
                 // This will need to be made much more complex, to handle viewing posts, editing them
                 // and viewing the conversation associated with each. For now, while getting basic
                 // pagination up & working, let's just show a div and the title.
-                <div class="flex flex-col border border-solid border-sky-100 m-2 p-2 text-gray-600">
+                <div class="flex flex-col border border-solid border-subtle m-2 p-2 text-muted">
                 {
                     let rerender = rerender.clone();
                     move || {
@@ -971,8 +971,8 @@ pub fn LinkFeed() -> impl IntoView {
                                 })
                             },
                             (None, true) => EitherOf3::C(view! {
-                                <div class="mx-auto max-w-md m-8 text-gray-600">
-                                    <p>"You don't have any saved links, yet. Click "<a href="/a" class="text-blue-600 underline hover:text-blue-800 visited:text-purple-600">"here"</a>" to start adding some."</p>
+                                <div class="mx-auto max-w-md m-8 text-muted">
+                                    <p>"You don't have any saved links, yet. Click "<a href="/a" class="text-link underline hover:text-link-hover visited:text-link-visited">"here"</a>" to start adding some."</p>
                                 </div>
                             })
                         }

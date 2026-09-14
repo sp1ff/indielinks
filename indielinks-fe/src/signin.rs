@@ -134,7 +134,7 @@ pub fn SignIn() -> impl IntoView {
     view! {
         <div class="flex items-center justify-around flex-col pt-[32px]" >
             <form
-                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center pt-4 border border-solid border-sky-100 p-8 text-gray-600"
+                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center pt-4 border border-solid border-subtle p-8 text-muted"
                 on:submit=move |ev| {
                   // If I don't say this, the damn page reloads before the HTTP call returns
                   ev.prevent_default();
@@ -145,19 +145,19 @@ pub fn SignIn() -> impl IntoView {
                     type="text"
                     id="username" name="username"
                     node_ref=username_element
-                    class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
+                    class="bg-transparent border-0 border-b outline-none focus:border-focus"
                 />
                 <label for="password">"Password:"</label>
                 <input required
                     type="password"
                     id="password" name="password"
                     node_ref=password_element
-                    class="bg-transparent border-0 border-b outline-none focus:border-sky-600"
+                    class="bg-transparent border-0 border-b outline-none focus:border-focus"
                 />
                 <input
                     type="submit"
                     value="Login"
-                    class="bg-transparent border px-4 py-2 hover:bg-sky-300 hover:text-gray-900 transition-colors cursor-pointer col-span-2 mx-auto focus:bg-sky-300"
+                    class="bg-transparent border px-4 py-2 hover:bg-brand-subtle hover:text-ink transition-colors cursor-pointer col-span-2 mx-auto focus:bg-brand-subtle"
                 />
             </form>
         </div>

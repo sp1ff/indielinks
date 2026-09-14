@@ -152,7 +152,7 @@ fn TopNav(since: TimelineToken, posts_s: RwSignal<VecDeque<FeedPost>>) -> Result
         <div class="mx-auto flex">
             <div class="mx-auto flex items-center">
                 <Button
-                    class="!font-normal !text-gray-600"
+                    class="!font-normal !text-muted"
                     appearance=ButtonAppearance::Transparent
                     on_click=move |_| { update.dispatch(());} >
                     "new posts"
@@ -241,7 +241,7 @@ fn BottomNav(
         <div class="mx-auto flex pt-[8px]">
             <div class="mx-auto flex items-center">
                 <Button
-                    class="!font-normal !text-gray-600"
+                    class="!font-normal !text-muted"
                     appearance=ButtonAppearance::Transparent
                     on_click=move |_| { update.dispatch(());} >
                     "older posts"
@@ -384,10 +384,10 @@ pub fn ItemFeedOuter() -> impl IntoView {
                                 Either::Left(view! { <ItemFeed posts since before rerender=Some(rerender.clone())/> })
                             },
                             None => Either::Right(view! {
-                                <div class="mx-auto max-w-md m-8 p-8 text-gray-600">
-                                    <p>"You don't have any posts in your home timeline, yet. You can start by following "<a href="https://indieweb.social/@sp1ff" class="text-blue-600 underline hover:text-blue-800 visited:text-purple-600">me</a>" on Mastodon. I'll be adding a \"find people to follow\" page soon."
+                                <div class="mx-auto max-w-md m-8 p-8 text-muted">
+                                    <p>"You don't have any posts in your home timeline, yet. You can start by following "<a href="https://indieweb.social/@sp1ff" class="text-link underline hover:text-link-hover visited:text-link-visited">me</a>" on Mastodon. I'll be adding a \"find people to follow\" page soon."
                                     <Icon icon=icondata::IoReloadOutline
-                                          class="text-gray-800 m-2 cursor-pointer"
+                                          class="text-ink m-2 cursor-pointer"
                                           on_click=on_click />
                                     </p>
                                 </div>

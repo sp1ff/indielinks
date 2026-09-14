@@ -225,13 +225,13 @@ fn ReplyingPost(
                    class="bg-transparent border-0 border-b border-r outline-none"/>
             <div class="space-x-2">
                 <Icon icon=icondata::BsSend
-                      class="text-gray-600"
+                      class="text-muted"
                       on_click=move |_| {
                           let text = string_for_node_ref(&reply_elt);
                           send_reply.dispatch(text);
                       }/>
                 <Icon icon=icondata::TbSendOffOutline
-                      class="text-gray-600"
+                      class="text-muted"
                       on_click=move |_| set_replying.set(false) />
             </div>
         </div>
@@ -298,14 +298,14 @@ fn PostControls(
     view! {
         <div class="text-sm">
             <Icon icon=icondata::AiStarOutlined
-                class="text-gray-600 cursor-pointer"
+                class="text-muted cursor-pointer"
                 on_click=move |_| { send_like.dispatch(()); }
                 />
             " "
             <Dropdown open_menu>
                 <DropdownIconTrigger
                     icon=icondata::ChQuote
-                    class="text-gray-600 cursor-pointer"
+                    class="text-muted cursor-pointer"
                     menu_id=share_menu_id.clone() />
                 <DropdownMenuItems menu_id=share_menu_id.clone()>
                     <DropdownMenuItem
@@ -318,14 +318,14 @@ fn PostControls(
             </Dropdown>
             " "
             <Icon icon=icondata::BsReply
-                class="text-gray-600 cursor-pointer"
+                class="text-muted cursor-pointer"
                 on_click=move |_| set_replying.set(true)
                 />
             " "
             <Dropdown open_menu>
                 <DropdownIconTrigger
                     icon=icondata::BsThreeDots
-                    class="text-gray-600 cursor-pointer"
+                    class="text-muted cursor-pointer"
                     menu_id=misc_menu_id.clone() />
                 <DropdownMenuItems menu_id=misc_menu_id.clone()>
                     <DropdownMenuItem
@@ -354,7 +354,7 @@ fn ViewPost(
     let post_actor = post.actor.clone();
 
     // Turn off the the cursor pointer if this is the currently focused post:
-    let mut cls = "text-left m-2 text-gray-800 cursor-pointer".to_owned();
+    let mut cls = "text-left m-2 text-ink cursor-pointer".to_owned();
     if current {
         cls += " cursor-pointer";
     }
@@ -376,7 +376,7 @@ fn ViewPost(
         .to_string();
 
     view! {
-        <div class="mx-auto flex flex-col m-2 p-2 border border-solid border-sky-100">
+        <div class="mx-auto flex flex-col m-2 p-2 border border-solid border-subtle">
             <div
                 class={cls}
                 on:click=move |_| {
@@ -530,14 +530,14 @@ pub fn ViewConversation(
     };
 
     view! {
-        <div class="border border-solid border-sky-600"
+        <div class="border border-solid border-brand"
             // style="display: flex; flex-direction: column; height: 100%; \
             //         overflow-y: auto; padding: 4px; box-sizing: border-box;"
             >
 
             <div /*style="margin-bottom: 4px;"*/>
                 <Icon icon=icondata::BiArrowBackRegular
-                      class="text-gray-600 cursor-pointer"
+                      class="text-muted cursor-pointer"
                       on_click=on_back />
             </div>
 
