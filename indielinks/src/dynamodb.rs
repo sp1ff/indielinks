@@ -990,66 +990,82 @@ impl clap::builder::TypedValueParser for LocationParser {
     }
 }
 
+/// How a DynamoDB client should source its AWS credentials
+#[derive(Clone, Debug)]
+enum CredentialsSource {
+    /// Use the credentials explicitly supplied by the operator
+    Explicit(aws_sdk_dynamodb::config::Credentials),
+    /// Leave the AWS SDK's default credential provider chain in place. On EC2, the chain will
+    /// resolve the node's instance profile through IMDS, so no static credentials are required.
+    DefaultChain,
+    /// Install throwaway credentials so that request signing succeeds against a local Alternator
+    /// (which doesn't verify them)
+    Test,
+}
+
+/// Decide how a DynamoDB client created for `location` should source its AWS credentials
+fn credentials_source(location: &Location, credentials: &Option<Credentials>) -> CredentialsSource {
+    use secrecy::ExposeSecret;
+
+    match (&location.0, credentials) {
+        (_, Some(Credentials((id, secret)))) => {
+            CredentialsSource::Explicit(aws_sdk_dynamodb::config::Credentials::new(
+                id.expose_secret(),
+                secret.expose_secret(),
+                None,
+                None,
+                "indielinks",
+            ))
+        }
+        (Either::Left(_), None) => CredentialsSource::DefaultChain,
+        (Either::Right(_), None) => CredentialsSource::Test,
+    }
+}
+
+/// Build the AWS SDK [ConfigLoader](aws_config::ConfigLoader) from which our DynamoDB client is
+/// created
+fn client_config_loader(
+    location: &Location,
+    credentials: &Option<Credentials>,
+) -> Result<aws_config::ConfigLoader> {
+    match &location.0 {
+        Either::Left(region) => Ok(aws_config::defaults(BehaviorVersion::latest()).region(
+            RegionProviderChain::first_try(Some(region.0.clone()))
+                .or_default_provider()
+                .or_else(AwsSdkRegion::new("us-west-2")),
+        )),
+        Either::Right(endpoints) => endpoints
+            .first()
+            .map(|endpoint_url| {
+                aws_config::defaults(BehaviorVersion::latest())
+                    // We *have* to specify a region for request signing (see below); for a local
+                    // Alternator the value doesn't matter, so just pick one.
+                    .region("us-west-2")
+                    .endpoint_url(endpoint_url.as_str())
+            })
+            .ok_or(NoEndpointsSnafu {}.build()),
+    }
+    .map(|loader| match credentials_source(location, credentials) {
+        CredentialsSource::Explicit(credentials) => loader.credentials_provider(credentials),
+        // Omitting explicit credentials against a regional DynamoDB endpoint leaves the AWS
+        // SDK's default credential provider chain in place.
+        CredentialsSource::DefaultChain => loader,
+        // The DynamoDB client always signs its requests and, per
+        // <https://github.com/awslabs/aws-sdk-rust/issues/971>, that's by design & won't be
+        // changed. Alternator doesn't verify credentials, so install throwaway ones purely to
+        // make signing succeed.
+        CredentialsSource::Test => loader.test_credentials(),
+    })
+}
+
 /// Create an AWS SDK DynamoDB Client
 pub async fn create_client(
     location: &Location,
     credentials: &Option<Credentials>,
 ) -> Result<aws_sdk_dynamodb::Client> {
-    use secrecy::ExposeSecret;
-
-    let credentials = credentials.as_ref().map(|Credentials((id, secret))| {
-        aws_sdk_dynamodb::config::Credentials::new(
-            id.expose_secret(),
-            secret.expose_secret(),
-            None,
-            None,
-            "indielinks",
-        )
-    });
-
-    let config = match &location.0 {
-        Either::Left(region) => {
-            let region_provider = RegionProviderChain::first_try(Some(region.0.clone()))
-                .or_default_provider()
-                .or_else(AwsSdkRegion::new("us-west-2"));
-            let mut loader = aws_config::from_env().region(region_provider);
-            if let Some(credentials) = credentials {
-                loader = loader.credentials_provider(credentials);
-            } else {
-                // The DynamoDB (apparently) always attempts to sign its requests; if we configure
-                // it with `no_credentials()` it will simply error-out. Per here:
-                // <https://github.com/awslabs/aws-sdk-rust/issues/971> this is by design & won't be
-                // changed. The suggested workaround is to use [test_credentials()]
-                // (https://docs.rs/aws-config/latest/aws_config/struct.ConfigLoader.html#method.test_credentials).
-                loader = loader.test_credentials();
-            }
-            loader.load().await
-        }
-        Either::Right(endpoints) => {
-            let ep_url = *endpoints
-                .iter()
-                .peekable()
-                .peek()
-                .ok_or(NoEndpointsSnafu {}.build())?;
-            let mut loader = aws_config::defaults(BehaviorVersion::latest())
-                // We *have* to specify a region for request signing (see below). Just pick one-- it doesn't matter.
-                .region("us-west-2")
-                .endpoint_url((*ep_url).as_str());
-            if let Some(credentials) = credentials {
-                loader = loader.credentials_provider(credentials);
-            } else {
-                // The DynamoDB (apparently) always attempts to sign its requests; if we configure
-                // it with `no_credentials()` it will simply error-out. Per here:
-                // <https://github.com/awslabs/aws-sdk-rust/issues/971> this is by design & won't be
-                // changed. The suggested workaround is to use [test_credentials()]
-                // (https://docs.rs/aws-config/latest/aws_config/struct.ConfigLoader.html#method.test_credentials).
-                loader = loader.test_credentials();
-            }
-            loader.load().await
-        }
-    };
-
-    Ok(aws_sdk_dynamodb::Client::new(&config))
+    Ok(aws_sdk_dynamodb::Client::new(
+        &client_config_loader(location, credentials)?.load().await,
+    ))
 }
 
 /// Retrieve the current schema version (or None, if the database doesn't exist)
@@ -3018,5 +3034,87 @@ impl CacheBackend for Client {
         try_get_log_entries1(&self.client, self.node_id, lower_bound, upper_bound)
             .await
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    use aws_sdk_dynamodb::config::ProvideCredentials;
+
+    fn region_location() -> Location {
+        Location::from(Region::new("us-west-2"))
+    }
+
+    fn alternator_location() -> Location {
+        Location::from(vec![
+            Url::parse("http://localhost:8000").expect("the Alternator URL should parse")
+        ])
+    }
+
+    fn explicit_credentials() -> Credentials {
+        Credentials(("test-access-key-id".into(), "test-secret-access-key".into()))
+    }
+
+    #[test]
+    fn regional_location_without_credentials_preserves_default_chain() {
+        assert!(matches!(
+            credentials_source(&region_location(), &None),
+            CredentialsSource::DefaultChain
+        ));
+    }
+
+    #[test]
+    fn explicit_credentials_override_wherever_supplied() {
+        for location in [region_location(), alternator_location()] {
+            match credentials_source(&location, &Some(explicit_credentials())) {
+                CredentialsSource::Explicit(credentials) => {
+                    assert_eq!(credentials.access_key_id(), "test-access-key-id");
+                    assert_eq!(credentials.secret_access_key(), "test-secret-access-key");
+                }
+                source => panic!("explicit credentials should be selected, got {source:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn alternator_without_credentials_uses_test_credentials() {
+        assert!(matches!(
+            credentials_source(&alternator_location(), &None),
+            CredentialsSource::Test
+        ));
+    }
+
+    #[tokio::test]
+    async fn regional_loader_resolves_explicit_credentials() {
+        let config = client_config_loader(&region_location(), &Some(explicit_credentials()))
+            .expect("the loader should build")
+            .load()
+            .await;
+        let credentials = config
+            .credentials_provider()
+            .expect("a credentials provider should be installed")
+            .provide_credentials()
+            .await
+            .expect("explicit credentials should resolve");
+        assert_eq!(credentials.access_key_id(), "test-access-key-id");
+        assert_eq!(credentials.secret_access_key(), "test-secret-access-key");
+    }
+
+    #[tokio::test]
+    async fn alternator_loader_resolves_test_credentials() {
+        let config = client_config_loader(&alternator_location(), &None)
+            .expect("the loader should build")
+            .load()
+            .await;
+        let credentials = config
+            .credentials_provider()
+            .expect("a credentials provider should be installed")
+            .provide_credentials()
+            .await
+            .expect("test credentials should resolve");
+        assert_eq!(credentials.access_key_id(), "ANOTREAL");
     }
 }
