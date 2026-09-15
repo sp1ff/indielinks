@@ -75,12 +75,11 @@
 use gloo_net::http::Request;
 use leptos::prelude::*;
 use leptos_router::{
-    components::{A, ProtectedRoute, Route, Router, Routes},
-    hooks::use_location,
+    components::{ProtectedRoute, Route, Router, Routes},
     path,
 };
 use secrecy::ExposeSecret;
-use thaw::{ConfigProvider, Layout, LayoutHeader, Tab, TabList, ToasterProvider};
+use thaw::{ConfigProvider, ToasterProvider};
 use tracing::{Level, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
@@ -90,6 +89,7 @@ use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
 use indielinks_fe::{
     add_link::AddLink,
+    components::shell::{Paths, Shell},
     http::{refresh_token, string_for_status},
     instance::Instance,
     personal::Personal,
@@ -127,15 +127,7 @@ fn App() -> impl IntoView {
     ));
 
     let base = expect_context::<Base>().0;
-    // These don't need to be reactive, but signals are `Copy`, so we don't have to do all the work
-    // of cloning these things multiple times. `StoredValue` seems to be the thing to use to get a
-    // `Copy` handle to a non-reactive thing, but I never figured-out how to get it working.
-    let (a, _) = signal(format!("{base}/a"));
-    let (p, _) = signal(format!("{base}/"));
-    let (h, _) = signal(format!("{base}/h"));
-    // Weirdly, these two get moved into a subsidiary view, so they do need to be cloned into it.
-    let s = format!("{base}/s");
-    let u = format!("{base}/u");
+    let paths = Paths::new(&base);
 
     // OK-- we store the access token here, but I'm probably going to revisit, since it needs to be
     // refreshed periodically. Something else to consider at that time: should this be a
@@ -143,7 +135,6 @@ fn App() -> impl IntoView {
     provide_context(Token::new(None));
     let token = expect_context::<Token>();
 
-    let selected_value = RwSignal::new(String::new());
     let visual_theme = RwSignal::new(theme::light());
 
     // If I don't use a `LocalResource`; if I, say, just call `refresh_token()` directly in an
@@ -171,6 +162,10 @@ fn App() -> impl IntoView {
             token.set(None);
         }
     });
+    let signed_in = Signal::derive(move || token.get().is_some());
+    let dispatch_sign_out = Callback::new(move |()| {
+        on_sign_out.dispatch(());
+    });
 
     Effect::new(move |_| {
         document().set_title("Indielinks");
@@ -187,97 +182,44 @@ fn App() -> impl IntoView {
                     {
                         // This closure returns an `Option<impl IntoView>`, but because we're inside
                         // a `<Suspense>` component, the `None` case will never be returned.
-                        move || try_token_refresh.get().map(|_| {
-                            let s = s.clone();
-                            let u = u.clone();
-                            view! {
-                                <Router base=base.clone()>
-                                    {
-                                        move || {
-                                            selected_value.set(if use_location().pathname.get() == "/h" {
-                                                "home"
-                                            } else {
-                                                "popular"
-                                            }.to_owned());
-                                        }
-                                    }
-                                    <LayoutHeader class="w-full text-on-brand flex bg-brand items-baseline">
-
-                                        <div class="text-on-brand font-header font-bold text-6xl pt-[6px] pb-[6px] pl-[12px] pr-[28px]">indielinks</div>
-
-                                        // Tab list running across the top when logged in:
-                                        <Show when=move || token.get().is_some() >
-                                            <TabList selected_value>
-                                                <Tab value="popular" >
-                                                    // Regrettably, we have to style the text here, because Thaw
-                                                    // sets these properties (the `ConfigProvider` component,
-                                                    // specifically).
-                                                    <A href=p.get_untracked()  attr:class="font-header font-medium text-2xl text-on-brand">"popular"</A>
-                                                </Tab>
-                                                <Tab value="home" >
-                                                    <A href=h.get_untracked() attr:class="font-header font-medium text-2xl text-on-brand">"home"</A>
-                                                </Tab>
-                                            </TabList>
-                                        </Show>
-
-                                        // Links on the top RHS; what's shown depends on whether or not the user
-                                        // is logged-in
-                                        <Show when=move || use_location().pathname.get() != "/s">
-                                            <Show when=move || token.get().is_some()
-                                                  // Worth it to factor this out into its own component?
-                                                  fallback={
-                                                      let s = s.clone();
-                                                      let u = u.clone();
-                                                      move || {
-                                                          view! {
-                                                              <div class="mr-[8px] ml-auto font-header font-medium text-lg self-center">
-                                                                  <ul class="list-none">
-                                                                    <li class="leading-tight"><A href=s.clone()>"sign-in"</A></li>
-                                                                    <li class="leading-tight"><A href=u.clone()>"sign-up"</A></li>
-                                                                  </ul>
-                                                              </div>
-                                                          }
-                                                      }
-                                                  } >
-                                                // Same here-- make this its own component?
-                                                <div class="mr-[8px] ml-auto font-header font-medium text-lg self-center">
-                                                    <ul class="list-none">
-                                                        // Should these be <buttons>?
-                                                        <li class="leading-tight"><A href=a.get()>"add link"</A></li>
-                                                        <li class="leading-tight"><a href="#" on:click=move |_| { on_sign_out.dispatch(()); }>
-                                                            "sign-out"</a>
-                                                        </li>
-                                                    </ul>
-                                                </div>
-                                            </Show>
-                                        </Show>
-                                    </LayoutHeader>
-                                    <Layout>
-                                        <Routes fallback=Instance>
-                                            <Route path=path!("/") view=Instance />
-                                            <Route path=path!("/s") view=SignIn />
-                                            <ProtectedRoute
-                                                path=path!("/h")
-                                                // Some(true) means display, Some(false) means do *not* display, and
-                                                // None means that this information is still loading
-                                                condition = move || Some(token.get().is_some())
-                                                redirect_path = || "/"
-                                                view=Personal
-                                            />
-                                            <ProtectedRoute
-                                                path=path!("/a")
-                                                // Some(true) means display, Some(false) means do *not* display, and
-                                                // None means that this information is still loading
-                                                condition = move || {
-                                                    Some(token.get().is_some())
-                                                }
-                                                redirect_path = || "/"
-                                                view=AddLink
-                                            />
-                                        </Routes>
-                                    </Layout>
-                                </Router>
-                        }})
+                        move || {
+                            let base = base.clone();
+                            let paths = paths.clone();
+                            try_token_refresh.get().map(move |_| {
+                                view! {
+                                    <Router base=base.clone()>
+                                        <Shell
+                                            paths=paths.clone()
+                                            signed_in
+                                            on_sign_out=dispatch_sign_out
+                                        >
+                                            <Routes fallback=Instance>
+                                                <Route path=path!("/") view=Instance />
+                                                <Route path=path!("/s") view=SignIn />
+                                                <ProtectedRoute
+                                                    path=path!("/h")
+                                                    // Some(true) means display, Some(false) means do *not* display, and
+                                                    // None means that this information is still loading
+                                                    condition = move || Some(token.get().is_some())
+                                                    redirect_path = || "/"
+                                                    view=Personal
+                                                />
+                                                <ProtectedRoute
+                                                    path=path!("/a")
+                                                    // Some(true) means display, Some(false) means do *not* display, and
+                                                    // None means that this information is still loading
+                                                    condition = move || {
+                                                        Some(token.get().is_some())
+                                                    }
+                                                    redirect_path = || "/"
+                                                    view=AddLink
+                                                />
+                                            </Routes>
+                                        </Shell>
+                                    </Router>
+                                }
+                            })
+                        }
                     }
                 </Suspense>
             </ToasterProvider>

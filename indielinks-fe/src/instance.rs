@@ -530,21 +530,22 @@ pub fn Instance() -> impl IntoView {
     view! {
         // I think I'm going to allow each component to handle its own errors; why give-up rendering
         // the entire page when only one component has a problem?
-        <div class="grid grid-rows-[auto_1fr_auto] h-screen gap-2 p-4  text-muted">
-            <div>
-              <Verbiage />
+        <div class="instance-layout text-muted">
+            <h1 class="sr-only">"popular"</h1>
+            <section class="instance-layout__introduction">
+                <Verbiage />
+            </section>
+            <div class="instance-layout__panels">
+                <section class="content-panel">
+                    <RecentPosts />
+                </section>
+                <section class="content-panel">
+                    <TopKTags />
+                </section>
             </div>
-          <div class="flex justify-between">
-            <div class="min-w-64 border border-solid border-subtle overflow-y-auto">
-                <RecentPosts />
-            </div>
-            <div class="min-w-48 border border-solid border-subtle overflow-y-auto">
-                <TopKTags />
-            </div>
-          </div>
-          <div class="border border-solid border-subtle">
-            <ClusterStats />
-          </div>
+            <section class="content-panel instance-layout__statistics">
+                <ClusterStats />
+            </section>
         </div>
     }
 }

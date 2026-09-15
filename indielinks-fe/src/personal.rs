@@ -35,13 +35,20 @@ use crate::{feeds::ItemFeedOuter, home::LinkFeed};
 #[component]
 pub fn Personal() -> impl IntoView {
     view! {
-        <div class="flex w-full">
-            <div class="flex-60 min-w-64 m-[8px] p-[4px] border border-solid border-subtle h-[80vh] overflow-y-auto">
-              <LinkFeed />
-            </div>
-            <div class="flex-40 min-w-48 m-[8px] p-[4px] border border-solid border-subtle h-[80vh] overflow-y-auto">
-              <ItemFeedOuter />
-            </div>
+        <div class="personal-layout">
+            <h1 class="sr-only">"home"</h1>
+            <section aria-labelledby="saved-links-heading" class="content-panel">
+                <h2 class="content-panel__heading" id="saved-links-heading">"saved links"</h2>
+                <div class="content-panel__body">
+                    <LinkFeed />
+                </div>
+            </section>
+            <section aria-labelledby="network-heading" class="content-panel">
+                <h2 class="content-panel__heading" id="network-heading">"network"</h2>
+                <div class="content-panel__body">
+                    <ItemFeedOuter />
+                </div>
+            </section>
         </div>
     }
 }

@@ -18,3 +18,4 @@
 pub mod brand;
 pub mod dropdown;
 pub mod post;
+pub mod shell;
