@@ -37,17 +37,14 @@ use leptos::{
     html,
     prelude::*,
 };
-use leptos_router::{
-    hooks::{use_navigate, use_query},
-    params::Params,
-};
-use nonempty_collections::{set::NESet, vector::NEVec};
+use leptos_router::{hooks::use_query, params::Params};
+use nonempty_collections::{Singleton, set::NESet, vector::NEVec};
 use serde::{Serialize, Serializer};
 use snafu::prelude::*;
 use tap::Pipe;
 use thaw::{
-    Button, ButtonAppearance, Icon, InfoLabel, InfoLabelInfo, Spinner, Toast, ToastBody,
-    ToastIntent, ToastOptions, ToastTitle, ToasterInjection,
+    Icon, InfoLabel, InfoLabelInfo, Spinner, Toast, ToastBody, ToastIntent, ToastOptions,
+    ToastTitle, ToasterInjection,
 };
 use tracing::{debug, error};
 use url::Url;
@@ -231,106 +228,112 @@ impl QueryParams {
             .context(ParamsSerSnafu)?,
         ))
     }
+
+    /// Return the query string for filtering on one tag while retaining the unread setting.
+    fn qs_for_tag(&self, tag: Tagname) -> Result<String> {
+        serde_urlencoded::to_string(&Self {
+            tag: Some(Tags(NESet::singleton(tag))),
+            page: None,
+            unread: self.unread,
+        })
+        .context(ParamsSerSnafu)
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         navigation bar                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[component]
-fn BackButton() -> Result<impl IntoView> {
-    let navigate = use_navigate();
-    let query_params = use_query::<QueryParams>()
-        .get_untracked()
-        .unwrap_or_default();
-    match query_params.qs_for_decremented_page()? {
-        None => Ok(view! { <Icon icon=icondata::VsChevronLeft class="text-muted"/> }),
-        Some(qs) => Ok(view! {
-            <Icon icon=icondata::VsChevronLeft
-                class="text-ink"
-                on_click=move |_| {
-                    navigate(&format!("/h?{qs}"), Default::default())
-                }/>
-        }),
-    }
-}
-
-#[component]
-fn ToggleButton() -> Result<impl IntoView> {
-    let navigate = use_navigate();
-    let query_params = use_query::<QueryParams>()
-        .get_untracked()
-        .unwrap_or_default();
-
-    let (toggled, qs) = query_params.toggle_unread()?;
-    if toggled {
-        Ok(view! {
-            <Button
-                class="!font-normal !text-muted"
-                appearance=ButtonAppearance::Transparent
-                on_click=move |_| { navigate(&format!("/h?{qs}"), Default::default()) }
-            >
-                "unread links"
-            </Button>
-        })
+fn home_href(base: &str, query: &str) -> String {
+    if query.is_empty() {
+        format!("{base}/h")
     } else {
-        Ok(view! {
-            <Button
-                class="!font-normal !text-muted"
-                appearance=ButtonAppearance::Transparent
-                on_click=move |_| { navigate(&format!("/h?{qs}"), Default::default()) }
-            >
-                "all links"
-            </Button>
-        })
+        format!("{base}/h?{query}")
     }
 }
 
+/// Previous and next links for the saved-link feed.
 #[component]
-fn ForwardButton(last: bool) -> Result<impl IntoView> {
-    let navigate = use_navigate();
-    let query_params = use_query::<QueryParams>()
-        .get_untracked()
-        .unwrap_or_default();
-    if last {
-        Ok(view! { <Icon icon=icondata::VsChevronRight class="text-muted"/> })
-    } else {
-        let qs = query_params.qs_for_incremented_page()?;
-        Ok(view! { <Icon icon=icondata::VsChevronRight
-        class="text-ink"
-        on_click=move |_| {
-            navigate(&format!("/h?{qs}"), Default::default())
-        } />})
-    }
-}
-
-/// A component representing the navigation bar at the top & bottom of the link list. The caller
-/// shall indicate whether this is the last page or not.
-#[component]
-fn Nav(last: bool) -> Result<impl IntoView> {
+fn Pager(last: Signal<bool>) -> impl IntoView {
+    let base = expect_context::<Base>().0;
     let query_params = use_query::<QueryParams>();
-    Ok(view! {
-        <div class="mx-auto flex">
-            // Alright, our "nav bar" consists of the following:
-            <div class="mx-auto flex items-center">
-            // - a back button :: disabled on page=0, otherwise action is to decrement the page
-            <BackButton />
-            // - page indicator :: always present, not "live"; simple enough to just code-up "inline"
-            {
-                let query_params = query_params.get_untracked().unwrap_or_default();
-                view! {
-                    <div class="inline-block px-[12px] py-[5px] font-normal text-muted">
-                        "page "{query_params.page.unwrap_or(0)}
-                    </div>
-                }
-            }
-            // - "all posts"/"unread posts" :: reacts to the "unread" parameter, action is to toggle
-            <ToggleButton />
-            // - forward button :: disabled on last page, otherwise action is to increment the page
-            <ForwardButton last />
-            </div>
+
+    move || -> Result<_> {
+        let query_params = query_params.get().unwrap_or_default();
+        let previous = query_params
+            .qs_for_decremented_page()?
+            .map(|query| home_href(&base, &query));
+        let next = if last.get() {
+            None
+        } else {
+            Some(home_href(&base, &query_params.qs_for_incremented_page()?))
+        };
+        let page = query_params.page.unwrap_or(0) + 1;
+
+        Ok(view! {
+            <nav aria-label="Saved links pages" class="saved-links-pager">
+                {match previous {
+                    Some(href) => Either::Left(view! {
+                        <a class="saved-links-pager__control" href=href>
+                            <span aria-hidden="true" class="saved-links-pager__icon">
+                                <Icon icon=icondata::VsChevronLeft />
+                            </span>
+                            <span class="saved-links-pager__label">"previous"</span>
+                        </a>
+                    }),
+                    None => Either::Right(view! {
+                        <span aria-disabled="true" class="saved-links-pager__control saved-links-pager__control--disabled">
+                            <span aria-hidden="true" class="saved-links-pager__icon">
+                                <Icon icon=icondata::VsChevronLeft />
+                            </span>
+                            <span class="saved-links-pager__label">"previous"</span>
+                        </span>
+                    }),
+                }}
+                <span class="saved-links-pager__status">"page "{page}</span>
+                {match next {
+                    Some(href) => Either::Left(view! {
+                        <a class="saved-links-pager__control" href=href>
+                            <span class="saved-links-pager__label">"next"</span>
+                            <span aria-hidden="true" class="saved-links-pager__icon">
+                                <Icon icon=icondata::VsChevronRight />
+                            </span>
+                        </a>
+                    }),
+                    None => Either::Right(view! {
+                        <span aria-disabled="true" class="saved-links-pager__control saved-links-pager__control--disabled">
+                            <span class="saved-links-pager__label">"next"</span>
+                            <span aria-hidden="true" class="saved-links-pager__icon">
+                                <Icon icon=icondata::VsChevronRight />
+                            </span>
+                        </span>
+                    }),
+                }}
+            </nav>
+        })
+    }
+}
+
+/// Filter and pagination controls shown above the saved-link feed.
+#[component]
+fn FeedControls(last: Signal<bool>) -> impl IntoView {
+    let base = expect_context::<Base>().0;
+    let query_params = use_query::<QueryParams>();
+
+    view! {
+        <div class="saved-links-controls">
+            {move || -> Result<_> {
+                let query_params = query_params.get().unwrap_or_default();
+                let (show_unread, query) = query_params.toggle_unread()?;
+                Ok(view! {
+                    <a class="saved-links-controls__filter" href=home_href(&base, &query)>
+                        {if show_unread { "show unread" } else { "show all" }}
+                    </a>
+                })
+            }}
+            <Pager last />
         </div>
-    })
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -434,9 +437,9 @@ fn use_toggle(rerender: ArcTrigger) -> Action<ToggleReadLaterParams, Result<()>>
 }
 
 #[derive(Clone, Debug)]
-pub struct DeleteParams {
-    pub api: Api,
-    pub url: StorUrl,
+struct DeleteParams {
+    api: Api,
+    url: StorUrl,
 }
 
 fn use_delete(rerender: ArcTrigger) -> Action<DeleteParams, Result<()>> {
@@ -485,109 +488,177 @@ fn use_delete(rerender: ArcTrigger) -> Action<DeleteParams, Result<()>> {
     on_delete
 }
 
-/// Render a [Post] for viewing (as opposed to editing)
+fn host_label(url: &StorUrl) -> String {
+    let url: &Url = url.as_ref();
+    url.host_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| url.scheme().to_owned())
+}
+
+/// Origin, saved time, and applicable state for a saved link.
 #[component]
-fn ViewPost(
-    /// The [Post] to be rendered
+fn LinkMetadata(
+    host: String,
+    datetime: String,
+    posted: String,
+    unread: bool,
+    private: bool,
+) -> impl IntoView {
+    view! {
+        <div class="saved-link__metadata">
+            <span class="saved-link__host">{host}</span>
+            <span aria-hidden="true" class="saved-link__separator">"·"</span>
+            <time datetime=datetime>{posted}</time>
+            {unread.then(|| view! { <span class="saved-link__badge saved-link__badge--unread">"unread"</span> })}
+            {private.then(|| view! {
+                <span class="saved-link__badge">
+                    <span aria-hidden="true" class="saved-link__badge-icon">
+                        <Icon icon=icondata::FiLock />
+                    </span>
+                    "private"
+                </span>
+            })}
+        </div>
+    }
+}
+
+/// Alphabetized tag filters for a saved link.
+#[component]
+fn LinkTags(tags: Vec<Tagname>) -> impl IntoView {
+    let base = expect_context::<Base>().0;
+    let query_params = use_query::<QueryParams>();
+    let tags = StoredValue::new(tags);
+
+    move || -> Result<_> {
+        let query_params = query_params.get().unwrap_or_default();
+        let tags = tags
+            .get_value()
+            .into_iter()
+            .sorted()
+            .map(|tag| {
+                let label = tag.to_string();
+                let query = query_params.qs_for_tag(tag)?;
+                Ok(view! {
+                    <li>
+                        <a class="saved-link__tag" href=home_href(&base, &query)>{label}</a>
+                    </li>
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok((!tags.is_empty()).then(|| {
+            view! {
+                <ul aria-label="Tags" class="saved-link__tags" role="list">{tags}</ul>
+            }
+        }))
+    }
+}
+
+/// Commands that act on one saved link.
+#[component]
+fn LinkActions(
     post: Post,
-    /// [WriteSignal] for setting the [Post] currently being edited
+    title: String,
+    /// [WriteSignal] for setting the saved link currently being edited
     set_editing: WriteSignal<Option<StorUrl>>,
     /// Trigger a re-render
     rerender: ArcTrigger,
 ) -> impl IntoView {
-    let base = expect_context::<Base>().0;
     let api = expect_context::<Api>();
-
-    // Seems inefficient-- pass the query parameters as a property?
-    let query_params = use_query::<QueryParams>()
-        .get_untracked()
-        .unwrap_or_default();
-
     let on_toggle = use_toggle(rerender.clone());
     let on_delete = use_delete(rerender.clone());
-
     let url = post.url().clone();
-    let title = post.title().to_owned();
-    let posted = post.posted().format("%Y-%m-%d %H:%M:%S").to_string();
-
-    let mut tag_base = format!("{base}/h?");
-    let unread = query_params.unread.unwrap_or(Unread(false)).0;
-    if unread {
-        tag_base += "unread&"
-    }
+    let action_label = format!("Actions for {title}");
+    let read_label = if post.unread() {
+        "mark read"
+    } else {
+        "mark unread"
+    };
 
     view! {
-        // The link itself (larger, more prominent)
-        <div class="text-lg">
-            <a href={ url.to_string() } class="text-link underline hover:text-link-hover visited:text-link-visited"> { title }</a>
-        </div>
-        // The post time & tags (smaller, gray text)
-        <div class="flex">
-            <div class="flex-[0 0 auto] text-muted"> { posted } </div>
-            <div class="px-2">
-            {
-                post
-                    .tags()
-                    .cloned()
-                    .map(|tag| view! {
-                        <a href={ format!("{tag_base}tag={tag}") }>{ format!("{tag}") }</a> " "
-                    })
-                    .collect::<Vec<_>>()
-            }
-            </div>
-        </div>
-        // Row of controls (right-aligned)
-        <div class="self-end text-sm">
-            // Should just ditch the `<Button>` component entirely? I spend a lot of effort just
-            // overriding the styles it sets unconditionally.
-            <Button
-              appearance=ButtonAppearance::Transparent
-              class="!text-sm !text-muted !px-1 !py-0 !min-w-0 !font-normal">
-                "conversation"
-            </Button>
-            <Button
-              appearance=ButtonAppearance::Transparent
-              class="!text-sm !text-muted !px-1 !py-0 !min-w-0 !font-normal"
-              on_click={
+        <div aria-label=action_label class="saved-link__actions" role="group">
+            <button
+                class="saved-link__action"
+                type="button"
+                on:click={
                     let api = api.clone();
                     let post = post.clone();
                     move |_| {
                         on_toggle.dispatch(ToggleReadLaterParams {
                             api: api.clone(), post: post.clone()
                         });
-                }}>
-                "mark as "{ if post.unread() { "read" } else { "unread"} }
-            </Button>
-            <Button
-              appearance=ButtonAppearance::Transparent
-              class="!text-sm !text-muted !px-1 !py-0 !min-w-0 !font-normal"
-              // `on_edit` is going to be *moved* out into the Leptos runtime, if not into the DOM
-              // itself. As such, needs to implement `Fn` (i.e. not `FnOnce` or `FnMut`).
-              on_click={
-                  let url=url.clone();
-                  move |_| {
-                      // and, since on each invocation, we're moving `url` into the `set_editing`
-                      // signal, we need to clone it on each invocation, so that we can be called
-                      // repeatedly.
-                      set_editing.set(Some(url.clone()));
-                  }
-              } >
+                    }
+                }
+            >
+                <span aria-hidden="true" class="saved-link__action-icon">
+                    <Icon icon=icondata::FiBookOpen />
+                </span>
+                {read_label}
+            </button>
+            <button
+                class="saved-link__action"
+                type="button"
+                on:click={
+                    let url = url.clone();
+                    move |_| set_editing.set(Some(url.clone()))
+                }
+            >
+                <span aria-hidden="true" class="saved-link__action-icon">
+                    <Icon icon=icondata::FiEdit2 />
+                </span>
                 "edit"
-            </Button>
-            <Button
-              appearance=ButtonAppearance::Transparent
-              class="!text-sm !text-muted !px-1 !py-0 !min-w-0 !font-normal"
-              on_click={
-                  let api = api.clone();
-                  let url = url.clone();
-                  move |_| {
-                      on_delete.dispatch(DeleteParams {
-                          api: api.clone(), url: url.clone()
-                      });}
-              } >
+            </button>
+            <button
+                class="saved-link__action saved-link__action--danger"
+                type="button"
+                on:click={
+                    let api = api.clone();
+                    let url = url.clone();
+                    move |_| {
+                        on_delete.dispatch(DeleteParams {
+                            api: api.clone(), url: url.clone()
+                        });
+                    }
+                }
+            >
+                <span aria-hidden="true" class="saved-link__action-icon">
+                    <Icon icon=icondata::FiTrash2 />
+                </span>
                 "delete"
-            </Button>
+            </button>
         </div>
+    }
+}
+
+/// Render a saved link for reading.
+#[component]
+fn SavedLink(
+    post: Post,
+    set_editing: WriteSignal<Option<StorUrl>>,
+    rerender: ArcTrigger,
+) -> impl IntoView {
+    let url = post.url().clone();
+    let title = post.title().to_owned();
+    let host = host_label(&url);
+    let datetime = post.posted().to_rfc3339();
+    let posted = post.posted().format("%Y-%m-%d %H:%M UTC").to_string();
+    let unread = post.unread();
+    let private = !post.public();
+    let notes = post.notes().map(str::to_owned);
+    let tags = post.tags().cloned().collect::<Vec<_>>();
+
+    view! {
+        <article class=if unread { "saved-link saved-link--unread" } else { "saved-link" }>
+            <h3 class="saved-link__title">
+                <a href=url.to_string()>{title.clone()}</a>
+            </h3>
+            <LinkMetadata host datetime posted unread private />
+            {notes.map(|notes| view! { <p class="saved-link__notes">{notes}</p> })}
+            <footer class="saved-link__footer">
+                <LinkTags tags />
+                <LinkActions post title set_editing rerender />
+            </footer>
+        </article>
     }
 }
 
@@ -684,10 +755,10 @@ fn do_toast(toaster: ToasterInjection, message: String) {
     );
 }
 
-/// Hook setting-up the [EditPost] component
+/// Hook setting-up the [EditLink] component
 // Similar to, but not quite the same as, the "Add Link" page. Not sure it's worth it to factor-out
 // the commonalities?
-fn use_edit_post(
+fn use_edit_link(
     post: Post,
     set_editing: WriteSignal<Option<StorUrl>>,
 ) -> (Form, FormElements, Action<(), ()>) {
@@ -723,19 +794,20 @@ fn use_edit_post(
     (form, elements, on_submit)
 }
 
-/// Render a [Post] for editing (as opposed to viewing)
+/// Render a saved link for editing.
 #[component]
-fn EditPost(
-    /// The [Post] to be edited
+fn EditLink(
+    /// The saved link to be edited.
     post: Post,
-    /// [WriteSignal] for setting the [Post] currently being edited
+    /// [WriteSignal] for setting the saved link currently being edited.
     set_editing: WriteSignal<Option<StorUrl>>,
 ) -> impl IntoView {
-    let (form, elements, on_submit) = use_edit_post(post, set_editing);
+    let (form, elements, on_submit) = use_edit_link(post, set_editing);
 
     view! {
-        <div>
-            <form class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 items-center w-full text-muted"
+        <article class="saved-link saved-link--editing">
+            <h3 class="saved-link__edit-heading">"edit saved link"</h3>
+            <form class="saved-link__editor grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 items-center w-full text-muted"
                   on:submit=move |ev| {
                       ev.prevent_default();
                       on_submit.dispatch(());
@@ -804,7 +876,7 @@ fn EditPost(
                            on:click=move |_| { set_editing.set(None); } />
                 </div>
             </form>
-        </div>
+        </article>
     }
 }
 
@@ -815,32 +887,37 @@ fn Links(posts: Vec<Post>, rerender: ArcTrigger) -> impl IntoView {
     let (editing, set_editing): (ReadSignal<Option<StorUrl>>, WriteSignal<Option<StorUrl>>) =
         signal(None);
 
-    posts
-        .into_iter()
-        .map(|post: Post| {
-            view! {
-                // This will need to be made much more complex, to handle viewing posts, editing them
-                // and viewing the conversation associated with each. For now, while getting basic
-                // pagination up & working, let's just show a div and the title.
-                <div class="flex flex-col border border-solid border-subtle m-2 p-2 text-muted">
-                {
-                    let rerender = rerender.clone();
-                    move || {
-                        if Some(post.url()) == editing.get().as_ref() {
-                            Either::Left(view! {
-                                <EditPost post=post.clone() set_editing />
-                            } )
-                        } else {
-                            Either::Right(view!{
-                                <ViewPost post=post.clone() set_editing rerender=rerender.clone() />
-                            })
-                        }
+    view! {
+        <ol class="saved-links-list" role="list">
+            {posts
+                .into_iter()
+                .map(|post: Post| {
+                    view! {
+                        <li class="saved-links-list__item">
+                            {
+                                let rerender = rerender.clone();
+                                move || {
+                                    if Some(post.url()) == editing.get().as_ref() {
+                                        Either::Left(view! {
+                                            <EditLink post=post.clone() set_editing />
+                                        })
+                                    } else {
+                                        Either::Right(view! {
+                                            <SavedLink
+                                                post=post.clone()
+                                                set_editing
+                                                rerender=rerender.clone()
+                                            />
+                                        })
+                                    }
+                                }
+                            }
+                        </li>
                     }
-                }
-                </div>
-            }
-        })
-        .collect::<Vec<_>>()
+                })
+                .collect_view()}
+        </ol>
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -888,12 +965,14 @@ const PAGE_SIZE: usize = 20;
 #[component]
 pub fn LinkFeed() -> impl IntoView {
     let api = expect_context::<Api>().0;
+    let add_href = StoredValue::new(format!("{}/a", expect_context::<Base>().0));
 
     // Setup a mechanism by which we can force this view to be re-rendered. A signal won't really do
     // it because there are places (say, after a delete) where we want to *force* a re-render
     // programmatically. "A trigger is a data-less signal with the sole purpose of notifying other
     // reactive code of a change."
     let rerender = ArcTrigger::new();
+    let last_page = RwSignal::new(true);
 
     // Setup a local resource yielding a `Result<Option<NEVec<Post>>>`. This will reactively track
     // the query parameters, re-running and yielding a new `Result` every time they are changed
@@ -958,21 +1037,26 @@ pub fn LinkFeed() -> impl IntoView {
                         match (maybe_posts, none_means_no_posts) {
                             (Some(posts), _) => {
                                 let last = posts.len().get() != PAGE_SIZE;
+                                last_page.set(last);
                                 EitherOf3::A(view! {
-                                    // Repeating the navigation widgets at the top and bottom.
-                                    <Nav last />
-                                    <Links posts=posts.into() rerender=rerender.clone() />
-                                    <Nav last />
+                                    <FeedControls last=last_page.into() />
+                                    <Links
+                                        posts=posts.into()
+                                        rerender=rerender.clone()
+                                    />
+                                    <div class="saved-links-footer-pager">
+                                        <Pager last=last_page.into() />
+                                    </div>
                                 })},
                             (None, false) => {
+                                last_page.set(true);
                                 EitherOf3::B(view! {
-                                    <Nav last=true />
-                                    <Links posts=Vec::new() rerender=rerender.clone() />
+                                    <FeedControls last=last_page.into() />
                                 })
                             },
                             (None, true) => EitherOf3::C(view! {
                                 <div class="mx-auto max-w-md m-8 text-muted">
-                                    <p>"You don't have any saved links, yet. Click "<a href="/a" class="text-link underline hover:text-link-hover visited:text-link-visited">"here"</a>" to start adding some."</p>
+                                    <p>"You don't have any saved links, yet. Click "<a href=add_href.get_value() class="text-link underline hover:text-link-hover visited:text-link-visited">"here"</a>" to start adding some."</p>
                                 </div>
                             })
                         }

@@ -37,7 +37,7 @@ pub fn Personal() -> impl IntoView {
     view! {
         <div class="personal-layout">
             <h1 class="sr-only">"home"</h1>
-            <section aria-labelledby="saved-links-heading" class="content-panel">
+            <section aria-labelledby="saved-links-heading" class="content-panel content-panel--saved-links">
                 <h2 class="content-panel__heading" id="saved-links-heading">"saved links"</h2>
                 <div class="content-panel__body">
                     <LinkFeed />
