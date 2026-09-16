@@ -43,7 +43,7 @@ pub fn Personal() -> impl IntoView {
                     <LinkFeed />
                 </div>
             </section>
-            <section aria-labelledby="network-heading" class="content-panel">
+            <section aria-labelledby="network-heading" class="content-panel content-panel--network">
                 <h2 class="content-panel__heading" id="network-heading">"network"</h2>
                 <div class="content-panel__body">
                     <ItemFeedOuter />

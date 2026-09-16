@@ -25,8 +25,8 @@ use nonempty_collections::NEVec;
 use snafu::prelude::*;
 use tap::Pipe;
 use thaw::{
-    Button, ButtonAppearance, Icon, InfoLabel, InfoLabelInfo, Spinner, Toast, ToastBody,
-    ToastIntent, ToastOptions, ToastTitle, ToasterInjection,
+    Icon, InfoLabel, InfoLabelInfo, Spinner, Toast, ToastBody, ToastIntent, ToastOptions,
+    ToastTitle, ToasterInjection,
 };
 use tracing::{debug, error, info};
 
@@ -36,10 +36,7 @@ use indielinks_shared::api::{
 };
 
 use crate::{
-    components::{
-        dropdown::use_dropdown,
-        post::{MenuId, Post},
-    },
+    components::post::Post,
     http::{error_for_status1, send_with_retry},
     types::Api,
 };
@@ -77,7 +74,7 @@ pub enum Error {
 type Result<T> = StdResult<T, Error>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                             TopNav                                             //
+//                                      new-posts control                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Asynchronously load feed items newer than `since`. Expects `Api` to be available in the context.
@@ -101,9 +98,12 @@ async fn update_home_since(since: TimelineToken) -> Result<TimelineSinceRsp> {
     .context(UpdateSinceSnafu)
 }
 
-/// Top navigation panel for the home feed
+/// Control for loading newer home-feed posts.
 #[component]
-fn TopNav(since: TimelineToken, posts_s: RwSignal<VecDeque<FeedPost>>) -> Result<impl IntoView> {
+fn NewPostsControl(
+    since: TimelineToken,
+    posts_s: RwSignal<VecDeque<FeedPost>>,
+) -> Result<impl IntoView> {
     let since_s = RwSignal::new(since);
 
     let update = Action::new_local(move |_: &()| {
@@ -149,21 +149,27 @@ fn TopNav(since: TimelineToken, posts_s: RwSignal<VecDeque<FeedPost>>) -> Result
     });
 
     Ok(view! {
-        <div class="mx-auto flex">
-            <div class="mx-auto flex items-center">
-                <Button
-                    class="!font-normal !text-muted"
-                    appearance=ButtonAppearance::Transparent
-                    on_click=move |_| { update.dispatch(());} >
-                    "new posts"
-                </Button>
-            </div>
+        <div class="timeline-control timeline-control--top">
+            <button
+                aria-busy=move || update.pending().get().to_string()
+                class="timeline-control__button"
+                disabled=move || update.pending().get()
+                on:click=move |_| {
+                    update.dispatch(());
+                }
+                type="button"
+            >
+                <span aria-hidden="true" class="timeline-control__icon">
+                    <Icon icon=icondata::IoRefresh />
+                </span>
+                {move || if update.pending().get() { "checking…" } else { "new posts" }}
+            </button>
         </div>
     })
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                           BottomNav                                            //
+//                                      older-posts control                                       //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Asynchronously load feed items older than `before`. Expects `Api` to be available in the context.
@@ -187,9 +193,9 @@ async fn update_home_before(before: TimelineToken) -> Result<TimelineBeforeRsp> 
     .context(UpdateBeforeSnafu)
 }
 
-/// Bottom navigation panel on the user's home feed
+/// Control for loading older home-feed posts.
 #[component]
-fn BottomNav(
+fn OlderPostsControl(
     before: TimelineToken,
     posts_s: RwSignal<VecDeque<FeedPost>>,
 ) -> Result<impl IntoView> {
@@ -238,15 +244,21 @@ fn BottomNav(
     });
 
     Ok(view! {
-        <div class="mx-auto flex pt-[8px]">
-            <div class="mx-auto flex items-center">
-                <Button
-                    class="!font-normal !text-muted"
-                    appearance=ButtonAppearance::Transparent
-                    on_click=move |_| { update.dispatch(());} >
-                    "older posts"
-                </Button>
-            </div>
+        <div class="timeline-control timeline-control--bottom">
+            <button
+                aria-busy=move || update.pending().get().to_string()
+                class="timeline-control__button"
+                disabled=move || update.pending().get()
+                on:click=move |_| {
+                    update.dispatch(());
+                }
+                type="button"
+            >
+                <span aria-hidden="true" class="timeline-control__icon">
+                    <Icon icon=icondata::VsChevronDown />
+                </span>
+                {move || if update.pending().get() { "loading…" } else { "older posts" }}
+            </button>
         </div>
     })
 }
@@ -263,18 +275,24 @@ pub fn ItemFeed(
     before: TimelineToken,
     #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
 ) -> Result<impl IntoView> {
-    let open_menu = use_dropdown::<MenuId>();
     let posts_s = RwSignal::<VecDeque<FeedPost>>::new(VecDeque::from_iter(posts.into_iter()));
 
     Ok(view! {
-        <TopNav since posts_s />
-        <For each=move || posts_s.get()
-             key=|post| post.id.clone()
-             children=move |post: FeedPost| {
-                 view! { <Post post open_menu rerender=rerender.clone() /> }
-             } >
-        </For>
-        <BottomNav before posts_s />
+        <NewPostsControl since posts_s />
+        <ol class="federated-feed" role="list">
+            <For
+                each=move || posts_s.get()
+                key=|post| post.id.clone()
+                children=move |post: FeedPost| {
+                    view! {
+                        <li class="federated-feed__item">
+                            <Post post rerender=rerender.clone() />
+                        </li>
+                    }
+                }
+            />
+        </ol>
+        <OlderPostsControl before posts_s />
     })
 }
 

@@ -24,11 +24,12 @@
 
 use std::{cmp::PartialEq, result::Result as StdResult, sync::Arc};
 
-use chrono::Local;
 use gloo_net::http::Request;
 use leptos::{either::Either, html, prelude::*};
 use snafu::{ResultExt, Snafu};
-use thaw::{Icon, Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection};
+use thaw::{
+    Icon, Spinner, Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection,
+};
 use tracing::{debug, error};
 use url::Url;
 
@@ -36,11 +37,7 @@ use indielinks_shared::api::{
     FeedPost, LikeRequest, ReplyRequest, ThreadContextRequest, ThreadContextResponse,
 };
 
-use crate::{
-    components::dropdown::{Dropdown, DropdownIconTrigger, DropdownMenuItem, DropdownMenuItems},
-    http::send_with_retry,
-    types::Api,
-};
+use crate::{http::send_with_retry, types::Api};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -117,20 +114,8 @@ fn pop_toast(toaster: ToasterInjection, intent: ToastIntent, title: String, mess
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                            ViewPost                                            //
+//                                        federated post                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum DropdownSort {
-    Share,
-    Miscellaneous,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct MenuId {
-    url: Url,
-    sort: DropdownSort,
-}
 
 // It's a pity to represent both the post & actor using `Url`-- could I use newtypes to distinguish
 // between the two? I have a task to look at this more generally on the backend.
@@ -171,7 +156,7 @@ fn use_replying(post_id: Url, actor_id: Url) -> Action<String, Result<()>> {
 }
 
 #[component]
-fn ReplyingPost(
+fn ReplyComposer(
     // I tried making this borrows, but the compiler insisted that "this function's return type
     // contains a borrowed value, but there is no value for it to be borrowed from"... which makes
     // no sense to me. It has nothing to do with the `Action` returned from `use_replying()`-- the
@@ -179,13 +164,19 @@ fn ReplyingPost(
     // I never called `use_replying()`-- there must be something in the view! macro doing this.
     post_id: Url,
     actor_id: Url,
-    reply_elt: NodeRef<html::Textarea>,
+    reply_element: NodeRef<html::Textarea>,
     set_replying: WriteSignal<bool>,
     #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
 ) -> impl IntoView {
     let send_reply = use_replying(post_id, actor_id);
 
     let toaster = ToasterInjection::expect_context();
+
+    Effect::new(move |_| {
+        if let Some(element) = reply_element.get() {
+            let _ = element.focus();
+        }
+    });
 
     Effect::new(move |_| {
         // We're moving `rerender` into this closure, which is fine-- it's not used anywhere else.
@@ -211,34 +202,52 @@ fn ReplyingPost(
         }
     });
 
-    // I need to factor this out.
-    fn string_for_node_ref(node: &NodeRef<html::Textarea>) -> String {
-        node.get().expect("NodeRef not mounted?").value()
-    }
-
     view! {
-        <div class="flex flex-col">
-            <textarea
-                   rows="4"
-                   node_ref=reply_elt
-                   placeholder="Your reply..."
-                   class="bg-transparent border-0 border-b border-r outline-none"/>
-            <div class="space-x-2">
-                <Icon icon=icondata::BsSend
-                      class="text-muted"
-                      on_click=move |_| {
-                          let text = string_for_node_ref(&reply_elt);
-                          send_reply.dispatch(text);
-                      }/>
-                <Icon icon=icondata::TbSendOffOutline
-                      class="text-muted"
-                      on_click=move |_| set_replying.set(false) />
+        <form
+            aria-label="Reply to this post"
+            class="federated-post__reply"
+            on:submit=move |event| {
+                event.prevent_default();
+                let text = reply_element.get().map(|element| element.value()).unwrap_or_default();
+                send_reply.dispatch(text);
+            }
+        >
+            <label class="federated-post__reply-field">
+                <span class="sr-only">"Your reply"</span>
+                <textarea
+                    autofocus=true
+                    class="federated-post__reply-input"
+                    node_ref=reply_element
+                    placeholder="Your reply..."
+                    rows="4"
+                ></textarea>
+            </label>
+            <div class="federated-post__reply-actions">
+                <button
+                    aria-busy=move || send_reply.pending().get().to_string()
+                    class="federated-post__reply-submit"
+                    disabled=move || send_reply.pending().get()
+                    type="submit"
+                >
+                    <span aria-hidden="true" class="federated-post__action-icon">
+                        <Icon icon=icondata::BsSend />
+                    </span>
+                    {move || if send_reply.pending().get() { "sending…" } else { "send reply" }}
+                </button>
+                <button
+                    class="federated-post__reply-cancel"
+                    disabled=move || send_reply.pending().get()
+                    on:click=move |_| set_replying.set(false)
+                    type="button"
+                >
+                    "cancel"
+                </button>
             </div>
-        </div>
+        </form>
     }
 }
 
-fn use_post_controls(post_id: Url, actor_id: Url) -> Action<(), Result<()>> {
+fn use_favorite(post_id: Url, actor_id: Url) -> Action<(), Result<()>> {
     Action::new_local(move |_: &()| {
         // Both `post_id` and `actor_id`, being referenced inside this block, have bee *moved*
         // here. I would have thought that we could just move them again into the next closure, but
@@ -265,167 +274,255 @@ fn use_post_controls(post_id: Url, actor_id: Url) -> Action<(), Result<()>> {
 }
 
 #[component]
-fn PostControls(
+fn PostActions(
     post_id: Url,
     actor_id: Url,
-    open_menu: RwSignal<Option<MenuId>>,
+    actor_label: String,
+    conversation_button: NodeRef<html::Button>,
+    on_conversation: Option<Callback<()>>,
+    reply_button: NodeRef<html::Button>,
     set_replying: WriteSignal<bool>,
 ) -> impl IntoView {
-    let share_menu_id = MenuId {
-        url: post_id.clone(),
-        sort: DropdownSort::Share,
-    };
-    let misc_menu_id = MenuId {
-        url: post_id.clone(),
-        sort: DropdownSort::Miscellaneous,
-    };
-
-    let send_like = use_post_controls(post_id, actor_id);
+    let send_favorite = use_favorite(post_id, actor_id);
 
     let toaster = ToasterInjection::expect_context();
 
     Effect::new(move |_| {
-        if let Some(Err(err)) = send_like.value().get() {
+        if let Some(Err(err)) = send_favorite.value().get() {
             pop_toast(
                 toaster,
                 ToastIntent::Error,
-                "Liking".into_owned(),
+                "Favoriting".into_owned(),
                 format!("{err}"),
             )
         }
     });
 
+    let action_label = format!("Actions for {actor_label}");
+
     view! {
-        <div class="text-sm">
-            <Icon icon=icondata::AiStarOutlined
-                class="text-muted cursor-pointer"
-                on_click=move |_| { send_like.dispatch(()); }
-                />
-            " "
-            <Dropdown open_menu>
-                <DropdownIconTrigger
-                    icon=icondata::ChQuote
-                    class="text-muted cursor-pointer"
-                    menu_id=share_menu_id.clone() />
-                <DropdownMenuItems menu_id=share_menu_id.clone()>
-                    <DropdownMenuItem
-                        text="share".to_string()
-                        handler=Callback::new(|()| debug!("Share selected"))/>
-                    <DropdownMenuItem
-                        text="quote".to_string()
-                        handler=Callback::new(|()| debug!("Quote selected"))/>
-                </DropdownMenuItems>
-            </Dropdown>
-            " "
-            <Icon icon=icondata::BsReply
-                class="text-muted cursor-pointer"
-                on_click=move |_| set_replying.set(true)
-                />
-            " "
-            <Dropdown open_menu>
-                <DropdownIconTrigger
-                    icon=icondata::BsThreeDots
-                    class="text-muted cursor-pointer"
-                    menu_id=misc_menu_id.clone() />
-                <DropdownMenuItems menu_id=misc_menu_id.clone()>
-                    <DropdownMenuItem
-                        text="copy link".to_string()
-                        handler=Callback::new(|()| debug!("Copy link selected"))/>
-                </DropdownMenuItems>
-            </Dropdown>
+        <div aria-label=action_label class="federated-post__actions" role="group">
+            <button
+                aria-busy=move || send_favorite.pending().get().to_string()
+                aria-label="Favorite"
+                class="federated-post__action"
+                disabled=move || send_favorite.pending().get()
+                on:click=move |_| {
+                    send_favorite.dispatch(());
+                }
+                type="button"
+            >
+                <span aria-hidden="true" class="federated-post__action-icon">
+                    <Icon icon=icondata::AiStarOutlined />
+                </span>
+                <span class="federated-post__action-label">"favorite"</span>
+            </button>
+            <button
+                aria-label="Reply"
+                class="federated-post__action"
+                node_ref=reply_button
+                on:click=move |_| set_replying.set(true)
+                type="button"
+            >
+                <span aria-hidden="true" class="federated-post__action-icon">
+                    <Icon icon=icondata::BsReply />
+                </span>
+                <span class="federated-post__action-label">"reply"</span>
+            </button>
+            {match on_conversation {
+                Some(on_conversation) => Either::Left(view! {
+                    <button
+                        aria-label="View conversation"
+                        class="federated-post__action"
+                        node_ref=conversation_button
+                        on:click=move |_| on_conversation.run(())
+                        type="button"
+                    >
+                        <span aria-hidden="true" class="federated-post__action-icon">
+                            <Icon icon=icondata::FiMessageCircle />
+                        </span>
+                        <span class="federated-post__action-label">"conversation"</span>
+                    </button>
+                }),
+                None => Either::Right(view! {
+                    <span class="federated-post__current-label">"current post"</span>
+                }),
+            }}
         </div>
     }
 }
 
-/// `ViewPost` is a component that displays a single post at a time, with the possibility of
-/// replying.
-#[component]
-fn ViewPost(
-    post: FeedPost,
-    open_menu: RwSignal<Option<MenuId>>,
-    #[prop(default = false)] current: bool,
-    #[prop(optional)] on_click: Option<Callback<()>>,
-    #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
-) -> impl IntoView {
-    let (replying, set_replying) = signal::<bool>(false);
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum PostContext {
+    #[default]
+    Feed,
+    Parent,
+    Current,
+    Child,
+}
 
-    let reply_element: NodeRef<html::Textarea> = NodeRef::new();
-    let post_id = post.id.clone();
-    let post_actor = post.actor.clone();
-
-    // Turn off the the cursor pointer if this is the currently focused post:
-    let mut cls = "text-left m-2 text-ink cursor-pointer".to_owned();
-    if current {
-        cls += " cursor-pointer";
-    }
-
-    fn truncate_actor(url: &Url) -> String {
-        let chars = url.as_str().chars();
-        let count = chars.clone().count();
-        if count <= 48 {
-            chars.collect::<String>()
-        } else {
-            format!("...{}", chars.skip(count - 48 + 3).collect::<String>())
+impl PostContext {
+    const fn article_class(self) -> &'static str {
+        match self {
+            Self::Feed => "federated-post",
+            Self::Parent => "federated-post federated-post--parent",
+            Self::Current => "federated-post federated-post--current",
+            Self::Child => "federated-post federated-post--child",
         }
     }
-    let actor = truncate_actor(&post.actor);
-    let timestamp = post
-        .published
-        .with_timezone(&Local)
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string();
+
+    const fn in_conversation(self) -> bool {
+        !matches!(self, Self::Feed)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ActorLabel {
+    short: String,
+    host: String,
+    url: String,
+}
+
+fn actor_label(actor: &Url) -> ActorLabel {
+    let url = actor.to_string();
+    let host = actor
+        .host_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| actor.scheme().to_owned());
+    let identifier = actor
+        .path_segments()
+        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(&host);
+    let short = if identifier.starts_with('@') {
+        identifier.to_owned()
+    } else {
+        format!("@{identifier}")
+    };
+
+    ActorLabel { short, host, url }
+}
+
+#[component]
+fn ActorIdentity(actor: Url, nested: bool) -> impl IntoView {
+    let actor = actor_label(&actor);
+    let heading = if nested {
+        Either::Left(view! {
+            <h4 class="federated-post__actor-heading">
+                <a class="federated-post__actor-link" href=actor.url.clone() title=actor.url.clone()>
+                    <span class="federated-post__actor-name">{actor.short.clone()}</span>
+                    <span class="federated-post__actor-host">{actor.host.clone()}</span>
+                </a>
+            </h4>
+        })
+    } else {
+        Either::Right(view! {
+            <h3 class="federated-post__actor-heading">
+                <a class="federated-post__actor-link" href=actor.url.clone() title=actor.url.clone()>
+                    <span class="federated-post__actor-name">{actor.short.clone()}</span>
+                    <span class="federated-post__actor-host">{actor.host.clone()}</span>
+                </a>
+            </h3>
+        })
+    };
 
     view! {
-        <div class="mx-auto flex flex-col m-2 p-2 border border-solid border-subtle">
-            <div
-                class={cls}
-                on:click=move |_| {
-                    if let Some(cb) = on_click {
-                        cb.run(());
-                    }
-                }
-                >
-                <div class="flex justify-between">
-                    <span>{ actor }</span>
-                    <span>{ timestamp }</span>
-                </div>
-                <div inner_html=post.content></div>
-            </div>
-            // I should really be using `<Show>` here, but it's not clear to me
-            // how to handle cloning `post_id` and `actor_id` in such a way as to still
-            // memoize each view.
-            {
-                move || {
-                    let post_id = post_id.clone();
-                    let post_actor = post_actor.clone();
-                    if replying.get() {
-                        Either::Left(
-                            view!{<ReplyingPost post_id
-                                  actor_id=post_actor
-                                  reply_elt=reply_element
-                                  set_replying
-                                  rerender=rerender.clone()/>}
-                        )
-                    } else {
-                        Either::Right(
-                            view! {
-                                <PostControls
-                                    post_id
-                                    actor_id=post_actor
-                                    open_menu
-                                    set_replying />
-
-                            }
-                        )
-                    }
-                }
-            }
+        <div class="federated-post__actor">
+            <span aria-hidden="true" class="federated-post__avatar">
+                <Icon icon=icondata::FiUser />
+            </span>
+            {heading}
         </div>
+    }
+}
+
+#[component]
+fn PostHeader(post: FeedPost, context: PostContext) -> impl IntoView {
+    let datetime = post.published.to_rfc3339();
+    let published = post.published.format("%Y-%m-%d %H:%M UTC").to_string();
+
+    view! {
+        <header class="federated-post__header">
+            <ActorIdentity actor=post.actor nested=context.in_conversation() />
+            <a class="federated-post__permalink" href=post.id.to_string()>
+                <time datetime=datetime>{published}</time>
+            </a>
+        </header>
+        {post.in_reply_to.is_some().then(|| view! {
+            <div class="federated-post__reply-context">"reply"</div>
+        })}
+    }
+}
+
+#[component]
+fn PostContent(content: String) -> impl IntoView {
+    view! { <div class="federated-post__content" inner_html=content></div> }
+}
+
+#[component]
+fn FederatedPost(
+    post: FeedPost,
+    #[prop(default = PostContext::Feed)] context: PostContext,
+    conversation_button: NodeRef<html::Button>,
+    #[prop(optional)] on_conversation: Option<Callback<()>>,
+    #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
+) -> impl IntoView {
+    let (replying, set_replying) = signal(false);
+    let reply_button = NodeRef::<html::Button>::new();
+    let reply_element = NodeRef::<html::Textarea>::new();
+    let post_id = post.id.clone();
+    let post_actor = post.actor.clone();
+    let actor_label = actor_label(&post.actor).short;
+    let content = post.content.clone();
+
+    Effect::new(move |was_replying: Option<bool>| {
+        let is_replying = replying.get();
+        if was_replying == Some(true)
+            && !is_replying
+            && let Some(button) = reply_button.get()
+        {
+            let _ = button.focus();
+        }
+        is_replying
+    });
+
+    view! {
+        <article class=context.article_class()>
+            <PostHeader post=post.clone() context />
+            <div class="federated-post__main">
+                <PostContent content />
+                {move || {
+                    if replying.get() {
+                        Either::Left(view! {
+                            <ReplyComposer
+                                post_id=post_id.clone()
+                                actor_id=post_actor.clone()
+                                reply_element
+                                set_replying
+                                rerender=rerender.clone()
+                            />
+                        })
+                    } else {
+                        Either::Right(view! {
+                            <PostActions
+                                post_id=post_id.clone()
+                                actor_id=post_actor.clone()
+                                actor_label=actor_label.clone()
+                                conversation_button
+                                on_conversation
+                                reply_button
+                                set_replying
+                            />
+                        })
+                    }
+                }}
+            </div>
+        </article>
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                        ViewConversation                                        //
+//                                          Conversation                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Creates a reactive stack of `ThreadContextResponse` values.
@@ -439,7 +536,7 @@ fn ViewPost(
 /// forward, pop to go back.  The *current* conversation node is always the
 /// last element.  We start with an empty vec; the component pushes the initial
 /// response once the Action resolves.
-pub fn use_conversation_stack() -> RwSignal<Vec<ThreadContextResponse>> {
+fn use_conversation_stack() -> RwSignal<Vec<ThreadContextResponse>> {
     RwSignal::new(vec![])
 }
 
@@ -465,11 +562,10 @@ async fn get_context(url: Url) -> Result<ThreadContextResponse> {
 ///
 /// - `show` — the parent's `WriteSignal<bool>`.  Set to `false` when the user
 ///   presses the back arrow while on the root node, returning to the button.
-/// - `initial_url` — URL of the first post to display.  Dispatched to the
-///   stub Action when the component first mounts.
+/// - `initial_url` — URL of the first post to display. Dispatched to the
+///   context-loading action when the component first mounts.
 #[component]
-pub fn ViewConversation(
-    open_menu: RwSignal<Option<MenuId>>,
+fn Conversation(
     show: WriteSignal<bool>,
     initial_url: Url,
     #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
@@ -529,48 +625,101 @@ pub fn ViewConversation(
         }
     };
 
-    view! {
-        <div class="border border-solid border-brand"
-            // style="display: flex; flex-direction: column; height: 100%; \
-            //         overflow-y: auto; padding: 4px; box-sizing: border-box;"
-            >
+    let back_button = NodeRef::<html::Button>::new();
+    Effect::new(move |_| {
+        if let Some(button) = back_button.get() {
+            let _ = button.focus();
+        }
+    });
 
-            <div /*style="margin-bottom: 4px;"*/>
-                <Icon icon=icondata::BiArrowBackRegular
-                      class="text-muted cursor-pointer"
-                      on_click=on_back />
-            </div>
+    view! {
+        <section
+            aria-busy=move || action.pending().get().to_string()
+            aria-label="Conversation"
+            class="conversation"
+        >
+            <header class="conversation__header">
+                <button
+                    class="conversation__back"
+                    node_ref=back_button
+                    on:click=on_back
+                    type="button"
+                >
+                    <span aria-hidden="true" class="conversation__back-icon">
+                        <Icon icon=icondata::BiArrowBackRegular />
+                    </span>
+                    "back"
+                </button>
+                <h3 class="conversation__heading">"conversation"</h3>
+            </header>
 
             {move || {
                 match stack.get().last().cloned() {
-                    None => view! { <div>"Loading…"</div> }.into_any(),
-
-                    Some(ctx) => view! {
-                        <div>
-                            // Parent — clicking navigates to it (push onto stack).
-                            {ctx.parent.map(|p| {
-                                let url = p.id.clone();
-                                let cb = Callback::new(move |_: ()| { action.dispatch(url.clone()); });
-                                view! { <ViewPost post=p open_menu on_click=cb rerender=rerender.clone() /> }
-                            })}
-
-                            // Focal post — inert, no click handler.
-                            <ViewPost post=ctx.post open_menu current=true rerender=rerender.clone() />
-
-                            // Children — each click navigates into that child.
-                            {ctx.children
-                                .into_iter()
-                                .map(|c| {
-                                    let url = c.id.clone();
-                                    let cb = Callback::new(move |_: ()| { action.dispatch(url.clone()); });
-                                    view! { <ViewPost post=c open_menu on_click=cb rerender=rerender.clone() /> }
-                                })
-                                .collect::<Vec<_>>()}
+                    None if action.pending().get() => view! {
+                        <div class="conversation__status" role="status">
+                            <Spinner />
+                            <span>"loading conversation…"</span>
                         </div>
                     }.into_any(),
+                    None => view! {
+                        <p class="conversation__status">"Conversation unavailable."</p>
+                    }.into_any(),
+                    Some(ctx) => {
+                        let parent = ctx.parent.map(|post| {
+                            let url = post.id.clone();
+                            let on_conversation = Callback::new(move |()| {
+                                action.dispatch(url.clone());
+                            });
+                            view! {
+                                <li class="conversation__item conversation__item--parent">
+                                    <div class="conversation__relation">"parent"</div>
+                                    <FederatedPost
+                                        post
+                                        context=PostContext::Parent
+                                        conversation_button=NodeRef::new()
+                                        on_conversation
+                                        rerender=rerender.clone()
+                                    />
+                                </li>
+                            }
+                        });
+                        let children = ctx.children.into_iter().map(|post| {
+                            let url = post.id.clone();
+                            let on_conversation = Callback::new(move |()| {
+                                action.dispatch(url.clone());
+                            });
+                            view! {
+                                <li class="conversation__item conversation__item--child">
+                                    <div class="conversation__relation">"reply"</div>
+                                    <FederatedPost
+                                        post
+                                        context=PostContext::Child
+                                        conversation_button=NodeRef::new()
+                                        on_conversation
+                                        rerender=rerender.clone()
+                                    />
+                                </li>
+                            }
+                        }).collect_view();
+
+                        view! {
+                            <ol class="conversation__thread" role="list">
+                                {parent}
+                                <li class="conversation__item conversation__item--current">
+                                    <FederatedPost
+                                        post=ctx.post
+                                        context=PostContext::Current
+                                        conversation_button=NodeRef::new()
+                                        rerender=rerender.clone()
+                                    />
+                                </li>
+                                {children}
+                            </ol>
+                        }.into_any()
+                    },
                 }
             }}
-        </div>
+        </section>
     }
 }
 
@@ -581,24 +730,40 @@ pub fn ViewConversation(
 #[component]
 pub fn Post(
     post: FeedPost,
-    open_menu: RwSignal<Option<MenuId>>,
     #[prop(optional_no_strip)] rerender: Option<ArcTrigger>,
 ) -> impl IntoView {
-    let (show_convo, set_show_convo) = signal::<bool>(false);
-    let cb = Callback::new(move |_: ()| set_show_convo.set(true));
+    let (show_conversation, set_show_conversation) = signal(false);
+    let conversation_button = NodeRef::<html::Button>::new();
+    let on_conversation = Callback::new(move |()| set_show_conversation.set(true));
+
+    Effect::new(move |was_showing: Option<bool>| {
+        let showing = show_conversation.get();
+        if was_showing == Some(true)
+            && !showing
+            && let Some(button) = conversation_button.get()
+        {
+            let _ = button.focus();
+        }
+        showing
+    });
+
     view! {
         <Show
-            when=move || show_convo.get()
+            when=move || show_conversation.get()
             fallback={
                 let post = post.clone();
                 let rerender = rerender.clone();
-                move || view!{
-                    <ViewPost post=post.clone() open_menu on_click=cb rerender=rerender.clone()/>
+                move || view! {
+                    <FederatedPost
+                        post=post.clone()
+                        conversation_button
+                        on_conversation
+                        rerender=rerender.clone()
+                    />
                 }
             }>
-            <ViewConversation
-                open_menu
-                show=set_show_convo
+            <Conversation
+                show=set_show_conversation
                 initial_url=post.clone().id
                 rerender=rerender.clone()
             />
