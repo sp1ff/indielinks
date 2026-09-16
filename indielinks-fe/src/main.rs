@@ -47,25 +47,6 @@
 //!
 //! Each of these helped me tremendously.
 //!
-//! ## Operator Configuration
-//!
-//! The frontend is configured at *compile* time via environment variables; changing any of them
-//! requires rebuilding the WASM bundle:
-//!
-//! - `INDIELINKS_FE_API`: the public API base URL; defaults to `http://localhost:20679`
-//! - `INDIELINKS_PAGE_SIZE`: the number of items requested per page; defaults to `4`
-//! - `INDIELINKS_BASE`: the path at which the frontend is mounted; defaults to the empty string
-//! - `INDIELINKS_FE_DARK_THEME`: `true` (or unset) enables the dark-theme capability: the
-//!   frontend follows the operating system's `prefers-color-scheme` setting until the user makes
-//!   an explicit choice via the theme control, which is then persisted in that browser. `false`
-//!   forces the light theme and omits the theme control. Any other value fails the build.
-//!
-//! For example, to build a light-only bundle:
-//!
-//! ```bash
-//! INDIELINKS_FE_DARK_THEME=false trunk build --release
-//! ```
-//!
 //! To understand how a [Leptos] front end (or, at least, a CSR, SPA) works, the first step is to
 //! shift your mental model of the program's execution. No longer are we implementing a Unix process
 //! whose lifetime is conicident with the execution of `main()`. Rather, we're building a
@@ -90,6 +71,26 @@
 //! dependency graph. Those signals & effects reside in the "runtime", which AFAICT is a collection
 //! of data structures to track this graph maintained by [Leptos], inside the .wasm bundle, driven
 //! by the user's interactions with the page via Javascript event handlers.
+//!
+//! ## Operator Configuration
+//!
+//! The frontend is configured at *compile* time via environment variables; changing any of them
+//! requires rebuilding the WASM bundle:
+//!
+//! - `INDIELINKS_FE_API`: the public API base URL; defaults to `http://localhost:20679`
+//! - `INDIELINKS_PAGE_SIZE`: the number of items requested per page; defaults to `4`
+//! - `INDIELINKS_BASE`: the path at which the frontend is mounted; defaults to the empty string
+//! - `INDIELINKS_FE_DARK_THEME`: `true` (or unset) enables the dark-theme capability: the
+//!   frontend follows the operating system's `prefers-color-scheme` setting until the user makes
+//!   an explicit choice via the theme control, which is then persisted in that browser. `false`
+//!   forces the light theme and omits the theme control. Any other value fails the build.
+//!
+//! For example, to build a light-only bundle:
+//!
+//! ```bash
+//! INDIELINKS_FE_DARK_THEME=false trunk build --release
+//! ```
+//!
 
 use gloo_net::http::Request;
 use leptos::prelude::*;

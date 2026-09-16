@@ -19,14 +19,52 @@
 //! turns an operator mistake into a build failure with a clear diagnostic rather than a bundle
 //! that misbehaves after deployment.
 
-use std::env;
+use std::{
+    env::{self, VarError},
+    ffi::OsStr,
+};
+
+use url::Url;
+
+fn validate_env_variable<K, F>(name: K, check: F)
+where
+    K: AsRef<OsStr> + Clone,
+    F: FnOnce(&str) -> (bool, &'static str),
+{
+    match env::var(name.clone()) {
+        Ok(value) => match check(value.as_ref()) {
+            (true, _) => (),
+            (false, msg) => {
+                panic!("{}: {value}: {msg}", name.as_ref().to_string_lossy());
+            }
+        },
+        Err(VarError::NotPresent) => (),
+        Err(err) => {
+            panic!(
+                "failed to fetch {}: {err:#?}",
+                name.as_ref().to_string_lossy()
+            );
+        }
+    }
+}
 
 fn main() {
     println!("cargo:rerun-if-env-changed=INDIELINKS_FE_DARK_THEME");
-    if let Ok(value) = env::var("INDIELINKS_FE_DARK_THEME") {
-        assert!(
-            ["true", "false"].contains(&value.as_str()),
-            "invalid INDIELINKS_FE_DARK_THEME value `{value}`; expected `true` or `false`"
-        );
-    }
+    println!("cargo:rerun-if-env-changed=INDIELINKS_PAGE_SIZE");
+    println!("cargo:rerun-if-env-changed=INDIELINKS_FE_API");
+    validate_env_variable("INDIELINKS_FE_DARK_THEME", |value| {
+        (
+            ["true", "false"].contains(&value),
+            "expected `true` or `false`",
+        )
+    });
+    validate_env_variable("INDIELINKS_PAGE_SIZE", |value| {
+        (
+            value.parse::<usize>().is_ok(),
+            "expected an unsigned integer",
+        )
+    });
+    validate_env_variable("INDIELINKS_FE_API", |value| {
+        (value.parse::<Url>().is_ok(), "expected an URL")
+    });
 }

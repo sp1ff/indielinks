@@ -15,10 +15,10 @@
 
 //! Route modules, shared components, and client-side services for the indielinks frontend.
 //!
-//! Almost everything in this crate only makes sense in the browser, so all modules except
-//! [theme] are compiled only for `wasm32`. The theme module's pure [model](theme::model) is
-//! compiled on every target so that its logic can be unit-tested on the host via
-//! `cargo test -p indielinks-fe --lib`.
+//! Almost everything in this crate only makes sense in the browser, so all modules except [theme]
+//! are compiled only for `wasm32`. The theme module's pure [model](theme::model) is compiled on
+//! every target so that its logic can be unit-tested on the host via `cargo test -p indielinks-fe
+//! --lib`.
 
 #[cfg(target_arch = "wasm32")]
 #[path = "add-link.rs"]

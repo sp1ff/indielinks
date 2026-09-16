@@ -22,8 +22,8 @@
 //! compiled-in the capability ([Availability]), an explicit choice persisted in the browser
 //! ([Preference]), and the palette actually being rendered ([Appearance]).
 //!
-//! The module is compiled on *all* targets (unlike the rest of this crate) so that its logic can
-//! be unit-tested on the host; browser integration lives in `super::controller`.
+//! The module is compiled on *all* targets (unlike the rest of this crate) so that its logic can be
+//! unit-tested on the host; browser integration lives in `super::controller`.
 
 use std::{result::Result as StdResult, str::FromStr};
 
