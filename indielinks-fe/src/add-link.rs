@@ -13,6 +13,11 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
+//! # Add Link
+//!
+//! This module owns the route form, query-string prefill, request, and post-save behavior used to
+//! add a link to the signed-in user's collection.
+
 use std::result::Result as StdResult;
 
 use gloo_net::http::Request;
@@ -23,13 +28,14 @@ use leptos_router::{
 };
 use snafu::{ResultExt, Snafu};
 use tap::Pipe;
-use thaw::{Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection};
+use thaw::{ToastIntent, ToasterInjection};
 use tracing::debug;
 use url::Url;
 
 use indielinks_shared::api::PostAddReq;
 
 use crate::{
+    components::feedback::show_toast,
     http::{error_for_status1, send_with_retry_no_body},
     types::{Api, Base},
 };
@@ -135,22 +141,6 @@ async fn submit(form: Form) -> Result<()> {
         .map(|_| ())
 }
 
-fn do_toast(toaster: ToasterInjection, message: String) {
-    toaster.dispatch_toast(
-        move || {
-            view! {
-                <Toast>
-                    <ToastTitle>"Add Post"</ToastTitle>
-                    <ToastBody>
-                        {message}
-                    </ToastBody>
-                </Toast>
-            }
-        },
-        ToastOptions::default().with_intent(ToastIntent::Error),
-    );
-}
-
 /// Hook setting-up the [AddLink] ocmponent
 fn use_add_link() -> (Form, FormElements, Action<(), ()>) {
     // I *think* this is ok (the `get_untracked()`)? It seems to work in manual testing, at any
@@ -180,6 +170,12 @@ fn use_add_link() -> (Form, FormElements, Action<(), ()>) {
                 Ok(_) => {
                     if form.another.get() {
                         form.reset();
+                        show_toast(
+                            toaster,
+                            ToastIntent::Success,
+                            "Link saved",
+                            "The link was saved. Add another when you're ready.",
+                        );
                         elements
                             .url
                             .get()
@@ -195,7 +191,7 @@ fn use_add_link() -> (Form, FormElements, Action<(), ()>) {
                     }
                 }
                 Err(err @ Error::Url { .. }) => {
-                    do_toast(toaster, format!("{err}"));
+                    show_toast(toaster, ToastIntent::Error, "Add link", format!("{err}"));
                     elements
                         .url
                         .get()
@@ -204,7 +200,7 @@ fn use_add_link() -> (Form, FormElements, Action<(), ()>) {
                         .expect("url should be focusable");
                 }
                 Err(err @ Error::Title { .. }) => {
-                    do_toast(toaster, format!("{err}"));
+                    show_toast(toaster, ToastIntent::Error, "Add link", format!("{err}"));
                     elements
                         .title
                         .get()
@@ -212,7 +208,7 @@ fn use_add_link() -> (Form, FormElements, Action<(), ()>) {
                         .focus()
                         .expect("title should be focusable");
                 }
-                Err(err) => do_toast(toaster, format!("{err}")),
+                Err(err) => show_toast(toaster, ToastIntent::Error, "Add link", format!("{err}")),
             }
         }
     });
@@ -227,92 +223,119 @@ pub fn AddLink() -> impl IntoView {
     let (form, elements, on_submit) = use_add_link();
 
     view! {
-        <div class="pt-[32px]">
-
-            <form
-                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center w-full max-w-lg min-w-64 mx-auto border border-solid border-subtle p-8 text-muted"
-                on:submit = move |ev| {
-                    debug!("Got an {ev:?}");
-                    ev.prevent_default();
-                    debug!("default prevented");
-                    on_submit.dispatch(());
-                    debug!("dispatched");
-                }>
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // URL
-                ////////////////////////////////////////////////////////////////////////////////////
-                <label for="url" class="">"Url:"</label>
-                <input autofocus required
-                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
-                       type="text" id="url" name="url"
-                       placeholder="URL to be saved"
-                       node_ref=elements.url
-                       bind:value=form.url />
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // Title
-                ////////////////////////////////////////////////////////////////////////////////////
-                <label for="title" class="">"Title:"</label>
-                <input required
-                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
-                       type="text" id="title" name="title"
-                       placeholder="Page title"
-                       node_ref=elements.title
-                       bind:value=form.title />
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // Notes
-                ////////////////////////////////////////////////////////////////////////////////////
-                <label for="notes" class="self-start">"Notes:"</label>
-                <textarea
-                    rows="4"
-                    class="bg-transparent border-0 border-b border-r outline-none focus:border-focus"
-                    placeholder="Optional free-form notes..."
-                    id="notes" name="notes"
-                    bind:value=form.notes >
-                </textarea>
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // Tags
-                ////////////////////////////////////////////////////////////////////////////////////
-                <label for="tags" class="">"Tags:"</label>
-                <input class="bg-transparent border-0 border-b outline-none focus:border-focus"
-                       type="text"
-                       id="tags" name="tags"
-                       placeholder="Comma-delimited tags..."
-                       node_ref=elements.tags
-                       bind:value=form.tags />
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // Private, Unread
-                ////////////////////////////////////////////////////////////////////////////////////
-                <div class="col-span-full items-center flex gap-x-4">
-                    <label class="flex gap-x-1">
-                        <input type="checkbox" bind:checked=form.private/> private
-                    </label>
-                    <label class="flex gap-x-1">
-                        <input type="checkbox" bind:checked=form.unread/> unread
-                    </label>
-                </div>
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // Add another, Submit
-                ////////////////////////////////////////////////////////////////////////////////////
-                <div class="col-span-full items-center flex gap-x-4">
-                    <label class="flex gap-x-1">
-                        <input type="checkbox"
-                               id="another" name="another"
-                               bind:checked=form.another />
-                        "add another"
-                    </label>
-                    <input
-                      class="bg-transparent border px-4 py-2 hover:bg-brand-subtle hover:text-ink transition-colors cursor-pointer focus:bg-brand-subtle"
-                      type="submit"
-                      value="save"/>
-                </div>
-
-            </form>
+        <div class="form-page">
+            <section aria-labelledby="add-link-heading" class="form-card">
+                <h1 class="form-card__heading" id="add-link-heading">"Add link"</h1>
+                <p class="form-card__introduction">
+                    "Save a page to your collection and choose how it should appear."
+                </p>
+                <form
+                    class="indielinks-form"
+                    on:submit=move |event| {
+                        event.prevent_default();
+                        if !on_submit.pending().get() {
+                            on_submit.dispatch(());
+                        }
+                    }
+                >
+                    <div class="form-field">
+                        <label class="form-field__label" for="url">"URL"</label>
+                        <input
+                            aria-describedby="url-help"
+                            autofocus
+                            class="form-control"
+                            id="url"
+                            inputmode="url"
+                            name="url"
+                            node_ref=elements.url
+                            required
+                            type="url"
+                            bind:value=form.url
+                        />
+                        <p class="form-field__help" id="url-help">
+                            "Enter the complete address of the page you want to save."
+                        </p>
+                    </div>
+                    <div class="form-field">
+                        <label class="form-field__label" for="title">"Title"</label>
+                        <input
+                            class="form-control"
+                            id="title"
+                            name="title"
+                            node_ref=elements.title
+                            required
+                            type="text"
+                            bind:value=form.title
+                        />
+                    </div>
+                    <div class="form-field">
+                        <label class="form-field__label" for="notes">"Notes"</label>
+                        <textarea
+                            class="form-control form-control--textarea"
+                            id="notes"
+                            name="notes"
+                            placeholder="Optional notes about this link"
+                            rows="4"
+                            bind:value=form.notes
+                        ></textarea>
+                    </div>
+                    <div class="form-field">
+                        <label class="form-field__label" for="tags">"Tags"</label>
+                        <input
+                            aria-describedby="tags-help"
+                            autocomplete="off"
+                            class="form-control"
+                            id="tags"
+                            name="tags"
+                            node_ref=elements.tags
+                            type="text"
+                            bind:value=form.tags
+                        />
+                        <p class="form-field__help" id="tags-help">
+                            "Separate multiple tags with commas."
+                        </p>
+                    </div>
+                    <fieldset class="form-options">
+                        <legend class="form-options__legend">"Link options"</legend>
+                        <label class="form-check" for="private">
+                            <input id="private" type="checkbox" bind:checked=form.private />
+                            <span>
+                                <strong>"Private"</strong>
+                                <small>"Only you can see this link."</small>
+                            </span>
+                        </label>
+                        <label class="form-check" for="unread">
+                            <input id="unread" type="checkbox" bind:checked=form.unread />
+                            <span>
+                                <strong>"Unread"</strong>
+                                <small>"Keep this link in your reading queue."</small>
+                            </span>
+                        </label>
+                    </fieldset>
+                    <fieldset class="form-options form-options--compact">
+                        <legend class="form-options__legend">"After saving"</legend>
+                        <label class="form-check" for="another">
+                            <input
+                                id="another"
+                                name="another"
+                                type="checkbox"
+                                bind:checked=form.another
+                            />
+                            <span>"Keep this form open to add another link"</span>
+                        </label>
+                    </fieldset>
+                    <div class="form-actions">
+                        <button
+                            aria-busy=move || on_submit.pending().get().to_string()
+                            class="form-button form-button--primary"
+                            disabled=move || on_submit.pending().get()
+                            type="submit"
+                        >
+                            {move || if on_submit.pending().get() { "Saving…" } else { "Save link" }}
+                        </button>
+                    </div>
+                </form>
+            </section>
         </div>
     }
 }

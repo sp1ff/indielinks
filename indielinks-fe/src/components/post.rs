@@ -27,9 +27,7 @@ use std::{cmp::PartialEq, result::Result as StdResult, sync::Arc};
 use gloo_net::http::Request;
 use leptos::{either::Either, html, prelude::*};
 use snafu::{ResultExt, Snafu};
-use thaw::{
-    Icon, Spinner, Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection,
-};
+use thaw::{Icon, ToastIntent, ToasterInjection};
 use tracing::{debug, error};
 use url::Url;
 
@@ -37,7 +35,11 @@ use indielinks_shared::api::{
     FeedPost, LikeRequest, ReplyRequest, ThreadContextRequest, ThreadContextResponse,
 };
 
-use crate::{http::send_with_retry, types::Api};
+use crate::{
+    components::feedback::{EmptyState, LoadingState, show_toast},
+    http::send_with_retry,
+    types::Api,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -98,19 +100,7 @@ impl From<gloo_net::Error> for Error {
 }
 
 fn pop_toast(toaster: ToasterInjection, intent: ToastIntent, title: String, message: String) {
-    toaster.dispatch_toast(
-        move || {
-            view! {
-                <Toast>
-                    <ToastTitle>{title}</ToastTitle>
-                    <ToastBody>
-                        {message}
-                    </ToastBody>
-                </Toast>
-            }
-        },
-        ToastOptions::default().with_intent(intent),
-    );
+    show_toast(toaster, intent, title, message);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -188,7 +178,7 @@ fn ReplyComposer(
             Some(Err(err)) => pop_toast(
                 toaster,
                 ToastIntent::Error,
-                "Replying".into_owned(),
+                "Reply".into_owned(),
                 format!("{err}"),
             ),
             Some(Ok(_)) => {
@@ -292,7 +282,7 @@ fn PostActions(
             pop_toast(
                 toaster,
                 ToastIntent::Error,
-                "Favoriting".into_owned(),
+                "Favorite".into_owned(),
                 format!("{err}"),
             )
         }
@@ -656,13 +646,13 @@ fn Conversation(
             {move || {
                 match stack.get().last().cloned() {
                     None if action.pending().get() => view! {
-                        <div class="conversation__status" role="status">
-                            <Spinner />
-                            <span>"loading conversation…"</span>
-                        </div>
+                        <LoadingState label="Loading conversation…" />
                     }.into_any(),
                     None => view! {
-                        <p class="conversation__status">"Conversation unavailable."</p>
+                        <EmptyState
+                            title="Conversation unavailable"
+                            message="Return to the timeline and try opening it again."
+                        />
                     }.into_any(),
                     Some(ctx) => {
                         let parent = ctx.parent.map(|post| {

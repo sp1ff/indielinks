@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -24,10 +24,7 @@ use leptos::{either::Either, prelude::*};
 use nonempty_collections::NEVec;
 use snafu::prelude::*;
 use tap::Pipe;
-use thaw::{
-    Icon, InfoLabel, InfoLabelInfo, Spinner, Toast, ToastBody, ToastIntent, ToastOptions,
-    ToastTitle, ToasterInjection,
-};
+use thaw::{Icon, ToastIntent, ToasterInjection};
 use tracing::{debug, error, info};
 
 use indielinks_shared::api::{
@@ -36,7 +33,10 @@ use indielinks_shared::api::{
 };
 
 use crate::{
-    components::post::Post,
+    components::{
+        feedback::{EmptyAction, EmptyState, ErrorState, LoadingState, show_toast},
+        post::Post,
+    },
     http::{error_for_status1, send_with_retry},
     types::Api,
 };
@@ -134,17 +134,7 @@ fn NewPostsControl(
 
     Effect::new(move |_| {
         if let Some(Err(err)) = update.value().get() {
-            toaster.dispatch_toast(
-                move || {
-                    view! {
-                        <Toast>
-                            <ToastTitle>"New posts"</ToastTitle>
-                            <ToastBody>{format!("{err}")} </ToastBody>
-                            </Toast>
-                    }
-                },
-                ToastOptions::default().with_intent(ToastIntent::Error),
-            )
+            show_toast(toaster, ToastIntent::Error, "New posts", format!("{err}"))
         }
     });
 
@@ -229,17 +219,7 @@ fn OlderPostsControl(
 
     Effect::new(move |_| {
         if let Some(Err(err)) = update.value().get() {
-            toaster.dispatch_toast(
-                move || {
-                    view! {
-                        <Toast>
-                            <ToastTitle>"Older posts"</ToastTitle>
-                            <ToastBody>{format!("{err}")} </ToastBody>
-                            </Toast>
-                    }
-                },
-                ToastOptions::default().with_intent(ToastIntent::Error),
-            )
+            show_toast(toaster, ToastIntent::Error, "Older posts", format!("{err}"))
         }
     });
 
@@ -354,24 +334,22 @@ pub fn ItemFeedOuter() -> impl IntoView {
 
     view! {
         <ErrorBoundary
-            // In the event of an unrecoverable error in any of our child components, we'll end-up
-            // here, rendering a little "Oops!" label on which the usewr can click to get more
-            // information. This mirrors the fallback for the saved links feed.
-            fallback=|errors| view! {
-                <InfoLabel>
-                    <InfoLabelInfo slot>
-                        <ul>
-                        { move || errors
-                          .get()
-                          .into_iter()
-                          .map(|(_, err)| view!{ <li>{err.to_string()}</li>})
-                          .collect::<Vec<_>>() }
-                        </ul>
-                    </InfoLabelInfo>
-                    "Ooops!"
-                </InfoLabel>
-            } >
-            <Transition fallback=move || view! { <Spinner /> } >
+            fallback={
+                let rerender = rerender.clone();
+                move |errors| view! {
+                    <ErrorState
+                        title="Your network could not be loaded"
+                        errors
+                        retry=Callback::new({
+                            let rerender = rerender.clone();
+                            move |()| rerender.notify()
+                        })
+                    />
+                }
+            }>
+            <Transition fallback=move || view! {
+                <LoadingState label="Loading your network…" />
+            }>
             {
                 // let on_click=on_click.clone();
                 // The trick here is to provide a lambda returning a `Result`; that way, we can
@@ -391,9 +369,9 @@ pub fn ItemFeedOuter() -> impl IntoView {
                     // Now, I don't entirely understand how, but the `Err` variant returned by
                     // `ItemFeed` is somehow *also* propagated back up to our fallback.
 
-                    let on_click = {
+                    let retry = {
                         let rerender = rerender.clone();
-                        move |_| rerender.notify()
+                        Callback::new(move |()| rerender.notify())
                     };
 
                     Ok(initial_response.map(|initial_response| {
@@ -402,13 +380,14 @@ pub fn ItemFeedOuter() -> impl IntoView {
                                 Either::Left(view! { <ItemFeed posts since before rerender=Some(rerender.clone())/> })
                             },
                             None => Either::Right(view! {
-                                <div class="mx-auto max-w-md m-8 p-8 text-muted">
-                                    <p>"You don't have any posts in your home timeline, yet. You can start by following "<a href="https://indieweb.social/@sp1ff" class="text-link underline hover:text-link-hover visited:text-link-visited">me</a>" on Mastodon. I'll be adding a \"find people to follow\" page soon."
-                                    <Icon icon=icondata::IoReloadOutline
-                                          class="text-ink m-2 cursor-pointer"
-                                          on_click=on_click />
-                                    </p>
-                                </div>
+                                <EmptyState
+                                    title="Your network is quiet"
+                                    message="Follow Fediverse accounts to fill this timeline, then check again."
+                                    action=EmptyAction::Button {
+                                        label: "Check again",
+                                        callback: retry,
+                                    }
+                                />
                             }),
                         }
                     }))

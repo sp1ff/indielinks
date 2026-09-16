@@ -42,10 +42,7 @@ use nonempty_collections::{Singleton, set::NESet, vector::NEVec};
 use serde::{Serialize, Serializer};
 use snafu::prelude::*;
 use tap::Pipe;
-use thaw::{
-    Icon, InfoLabel, InfoLabelInfo, Spinner, Toast, ToastBody, ToastIntent, ToastOptions,
-    ToastTitle, ToasterInjection,
-};
+use thaw::{Icon, ToastIntent, ToasterInjection};
 use tracing::{debug, error};
 use url::Url;
 
@@ -55,6 +52,7 @@ use indielinks_shared::{
 };
 
 use crate::{
+    components::feedback::{EmptyAction, EmptyState, ErrorState, LoadingState, show_toast},
     http::{error_for_status1, send_with_retry_no_body},
     types::{Api, Base},
 };
@@ -416,16 +414,11 @@ fn use_toggle(rerender: ArcTrigger) -> Action<ToggleReadLaterParams, Result<()>>
                 Some(Err(err)) => {
                     // May want to factor this out
                     error!("While toggling read-only: {err:?}");
-                    toaster.dispatch_toast(
-                        move || {
-                            view! {
-                                <Toast>
-                                    <ToastTitle>"Read-only"</ToastTitle>
-                                    <ToastBody>{format!("{err}")}</ToastBody>
-                                </Toast>
-                            }
-                        },
-                        ToastOptions::default().with_intent(ToastIntent::Error),
+                    show_toast(
+                        toaster,
+                        ToastIntent::Error,
+                        "Reading status",
+                        format!("{err}"),
                     )
                 }
                 None => (),
@@ -468,17 +461,7 @@ fn use_delete(rerender: ArcTrigger) -> Action<DeleteParams, Result<()>> {
                 Some(Err(err)) => {
                     // May want to factor this out
                     error!("While deleting: {err:?}");
-                    toaster.dispatch_toast(
-                        move || {
-                            view! {
-                                <Toast>
-                                    <ToastTitle>"Delete"</ToastTitle>
-                                    <ToastBody>{format!("{err}")}</ToastBody>
-                                </Toast>
-                            }
-                        },
-                        ToastOptions::default().with_intent(ToastIntent::Error),
-                    )
+                    show_toast(toaster, ToastIntent::Error, "Delete link", format!("{err}"))
                 }
                 None => (),
             }
@@ -740,19 +723,7 @@ async fn submit(form: Form) -> Result<()> {
 }
 
 fn do_toast(toaster: ToasterInjection, message: String) {
-    toaster.dispatch_toast(
-        move || {
-            view! {
-                <Toast>
-                    <ToastTitle>"Add Post"</ToastTitle>
-                    <ToastBody>
-                        {message}
-                    </ToastBody>
-                </Toast>
-            }
-        },
-        ToastOptions::default().with_intent(ToastIntent::Error),
-    );
+    show_toast(toaster, ToastIntent::Error, "Edit link", message);
 }
 
 /// Hook setting-up the [EditLink] component
@@ -761,33 +732,40 @@ fn do_toast(toaster: ToasterInjection, message: String) {
 fn use_edit_link(
     post: Post,
     set_editing: WriteSignal<Option<StorUrl>>,
+    rerender: ArcTrigger,
 ) -> (Form, FormElements, Action<(), ()>) {
     let form: Form = post.into();
     let elements: FormElements = Default::default();
     let toaster = ToasterInjection::expect_context();
 
-    let on_submit = Action::new_local(move |_: &()| async move {
-        match submit(form).await {
-            Ok(_) => set_editing.set(None),
-            Err(err @ Error::UrlParse { .. }) => {
-                do_toast(toaster, format!("{err}"));
-                elements
-                    .url
-                    .get()
-                    .expect("title should be mounted")
-                    .focus()
-                    .expect("url should be focusable");
+    let on_submit = Action::new_local(move |_: &()| {
+        let rerender = rerender.clone();
+        async move {
+            match submit(form).await {
+                Ok(_) => {
+                    rerender.notify();
+                    set_editing.set(None);
+                }
+                Err(err @ Error::UrlParse { .. }) => {
+                    do_toast(toaster, format!("{err}"));
+                    elements
+                        .url
+                        .get()
+                        .expect("title should be mounted")
+                        .focus()
+                        .expect("url should be focusable");
+                }
+                Err(err @ Error::Title { .. }) => {
+                    do_toast(toaster, format!("{err}"));
+                    elements
+                        .title
+                        .get()
+                        .expect("title should be mounted")
+                        .focus()
+                        .expect("title should be focusable");
+                }
+                Err(err) => do_toast(toaster, format!("{err}")),
             }
-            Err(err @ Error::Title { .. }) => {
-                do_toast(toaster, format!("{err}"));
-                elements
-                    .title
-                    .get()
-                    .expect("title should be mounted")
-                    .focus()
-                    .expect("title should be focusable");
-            }
-            Err(err) => do_toast(toaster, format!("{err}")),
         }
     });
 
@@ -801,79 +779,118 @@ fn EditLink(
     post: Post,
     /// [WriteSignal] for setting the saved link currently being edited.
     set_editing: WriteSignal<Option<StorUrl>>,
+    /// Trigger used to reload the saved-link row after a successful edit.
+    rerender: ArcTrigger,
 ) -> impl IntoView {
-    let (form, elements, on_submit) = use_edit_link(post, set_editing);
+    let id = post.id().to_string();
+    let url_id = StoredValue::new(format!("edit-url-{id}"));
+    let title_id = StoredValue::new(format!("edit-title-{id}"));
+    let notes_id = StoredValue::new(format!("edit-notes-{id}"));
+    let tags_id = StoredValue::new(format!("edit-tags-{id}"));
+    let private_id = StoredValue::new(format!("edit-private-{id}"));
+    let unread_id = StoredValue::new(format!("edit-unread-{id}"));
+    let (form, elements, on_submit) = use_edit_link(post, set_editing, rerender);
 
     view! {
         <article class="saved-link saved-link--editing">
             <h3 class="saved-link__edit-heading">"edit saved link"</h3>
-            <form class="saved-link__editor grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 items-center w-full text-muted"
-                  on:submit=move |ev| {
-                      ev.prevent_default();
-                      on_submit.dispatch(());
-                  } >
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // URL
-                ////////////////////////////////////////////////////////////////////////////////////
-                <label for="url">"Url:"</label>
-                <input required
-                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
-                       type="text" id="url" name="url"
-                       node_ref=elements.url
-                       bind:value=form.url />
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // Title
-                ////////////////////////////////////////////////////////////////////////////////////
-                <label for="title">"Title:"</label>
-                <input required
-                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
-                       type="text" id="title" name="title"
-                       node_ref=elements.title
-                       bind:value=form.title />
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // Notes
-                ////////////////////////////////////////////////////////////////////////////////////
-                <label for="notes" class="self-start">"Notes:"</label>
-                <textarea
-                    class="bg-transparent border-0 border-b border-r outline-none focus:border-focus"
-                    rows="4"
-                    placeholder="Optional free-form notes..."
-                    id="notes" name="notes"
-                    bind:value=form.notes >
-                </textarea>
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // Tags
-                ////////////////////////////////////////////////////////////////////////////////////
-                <label for="tags" class="">"Tags:"</label>
-                <input type="text"
-                       class="bg-transparent border-0 border-b outline-none focus:border-focus"
-                       id="tags" name="tags"
-                       placeholder="Comma-delimited tags..."
-                       node_ref=elements.tags
-                       bind:value=form.tags />
-
-                ////////////////////////////////////////////////////////////////////////////////////
-                // Private, Unread
-                ////////////////////////////////////////////////////////////////////////////////////
-                <div class="col-span-full items-center flex gap-x-4">
-                    <label class="flex gap-x-1">
-                        <input type="checkbox" bind:checked=form.private/> private
-                    </label>
-                    <label class="flex gap-x-1">
-                        <input type="checkbox" bind:checked=form.unread/> unread
-                    </label>
+            <form
+                class="indielinks-form saved-link__editor"
+                on:submit=move |event| {
+                    event.prevent_default();
+                    if !on_submit.pending().get() {
+                        on_submit.dispatch(());
+                    }
+                }
+            >
+                <div class="form-field">
+                    <label class="form-field__label" for=url_id.get_value()>"URL"</label>
+                    <input
+                        class="form-control"
+                        id=url_id.get_value()
+                        inputmode="url"
+                        name="url"
+                        node_ref=elements.url
+                        required
+                        type="url"
+                        bind:value=form.url
+                    />
                 </div>
-
-                <div class="col-span-full items-center flex gap-x-4">
-                    <input class="bg-transparent cursor-pointer focus:bg-brand-subtle"
-                           type="submit" value="save"/>
-                    <input class="bg-transparent cursor-pointer focus:bg-brand-subtle"
-                           type="button" value="cancel"
-                           on:click=move |_| { set_editing.set(None); } />
+                <div class="form-field">
+                    <label class="form-field__label" for=title_id.get_value()>"Title"</label>
+                    <input
+                        class="form-control"
+                        id=title_id.get_value()
+                        name="title"
+                        node_ref=elements.title
+                        required
+                        type="text"
+                        bind:value=form.title
+                    />
+                </div>
+                <div class="form-field">
+                    <label class="form-field__label" for=notes_id.get_value()>"Notes"</label>
+                    <textarea
+                        class="form-control form-control--textarea"
+                        id=notes_id.get_value()
+                        name="notes"
+                        placeholder="Optional notes about this link"
+                        rows="4"
+                        bind:value=form.notes
+                    ></textarea>
+                </div>
+                <div class="form-field">
+                    <label class="form-field__label" for=tags_id.get_value()>"Tags"</label>
+                    <input
+                        aria-describedby=format!("{}-help", tags_id.get_value())
+                        autocomplete="off"
+                        class="form-control"
+                        id=tags_id.get_value()
+                        name="tags"
+                        node_ref=elements.tags
+                        type="text"
+                        bind:value=form.tags
+                    />
+                    <p class="form-field__help" id=format!("{}-help", tags_id.get_value())>
+                        "Separate multiple tags with commas."
+                    </p>
+                </div>
+                <fieldset class="form-options form-options--inline">
+                    <legend class="form-options__legend">"Link options"</legend>
+                    <label class="form-check" for=private_id.get_value()>
+                        <input
+                            id=private_id.get_value()
+                            type="checkbox"
+                            bind:checked=form.private
+                        />
+                        <span>"Private"</span>
+                    </label>
+                    <label class="form-check" for=unread_id.get_value()>
+                        <input
+                            id=unread_id.get_value()
+                            type="checkbox"
+                            bind:checked=form.unread
+                        />
+                        <span>"Unread"</span>
+                    </label>
+                </fieldset>
+                <div class="form-actions">
+                    <button
+                        aria-busy=move || on_submit.pending().get().to_string()
+                        class="form-button form-button--primary"
+                        disabled=move || on_submit.pending().get()
+                        type="submit"
+                    >
+                        {move || if on_submit.pending().get() { "Saving…" } else { "Save changes" }}
+                    </button>
+                    <button
+                        class="form-button form-button--secondary"
+                        disabled=move || on_submit.pending().get()
+                        type="button"
+                        on:click=move |_| set_editing.set(None)
+                    >
+                        "Cancel"
+                    </button>
                 </div>
             </form>
         </article>
@@ -899,7 +916,11 @@ fn Links(posts: Vec<Post>, rerender: ArcTrigger) -> impl IntoView {
                                 move || {
                                     if Some(post.url()) == editing.get().as_ref() {
                                         Either::Left(view! {
-                                            <EditLink post=post.clone() set_editing />
+                                            <EditLink
+                                                post=post.clone()
+                                                set_editing
+                                                rerender=rerender.clone()
+                                            />
                                         })
                                     } else {
                                         Either::Right(view! {
@@ -965,7 +986,9 @@ const PAGE_SIZE: usize = 20;
 #[component]
 pub fn LinkFeed() -> impl IntoView {
     let api = expect_context::<Api>().0;
-    let add_href = StoredValue::new(format!("{}/a", expect_context::<Base>().0));
+    let base = expect_context::<Base>().0;
+    let add_href = StoredValue::new(format!("{base}/a"));
+    let clear_href = StoredValue::new(format!("{base}/h"));
 
     // Setup a mechanism by which we can force this view to be re-rendered. A signal won't really do
     // it because there are places (say, after a delete) where we want to *force* a re-render
@@ -999,24 +1022,22 @@ pub fn LinkFeed() -> impl IntoView {
 
     view! {
         <ErrorBoundary
-            // In the event of an unrecoverable error in any of our child components, we'll end-up
-            // here, rendering a little "Oops!" label on which the usewr can click to get more
-            // information. This mirrors the fallback for the user's home feed.
-            fallback=|errors| view! {
-                <InfoLabel>
-                    <InfoLabelInfo slot>
-                        <ul>
-                        { move || errors
-                          .get()
-                          .into_iter()
-                          .map(|(_, err)| view!{ <li>{err.to_string()}</li>})
-                          .collect::<Vec<_>>() }
-                        </ul>
-                    </InfoLabelInfo>
-                    "Ooops!"
-                </InfoLabel>
-            } >
-            <Transition fallback=move || view! { <Spinner /> } >
+            fallback={
+                let rerender = rerender.clone();
+                move |errors| view! {
+                    <ErrorState
+                        title="Saved links could not be loaded"
+                        errors
+                        retry=Callback::new({
+                            let rerender = rerender.clone();
+                            move |()| rerender.notify()
+                        })
+                    />
+                }
+            }>
+            <Transition fallback=move || view! {
+                <LoadingState label="Loading saved links…" />
+            }>
             {
                 // The body of the `Transition` is a lambda yielding a `Result`; that means we can
                 // use the `?` sigil naturally below in cases where we want to invoke our fallback,
@@ -1052,12 +1073,25 @@ pub fn LinkFeed() -> impl IntoView {
                                 last_page.set(true);
                                 EitherOf3::B(view! {
                                     <FeedControls last=last_page.into() />
+                                    <EmptyState
+                                        title="No saved links match these filters"
+                                        message="Clear the current filters to see your full collection."
+                                        action=EmptyAction::Link {
+                                            href: clear_href.get_value(),
+                                            label: "Clear filters",
+                                        }
+                                    />
                                 })
                             },
                             (None, true) => EitherOf3::C(view! {
-                                <div class="mx-auto max-w-md m-8 text-muted">
-                                    <p>"You don't have any saved links, yet. Click "<a href=add_href.get_value() class="text-link underline hover:text-link-hover visited:text-link-visited">"here"</a>" to start adding some."</p>
-                                </div>
+                                <EmptyState
+                                    title="No saved links yet"
+                                    message="Build your collection by saving a useful page."
+                                    action=EmptyAction::Link {
+                                        href: add_href.get_value(),
+                                        label: "Save your first link",
+                                    }
+                                />
                             })
                         }
                     }))

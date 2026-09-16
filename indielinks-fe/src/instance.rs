@@ -13,27 +13,34 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
+//! # The public instance page
+//!
+//! Popular introduces an indielinks instance and presents its recent public links, ranked tags,
+//! and service statistics. Each independently useful data region owns its resource and recovery.
+
 use std::{result::Result as StdResult, sync::Arc};
 
 use gloo_net::http::Request;
-use leptos::{either::EitherOf3, prelude::*};
+use leptos::{either::Either, prelude::*};
 use nonempty_collections::vector::NEVec;
 use nonzero::nonzero;
 use snafu::prelude::*;
 use tap::Pipe;
-use thaw::{Icon, InfoLabel, InfoLabelInfo, Spinner};
+use thaw::Icon;
+use url::Url;
 
 use indielinks_shared::{
     api::{
         ClusterStatsResponse, RecentPostsRequest, RecentPostsResponse, TopKTagsRequest,
         TopKTagsResponse,
     },
-    entities::{Post, Tagname},
+    entities::{Post, StorUrl, Tagname},
 };
 
 use crate::{
+    components::feedback::{EmptyAction, EmptyState, ErrorState, LoadingState},
     http::error_for_status1,
-    types::{Api, Token},
+    types::{Api, Base, Token},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -42,24 +49,24 @@ use crate::{
 
 #[derive(Clone, Debug, Snafu)]
 enum Error {
-    #[snafu(display("While sending an HTTP request, {source}"))]
+    #[snafu(display("While sending an HTTP request"))]
     Http {
         #[snafu(source(from(gloo_net::Error, Arc::new)))]
         source: Arc<gloo_net::Error>,
     },
-    #[snafu(display("While deserializing the recent posts response, {source}"))]
+    #[snafu(display("While deserializing the recent links response"))]
     Posts {
         #[snafu(source(from(gloo_net::Error, Arc::new)))]
         source: Arc<gloo_net::Error>,
     },
-    #[snafu(display("While deserializing the cluster stats response, {source}"))]
+    #[snafu(display("While deserializing the instance statistics"))]
     Stats {
         #[snafu(source(from(gloo_net::Error, Arc::new)))]
         source: Arc<gloo_net::Error>,
     },
-    #[snafu(display("Failed HTTP call: {source}"))]
+    #[snafu(display("The server returned an unsuccessful response"))]
     Status { source: crate::http::Error },
-    #[snafu(display("While deserializing the top-k tags response, {source}"))]
+    #[snafu(display("While deserializing the popular tags response"))]
     Tags {
         #[snafu(source(from(gloo_net::Error, Arc::new)))]
         source: Arc<gloo_net::Error>,
@@ -69,45 +76,197 @@ enum Error {
 type Result<T> = StdResult<T, Error>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                     Top-K Tags Navigation                                      //
+//                                         Shared helpers                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// A very simple component rendering a "refresh" option at the top of the popular tags list
-#[component]
-fn TopKTagsNav(refresh: ArcTrigger) -> impl IntoView {
-    view! {
-        <div class="mx-auto flex items-center gap-2 p-2">
-            <span class="text-lg">"Most Popular Tags "</span>
-            <Icon icon=icondata::IoRefresh class="text-muted"
-                  on_click=move |_| {
-                      refresh.notify()
-                  }
-            />
-        </div>
+fn host_label(url: &StorUrl) -> String {
+    let url: &Url = url.as_ref();
+    url.host_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| url.scheme().to_owned())
+}
+
+fn empty_action(token: Token, base: &str) -> EmptyAction {
+    if token.get().is_some() {
+        EmptyAction::Link {
+            href: format!("{base}/a"),
+            label: "Add link",
+        }
+    } else {
+        EmptyAction::Link {
+            href: format!("{base}/s"),
+            label: "Sign in",
+        }
     }
-    //
 }
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                        Top-K Tags List                                         //
-////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[component]
-fn TopKTagsList(tags: NEVec<(Tagname, f64)>) -> impl IntoView {
-    tags.into_iter()
-        .map(|(tag, score)| {
-            view! {
-                <div class="flex gap-2 p-1">
-                    <span>{ format!("{tag}") }</span>
-                    <span>{ format!("{score:.2}")}</span>
-                </div>
-            }
-        })
-        .collect::<Vec<_>>()
+fn RefreshButton(
+    label: &'static str,
+    loading: Signal<bool>,
+    callback: Callback<()>,
+) -> impl IntoView {
+    view! {
+        <button
+            aria-label=label
+            aria-busy=move || loading.get().to_string()
+            class="popular-panel__refresh"
+            disabled=move || loading.get()
+            type="button"
+            on:click=move |_| callback.run(())
+        >
+            <span aria-hidden="true"><Icon icon=icondata::IoRefresh /></span>
+            <span>{move || if loading.get() { "Refreshing…" } else { "Refresh" }}</span>
+        </button>
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                           Top-K Tags                                           //
+//                                      Recent public links                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+async fn load_posts(api: &str) -> Result<Option<NEVec<Post>>> {
+    Request::post(&format!("{api}/api/v1/users/recent-posts"))
+        .json(&RecentPostsRequest {
+            token: None,
+            page_size: Some(nonzero!(32usize)),
+        })
+        .context(HttpSnafu)?
+        .send()
+        .await
+        .context(HttpSnafu)?
+        .pipe(error_for_status1)
+        .context(StatusSnafu)?
+        .json::<RecentPostsResponse>()
+        .await
+        .context(PostsSnafu)
+        .map(|page| page.map(|page| page.page))
+}
+
+#[component]
+fn PublicLink(post: Post) -> impl IntoView {
+    let url = post.url().clone();
+    let host = host_label(&url);
+    let datetime = post.posted().to_rfc3339();
+    let posted = post.posted().format("%Y-%m-%d %H:%M UTC").to_string();
+    let notes = post.notes().map(str::to_owned);
+    let mut tags = post.tags().cloned().collect::<Vec<_>>();
+    tags.sort();
+    let tag_list = (!tags.is_empty()).then(|| {
+        view! {
+            <ul aria-label="Tags" class="public-link__tags" role="list">
+                {tags.into_iter().map(|tag| view! {
+                    <li class="public-link__tag">{tag.to_string()}</li>
+                }).collect_view()}
+            </ul>
+        }
+    });
+
+    view! {
+        <article class="public-link">
+            <h3 class="public-link__title">
+                <a href=url.to_string()>{post.title().to_owned()}</a>
+            </h3>
+            <div class="public-link__metadata">
+                <span class="public-link__host">{host}</span>
+                <span aria-hidden="true">"·"</span>
+                <time datetime=datetime>{posted}</time>
+            </div>
+            {notes.map(|notes| view! { <p class="public-link__notes">{notes}</p> })}
+            {tag_list}
+        </article>
+    }
+}
+
+#[component]
+fn RecentPosts() -> impl IntoView {
+    let api = expect_context::<Api>().0;
+    let base = expect_context::<Base>().0;
+    let token = expect_context::<Token>();
+    let refresh = ArcTrigger::new();
+    let loading = RwSignal::new(true);
+    let posts = LocalResource::new({
+        let refresh = refresh.clone();
+        move || {
+            let api = api.clone();
+            refresh.track();
+            async move {
+                let result = load_posts(&api).await;
+                loading.set(false);
+                result
+            }
+        }
+    });
+    let refresh_callback = Callback::new({
+        let refresh = refresh.clone();
+        move |()| {
+            if !loading.get_untracked() {
+                loading.set(true);
+                refresh.notify();
+            }
+        }
+    });
+
+    view! {
+        <section aria-labelledby="recent-public-links-heading" class="content-panel popular-panel">
+            <header class="popular-panel__header">
+                <h2 class="content-panel__heading" id="recent-public-links-heading">
+                    "Recent public links"
+                </h2>
+                <RefreshButton
+                    label="Refresh recent public links"
+                    loading=loading.into()
+                    callback=refresh_callback
+                />
+            </header>
+            <div class="content-panel__body">
+                <ErrorBoundary fallback={
+                    let refresh = refresh.clone();
+                    move |errors| view! {
+                        <ErrorState
+                            title="Recent links could not be loaded"
+                            errors
+                            retry=Callback::new({
+                                let refresh = refresh.clone();
+                                move |()| {
+                                    loading.set(true);
+                                    refresh.notify();
+                                }
+                            })
+                        />
+                    }
+                }>
+                    <Transition fallback=move || view! {
+                        <LoadingState label="Loading recent links…" />
+                    }>
+                        {move || -> Result<_> {
+                            let response = posts.get().transpose()?;
+                            Ok(response.map(|posts| match posts {
+                                Some(posts) => Either::Left(view! {
+                                    <ol class="public-links" role="list">
+                                        {posts.into_iter().map(|post| view! {
+                                            <li class="public-links__item"><PublicLink post /></li>
+                                        }).collect_view()}
+                                    </ol>
+                                }),
+                                None => Either::Right(view! {
+                                    <EmptyState
+                                        title="No public links yet"
+                                        message="Be the first to add a link to this instance."
+                                        action=empty_action(token, &base)
+                                    />
+                                }),
+                            }))
+                        }}
+                    </Transition>
+                </ErrorBoundary>
+            </div>
+        </section>
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         Popular tags                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 async fn load_tags(api: &str) -> Result<Option<NEVec<(Tagname, f64)>>> {
@@ -127,275 +286,104 @@ async fn load_tags(api: &str) -> Result<Option<NEVec<(Tagname, f64)>>> {
         .map(|response| NEVec::try_from_vec(response.tags))
 }
 
-// I'd like to factor this out into its own component, but start here for now.
 #[component]
-pub fn TopKTags() -> impl IntoView {
+fn PopularTags() -> impl IntoView {
     let api = expect_context::<Api>().0;
-
+    let base = expect_context::<Base>().0;
     let token = expect_context::<Token>();
-
-    // Setup a mechanism by which we can force this view to be re-rendered. A signal won't really do
-    // it because this summarizes state after other operations outside our awareness. "A trigger is
-    // a data-less signal with the sole purpose of notifying other reactive code of a change."
     let refresh = ArcTrigger::new();
-
-    // Setup a local resource yielding a `Result<Option<NEVec<(Tagname, f64)>>>`. I can never keep
-    // track of whether I want a `Resource` or an `Action`. According to the book, "Actions and
-    // resources seem similar, but they represent fundamentally different things. If you’re trying
-    // to load data by running an async function, either once or when some other value changes, you
-    // probably want to use a resource. If you’re trying to occasionally run an async function in
-    // response to something like a user clicking a button, you probably want to use an Action."
-
-    // Seems like this is a resource:
+    let loading = RwSignal::new(true);
     let tags = LocalResource::new({
         let refresh = refresh.clone();
         move || {
             let api = api.clone();
             refresh.track();
-            async move { load_tags(&api).await }
+            async move {
+                let result = load_tags(&api).await;
+                loading.set(false);
+                result
+            }
         }
     });
-
-    view! {
-        // In the event of an unrecoverable error in any of our child components, we'll end-up
-        // here, rendering a little "Oops!" label on which the usewr can click to get more
-        // information. I used this idiom on the user's page, as well.
-        <ErrorBoundary
-            fallback=|errors| view! {
-                <InfoLabel>
-                    <InfoLabelInfo slot>
-                        <ul>
-                        { move || errors
-                          .get()
-                          .into_iter()
-                          .map(|(_, err)| view!{ <li>{err.to_string()}</li>})
-                          .collect::<Vec<_>>() }
-                        </ul>
-                    </InfoLabelInfo>
-                    "Ooops!"
-                </InfoLabel>
-            } >
-            <Transition fallback=move || view! { <Spinner /> }>
-            {
-                // The body of the `Transition` is a lambda yielding a `Result`; that means we can
-                // use the `?` sigil naturally below in cases where we want to invoke our
-                // <ErrorBoundary> fallback, above.
-                move || -> Result<_> {
-                    // `.get()` yields an *option* wrapped around the actual return value; in our
-                    // case, we'll get an `Option<Result<Option<NEVec<(Tagname, f64)>>>>`. This lets
-                    // us model the resource having not yet resolved. Now, because we're inside a
-                    // <Transition>, we *know* it will never return the `None` case, but for
-                    // starters, let's handle the error case:
-                    let tags = tags.get().transpose()?; // `Option<Option<NEVec<...>>>` Now,
-                    // technically, this view will return a `Result<Option<Either<...>>>`. However,
-                    // again, we know we'll never have the `None` variant returned (because we're in
-                    // a <Transition>), so just work "inside" the `Option` via `.map()` to avoid
-                    // having to explicitly handle that case (with something inelegant like an
-                    // `unimplemented()` or something):
-                    Ok(tags.map(|maybe_tags| {
-                        match maybe_tags {
-                            Some(tags) => EitherOf3::A(view! {
-                                <TopKTagsNav refresh=refresh.clone() />
-                                <TopKTagsList tags=tags/>
-                            }),
-                            None => match token.get() {
-                                Some(_) => EitherOf3::B(view! {
-                                    <div class="mx-auto max-w-md m-8 text-muted p-2">
-                                        <p>"This instance doesn't have any tags, yet. Click "<a href="/a" class="text-link underline hover:text-link-hover visited:text-link-visited">"here"</a>" to start adding some."</p>
-                                    </div>
-                                }),
-                                None => EitherOf3::C(view! {
-                                    <div class="mx-auto max-w-md m-8 text-muted p-2">
-                                        <p>"This instance doesn't have any tags, yet. "<a href="/s" class="text-link underline hover:text-link-hover visited:text-link-visited">"Sign-in"</a>" to start adding some."</p>
-                                    </div>
-                                })
-                            }
-                        }
-                    }))
-                }
-            }
-            </Transition >
-        </ErrorBoundary>
-    }
-} // TopKTags
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                    Recent Posts Navigation                                     //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// A very simple component rendering a "refresh" option at the top of the recent posts list
-#[component]
-fn RecentPostsNav(refresh: ArcTrigger) -> impl IntoView {
-    view! {
-        <div class="mx-auto flex items-center gap-2 p-2">
-            <span class="text-lg">"Most Recent Public Posts "</span>
-            <Icon icon=icondata::IoRefresh class="text-muted"
-                  on_click=move |_| {
-                      refresh.notify()
-                  }
-            />
-        </div>
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                       Recent Posts List                                        //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[component]
-fn RecentPostsList(posts: NEVec<Post>) -> impl IntoView {
-    posts
-        .into_iter()
-        // Really need to factor this (along with the logic in `home.rs` out into `components`)...
-        .map(|post| {
-            let url = post.url().clone();
-            let title = post.title().to_owned();
-            let posted = post.posted().format("%Y-%m-%d %H:%M:%S").to_string();
-
-            view!{
-                <div class="p-1">
-                    // The link itself (larger, more prominent)
-                    <div class="text-lg">
-                        <a href={ url.to_string() } class="text-link underline hover:text-link-hover visited:text-link-visited"> { title }</a>
-                    </div>
-                    // The post time & tags (smaller, gray text)
-                    <div class="flex">
-                    <div class="flex-[0 0 auto] text-muted"> { posted } </div>
-                    <div class="flex px-2 gap-1">
-                    {
-                        post
-                            .tags()
-                            .cloned()
-                            .map(|tag| view! {
-                                <span>{ format!("{tag}") }</span>
-                            })
-                            .collect::<Vec<_>>()
-                    }
-                    </div>
-                </div>
-            </div>
-        }})
-        .collect::<Vec<_>>()
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                       Recent Posts List                                        //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-async fn load_posts(api: &str) -> Result<Option<NEVec<Post>>> {
-    Request::post(&format!("{api}/api/v1/users/recent-posts"))
-        .json(&RecentPostsRequest {
-            token: None,
-            page_size: Some(nonzero!(32usize)),
-        })
-        .context(HttpSnafu)?
-        .send()
-        .await
-        .context(HttpSnafu)?
-        .pipe(error_for_status1)
-        .context(StatusSnafu)?
-        .json::<RecentPostsResponse>()
-        .await
-        .context(PostsSnafu)
-        .map(|maybe_page| match maybe_page {
-            Some(response) => Some(response.page),
-            None => None,
-        })
-}
-
-#[component]
-pub fn RecentPosts() -> impl IntoView {
-    let api = expect_context::<Api>().0;
-
-    let token = expect_context::<Token>();
-
-    // Setup a mechanism by which we can force this view to be re-rendered. A signal won't really do
-    // it because this summarizes state after other operations outside our awareness. "A trigger is
-    // a data-less signal with the sole purpose of notifying other reactive code of a change."
-    let refresh = ArcTrigger::new();
-
-    // Setup a local resource yielding a `Result<Option<RecentPostsPage>>>`. I can never keep
-    // track of whether I want a `Resource` or an `Action`. According to the book, "Actions and
-    // resources seem similar, but they represent fundamentally different things. If you’re trying
-    // to load data by running an async function, either once or when some other value changes, you
-    // probably want to use a resource. If you’re trying to occasionally run an async function in
-    // response to something like a user clicking a button, you probably want to use an Action."
-
-    // Seems like this is a resource:
-    let posts = LocalResource::new({
+    let refresh_callback = Callback::new({
         let refresh = refresh.clone();
-        move || {
-            let api = api.clone();
-            refresh.track();
-            async move { load_posts(&api).await }
+        move |()| {
+            if !loading.get_untracked() {
+                loading.set(true);
+                refresh.notify();
+            }
         }
     });
 
     view! {
-        // In the event of an unrecoverable error in any of our child components, we'll end-up
-        // here, rendering a little "Oops!" label on which the usewr can click to get more
-        // information. I used this idiom on the user's page, as well.
-        <ErrorBoundary
-            fallback=|errors| view! {
-                <InfoLabel>
-                    <InfoLabelInfo slot>
-                        <ul>
-                        { move || errors
-                          .get()
-                          .into_iter()
-                          .map(|(_, err)| view!{ <li>{err.to_string()}</li>})
-                          .collect::<Vec<_>>() }
-                        </ul>
-                    </InfoLabelInfo>
-                    "Ooops!"
-                </InfoLabel>
-            } >
-            <Transition fallback=move || view! { <Spinner /> }>
-            {
-                // The body of the `Transition` is a lambda yielding a `Result`; that means we can
-                // use the `?` sigil naturally below in cases where we want to invoke our
-                // <ErrorBoundary> fallback, above.
-                move || -> Result<_> {
-                    // `.get()` yields an *option* wrapped around the actual return value; in our
-                    // case, we'll get an `Option<Result<Option<RecentPostsPage>>>>`. This lets
-                    // us model the resource having not yet resolved. Now, because we're inside a
-                    // <Transition>, we *know* it will never return the `None` case, but for
-                    // starters, let's handle the error case:
-                    let posts = posts.get().transpose()?; // `Option<Option<RecentPostsPage>>` Now,
-                    // technically, this view will return a `Result<Option<Either<...>>>`. However,
-                    // again, we know we'll never have the `None` variant returned (because we're in
-                    // a <Transition>), so just work "inside" the `Option` via `.map()` to avoid
-                    // having to explicitly handle that case (with something inelegant like an
-                    // `unimplemented()` or something):
-                    Ok(posts.map(|maybe_posts| {
-                        match maybe_posts {
-                            Some(posts) => EitherOf3::A(view! {
-                                <RecentPostsNav refresh=refresh.clone() />
-                                <RecentPostsList posts/>
-                            }),
-                            None => match token.get() {
-                                Some(_) => EitherOf3::B(view! {
-                                    <div class="mx-auto max-w-md m-8 text-muted p-2">
-                                        <p>"This instance doesn't have any posts, yet. Click "<a href="/a" class="text-link underline hover:text-link-hover visited:text-link-visited">"here"</a>" to start adding some."</p>
-                                    </div>
+        <section aria-labelledby="popular-tags-heading" class="content-panel popular-panel">
+            <header class="popular-panel__header">
+                <h2 class="content-panel__heading" id="popular-tags-heading">"Popular tags"</h2>
+                <RefreshButton
+                    label="Refresh popular tags"
+                    loading=loading.into()
+                    callback=refresh_callback
+                />
+            </header>
+            <div class="content-panel__body">
+                <ErrorBoundary fallback={
+                    let refresh = refresh.clone();
+                    move |errors| view! {
+                        <ErrorState
+                            title="Popular tags could not be loaded"
+                            errors
+                            retry=Callback::new({
+                                let refresh = refresh.clone();
+                                move |()| {
+                                    loading.set(true);
+                                    refresh.notify();
+                                }
+                            })
+                        />
+                    }
+                }>
+                    <Transition fallback=move || view! {
+                        <LoadingState label="Loading popular tags…" />
+                    }>
+                        {move || -> Result<_> {
+                            let response = tags.get().transpose()?;
+                            Ok(response.map(|tags| match tags {
+                                Some(tags) => Either::Left(view! {
+                                    <ol class="popular-tags" role="list">
+                                        {tags.into_iter().enumerate().map(|(index, (tag, score))| {
+                                            let score_label = format!("score {score:.2}");
+                                            view! {
+                                                <li class="popular-tags__item">
+                                                    <span aria-hidden="true" class="popular-tags__rank">
+                                                        {index + 1}
+                                                    </span>
+                                                    <span class="popular-tags__name">{tag.to_string()}</span>
+                                                    <span aria-label=score_label class="popular-tags__score">
+                                                        {format!("{score:.2}")}
+                                                    </span>
+                                                </li>
+                                            }
+                                        }).collect_view()}
+                                    </ol>
                                 }),
-                                None => EitherOf3::C(view! {
-                                    <div class="mx-auto max-w-md m-8 text-muted p-2">
-                                        <p>"This instance doesn't have any posts, yet. "<a href="/s" class="text-link underline hover:text-link-hover visited:text-link-visited">"Sign-in"</a>" to start adding some."</p>
-                                    </div>
-                                })
-                            }
-                        }
-                    }))
-                }
-            }
-            </Transition >
-        </ErrorBoundary>
+                                None => Either::Right(view! {
+                                    <EmptyState
+                                        title="No popular tags yet"
+                                        message="Tags will appear as people save links."
+                                        action=empty_action(token, &base)
+                                    />
+                                }),
+                            }))
+                        }}
+                    </Transition>
+                </ErrorBoundary>
+            </div>
+        </section>
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                         Cluster Stats                                          //
+//                                      Instance information                                      //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 async fn load_stats(api: &str) -> Result<ClusterStatsResponse> {
@@ -411,141 +399,113 @@ async fn load_stats(api: &str) -> Result<ClusterStatsResponse> {
 }
 
 #[component]
-fn ClusterStats() -> impl IntoView {
+fn InstanceDetails() -> impl IntoView {
     let api = expect_context::<Api>().0;
-    // Seems like this is a resource:
+    let refresh = ArcTrigger::new();
     let stats = LocalResource::new({
+        let refresh = refresh.clone();
         move || {
             let api = api.clone();
+            refresh.track();
             async move { load_stats(&api).await }
         }
     });
+
     view! {
-        <ErrorBoundary
-            fallback=|errors| view! {
-                <InfoLabel>
-                    <InfoLabelInfo slot>
-                        <ul>
-                        { move || errors
-                          .get()
-                          .into_iter()
-                          .map(|(_, err)| view!{ <li>{err.to_string()}</li>})
-                          .collect::<Vec<_>>() }
-                        </ul>
-                    </InfoLabelInfo>
-                    "Ooops!"
-                </InfoLabel>
-            } >
-            <Transition fallback=move || view! { <Spinner /> }>
-            {
-                move || -> Result<_> {
-                    let stats = stats.get().transpose()?;
-                    Ok(stats.map(|stats| {
-                        let verbiage = match (stats.raft_initialized, stats.raft_leader) {
-                            (Some(initialized), Some(leader)) => {
-                                format!("This instance has {} users & {} posts. The raft was initialized {}, the leader is {}, and the raft term is {}.", stats.num_users, stats.num_posts, initialized, leader, stats.raft_term)
-                            },
-                            (Some(initialized), None) => {
-                                format!("This instance has {} users & {} posts. The raft was initialized {}, and the raft term is {}.", stats.num_users, stats.num_posts, initialized, stats.raft_term)
-                            },
-                            (None, Some(leader)) => {
-                                // Pretty-sure this can't happen, but 🤷
-                                format!("This instance has {} users & {} posts. The raft leader is {}, and the raft term is {}.", stats.num_users, stats.num_posts, leader, stats.raft_term)
-                            },
-                            (None, None) => {
-                                format!("This instance has {} users & {} posts. The raft has not yet been initialized", stats.num_users, stats.num_posts)
-                            },
-                        };
-                        view! {
-                            <div class="text-muted">
-                                { verbiage }
-                            </div>
-                        }
-                    }))
+        <div class="instance-details">
+            <ErrorBoundary fallback={
+                let refresh = refresh.clone();
+                move |errors| view! {
+                    <section class="content-panel instance-layout__details-error">
+                        <ErrorState
+                            title="Instance details could not be loaded"
+                            errors
+                            retry=Callback::new({
+                                let refresh = refresh.clone();
+                                move |()| refresh.notify()
+                            })
+                        />
+                    </section>
                 }
-            }
-            </Transition >
-        </ErrorBoundary>
+            }>
+                <Transition fallback=move || view! {
+                    <section class="content-panel instance-layout__details-loading">
+                        <LoadingState label="Loading instance details…" />
+                    </section>
+                }>
+                    {move || -> Result<_> {
+                        Ok(stats.get().transpose()?.map(|stats| {
+                            let initialized = stats
+                                .raft_initialized
+                                .map(|value| value.to_rfc3339())
+                                .unwrap_or_else(|| "not initialized".to_owned());
+                            let leader = stats
+                                .raft_leader
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "none".to_owned());
+                            view! {
+                                <section
+                                    aria-labelledby="instance-statistics-heading"
+                                    class="content-panel instance-layout__statistics"
+                                >
+                                    <h2 id="instance-statistics-heading">"About this instance"</h2>
+                                    <p class="instance-statistics__origin">{stats.origin.to_string()}</p>
+                                    <dl class="instance-statistics">
+                                        <div>
+                                            <dt>"Users"</dt>
+                                            <dd>{stats.num_users}</dd>
+                                        </div>
+                                        <div>
+                                            <dt>"Saved links"</dt>
+                                            <dd>{stats.num_posts}</dd>
+                                        </div>
+                                    </dl>
+                                    <details class="instance-service-details">
+                                        <summary>"Service details"</summary>
+                                        <dl>
+                                            <div><dt>"Raft initialized"</dt><dd>{initialized}</dd></div>
+                                            <div><dt>"Raft leader"</dt><dd>{leader}</dd></div>
+                                            <div><dt>"Raft term"</dt><dd>{stats.raft_term}</dd></div>
+                                        </dl>
+                                    </details>
+                                </section>
+                            }
+                        }))
+                    }}
+                </Transition>
+            </ErrorBoundary>
+        </div>
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                     The instance verbiage                                      //
+//                                         Popular page                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[component]
-fn Verbiage() -> impl IntoView {
-    let api = expect_context::<Api>().0;
-    // Seems like this is a resource:
-    let stats = LocalResource::new({
-        move || {
-            let api = api.clone();
-            async move { load_stats(&api).await }
-        }
-    });
-    view! {
-        <ErrorBoundary
-            fallback=|errors| view! {
-                <InfoLabel>
-                    <InfoLabelInfo slot>
-                        <ul>
-                        { move || errors
-                          .get()
-                          .into_iter()
-                          .map(|(_, err)| view!{ <li>{err.to_string()}</li>})
-                          .collect::<Vec<_>>() }
-                        </ul>
-                    </InfoLabelInfo>
-                    "Ooops!"
-                </InfoLabel>
-            } >
-            <Transition fallback=move || view! { <Spinner /> }>
-            {
-                move || -> Result<_> {
-                    let stats = stats.get().transpose()?;
-                    Ok(stats.map(|stats| {
-                        view! {
-                            <div class="text-muted">
-                                "This is "{ format!("{}", stats.origin) }", an indielinks instance. Think of it as del.icio.us on the fediverse. Contact "<a href="mailto:sp1ff@pobox.com">"sp1ff@pobox.com"</a>" for an account!"
-                            </div>
-                        }
-                    }))
-                }
-            }
-            </Transition >
-        </ErrorBoundary>
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                               The "instance", or "popular" page                                //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// indielinks "instance" page
-// This is going to be pretty simple, for now: a rolling list of recent (public) posts, the most
-// popular tags, and some basic stats. On top, some welcoming verbiage & contact information. In
-// the future, this would be an ideal place for the local and/or federated feeds.
+/// Render the public instance page.
 #[component]
 pub fn Instance() -> impl IntoView {
     view! {
-        // I think I'm going to allow each component to handle its own errors; why give-up rendering
-        // the entire page when only one component has a problem?
-        <div class="instance-layout text-muted">
-            <h1 class="sr-only">"popular"</h1>
+        <div class="instance-layout">
             <section class="instance-layout__introduction">
-                <Verbiage />
+                <p class="instance-layout__eyebrow">"Welcome to indielinks"</p>
+                <h1>"Popular"</h1>
+                <p class="instance-layout__lead">
+                    "Del.icio.us on the Fediverse: save, tag, and discover useful links."
+                </p>
+                <p class="instance-layout__contact">
+                    "Want an account? "
+                    <a href="mailto:sp1ff@pobox.com?subject=indielinks%20account%20request">
+                        "Contact the administrator"
+                    </a>
+                    "."
+                </p>
             </section>
+            <InstanceDetails />
             <div class="instance-layout__panels">
-                <section class="content-panel">
-                    <RecentPosts />
-                </section>
-                <section class="content-panel">
-                    <TopKTags />
-                </section>
+                <RecentPosts />
+                <PopularTags />
             </div>
-            <section class="content-panel instance-layout__statistics">
-                <ClusterStats />
-            </section>
         </div>
     }
 }

@@ -15,7 +15,10 @@
 
 #![cfg(target_arch = "wasm32")]
 
+//! Shared presentation components used across the frontend routes.
+
 pub mod brand;
 pub mod dropdown;
+pub mod feedback;
 pub mod post;
 pub mod shell;

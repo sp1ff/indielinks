@@ -21,12 +21,13 @@ use leptos::{
     prelude::*,
 };
 use serde::{Deserialize, Serialize};
-use thaw::{Toast, ToastBody, ToastIntent, ToastOptions, ToastTitle, ToasterInjection};
+use thaw::{ToastIntent, ToasterInjection};
 use tracing::{error, info};
 
 use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
 use crate::{
+    components::feedback::show_toast,
     http::string_for_status,
     types::{Api, Base, Token, USER_AGENT},
 };
@@ -101,6 +102,7 @@ pub fn SignIn() -> impl IntoView {
     });
 
     let base = expect_context::<Base>().0;
+    let sign_up = StoredValue::new(format!("{base}/u"));
 
     Effect::new(move |_| {
         // Still figuring this out...
@@ -113,53 +115,73 @@ pub fn SignIn() -> impl IntoView {
             }
             Some(Err(err)) => {
                 info!("My effect has been invoked with an error value of {err:?}");
-                // set_error.set(Some(err))
-                let message = format!("{err}");
-                toaster.dispatch_toast(
-                    move || {
-                        view! {
-                            <Toast>
-                                <ToastTitle>"Login"</ToastTitle>
-                                <ToastBody>{message}</ToastBody>
-                            </Toast>
-                        }
-                    },
-                    ToastOptions::default().with_intent(ToastIntent::Error),
-                );
+                show_toast(toaster, ToastIntent::Error, "Sign in", err.to_string());
+                if let Some(username) = username_element.get() {
+                    let _ = username.focus();
+                }
             }
             None => info!("Effect invoked with no value!?"),
         }
     });
 
     view! {
-        <div class="flex items-center justify-around flex-col pt-[32px]" >
-            <form
-                class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center pt-4 border border-solid border-subtle p-8 text-muted"
-                on:submit=move |ev| {
-                  // If I don't say this, the damn page reloads before the HTTP call returns
-                  ev.prevent_default();
-                  on_submit.dispatch(());
-            }>
-                <label for="username">"Username:"</label>
-                <input autofocus required
-                    type="text"
-                    id="username" name="username"
-                    node_ref=username_element
-                    class="bg-transparent border-0 border-b outline-none focus:border-focus"
-                />
-                <label for="password">"Password:"</label>
-                <input required
-                    type="password"
-                    id="password" name="password"
-                    node_ref=password_element
-                    class="bg-transparent border-0 border-b outline-none focus:border-focus"
-                />
-                <input
-                    type="submit"
-                    value="Login"
-                    class="bg-transparent border px-4 py-2 hover:bg-brand-subtle hover:text-ink transition-colors cursor-pointer col-span-2 mx-auto focus:bg-brand-subtle"
-                />
-            </form>
+        <div class="authentication-page">
+            <section aria-labelledby="sign-in-heading" class="authentication-card">
+                <h1 class="authentication-card__heading" id="sign-in-heading">"Sign in"</h1>
+                <p class="authentication-card__introduction">
+                    "Sign in to manage your saved links and follow your network."
+                </p>
+                <form
+                    class="indielinks-form"
+                    on:submit=move |event| {
+                        event.prevent_default();
+                        if !on_submit.pending().get() {
+                            on_submit.dispatch(());
+                        }
+                    }
+                >
+                    <div class="form-field">
+                        <label class="form-field__label" for="username">"Username"</label>
+                        <input
+                            autofocus
+                            autocomplete="username"
+                            class="form-control"
+                            id="username"
+                            name="username"
+                            node_ref=username_element
+                            required
+                            type="text"
+                        />
+                    </div>
+                    <div class="form-field">
+                        <label class="form-field__label" for="password">"Password"</label>
+                        <input
+                            autocomplete="current-password"
+                            class="form-control"
+                            id="password"
+                            name="password"
+                            node_ref=password_element
+                            required
+                            type="password"
+                        />
+                    </div>
+                    <div class="form-actions">
+                        <button
+                            aria-busy=move || on_submit.pending().get().to_string()
+                            class="form-button form-button--primary"
+                            disabled=move || on_submit.pending().get()
+                            type="submit"
+                        >
+                            {move || if on_submit.pending().get() { "Signing in…" } else { "Sign in" }}
+                        </button>
+                    </div>
+                </form>
+                <p class="authentication-card__secondary">
+                    "Need an account? "
+                    <a href=sign_up.get_value()>"Request one"</a>
+                    "."
+                </p>
+            </section>
         </div>
     }
 }

@@ -89,11 +89,15 @@ use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
 use indielinks_fe::{
     add_link::AddLink,
-    components::shell::{Paths, Shell},
+    components::{
+        feedback::{LoadingPlacement, LoadingState},
+        shell::{Paths, Shell},
+    },
     http::{refresh_token, string_for_status},
     instance::Instance,
     personal::Personal,
     signin::SignIn,
+    signup::SignUp,
     theme,
     types::{Api, Base, PageSize, Token, USER_AGENT},
 };
@@ -178,7 +182,12 @@ fn App() -> impl IntoView {
                 // complete, but the future it demands must be send, and ultimately, the future
                 // returned by `refresh_token()` is not. Not sure what I want to use for a fallback,
                 // however.
-                <Suspense fallback=move || view! { <p>"Attempting a token refresh"</p> }>
+                <Suspense fallback=move || view! {
+                    <LoadingState
+                        label="Loading indielinks…"
+                        placement=LoadingPlacement::Startup
+                    />
+                }>
                     {
                         // This closure returns an `Option<impl IntoView>`, but because we're inside
                         // a `<Suspense>` component, the `None` case will never be returned.
@@ -196,6 +205,7 @@ fn App() -> impl IntoView {
                                             <Routes fallback=Instance>
                                                 <Route path=path!("/") view=Instance />
                                                 <Route path=path!("/s") view=SignIn />
+                                                <Route path=path!("/u") view=SignUp />
                                                 <ProtectedRoute
                                                     path=path!("/h")
                                                     // Some(true) means display, Some(false) means do *not* display, and
