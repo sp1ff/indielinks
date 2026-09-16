@@ -22,17 +22,18 @@ use leptos::{either::Either, prelude::*};
 /// Selects the compact mark or complete wordmark treatment.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Variant {
-    /// The four-tile mark with a visually hidden accessible name.
+    /// The linked-bookmarks mark with a visually hidden accessible name.
     Mark,
-    /// The four-tile mark followed by the visible wordmark.
+    /// The linked-bookmarks mark followed by the visible wordmark.
     #[default]
     Full,
 }
 
 /// Render the indielinks logo.
 ///
-/// The component's text supplies an accessible name when the logo is wrapped in a link. The SVG
-/// tiles are decorative and therefore hidden from assistive technology.
+/// The component's text supplies an accessible name when the logo is wrapped in a link. The two
+/// offset ribbons suggest both saved bookmarks and connected sites. The SVG is decorative and
+/// therefore hidden from assistive technology.
 #[component]
 pub fn Logo(#[prop(optional)] variant: Variant) -> impl IntoView {
     let wordmark = match variant {
@@ -46,15 +47,15 @@ pub fn Logo(#[prop(optional)] variant: Variant) -> impl IntoView {
         <span class="inline-flex items-center gap-2 text-ink">
             <svg
                 aria-hidden="true"
-                class="size-6 shrink-0 border border-subtle"
+                class="size-6 shrink-0"
                 focusable="false"
+                shape-rendering="crispEdges"
                 viewBox="0 0 24 24"
                 xmlns="http://www.w3.org/2000/svg"
             >
-                <rect class="fill-surface" height="12" width="12" x="0" y="0" />
-                <rect class="fill-heritage" height="12" width="12" x="12" y="0" />
-                <rect class="fill-ink" height="12" width="12" x="0" y="12" />
-                <rect class="fill-border-subtle" height="12" width="12" x="12" y="12" />
+                <path class="fill-ink" d="M2 4H12V22L7 18.5L2 22V4Z" />
+                <path class="fill-heritage" d="M9 2H22V20L15.5 16L9 20V2Z" />
+                <rect class="fill-surface" height="4" width="4" x="9" y="8" />
             </svg>
             {wordmark}
         </span>
