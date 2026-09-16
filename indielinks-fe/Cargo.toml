@@ -3,7 +3,12 @@ name = "indielinks-fe"
 version = "0.0.1"
 edition = "2024"
 
+# Only the pure theme model (`theme::model`) compiles off-wasm; everything else is a browser
+# dependency and is declared in the wasm32 target section below.
 [dependencies]
+snafu = "0.8.6"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
 chrono = { version = "0.4.41", features = ["serde"] }
 console_error_panic_hook = "0.1.7"
 futures = "0.3.31"
@@ -16,7 +21,6 @@ nonempty-collections = { version = "1.3.0", features = ["serde"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_urlencoded = "0.7.1"
 serde-wasm-bindgen = "0.6"
-snafu = "0.8.6"
 tap = "1.0.1"
 thaw = { git = "https://github.com/thaw-ui/thaw", branch = "thaw/v0.5", features = ["csr"] }
 tracing = "0.1.41"
@@ -26,7 +30,7 @@ url = { version = "2.5.4", features = ["serde"] }
 uuid = { version = "1.17.0", features = ["v4", "serde"] }
 wasm-bindgen = "0.2.100"
 wasm-cookies = "0.2.1"
-web-sys = "0.3.77"
+web-sys = { version = "0.3.77", features = ["Document", "Element", "EventTarget", "MediaQueryList", "MediaQueryListEvent", "Storage", "Window"] }
 reactive_stores = "0.4.2"
 send_wrapper = "0.6.0"
 secrecy = { version = "0.10.3", features = ["serde"] }

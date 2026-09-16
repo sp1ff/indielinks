@@ -25,7 +25,13 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_location;
 use thaw::Icon;
 
-use crate::components::brand::{Logo, Variant};
+use crate::{
+    components::{
+        brand::{Logo, Variant},
+        theme_control::ThemeControl,
+    },
+    theme::ThemeController,
+};
 
 /// URLs used by the application shell.
 ///
@@ -244,6 +250,7 @@ fn AccountControls(
 /// Persistent navigation shown to signed-in users at large widths.
 #[component]
 fn DesktopRail(paths: Paths, signed_in: Signal<bool>, on_sign_out: Callback<()>) -> impl IntoView {
+    let theme = expect_context::<ThemeController>();
     view! {
         <aside class="shell-rail">
             <BrandLink paths=paths.clone() variant=Variant::Full />
@@ -266,12 +273,19 @@ fn DesktopRail(paths: Paths, signed_in: Signal<bool>, on_sign_out: Callback<()>)
                 paths=paths.clone()
                 placement=Placement::Action
             />
-            <AccountControls
-                paths
-                signed_in
-                on_sign_out
-                class="shell-account--rail"
-            />
+            <div class="shell-rail__footer">
+                <ThemeControl
+                    availability=theme.availability()
+                    appearance=theme.appearance()
+                    on_toggle=theme.toggle()
+                />
+                <AccountControls
+                    paths
+                    signed_in
+                    on_sign_out
+                    class="shell-account--rail"
+                />
+            </div>
         </aside>
     }
 }
@@ -279,6 +293,7 @@ fn DesktopRail(paths: Paths, signed_in: Signal<bool>, on_sign_out: Callback<()>)
 /// Header used for guest views and for signed-in users below the desktop breakpoint.
 #[component]
 fn SiteHeader(paths: Paths, signed_in: Signal<bool>, on_sign_out: Callback<()>) -> impl IntoView {
+    let theme = expect_context::<ThemeController>();
     let pathname = use_location().pathname;
     let title_paths = paths.clone();
     let full_logo_paths = paths.clone();
@@ -321,6 +336,11 @@ fn SiteHeader(paths: Paths, signed_in: Signal<bool>, on_sign_out: Callback<()>) 
                             placement=Placement::Action
                         />
                     </Show>
+                    <ThemeControl
+                        availability=theme.availability()
+                        appearance=theme.appearance()
+                        on_toggle=theme.toggle()
+                    />
                     <AccountControls
                         paths=account_paths
                         signed_in

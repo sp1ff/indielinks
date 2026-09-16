@@ -47,6 +47,25 @@
 //!
 //! Each of these helped me tremendously.
 //!
+//! ## Operator Configuration
+//!
+//! The frontend is configured at *compile* time via environment variables; changing any of them
+//! requires rebuilding the WASM bundle:
+//!
+//! - `INDIELINKS_FE_API`: the public API base URL; defaults to `http://localhost:20679`
+//! - `INDIELINKS_PAGE_SIZE`: the number of items requested per page; defaults to `4`
+//! - `INDIELINKS_BASE`: the path at which the frontend is mounted; defaults to the empty string
+//! - `INDIELINKS_FE_DARK_THEME`: `true` (or unset) enables the dark-theme capability: the
+//!   frontend follows the operating system's `prefers-color-scheme` setting until the user makes
+//!   an explicit choice via the theme control, which is then persisted in that browser. `false`
+//!   forces the light theme and omits the theme control. Any other value fails the build.
+//!
+//! For example, to build a light-only bundle:
+//!
+//! ```bash
+//! INDIELINKS_FE_DARK_THEME=false trunk build --release
+//! ```
+//!
 //! To understand how a [Leptos] front end (or, at least, a CSR, SPA) works, the first step is to
 //! shift your mental model of the program's execution. No longer are we implementing a Unix process
 //! whose lifetime is conicident with the execution of `main()`. Rather, we're building a
@@ -98,13 +117,18 @@ use indielinks_fe::{
     personal::Personal,
     signin::SignIn,
     signup::SignUp,
-    theme,
+    theme::model::{Appearance, Availability},
+    theme::{self, InitialTheme, ThemeController},
     types::{Api, Base, PageSize, Token, USER_AGENT},
 };
 
 /// [App] is [indielinks-fe](crate) root component; `main()` will mount it as the DOM body.
+///
+/// `initial_theme` carries the pre-mount theme resolution performed by `main()`, so that the
+/// palette first rendered here is the same one already advertised by the document element's
+/// `data-theme` attribute.
 #[component]
-fn App() -> impl IntoView {
+fn App(initial_theme: InitialTheme) -> impl IntoView {
     // Setup the network location at which we can reach indielinks. In my world (the backend), this
     // would be a configuration item, typically provided by something as sophisticated as a
     // parameter management system, or as simple as a configuration file. In this world
@@ -139,7 +163,24 @@ fn App() -> impl IntoView {
     provide_context(Token::new(None));
     let token = expect_context::<Token>();
 
-    let visual_theme = RwSignal::new(theme::light());
+    // The application-wide theme controller: owns the stored preference, follows the operating
+    // system's color-scheme setting while no preference exists, and keeps the document element's
+    // `data-theme` attribute in step with the rendered palette.
+    let theme_controller = ThemeController::new(initial_theme);
+    provide_context(theme_controller);
+
+    // `ConfigProvider` consumes an `RwSignal<Theme>`; keep it in step with the controller's
+    // effective appearance.
+    let visual_theme = RwSignal::new(match initial_theme.appearance() {
+        Appearance::Light => theme::light(),
+        Appearance::Dark => theme::dark(),
+    });
+    Effect::new(move |_| {
+        visual_theme.set(match theme_controller.appearance().get() {
+            Appearance::Light => theme::light(),
+            Appearance::Dark => theme::dark(),
+        });
+    });
 
     // If I don't use a `LocalResource`; if I, say, just call `refresh_token()` directly in an
     // `Await` below, I get pages of warnings about the future not being Send (?)
@@ -252,6 +293,14 @@ fn main() {
     // trace that includes a line in the Rust source code
     // <https://book.leptos.dev/getting_started/leptos_dx.html>.
     console_error_panic_hook::set_once();
+    // Resolve the theme capability, any stored preference & the system color scheme *before*
+    // mounting, and tag the document element with the result, so that a saved dark preference
+    // never paints the complete light interface first. `build.rs` rejects invalid values of
+    // `INDIELINKS_FE_DARK_THEME` at build time, hence `expect` here.
+    let availability = Availability::from_compile_time(option_env!("INDIELINKS_FE_DARK_THEME"))
+        .expect("INDIELINKS_FE_DARK_THEME should have been validated at build time");
+    let initial_theme = InitialTheme::detect(availability);
+    initial_theme.apply_to_document();
     // Mount the `App` component as the document <body>:
-    leptos::mount::mount_to_body(App);
+    leptos::mount::mount_to_body(move || view! { <App initial_theme/> });
 }

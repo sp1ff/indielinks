@@ -13,13 +13,20 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-#![cfg(target_arch = "wasm32")]
+//! Build-time validation of the frontend's compile-time configuration.
+//!
+//! `INDIELINKS_FE_DARK_THEME` is consumed by the crate through `option_env!`; validating it here
+//! turns an operator mistake into a build failure with a clear diagnostic rather than a bundle
+//! that misbehaves after deployment.
 
-//! Shared presentation components used across the frontend routes.
+use std::env;
 
-pub mod brand;
-pub mod dropdown;
-pub mod feedback;
-pub mod post;
-pub mod shell;
-pub mod theme_control;
+fn main() {
+    println!("cargo:rerun-if-env-changed=INDIELINKS_FE_DARK_THEME");
+    if let Ok(value) = env::var("INDIELINKS_FE_DARK_THEME") {
+        assert!(
+            ["true", "false"].contains(&value.as_str()),
+            "invalid INDIELINKS_FE_DARK_THEME value `{value}`; expected `true` or `false`"
+        );
+    }
+}

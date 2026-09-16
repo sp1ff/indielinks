@@ -355,8 +355,8 @@ where
                        top: calc(100% + 4px); \
                        left: -4px; \
                        z-index: 10; \
-                       background: white; \
-                       border: 1px solid #ccc; \
+                       background: var(--colorNeutralBackground1); \
+                       border: 1px solid var(--colorNeutralStroke1); \
                        border-radius: 4px; \
                        padding: 4px 0; \
                        display: flex; \

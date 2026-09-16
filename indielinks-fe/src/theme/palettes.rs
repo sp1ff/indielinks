@@ -13,12 +13,14 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-#![cfg(target_arch = "wasm32")]
-
-//! The indielinks visual theme.
+//! # The light & dark palettes
 //!
-//! Thaw components and application-authored Tailwind classes share the CSS variables emitted by
-//! this theme. Keeping the palette here prevents the two styling systems from drifting apart.
+//! ## Introduction
+//!
+//! Both palettes are built from the same brand ramp and share typography, radii & timing
+//! customization ([customize]); only color and shadow choices differ. [light] is the canonical
+//! indielinks appearance: its values must remain unchanged. [dark] targets the design laid out in
+//! the dark-theme plan, with individual values tuned during browser review.
 
 use std::collections::HashMap;
 
@@ -27,9 +29,9 @@ use thaw::Theme;
 const SYSTEM_FONT: &str = "'Segoe UI', 'Segoe UI Web (West European)', ui-sans-serif, system-ui, \
                           -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue', sans-serif";
 
-/// Construct the indielinks light theme.
-pub fn light() -> Theme {
-    let brand_colors = HashMap::from([
+/// The indielinks brand ramp, shared by both palettes.
+fn brand_colors() -> HashMap<i32, &'static str> {
+    HashMap::from([
         (10, "#061333"),
         (20, "#0B1F52"),
         (30, "#102B70"),
@@ -46,9 +48,11 @@ pub fn light() -> Theme {
         (140, "#C0D0FA"),
         (150, "#DCE5FC"),
         (160, "#F1F5FE"),
-    ]);
-    let mut theme = Theme::custom_light(&brand_colors);
+    ])
+}
 
+/// Apply the typography, radii & timing customization common to both palettes.
+fn customize(theme: &mut Theme) {
     theme.common.set_font_family_base(SYSTEM_FONT.to_owned());
     theme.common.set_font_size_base_400("15px".to_owned());
     theme.common.set_border_radius_small("4px".to_owned());
@@ -60,6 +64,12 @@ pub fn light() -> Theme {
     theme.common.set_duration_normal("180ms".to_owned());
     theme.common.set_duration_gentle("220ms".to_owned());
     theme.common.set_duration_slow("250ms".to_owned());
+}
+
+/// Construct the indielinks light theme.
+pub fn light() -> Theme {
+    let mut theme = Theme::custom_light(&brand_colors());
+    customize(&mut theme);
 
     theme
         .color
@@ -169,6 +179,132 @@ pub fn light() -> Theme {
     theme
         .color
         .set_shadow64("0 8px 24px rgb(23 32 51 / 12%)".to_owned());
+
+    theme
+}
+
+/// Construct the indielinks dark theme.
+pub fn dark() -> Theme {
+    let mut theme = Theme::custom_dark(&brand_colors());
+    customize(&mut theme);
+
+    // Surfaces: a blue-tinted canvas, raised surfaces one step lighter, and subtle regions one
+    // step lighter still. Hover & pressed states move *up* the lightness scale, the reverse of
+    // the light palette.
+    theme
+        .color
+        .set_color_neutral_background_1("#161E2B".to_owned());
+    theme
+        .color
+        .set_color_neutral_background_1_hover("#1D2735".to_owned());
+    theme
+        .color
+        .set_color_neutral_background_1_pressed("#242F40".to_owned());
+    theme
+        .color
+        .set_color_neutral_background_3("#0F1520".to_owned());
+    theme
+        .color
+        .set_color_neutral_background_3_hover("#161E2B".to_owned());
+    theme
+        .color
+        .set_color_neutral_background_3_pressed("#1D2735".to_owned());
+    theme
+        .color
+        .set_color_neutral_background_4("#1D2735".to_owned());
+    theme
+        .color
+        .set_color_neutral_background_4_hover("#242F40".to_owned());
+    theme
+        .color
+        .set_color_neutral_background_4_pressed("#2A3648".to_owned());
+
+    theme
+        .color
+        .set_color_neutral_foreground_1("#EDF2F7".to_owned());
+    theme
+        .color
+        .set_color_neutral_foreground_1_hover("#EDF2F7".to_owned());
+    theme
+        .color
+        .set_color_neutral_foreground_1_pressed("#EDF2F7".to_owned());
+    theme
+        .color
+        .set_color_neutral_foreground_2("#A9B4C3".to_owned());
+    theme
+        .color
+        .set_color_neutral_foreground_2_hover("#C3CDDA".to_owned());
+    theme
+        .color
+        .set_color_neutral_foreground_2_pressed("#D7DEE8".to_owned());
+    theme
+        .color
+        .set_color_neutral_foreground_3("#A9B4C3".to_owned());
+    theme
+        .color
+        .set_color_neutral_foreground_on_brand("#FFFFFF".to_owned());
+
+    theme.color.set_color_neutral_stroke_1("#344154".to_owned());
+    theme
+        .color
+        .set_color_neutral_stroke_1_hover("#42506B".to_owned());
+    theme
+        .color
+        .set_color_neutral_stroke_1_pressed("#536284".to_owned());
+    theme.color.set_color_neutral_stroke_2("#344154".to_owned());
+    theme
+        .color
+        .set_color_neutral_stroke_accessible("#A9B4C3".to_owned());
+    theme
+        .color
+        .set_color_neutral_stroke_accessible_hover("#C3CDDA".to_owned());
+    theme
+        .color
+        .set_color_neutral_stroke_accessible_pressed("#D7DEE8".to_owned());
+
+    // Primary actions stay recognizably blue with white text; links & other brand foregrounds
+    // move up the brand ramp to retain contrast against dark surfaces.
+    theme.color.set_color_brand_background("#2563EB".to_owned());
+    theme
+        .color
+        .set_color_brand_background_hover("#3B73EE".to_owned());
+    theme
+        .color
+        .set_color_brand_background_pressed("#1D4ED8".to_owned());
+    theme
+        .color
+        .set_color_brand_background_2("#1A2740".to_owned());
+    theme
+        .color
+        .set_color_brand_foreground_1("#88AAF6".to_owned());
+    theme
+        .color
+        .set_color_brand_foreground_2("#A5BDF8".to_owned());
+    theme
+        .color
+        .set_color_brand_foreground_link("#88AAF6".to_owned());
+    theme
+        .color
+        .set_color_brand_foreground_link_hover("#A5BDF8".to_owned());
+    theme
+        .color
+        .set_color_brand_foreground_link_pressed("#C0D0FA".to_owned());
+    theme.color.set_color_brand_stroke_1("#88AAF6".to_owned());
+    theme.color.set_color_stroke_focus_2("#88AAF6".to_owned());
+
+    // Darker, lower-opacity shadows, so overlays separate from the canvas without a light halo.
+    theme
+        .color
+        .set_color_neutral_shadow_ambient("rgb(0 0 0 / 40%)".to_owned());
+    theme
+        .color
+        .set_color_neutral_shadow_key("rgb(0 0 0 / 40%)".to_owned());
+    theme
+        .color
+        .set_shadow16("0 8px 24px rgb(0 0 0 / 40%)".to_owned());
+    theme
+        .color
+        .set_shadow64("0 8px 24px rgb(0 0 0 / 40%)".to_owned());
 
     theme
 }

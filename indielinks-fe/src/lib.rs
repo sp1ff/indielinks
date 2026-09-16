@@ -13,19 +13,32 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-#![cfg(target_arch = "wasm32")]
-
 //! Route modules, shared components, and client-side services for the indielinks frontend.
+//!
+//! Almost everything in this crate only makes sense in the browser, so all modules except
+//! [theme] are compiled only for `wasm32`. The theme module's pure [model](theme::model) is
+//! compiled on every target so that its logic can be unit-tested on the host via
+//! `cargo test -p indielinks-fe --lib`.
 
+#[cfg(target_arch = "wasm32")]
 #[path = "add-link.rs"]
 pub mod add_link;
+#[cfg(target_arch = "wasm32")]
 pub mod components;
+#[cfg(target_arch = "wasm32")]
 pub mod feeds;
+#[cfg(target_arch = "wasm32")]
 pub mod home;
+#[cfg(target_arch = "wasm32")]
 pub mod http;
+#[cfg(target_arch = "wasm32")]
 pub mod instance;
+#[cfg(target_arch = "wasm32")]
 pub mod personal;
+#[cfg(target_arch = "wasm32")]
 pub mod signin;
+#[cfg(target_arch = "wasm32")]
 pub mod signup;
 pub mod theme;
+#[cfg(target_arch = "wasm32")]
 pub mod types;
