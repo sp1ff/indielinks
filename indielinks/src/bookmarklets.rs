@@ -296,10 +296,10 @@ struct SaveRequest {
 
 // This implementation has a few drawbacks:
 //
-// - it will work in production only; the `/fe` prefix is, at this point, hard-coded so we're safe
-//   there, but if you're using `trunk` to serve a development build, this won't work. I suppose I
-//   could introduce some bit of state/configuration denoting whether we're serving the front end
-//   from the indielinks `/fe` endpoint or somewhere else, which both seems inelegant and inferior
+// - it will work in production only; the front end is served by the backend at the origin root, so
+//   we can simply reference `/style.css` here, but if you're using `trunk` to serve a development
+//   build, this won't work. I suppose I could introduce some bit of state/configuration denoting
+//   whether we're serving the front end ourselves or not, which both seems inelegant and inferior
 //   to the solution enabled by the next point...
 //
 // - since tailwind will never see these class names (under the current project configuration), we
@@ -316,7 +316,7 @@ struct SaveRequest {
 /// <head>
 ///     <meta charset="UTF-8">
 ///     <title>Save to indielinks</title>
-///     <link rel="stylesheet" href="/fe/style.css"/>
+///     <link rel="stylesheet" href="/style.css"/>
 /// </head>
 /// <body class="pt-[32px]">
 ///     <form method="POST" action="add" class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 items-center w-full max-w-lg min-w-64 mx-auto border border-solid border-sky-100 p-8 text-gray-600">

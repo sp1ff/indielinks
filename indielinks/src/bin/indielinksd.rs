@@ -661,43 +661,29 @@ define_metric! { "frontend.asset.successes", frontend_asset_successes, Sort::Int
 define_metric! { "frontend.asset.404s", frontend_asset_404s, Sort::IntegralCounter }
 define_metric! { "frontend.asset.failures", frontend_asset_failures, Sort::IntegralCounter }
 
-/// Serve the front end
+/// Read the front-end asset `asset` from `assets`
 ///
-/// This is a quick & easy way to deploy [indielinks-fe]: just serve it from an endpoint on this
-/// service. Not sure if I'm going to stick with this long-term.
-async fn frontend(
-    State(state): State<Arc<Indielinks>>,
-    file: Option<axum::extract::Path<PathBuf>>,
-) -> axum::response::Response {
-    fn frontend1(assets: &Path, file: &PathBuf) -> Result<Vec<u8>> {
-        // Not sure I like this, but I don't see how else to handle requests for, say "/h?tag=blog".
-        // I suppose once the list of URLs recognized by the SPA stabilizes, I could check for them
-        // & 404 anything else.
-        let mut p = [assets.as_os_str(), file.as_os_str()]
-            .iter()
-            .collect::<PathBuf>();
-        if !fs::exists(&p).unwrap_or(false) {
-            p = assets.join("index.html");
-        }
-
-        fs::read(&p)
-            .map_err(|err| {
+/// We only serve plain files from the top level of the assets directory; anything else (in
+/// particular, anything containing parent references) is treated as "not found".
+fn read_asset(assets: &Path, asset: &Path) -> Result<Vec<u8>> {
+    let mut components = asset.components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) => {
+            fs::read(assets.join(asset)).map_err(|err| {
                 if err.kind() == io::ErrorKind::NotFound {
-                    Error::AssetNotFound {
-                        asset: file.clone(),
-                    }
+                    AssetNotFoundSnafu { asset }.build()
                 } else {
-                    AssetSnafu { asset: file }.into_error(err)
+                    AssetSnafu { asset }.into_error(err)
                 }
-            })?
-            .pipe(Ok)
+            })
+        }
+        _ => AssetNotFoundSnafu { asset }.fail(),
     }
+}
 
-    let file = file
-        .unwrap_or(axum::extract::Path(PathBuf::from("index.html")))
-        .0;
-
-    match frontend1(&state.assets, &file) {
+/// Build an HTTP response for the front-end asset at `file` under `assets`
+fn frontend_response(assets: &Path, file: &Path) -> axum::response::Response {
+    match read_asset(assets, file) {
         Ok(body) => {
             let mut rsp = axum::response::Response::builder().status(http::StatusCode::OK);
             if let Some(Some(header_value)) = file.extension().map(|ext| CONTENT_TYPES.get(ext)) {
@@ -708,7 +694,7 @@ async fn frontend(
                 &[KeyValue::new("asset", file.to_string_lossy().into_owned())],
             );
             rsp.status(http::StatusCode::OK).body(body.into()).expect(
-                "Failed to construct a response from /fe. This is a bug & should be investigated",
+                "Failed to construct a front-end response. This is a bug & should be investigated",
             )
         }
         Err(Error::AssetNotFound { .. }) => {
@@ -727,6 +713,40 @@ async fn frontend(
             http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+/// Serve the front end's SPA document (`index.html`)
+async fn frontend_index(State(assets): State<PathBuf>) -> axum::response::Response {
+    frontend_response(&assets, Path::new("index.html"))
+}
+
+/// Serve a front-end asset, or 404 if the file doesn't exist
+async fn frontend_asset(
+    State(assets): State<PathBuf>,
+    axum::extract::Path(file): axum::extract::Path<PathBuf>,
+) -> axum::response::Response {
+    frontend_response(&assets, &file)
+}
+
+/// Make the [Router] serving the front end from the origin root
+///
+/// This is a quick & easy way to deploy [indielinks-fe]: just serve it from this service. `GET /`
+/// serves the SPA document (`index.html`), as do the SPA's client-side routes (so that direct
+/// navigation & browser refresh work). Its assets (JS & WASM bundles, stylesheet, &c) are served
+/// from root URLs; anything else is a 404 -- in particular, unknown API or federation paths must
+/// *not* receive the SPA document.
+///
+/// [indielinks-fe]: https://github.com/sp1ff/indielinks
+fn make_frontend_router<S>(assets: PathBuf) -> Router<S> {
+    Router::new()
+        .route("/", get(frontend_index))
+        // Client-side routes used by the current Leptos router (cf. indielinks-fe)
+        .route("/s", get(frontend_index))
+        .route("/h", get(frontend_index))
+        .route("/a", get(frontend_index))
+        .route("/u", get(frontend_index))
+        .route("/{file}", get(frontend_asset))
+        .with_state(assets)
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -759,11 +779,8 @@ fn make_world_router(state: Arc<Indielinks>, header_blacklist: Option<&HeaderBla
 
     Router::new()
         .route("/healthcheck", get(healthcheck))
-        // It's *really* irritating that I need to specify three separate routes to handle each of
-        // these cases, but here we are. At least I only need to implement one handler.
-        .route("/fe", get(frontend))
-        .route("/fe/", get(frontend))
-        .route("/fe/{file}", get(frontend))
+        // The front end is mounted at the origin root
+        .merge(make_frontend_router(state.assets.clone()))
         .route(
             "/.well-known/webfinger",
             get(webfinger).layer(CorsLayer::permissive()),
@@ -1774,4 +1791,139 @@ A UUID identifying this indielinks instance in a cluster. If not given, a random
     tokio::runtime::Runtime::new()
         .context(TokioRuntimeSnafu)?
         .block_on(go_async(opts, bootstrap_logging_guard)) // and start our server!
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    use tempfile::TempDir;
+    use tower::ServiceExt;
+
+    /// Write a minimal front end to a temporary directory & return it (the caller must keep the
+    /// [TempDir] alive while exercising the router)
+    fn frontend_assets() -> TempDir {
+        let dir = TempDir::new().expect("a temporary directory should be created");
+        fs::write(dir.path().join("index.html"), "<html>the SPA</html>")
+            .expect("index.html should be written");
+        fs::write(dir.path().join("style.css"), "body { color: red; }")
+            .expect("style.css should be written");
+        fs::write(dir.path().join("indielinks-fe.js"), "console.log(1);")
+            .expect("the JS bundle should be written");
+        fs::write(dir.path().join("indielinks-fe_bg.wasm"), b"\0asm")
+            .expect("the WASM bundle should be written");
+        dir
+    }
+
+    /// Request `uri` from a fresh front-end router serving `assets`
+    async fn fetch(assets: &Path, uri: &str) -> axum::response::Response {
+        let router: Router = make_frontend_router(assets.to_path_buf());
+        router
+            .oneshot(
+                axum::extract::Request::builder()
+                    .uri(uri)
+                    .body(axum::body::Body::empty())
+                    .expect("the request should build"),
+            )
+            .await
+            .expect("the router should respond")
+    }
+
+    async fn body_string(rsp: axum::response::Response) -> String {
+        axum::body::to_bytes(rsp.into_body(), usize::MAX)
+            .await
+            .map(|body| String::from_utf8(body.to_vec()).expect("the body should be UTF-8"))
+            .expect("the body should be readable")
+    }
+
+    #[tokio::test]
+    async fn root_serves_the_spa_document() {
+        let dir = frontend_assets();
+        let rsp = fetch(dir.path(), "/").await;
+        assert_eq!(rsp.status(), StatusCode::OK);
+        assert_eq!(
+            rsp.headers().get(http::header::CONTENT_TYPE),
+            Some(&HeaderValue::from_static("text/html")),
+        );
+        assert_eq!(body_string(rsp).await, "<html>the SPA</html>");
+    }
+
+    #[tokio::test]
+    async fn client_side_routes_serve_the_spa_document() {
+        let dir = frontend_assets();
+        for route in ["/s", "/h", "/a", "/u"] {
+            let rsp = fetch(dir.path(), route).await;
+            assert_eq!(rsp.status(), StatusCode::OK, "GET {route}");
+            assert_eq!(
+                body_string(rsp).await,
+                "<html>the SPA</html>",
+                "GET {route}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn assets_are_served_with_their_content_types() {
+        let dir = frontend_assets();
+        for (uri, content_type, body) in [
+            ("/style.css", "text/css", "body { color: red; }"),
+            ("/indielinks-fe.js", "text/javascript", "console.log(1);"),
+            ("/indielinks-fe_bg.wasm", "application/wasm", "\0asm"),
+        ] {
+            let rsp = fetch(dir.path(), uri).await;
+            assert_eq!(rsp.status(), StatusCode::OK, "GET {uri}");
+            assert_eq!(
+                rsp.headers().get(http::header::CONTENT_TYPE),
+                Some(&HeaderValue::from_static(content_type)),
+                "GET {uri}",
+            );
+            assert_eq!(body_string(rsp).await, body, "GET {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_paths_are_404s() {
+        let dir = frontend_assets();
+        for uri in [
+            // The retired mount point is gone, without a redirect
+            "/fe",
+            // Unknown API & federation paths must not receive the SPA document
+            "/api",
+            "/inbox/nonexistent",
+            // Missing assets are simply 404s
+            "/nope.js",
+        ] {
+            let rsp = fetch(dir.path(), uri).await;
+            assert_eq!(rsp.status(), StatusCode::NOT_FOUND, "GET {uri}");
+            assert_ne!(body_string(rsp).await, "<html>the SPA</html>", "GET {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn parent_references_are_404s() {
+        let dir = frontend_assets();
+        for uri in ["/..", "/..%2F..%2Fetc%2Fpasswd"] {
+            let rsp = fetch(dir.path(), uri).await;
+            assert_eq!(rsp.status(), StatusCode::NOT_FOUND, "GET {uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn server_routes_take_precedence_over_the_asset_wildcard() {
+        let dir = frontend_assets();
+        let router: Router = Router::new()
+            .route("/healthcheck", get(|| async { StatusCode::ACCEPTED }))
+            .merge(make_frontend_router(dir.path().to_path_buf()));
+        let rsp = router
+            .oneshot(
+                axum::extract::Request::builder()
+                    .uri("/healthcheck")
+                    .body(axum::body::Body::empty())
+                    .expect("the request should build"),
+            )
+            .await
+            .expect("the router should respond");
+        assert_eq!(rsp.status(), StatusCode::ACCEPTED);
+    }
 }

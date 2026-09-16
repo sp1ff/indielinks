@@ -150,7 +150,8 @@ fn App(initial_theme: InitialTheme) -> impl IntoView {
     ));
 
     // Finally, this is where we "mount" this frontend. When developing against Trunk, this will
-    // just be "", but as of the time of this writing, it is served by the backend at "/fe"
+    // just be ""; the backend now serves the front end at the origin root, so production builds
+    // use "" as well.
     provide_context(Base(
         option_env!("INDIELINKS_BASE").unwrap_or("").to_owned(),
     ));
