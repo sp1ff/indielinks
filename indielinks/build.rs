@@ -19,9 +19,10 @@ fn export_toml(
     source_ncl: &str,
     target_toml: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Merge the development-only credentials into the (secrets-free) generated configuration
     let expr = ctx
         .eval_deep_for_export(&format!(
-            r#"let stacks = import "stacks.ncl" in (import "{source_ncl}") stacks."{stack}""#
+            r#"let stacks = import "stacks.ncl" in ((import "{source_ncl}") stacks."{stack}") & {{ pepper = (import "dev-peppers.ncl") }} & (import "dev-signing-keys.ncl")"#
         ))
         .map_err(|err| format!("{err:?}"))?;
     std::fs::write(
@@ -39,9 +40,11 @@ fn export_cluster_toml(
     backend: &str,
     target_dir: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Merge the development-only credentials into each (secrets-free) generated node
+    // configuration
     let expr = ctx
         .eval_deep_for_export(&format!(
-            r#"let stacks = import "stacks.ncl" in (import "{source_ncl}") stacks."{stack}""#
+            r#"let stacks = import "stacks.ncl" in std.array.map (fun node => node & {{ pepper = (import "dev-peppers.ncl") }} & (import "dev-signing-keys.ncl")) ((import "{source_ncl}") stacks."{stack}")"#
         ))
         .map_err(|err| format!("{err:#?}"))?;
     let arr = expr
@@ -54,6 +57,31 @@ fn export_cluster_toml(
                 .map_err(|err| format!("{err:#?}"))
                 .and_then(|toml| {
                     std::fs::write(format!("{target_dir}/{stem}-{backend}-{i}.toml"), &toml)
+                        .map_err(|err| format!("{err:#?}"))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.into())
+        .map(|_| ())
+}
+
+/// Export the AWS production configuration (three nodes; no secrets, no stack)
+fn export_aws_toml(ctx: &mut nickel_lang::Context) -> Result<(), Box<dyn std::error::Error>> {
+    let target_dir = "../target/conf/aws/";
+    std::fs::create_dir_all(target_dir)?;
+    let expr = ctx
+        .eval_deep_for_export(r#"import "indielinksd-aws.ncl""#)
+        .map_err(|err| format!("{err:#?}"))?;
+    let arr = expr
+        .as_array()
+        .ok_or("Source Nickel didn't evaluate to an array?")?;
+    arr.iter()
+        .enumerate()
+        .map(|(i, expr)| {
+            ctx.expr_to_toml(&expr)
+                .map_err(|err| format!("{err:#?}"))
+                .and_then(|toml| {
+                    std::fs::write(format!("{target_dir}indielinksd-aws-{i}.toml"), &toml)
                         .map_err(|err| format!("{err:#?}"))
                 })
         })
@@ -134,7 +162,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "alternator-backend.ncl",
         "scylla-backend.ncl",
         "indielinksd-common.ncl",
-        "peppers.ncl",
+        "dev-peppers.ncl",
+        "dev-signing-keys.ncl",
+        "indielinksd-aws.ncl",
         "indielinksd-front-matter.ncl",
         "indielinksd-front-matter-clustered.ncl",
         "indielinksd-single-node-alternator.ncl",
@@ -151,6 +181,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ["master", "bugfix", "front-end", "pre-alpha", "cloud"]
         .into_iter()
         .map(|stack| configure_stack(&mut ctx, stack))
-        .collect::<Result<Vec<_>, _>>()
-        .map(|_| ())
+        .collect::<Result<Vec<_>, _>>()?;
+    export_aws_toml(&mut ctx)
 }

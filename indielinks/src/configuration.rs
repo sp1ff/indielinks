@@ -26,8 +26,10 @@ use std::{
 
 use chrono::Duration;
 use clap::crate_version;
+use either::Either;
 use http::HeaderName;
 use indielinks_shared::{
+    entities::SsmParameter,
     origin::{NetLoc, Origin},
     service::ExponentialBackoffParameters,
 };
@@ -106,8 +108,11 @@ pub struct SigningKeysConfig {
     pub token_lifetime: Duration,
     #[serde(rename = "refresh-token-lifetime")]
     pub refresh_token_lifetime: Duration,
+    /// The signing keys themselves, or the name of the SSM Parameter Store parameter from which
+    /// they are to be fetched
     #[serde(rename = "signing-keys")]
-    pub signing_keys: Option<SigningKeys>,
+    #[serde(with = "either::serde_untagged")]
+    pub signing_keys: Either<SsmParameter, SigningKeys>,
 }
 
 impl Default for SigningKeysConfig {
@@ -115,7 +120,7 @@ impl Default for SigningKeysConfig {
         SigningKeysConfig {
             token_lifetime: Duration::minutes(5),
             refresh_token_lifetime: Duration::hours(36),
-            signing_keys: None,
+            signing_keys: Either::Right(SigningKeys::default()),
         }
     }
 }
@@ -254,7 +259,10 @@ pub struct ConfigV1 {
     /// The address at which this [indielinks](crate) instance may be reached from the public internet
     #[serde(rename = "public-origin")]
     pub public_origin: Origin,
-    pub pepper: Option<Peppers>,
+    /// The peppers, or the name of the SSM Parameter Store parameter from which they are to be
+    /// fetched
+    #[serde(with = "either::serde_untagged")]
+    pub pepper: Either<SsmParameter, Peppers>,
     #[serde(rename = "signing-keys")]
     pub signing_keys: SigningKeysConfig,
     #[serde(rename = "users-config")]
@@ -304,7 +312,7 @@ impl Default for ConfigV1 {
             raft_grpc_address: "0.0.0.0:20681".parse::<SocketAddr>().unwrap(/* known good */),
             storage_config: StorageConfig::default(),
             public_origin: "http://localhost:20679".parse::<Origin>().unwrap(/* known good */),
-            pepper: None,
+            pepper: Either::Right(Peppers::default()),
             signing_keys: SigningKeysConfig::default(),
             users_config: UsersConfiguration::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
@@ -327,4 +335,153 @@ impl Default for ConfigV1 {
 pub enum Configuration {
     #[serde(rename = "1")]
     V1(ConfigV1),
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// TOML for a complete `ConfigV1`, parameterized on the pepper & signing-keys definitions so
+    /// that each `Either` arm can be exercised
+    fn full_config(pepper: &str, signing_keys: &str) -> String {
+        [
+            r##"version = "1"
+log-file = "/tmp/indielinksd.log"
+public-address = "0.0.0.0:20676"
+private-address = "127.0.0.1:20677"
+raft-grpc-address = "0.0.0.0:20678"
+user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
+collection-page-size = 64
+
+"##,
+            pepper,
+            r##"
+
+[signing-keys]
+token-lifetime = [300, 0]
+refresh-token-lifetime = [129600, 0]
+"##,
+            signing_keys,
+            r##"
+
+[storage-config.Dynamo]
+location = "us-west-2"
+
+[public-origin]
+scheme = "http"
+port = 20676
+[public-origin.host]
+RegName = "indiemark.local"
+
+[users-config]
+same-site = "Lax"
+secure-cookies = true
+allowed-origins = []
+
+[background-tasks]
+default-timeout = { secs = 5, nanos = 0 }
+max-concurrent-tasks = 16
+sleep-duration = { secs = 1, nanos = 0 }
+shutdown-timeout = { secs = 0, nanos = 500000000 }
+pickup-timeout = { secs = 1, nanos = 0 }
+
+[raft-config]
+cluster-name = "indielinks"
+this-node = 0
+heartbeat-interval = { secs = 0, nanos = 200000000 }
+election-timeout-min = { secs = 0, nanos = 600000000 }
+election-timeout-max = { secs = 1, nanos = 200000000 }
+snapshot-policy = { LogsSinceLast = 5000 }
+
+[client-exponential-backoff]
+jitter = 10
+num-attempts = 3
+[client-exponential-backoff.durations.min]
+secs = 1
+nanos = 0
+[client-exponential-backoff.durations.max]
+secs = 3
+nanos = 0
+
+[client-configuration]
+timeout = [5, 0]
+[client-configuration.rate-limits]
+per-hour = 5760
+custom = []
+
+[local-client-configuration]
+timeout = [2, 0]
+[local-client-configuration.rate-limits]
+per-hour = 8320
+custom = []
+
+[general-purpose-client-configuration]
+timeout = [3, 0]
+[general-purpose-client-configuration.rate-limits]
+per-hour = 2880
+custom = []
+"##,
+        ]
+        .concat()
+    }
+
+    fn parse(text: &str) -> ConfigV1 {
+        match toml::from_str::<Configuration>(text)
+            .expect("the TOML should parse as a `Configuration`")
+        {
+            Configuration::V1(cfg) => cfg,
+        }
+    }
+
+    #[test]
+    fn inline_secrets_parse_as_right_arms() {
+        let cfg = parse(&full_config(
+            r#"pepper = { peppers = { "pepper-ver:20250213" = [178, 145, 72, 52, 77, 95, 211, 126, 89, 113, 87, 145, 221, 0, 50, 146, 98, 233, 25, 119, 109, 174, 75, 91, 106, 171, 0, 103, 14, 140, 244, 54] } }"#,
+            r#"signing-keys = { keys = { "keyid:20250214" = [207, 30, 37, 178, 222, 42, 68, 222, 209, 206, 199, 250, 219, 94, 3, 163, 30, 21, 161, 140, 1, 170, 140, 187, 185, 228, 47, 177, 215, 11, 196, 152, 221, 128, 208, 77, 104, 247, 28, 178, 207, 241, 6, 239, 71, 11, 22, 221, 105, 152, 60, 109, 121, 214, 201, 12, 252, 96, 19, 160, 95, 124, 100, 234] } }"#,
+        ));
+        assert!(
+            matches!(cfg.pepper, Either::Right(_)),
+            "inline peppers should parse as the `Right` arm"
+        );
+        assert!(
+            matches!(cfg.signing_keys.signing_keys, Either::Right(_)),
+            "inline signing keys should parse as the `Right` arm"
+        );
+    }
+
+    #[test]
+    fn ssm_parameter_names_parse_as_left_arms() {
+        let cfg = parse(&full_config(
+            r#"pepper = "/indielinks/prod/peppers""#,
+            r#"signing-keys = "/indielinks/prod/signing-keys""#,
+        ));
+        assert!(
+            matches!(&cfg.pepper, Either::Left(name) if name.as_ref() == "/indielinks/prod/peppers"),
+            "an SSM parameter name should parse as the `Left` arm"
+        );
+        assert!(
+            matches!(&cfg.signing_keys.signing_keys, Either::Left(name) if name.as_ref() == "/indielinks/prod/signing-keys"),
+            "an SSM parameter name should parse as the `Left` arm"
+        );
+    }
+
+    #[test]
+    fn missing_secrets_are_rejected() {
+        assert!(
+            toml::from_str::<Configuration>(&full_config(
+                "",
+                r#"signing-keys = "/indielinks/prod/signing-keys""#
+            ))
+            .is_err(),
+            "a configuration omitting `pepper` should be rejected"
+        );
+        assert!(
+            toml::from_str::<Configuration>(&full_config(
+                r#"pepper = "/indielinks/prod/peppers""#,
+                ""
+            ))
+            .is_err(),
+            "a configuration omitting `signing-keys.signing-keys` should be rejected"
+        );
+    }
 }

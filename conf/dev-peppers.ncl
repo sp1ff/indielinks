@@ -21,9 +21,11 @@
 # `indielinks/src/_docs.rs`. The assorted TOML configuration files are generated
 # in the salient `build.rs` files.
 #
-# This particular Nickel file contains a bit of state shared among all
-# indielinkd configuration files, as well as `smoke-tests` configuration files:
-# the peppers in use (for peppering user passwords).
+# This particular Nickel file contains the *development-only* peppers in use
+# (for peppering user passwords), shared among the generated development-stack
+# indielinksd configuration files as well as `smoke-tests` configuration
+# files. It is merged into development configurations by `indielinks/build.rs`;
+# production deployments reference their secrets by SSM parameter name instead.
 {
     peppers = {
         "pepper-ver:20250213" = [

@@ -3712,6 +3712,7 @@ dependencies = [
  "scylla",
  "secrecy 0.10.3",
  "serde",
+ "serde_json",
  "snafu",
  "tap",
  "time",
