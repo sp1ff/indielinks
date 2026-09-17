@@ -94,6 +94,8 @@ pub enum Error {
         source: rsa::errors::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("{text} is not a valid SSM parameter name"))]
+    SsmParameter { text: String, backtrace: Backtrace },
     #[snafu(display("{text} is not a valid tag name"))]
     Tagname { text: String, backtrace: Backtrace },
     #[snafu(display("Failed to parse {text} as an URL: {source}"))]
@@ -527,8 +529,110 @@ impl TryFrom<String> for UserEmail {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                            StorUrl                                             //
+//                                          SsmParameter                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// A refined type representing an AWS Systems Manager Parameter Store parameter name
+///
+/// The daemon's secrets (peppers & signing keys) may be referenced in configuration by the name of
+/// the SSM parameter from which they are to be fetched, rather than being written-down on disk.
+/// This type refines [String] to legal hierarchical parameter names.
+// <https://docs.aws.amazon.com/cli/latest/reference/ssm/put-parameter.html>:
+//
+// - Allowed characters: letters, numbers, and _ . - only (a-zA-Z0-9_.-). The / character is
+// reserved separately, for hierarchy delineation.
+// - Case-sensitive, and must be unique within a region.
+// - No spaces — leading/trailing spaces get silently stripped by the service.
+// - Can't be prefixed with aws or ssm (case-insensitive) — those prefixes are reserved for
+// Amazon/service-created parameters.
+// - Hierarchies use a leading /, e.g. /Dev/Production/East/Project-ABC/MyParameter. Max hierarchy
+// depth is 15 levels.
+// - Length: standard tier allows up to 1011 characters per fully-qualified name (2048 for
+// advanced-tier parameters).
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SsmParameter(String);
+
+impl SsmParameter {
+    pub fn new(name: String) -> Result<Self> {
+        if [
+            |n: &str| {
+                !n.bytes().all(|x| {
+                    x.is_ascii_alphanumeric() || x == b'_' || x == b'-' || x == b'.' || x == b'/'
+                })
+            },
+            |n: &str| n.contains(" "),
+            |n: &str| n.starts_with("aws") || n.starts_with("ssm"),
+            |n: &str| n.chars().filter(|x| *x == '/').count() > 15,
+            |n: &str| n.is_empty() || n.len() > 1011,
+            |n: &str| n.contains("/") && !n.starts_with("/"),
+            |n: &str| n == "/",
+        ]
+        .iter()
+        .any(|check| check(&name))
+        {
+            SsmParameterSnafu { text: name }.fail()
+        } else {
+            Ok(Self(name))
+        }
+    }
+    // panics on invalid
+    pub fn from_static(name: &'static str) -> Self {
+        Self::new(name.to_owned()).expect("{name} is not a valid parameter name")
+    }
+}
+
+impl<'de> Deserialize<'de> for SsmParameter {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Self, D::Error> {
+        <String as serde::Deserialize>::deserialize(deserializer)?
+            .parse::<SsmParameter>()
+            .map_err(mk_serde_de_err::<'de, D>)
+    }
+}
+
+impl TryFrom<String> for SsmParameter {
+    type Error = Error;
+    fn try_from(value: String) -> Result<Self> {
+        SsmParameter::new(value)
+    }
+}
+
+impl TryFrom<&str> for SsmParameter {
+    type Error = Error;
+    fn try_from(value: &str) -> Result<Self> {
+        SsmParameter::new(value.to_owned())
+    }
+}
+
+impl FromStr for SsmParameter {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self> {
+        SsmParameter::new(s.to_owned())
+    }
+}
+
+impl From<SsmParameter> for String {
+    fn from(b: SsmParameter) -> String {
+        b.0
+    }
+}
+
+impl From<&SsmParameter> for String {
+    fn from(value: &SsmParameter) -> Self {
+        value.0.clone()
+    }
+}
+
+impl AsRef<str> for SsmParameter {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SsmParameter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// Newtype to work around Rust's orphaned traits rule
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -769,6 +873,23 @@ impl TryFrom<String> for Tagname {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn ssm_parameter() {
+        assert!(SsmParameter::new("/indielinks/prod/peppers".to_owned()).is_ok());
+        assert!(SsmParameter::new("/indielinks/prod/signing-keys".to_owned()).is_ok());
+        assert!(SsmParameter::new("/a".to_owned()).is_ok());
+        // Empty, missing the leading slash, bare slash, and out-of-charset characters are all
+        // rejected
+        assert!(SsmParameter::new("".to_owned()).is_err());
+        assert!(SsmParameter::new("indielinks/prod/peppers".to_owned()).is_err());
+        assert!(SsmParameter::new("/".to_owned()).is_err());
+        assert!(SsmParameter::new("/indielinks prod peppers".to_owned()).is_err());
+        assert!(SsmParameter::new("/indielinks%2Fprod".to_owned()).is_err());
+        // Deserialization applies the same validation
+        assert!(serde_json::from_str::<SsmParameter>("\"/indielinks/prod/peppers\"").is_ok());
+        assert!(serde_json::from_str::<SsmParameter>("\"indielinks/prod/peppers\"").is_err());
+    }
 
     #[test]
     fn tagname() {

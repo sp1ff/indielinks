@@ -1926,4 +1926,60 @@ mod test {
             .expect("the router should respond");
         assert_eq!(rsp.status(), StatusCode::ACCEPTED);
     }
+
+    /// The three generated AWS configuration files (written to `target/conf/aws` by this crate's
+    /// build script) must parse as `Configuration` and carry the expected production values
+    #[test]
+    fn aws_configuration_files_parse() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/conf/aws");
+        let mut this_nodes = Vec::new();
+        for i in 0..3 {
+            let text = fs::read_to_string(dir.join(format!("indielinksd-aws-{i}.toml")))
+                .expect("the generated AWS configuration should be readable");
+            let cfg = match toml::from_str::<Configuration>(&text)
+                .expect("the AWS configuration should parse as a `Configuration`")
+            {
+                Configuration::V1(cfg) => cfg,
+            };
+            this_nodes.push(cfg.raft_config.this_node);
+            assert_eq!(
+                cfg.public_origin.to_string(),
+                "https://indiemark.sh",
+                "the public origin should render without a port"
+            );
+            assert_eq!(cfg.public_address().to_string(), "[::]:20676");
+            assert_eq!(cfg.private_address().to_string(), "127.0.0.1:20677");
+            assert_eq!(cfg.raft_grpc_address.to_string(), "[::]:20678");
+            match &cfg.storage_config {
+                StorageConfig::Dynamo {
+                    credentials,
+                    location,
+                } => {
+                    assert!(
+                        credentials.is_none(),
+                        "DynamoDB credentials should be omitted (instance profile)"
+                    );
+                    assert!(
+                        matches!(location.as_ref(), either::Either::Left(region) if region.to_string() == "us-west-2"),
+                        "the DynamoDB location should be the us-west-2 region"
+                    );
+                }
+                _ => panic!("the AWS configuration should use the Dynamo backend"),
+            }
+            assert!(
+                matches!(&cfg.pepper, either::Either::Left(name) if name.as_ref() == "/indielinks/prod/peppers"),
+                "the peppers should be referenced by SSM parameter name"
+            );
+            assert!(
+                matches!(&cfg.signing_keys.signing_keys, either::Either::Left(name) if name.as_ref() == "/indielinks/prod/signing-keys"),
+                "the signing keys should be referenced by SSM parameter name"
+            );
+        }
+        this_nodes.sort_unstable();
+        assert_eq!(
+            this_nodes,
+            vec![0, 1, 2],
+            "the three nodes should carry distinct Raft node IDs"
+        );
+    }
 }

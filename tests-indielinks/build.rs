@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     [
         "../conf/mk-stack.ncl",
         "../conf/stacks.ncl",
-        "../conf/peppers.ncl",
+        "../conf/dev-peppers.ncl",
         "../conf/alternator.ncl",
         "../conf/scylla.ncl",
         "conf/runner.ncl",

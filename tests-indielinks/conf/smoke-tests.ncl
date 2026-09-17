@@ -22,9 +22,10 @@
 # in the salient `build.rs` files.
 #
 # This particular Nickel file contains the code for producing configuration
-# files for the `smoke-tests` integration test.
+# files for the `smoke-tests` integration test. The peppers are the shared
+# development-only credentials from `dev-peppers.ncl`.
 let runner-record = import "runner.ncl" in
-let peppers = import "peppers.ncl" in
+let peppers = import "dev-peppers.ncl" in
 let mk-scylla-backend = import "test-scylla-backend.ncl" in
 let mk-alternator-backend = import "test-alternator-backend.ncl" in
 fun stack => {
