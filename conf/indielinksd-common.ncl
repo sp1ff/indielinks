@@ -26,24 +26,17 @@
 # currently untyped, because, at the time of this writing, I am just beginning
 # the conversion from hand-authored TOML to Nickel. I plan to gradually
 # introduce typing.
-let peppers = import "peppers.ncl" in
+#
+# This file deliberately contains no secrets: peppers & signing keys are
+# merged into development configurations by `indielinks/build.rs` (from
+# `dev-peppers.ncl` & `dev-signing-keys.ncl`), while production configurations
+# reference their secrets by SSM parameter name.
 {
     version = "1",
     user-agent = "indielinks/0.0.1; +sp1ff@pobox.com",
     collection-page-size = 64,
     otlp-export = { endpoint = "http://localhost:9090/api/v1/otlp/v1/metrics" },
-    pepper = peppers,
     signing-keys = {
-        signing-keys = {
-            keys = {
-                "keyid:20250214" = [
-                    207, 30, 37, 178, 222, 42, 68, 222, 209, 206, 199, 250, 219, 94, 3, 163,
-                    30, 21, 161, 140, 1, 170, 140, 187, 185, 228, 47, 177, 215, 11, 196, 152, 
-                    221, 128, 208, 77, 104, 247, 28, 178, 207, 241, 6, 239, 71, 11, 22, 221,
-                    105, 152, 60, 109, 121, 214, 201, 12, 252, 96, 19, 160, 95, 124, 100, 234
-               ]
-            } 
-        },
         token-lifetime = [300, 0], # seconds, nanoseconds => 5 min
         refresh-token-lifetime = [129600, 0] # seconds, nanoseconds => 36 hours
     },

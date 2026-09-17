@@ -392,7 +392,6 @@
 //!
 //! - environment variable
 //! - configuration file
-//! - AWS SSM Parameter Store
 //!
 //! If either of the environment variables `INDIELINKS_PEPPERS` or `INDIELINKS_SIGNING_KEYS` are
 //! specified, their values will be interpreted as JSON encodings of the salient secret. Here are
@@ -407,11 +406,17 @@
 //! ```
 //!
 //! If either or both environment variables are not set, they will next be resolved from the
-//! indielinks configuration file. The operator may choose to simply store them on disk, presumably
-//! protecting the file appropriately.
+//! indielinks configuration file. The `pepper` and `signing-keys.signing-keys` fields each hold
+//! *either* the secret material inline (the operator presumably protecting the file
+//! appropriately) *or* the name of the AWS SSM Parameter Store parameter from which the secret
+//! will be fetched at startup, as a slash-prefixed string:
 //!
-//! Finally, [indielinks] will reach-out to AWS SSM Parameter Store for the secrets, if they are
-//! found in neither the relevant environment variable nor on disk.
+//! ```toml
+//! pepper = "/indielinks/prod/peppers"
+//! ```
+//!
+//! When both secrets resolve to SSM parameters, they are fetched in a single batched
+//! `GetParameters` call.
 //!
 //! # Developers' Documentation
 //!

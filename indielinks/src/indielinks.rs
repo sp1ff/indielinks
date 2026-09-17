@@ -19,12 +19,12 @@
 //!
 //! ## Secrets
 //!
-//! [indielinks] provides a simple chained secrets resolver: environment variables, configuration
-//! file, and finally SSM Parameter Store.
+//! [indielinks] provides a simple chained secrets resolver: environment variables take precedence
+//! over the configuration file, which either holds the secrets inline or names the AWS SSM
+//! Parameter Store parameters from which they are to be fetched.
 
 use std::{
     env::{self, VarError},
-    ffi::OsStr,
     path::PathBuf,
     result::Result as StdResult,
     sync::Arc,
@@ -42,6 +42,7 @@ use aws_sdk_ssm::{
     Client,
 };
 use chrono::Duration;
+use either::Either;
 use nonzero::nonzero;
 use opentelemetry_prometheus_text_exporter::PrometheusExporter;
 use secrecy::SecretString;
@@ -51,7 +52,11 @@ use tap::Pipe;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-use indielinks_shared::{entities::Tagname, instance_state::InstanceStateV0, origin::Origin};
+use indielinks_shared::{
+    entities::{SsmParameter, Tagname},
+    instance_state::InstanceStateV0,
+    origin::Origin,
+};
 
 use indielinks_cache::raft::SharedCacheNode;
 
@@ -218,16 +223,11 @@ impl Indielinks {
         user_outboxes: Arc<Mutex<UserOutboxes>>,
         cfg: &ConfigV1,
     ) -> Result<Self> {
-        // Will presumably move these string literals into constants centrally defined
-        // somewhere, once I know what they are. Now that I think about it, it might make sense
-        // to make the parameter name itself configurable.
         let (pepper, signing_keys) = resolve_secrets(
             "INDIELINKS_PEPPERS",
-            cfg.pepper.as_ref(),
-            "indielinks/prod/peppers",
+            &cfg.pepper,
             "INDIELINKS_SIGNING_KEYS",
-            cfg.signing_keys.signing_keys.as_ref(),
-            "indielinks/prod/signing-keys",
+            &cfg.signing_keys.signing_keys,
         )
         .await?;
 
@@ -274,21 +274,40 @@ impl Indielinks {
 //                                       Secrets Management                                       //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Attempt to resolve a secret between the environment variable & configuration value
-fn resolve_secret<K, T>(env_var: K, configuration_value: Option<&T>) -> Result<Option<T>>
+/// Where a secret is to be found: either already in hand, or to be fetched from AWS SSM
+/// Parameter Store under a parameter name
+enum Source<T> {
+    Inline(T),
+    Ssm(SsmParameter),
+}
+
+/// Read the environment variable `env_var`, mapping a missing variable to `None`
+fn read_env(env_var: &str) -> Result<Option<String>> {
+    match env::var(env_var) {
+        Ok(json) => Ok(Some(json)),
+        Err(VarError::NotPresent) => Ok(None),
+        Err(err) => Err(EnvSnafu { env_var }.into_error(err)),
+    }
+}
+
+/// Choose the source for a secret: the environment variable, if set, takes precedence over the
+/// configuration value
+fn select_source<T>(
+    env_value: Option<&str>,
+    env_var: &str,
+    configuration_value: &Either<SsmParameter, T>,
+) -> Result<Source<T>>
 where
-    K: AsRef<OsStr>,
     T: Clone + DeserializeOwned,
 {
-    match env::var(env_var.as_ref()) {
-        Ok(json) => serde_json::from_str(&json).context(EnvSerdeSnafu {
-            env_var: env_var.as_ref().to_string_lossy(),
+    match env_value {
+        Some(json) => serde_json::from_str(json)
+            .map(Source::Inline)
+            .context(EnvSerdeSnafu { env_var }),
+        None => Ok(match configuration_value {
+            Either::Left(parameter) => Source::Ssm(parameter.clone()),
+            Either::Right(value) => Source::Inline(value.clone()),
         }),
-        Err(VarError::NotPresent) => Ok(configuration_value.cloned()),
-        Err(err) => Err(EnvSnafu {
-            env_var: env_var.as_ref().to_string_lossy(),
-        }
-        .into_error(err)),
     }
 }
 
@@ -352,53 +371,132 @@ fn deserialize_output(
     ))
 }
 
-/// Resolve the peppers & signing keys; prefer the environment variable, followed by the value
-/// already read from configuration (if present), followed finally by AWS SSM Parameter Store.
+/// Resolve the peppers & signing keys; prefer the environment variables, followed by the
+/// configuration values. Configuration either supplies the secrets inline or names the AWS SSM
+/// Parameter Store parameters from which they are to be fetched.
 pub async fn resolve_secrets(
     peppers_env_var: &str,
-    peppers_config_value: Option<&Peppers>,
-    peppers_parameter_name: &str,
+    peppers_config_value: &Either<SsmParameter, Peppers>,
     signing_keys_env_var: &str,
-    signing_keys_config_value: Option<&SigningKeys>,
-    signing_keys_parameter_name: &str,
+    signing_keys_config_value: &Either<SsmParameter, SigningKeys>,
 ) -> Result<(Peppers, SigningKeys)> {
-    let client = Client::new(&load_from_env().await);
     match (
-        resolve_secret(peppers_env_var, peppers_config_value)?,
-        resolve_secret(signing_keys_env_var, signing_keys_config_value)?,
+        select_source(
+            read_env(peppers_env_var)?.as_deref(),
+            peppers_env_var,
+            peppers_config_value,
+        )?,
+        select_source(
+            read_env(signing_keys_env_var)?.as_deref(),
+            signing_keys_env_var,
+            signing_keys_config_value,
+        )?,
     ) {
-        (None, None) => {
-            // Retrieve both from SSM
-            client
+        (Source::Ssm(peppers_name), Source::Ssm(signing_keys_name)) => {
+            // Retrieve both from SSM in a single batched call
+            Client::new(&load_from_env().await)
                 .get_parameters()
-                .names(peppers_parameter_name)
-                .names(signing_keys_parameter_name)
+                .names(peppers_name.as_ref())
+                .names(signing_keys_name.as_ref())
                 .with_decryption(true)
                 .send()
                 .await
                 .context(FetchParametersSnafu {
-                    parameter_names: vec![peppers_parameter_name, signing_keys_parameter_name]
+                    parameter_names: vec![&peppers_name, &signing_keys_name]
                         .into_iter()
-                        .map(str::to_owned)
+                        .map(String::from)
                         .collect::<Vec<String>>(),
                 })?
                 .pipe(transform_output)?
                 .pipe(|(peppers, signing_keys)| deserialize_output(peppers, signing_keys))
         }
-        (None, Some(signing_keys)) => {
+        (Source::Ssm(peppers_name), Source::Inline(signing_keys)) => {
             // Retrieve the peppers from SSM
             Ok((
-                fetch_parameter(&client, peppers_parameter_name).await?,
+                fetch_parameter(&Client::new(&load_from_env().await), peppers_name.as_ref())
+                    .await?,
                 signing_keys,
             ))
         }
-        (Some(peppers), None) => {
-            // Retreive the signing keys from SSM
+        (Source::Inline(peppers), Source::Ssm(signing_keys_name)) => {
+            // Retrieve the signing keys from SSM
             Ok((
                 peppers,
-                fetch_parameter(&client, signing_keys_parameter_name).await?,
+                fetch_parameter(
+                    &Client::new(&load_from_env().await),
+                    signing_keys_name.as_ref(),
+                )
+                .await?,
             ))
         }
-        (Some(peppers), Some(signing_keys)) => Ok((peppers, signing_keys)),
+        (Source::Inline(peppers), Source::Inline(signing_keys)) => Ok((peppers, signing_keys)),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn select_source_prefers_the_environment() {
+        let json = serde_json::to_string(&Peppers::default())
+            .expect("the peppers should serialize to JSON");
+        // The environment variable wins over an inline configuration value...
+        assert!(matches!(
+            select_source::<Peppers>(
+                Some(&json),
+                "INDIELINKS_PEPPERS",
+                &Either::Right(Peppers::default())
+            ),
+            Ok(Source::Inline(_))
+        ));
+        // ...and over an SSM parameter name
+        assert!(matches!(
+            select_source::<Peppers>(
+                Some(&json),
+                "INDIELINKS_PEPPERS",
+                &Either::Left(
+                    SsmParameter::new("/indielinks/prod/peppers".to_owned())
+                        .expect("the parameter name should be valid")
+                )
+            ),
+            Ok(Source::Inline(_))
+        ));
+    }
+
+    #[test]
+    fn select_source_falls_back_to_configuration() {
+        // An inline configuration value is used as-is
+        assert!(matches!(
+            select_source::<Peppers>(
+                None,
+                "INDIELINKS_PEPPERS",
+                &Either::Right(Peppers::default())
+            ),
+            Ok(Source::Inline(_))
+        ));
+        // A parameter name selects an SSM fetch
+        let name = SsmParameter::new("/indielinks/prod/peppers".to_owned())
+            .expect("the parameter name should be valid");
+        assert!(matches!(
+            select_source::<Peppers>(
+                None,
+                "INDIELINKS_PEPPERS",
+                &Either::Left(name.clone())
+            ),
+            Ok(Source::Ssm(parameter)) if parameter == name
+        ));
+    }
+
+    #[test]
+    fn select_source_rejects_malformed_json() {
+        assert!(matches!(
+            select_source::<Peppers>(
+                Some("not json"),
+                "INDIELINKS_PEPPERS",
+                &Either::Right(Peppers::default())
+            ),
+            Err(Error::EnvSerde { .. })
+        ));
     }
 }
