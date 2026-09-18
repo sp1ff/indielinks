@@ -95,6 +95,7 @@ use tests_indielinks::{
     outboxes::outbox_smoke_test,
     post_reply_timeline::{post_replies_endpoint, post_reply_timeline},
     run::run,
+    schema::tables_use_on_demand_billing,
     test_healthcheck,
     users::{test_mint_key, test_signup},
     webfinger::webfinger_smoke,
@@ -823,6 +824,16 @@ inventory::submit!(Test {
         FixtureId::ScyllaSingleNode,
         FixtureId::DynamoDBSingleNode,
         FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBCluster
+    ]),
+});
+
+inventory::submit!(Test {
+    name: "003tables_use_on_demand_billing",
+    test_fn: |cfg, _helper| Box::pin(tables_use_on_demand_billing(cfg.dynamo)),
+    fixtures: Some(&[
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::DynamoDBSingleNodePreCharged,
         FixtureId::DynamoDBCluster
     ]),
 });
