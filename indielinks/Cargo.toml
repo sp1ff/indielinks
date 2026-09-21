@@ -109,6 +109,7 @@ wiremock = "0.6.5"
 [package.metadata.deb]
 copyright = "Copyright (C) 2024-2025 Michael Herstine"
 depends = ["libssl-dev", "adduser", "acl"]
+conflicts = "indielinks-aws"
 maintainer = "Michael Herstine <sp1ff@pobox.com>"
 maintainer-scripts = "../admin/debian/deb-maintainer-scripts"
 assets = [
@@ -128,3 +129,23 @@ assets = [
 # operator before it can startup. If using stystemd, enable the unit,
 # but don't start it.
 systemd-units = { unit-name="indielinks", enable=true, start=false }
+
+[package.metadata.deb.variants.aws]
+name = "indielinks-aws"
+conflicts = "indielinks"
+depends = ["debconf"]
+maintainer-scripts = "../admin/debian/aws-deb-maintainer-scripts"
+systemd-units = { enable = false }
+
+assets = [
+    ["target/release/indielinksd", "/usr/bin/", "755"],
+    ["target/release/indielinks-schemas", "/usr/bin/", "755"],
+    ["target/release/indic", "/usr/bin/", "755"],
+    ["../target/conf/aws/indielinksd-aws.toml", "/etc/indielinks.toml", "644"],
+    ["../scripts/indielinks-post-install", "/usr/bin/indielinks-post-install", "755"],
+    ["../scripts/indielinks-ctl", "/usr/bin/indielinks-ctl", "755"],
+    ["../indielinks-fe/dist/index.html", "/usr/share/indielinks/assets/index.html", "644"],
+    ["../indielinks-fe/dist/indielinks-fe.js", "/usr/share/indielinks/assets/indielinks-fe.js", "644"],
+    ["../indielinks-fe/dist/style.css", "/usr/share/indielinks/assets/style.css", "644"],
+    ["../indielinks-fe/dist/indielinks-fe.wasm", "/usr/share/indielinks/assets/indielinks-fe.wasm", "644"],
+]

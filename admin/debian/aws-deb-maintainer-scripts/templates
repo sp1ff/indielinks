@@ -1,0 +1,3 @@
+Template: indielinks/node-id
+Type: string
+Description: Raft node ID for this instance

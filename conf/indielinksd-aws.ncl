@@ -22,16 +22,16 @@
 # in the salient `build.rs` files.
 #
 # This particular Nickel file contains the code for generating the indielinksd
-# configuration files for the three-node AWS production cluster at
-# https://indiemark.sh. It is *not* stack-parameterized: it evaluates directly
-# to an array of three node configurations differing only in
-# `raft-config.this-node`. The generated files contain no secrets: peppers &
+# configuration file for the AWS production cluster at https://indiemark.sh. It
+# is *not* stack-parameterized: it evaluates directly to a single configuration
+# with a placeholder `raft-config.this-node` that the Debian postinst replaces
+# at installation time. The generated file contains no secrets: peppers &
 # signing keys are referenced by their SSM Parameter Store parameter names, and
 # DynamoDB credentials are omitted (the daemon uses the EC2 instance profile).
 # Raft peer addresses are deliberately absent, as well: they are supplied to
 # the cluster via `POST /ops/cache/init-cluster` at bootstrap time.
 let common = import "indielinksd-common.ncl" in
-let mk-node = fun i => common & {
+common & {
     log-file = "/var/log/indielinks/indielinksd.log",
     public-origin = {
         scheme = "https",
@@ -71,7 +71,6 @@ let mk-node = fun i => common & {
         ]
     },
     raft-config = common.raft-config & {
-        this-node = i
+        this-node = "PLACEHOLDER"
     }
 }
-in std.array.generate mk-node 3
