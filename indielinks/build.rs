@@ -65,29 +65,17 @@ fn export_cluster_toml(
         .map(|_| ())
 }
 
-/// Export the AWS production configuration (three nodes; no secrets, no stack)
+/// Export the AWS production configuration (single node; no secrets, no stack)
 fn export_aws_toml(ctx: &mut nickel_lang::Context) -> Result<(), Box<dyn std::error::Error>> {
     let target_dir = "../target/conf/aws/";
     std::fs::create_dir_all(target_dir)?;
     let expr = ctx
         .eval_deep_for_export(r#"import "indielinksd-aws.ncl""#)
         .map_err(|err| format!("{err:#?}"))?;
-    let arr = expr
-        .as_array()
-        .ok_or("Source Nickel didn't evaluate to an array?")?;
-    arr.iter()
-        .enumerate()
-        .map(|(i, expr)| {
-            ctx.expr_to_toml(&expr)
-                .map_err(|err| format!("{err:#?}"))
-                .and_then(|toml| {
-                    std::fs::write(format!("{target_dir}indielinksd-aws-{i}.toml"), &toml)
-                        .map_err(|err| format!("{err:#?}"))
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()
+    let toml = ctx.expr_to_toml(&expr).map_err(|err| format!("{err:#?}"))?;
+    std::fs::write(format!("{target_dir}indielinksd-aws.toml"), &toml)
+        .map_err(|err| format!("{err:#?}"))
         .map_err(|err| err.into())
-        .map(|_| ())
 }
 
 fn configure_stack(
