@@ -1,7 +1,7 @@
 #+TITLE: README
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2026-02-14 Sat 16:04>
+#+DATE: <2026-09-24 Thu 13:54>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -9,8 +9,8 @@
 * Introduction
 
 This directory comprises a Dockerfile, an OpenTofu project and shell
-scripts that will build a Debian binary package for installing
-indielinks as well as test it in a few ways.
+scripts that will build two Debian binary packages for installing
+indielinks as well as test them in a few ways.
 * Discussion
 
 indielinks is packaged (for Debian & Arch, at the time of this
@@ -23,20 +23,23 @@ DynamoDB). At that point, the operator will then need to run the
 actually start the indielinks daemon.
 
 Depending on the configuration and how =indielinks-post-install= is
-invoked, indielinks can be run as a plain, standalone, SysV-style
+invoked, indielinks can be run as a plain, standalone, System V-style
 daemon process, or as a systemd unit.
 
-The shell script =build-and-test-debian-package-sysv= builds the binary
-package inside a Debian container & tests the package when installing
-it as a SysV daemon. The script =test-debian-package-systemd= will
-spin-up a Debian EC2 instance in AWS, upload the package there, and
-test installation as a systemd unit.
+The shell script =build-and-test-debian-package-sysv= builds the
+binary packages inside a Debian container & tests the package when
+installing it as a System V daemon. The script
+=test-debian-package-systemd= will spin-up a Debian EC2 instance in
+AWS, upload the package there, and test installation as a systemd
+unit. The script =test-debian-aws-package= will spin-up a second
+Debian EC2 instance in AWS, upload the package there, and test
+installation in the same way we deploy indiemark.sh.
 ** Why Is This So Complicated?
 
-*** Why Are We Building the Package in a Container
+*** Why Are We Building the Package in a Container?
 
 The reader may wonder why we do a full re-build of the project as a
-part of building the Debian binary package in a Debian contaier.
+part of building the Debian binary package in a Debian container.
 =cargo deb=, after all, doesn't _have_ to be run on Debian, and is
 quite capable of detecting that the requried binaries have already
 been built & just picking them up (instead of rebuilding them).
@@ -51,11 +54,11 @@ There are a few reasons:
     ahead of that found on Debian hosts, leading to failures to start
     during testing; this arrangement ensures that the binaries built
     into the package will actually run in Debian containers & VMs
-*** Why Are We Spinning Up an EC2 Instance
+*** Why Are We Spinning Up an EC2 Instance?
 
 I at first thought to test installation as a systemd unit in the same
-manner as a SysV daemon: spin-up a container, copy the package and a
-test script into it, and exercise it there. It turns-out to be very
+manner as a System V daemon: spin-up a container, copy the package and
+a test script into it, and exercise it there. It turns-out to be very
 difficult to get a Docker container up that runs systemd-- systemd
 really wants to be the init process (PID 1; parent of all others)
 where as Docker makes the implicit assumption that the container
@@ -71,6 +74,50 @@ getting a hypervisor installed on a Linux machine was non-trivial, as
 well. Still: indielinks is deployed to AWS, and I had a fair amount of
 HCL laying around to do this sort of thing, so the path of least
 resistence seemed to be to just spin-up an EC2 instance with a Debian
-image & test there. Furthermore, any else who may end up working on
+image & test there. Furthermore, anyone else who may end up working on
 indielinks will likely need to have an AWS account, anyway, so there's
 little-to-no additional burden on the developer.
+* Detailed Map
+
+First, let's fix terms:
+  - deb :: the binary Debian package for users to run locally on bare metal
+  - deb-aws :: the binary Debian package for me to run at indiemark.sh (i.e. in AWS)
+
+They differ in the configuration file, maintainer scripts and the
+front end "bundle" with which they're distributed. The front end is
+still configured statically, and so has to be built differently for
+the two cases.
+
+The flow of control:
+
+  - =admin/build-and-test-debian-packages=
+    + first runs =admin/debian/build-and-test-debian-package-sysv=
+      - builds a Docker image, then uses docker compose to stand-up
+        that image along with a ScyllaDB backend
+      - in the image, run 
+      - run =admin/debian/sysv-driver=
+        + uses the helper script =admin/build-debian-packages= to
+          * builds indielinks with the release profile
+          * builds the frontend
+          * builds deb & deb-aws
+          * installs deb in the docker container
+          * tests the install
+          * removes the package
+    + runs =admin/debian/test-debian-package-systemd=
+      - spins-up an EC2 instance
+      - scp's the packages *built in step 1* along with
+        =admin/debian/systemd-driver= up to it
+      - runs systemd-driver in the EC2 instance
+        + installs the packge
+        + tests it
+        + removes it
+      - cleans-up
+    + runs =admin/debian/test-debian-aws-package=
+      - spins-up an EC2 instance
+      - scp's the packages *built in step 1* along with
+        =admin/debian/aws-driver= up to it
+      - runs aws-driver in the EC2 instance
+        + installs the packge
+        + tests it
+        + removes it
+      - cleans-up

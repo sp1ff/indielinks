@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 VERSION=0.0.1
 
 set -euo pipefail
@@ -8,6 +7,8 @@ help=
 identity=
 keypair=
 nargs=0
+no_apply=
+no_cleanup=
 operator_ip=
 prev_option=
 region="us-west-2"
@@ -32,6 +33,12 @@ do
 
     # Options are handled here:
     case $option in
+        -A | --no-apply | --no-tofu-apply)
+	        nargs=$(($nargs+1));
+            no_apply=yes;;
+        -C | --no-cleanup)
+	        nargs=$(($nargs+1));
+            no_cleanup=yes;;
         -I | --identity)
 	        nargs=$(($nargs+1));
             prev_option=identity;;
@@ -74,13 +81,13 @@ do
         -*)
             cat >&2 <<EOF
 Unrecognized option '$option'.
-Try 'build-and-test-debian-package --help' for more information.
+Try 'test-debian-aws-package --help' for more information.
 EOF
             exit 2;;
 	    *)
             cat >&2 <<EOF
-'build-and-test-debian-package' takes no arguments.
-Try 'build-and-test-debian-package --help' for more information.
+'test-debian-package-systemd' takes no arguments.
+Try 'test-debian-aws-package --help' for more information.
 EOF
             exit 2;;
     esac
@@ -89,18 +96,20 @@ done
 
 if test -n "${help}"; then
     cat <<EOF
-build-and-test-debian-package -- build a Debian binary package for indielinks,
-and test it both as a SysV daemon and as a systemd unit
+test-debian-aws-package -- Test the AWS debian package
 
 Usage:
 
-    build-and-test-debian-package [OPTION...]
+    test-debian-aws-package [OPTION...]
 
 Options:
 
     -h, --help      Print this message & exit
     -V, --version   Print this script's version & exit
     -v, --verbose   Produce prolix output
+
+    -A | --no-apply | --no-tofu-apply  Skip 'tofu apply'
+    -C | --no-cleanup                  Skip cleanup
     -I ID | --identity=ID              Specify the private key for
                     ssh'ing into the EC2 instance
     -c CREDS | --credentials=CREDS     Specify credentials for accessing
@@ -110,36 +119,73 @@ Options:
     -k KEYPAIR | --key-pair=KEYPAIR    Specify the caller's EC2 keypair
     -r REGION | --region=REGION        Specify the region in which to
                     stand-up the EC2 instance (defaults to us-west-2)
+
 EOF
     exit 0
 fi
 
 if test -n "${version}"; then
     cat <<EOF
-build-and-test-debian-package $VERSION
+test-debian-aws-package $VERSION
 EOF
     exit 0
 fi
 
-v=
 if test -n "${verbose}"; then
     set -x
-    v="-v"
 fi
 
+
 here=$(dirname $(realpath $0))
-cd ${here}/debian
+project=${here}/../..
+base_pkg=$(ls -1 ../../target/debian/indielinks_*.deb|head -n1)
+pkg=$(ls -1 ../../target/debian/indielinks-aws_*.deb|head -n1)
+script=${here}/aws-driver
 
-SECONDS=0
-./build-and-test-debian-package-sysv ${v}
-args=
-test -n "${verbose}"     && args="$args -v"
-test -n "${identity}"    && args="$args -I ${identity}"
-test -n "${creds}"       && args="$args -c $creds"
-test -n "${operator_ip}" && args="$args -i ${operator_ip}"
-test -n "${keypair}"     && args="$args -k ${keypair}"
-test -n "${region}"      && args="$args -r ${region}"
-./test-debian-package-systemd ${v} ${args}
-./test-debian-aws-package ${v} ${args}
+if test -z "${operator_ip}"; then
+    # Should probably handle failure here 👇
+    operator_ip=$(curl -s http://ipv4.icanhazip.com)
+fi
 
-echo "Built Debian binary package tests-out in $SECONDS seconds 🍻"
+if ! test -f ${pkg}; then
+    cat >&2 <<EOF
+The Debian AWS package was not found; run 'cargo deb' before running this script.
+EOF
+    exit 1
+fi
+
+# 1. tofu apply (should be idempotent, right? add a switch, anyway)
+apply_args="-auto-approve"
+apply_args="${apply_args} -var aws_region=${region}"
+apply_args="${apply_args} -var operator_cidr=${operator_ip}/32"
+apply_args="${apply_args} -var ec2_key_name=${keypair}"
+if test -z "${no_apply}"; then
+    tofu apply ${apply_args}
+fi
+
+# 2. scp the test script & the packages up
+ec2=$(tofu output instance_public_ip); ec2=${ec2#\"}; ec2=${ec2%\"}
+scp_options="-o StrictHostKeyChecking=no"
+scp_options="${scp_options} -o UserKnownHostsFile=/dev/null"
+scp ${scp_options} -i ${identity} ${script} ${pkg} ${base_pkg} admin@${ec2}:/tmp
+script=$(basename ${script})
+
+# 3. invoke the test script via ssh
+ssh_options="-o StrictHostKeyChecking=no"
+ssh_options="${ssh_options} -o UserKnownHostsFile=/dev/null"
+ssh ${ssh_options} -i ${identity} admin@${ec2} "/tmp/${script} ${region} ${creds}"
+echo "ssh returns $?"
+
+# 4. cleanup (add switch to skip)
+if test -z "${no_cleanup}"; then
+
+    # At the time of this writing, we're not running `indielinks-post-install`,
+    # so no tables should be created. Doing this just to be safe:
+    for table in users unique_usernames followers following posts raft_log raft_metadata schema_migrations tasks likes_replies_shares incoming_likes_replies_shares; do
+        if aws --region=$region dynamodb describe-table --table-name "$table" >/dev/null 2>&1; then
+            aws --region=$region dynamodb delete-table --table-name "$table"
+        fi
+    done
+
+    tofu apply ${apply_args} -destroy
+fi

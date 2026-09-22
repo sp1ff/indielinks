@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 VERSION=0.0.1
 
+set -euo pipefail
+
 creds=
 help=
 identity=
@@ -130,15 +132,13 @@ EOF
     exit 0
 fi
 
-set -e
-
 if test -n "${verbose}"; then
     set -x
 fi
 
 here=$(dirname $(realpath $0))
 project=${here}/../..
-pkg=$(ls -1 ../../target/debian/indielinks*.deb|head -n1)
+pkg=$(ls -1 ../../target/debian/indielinks_*.deb|head -n1)
 script=${here}/systemd-driver
 
 if test -z "${operator_ip}"; then
@@ -166,9 +166,7 @@ fi
 ec2=$(tofu output instance_public_ip); ec2=${ec2#\"}; ec2=${ec2%\"}
 scp_options="-o StrictHostKeyChecking=no"
 scp_options="${scp_options} -o UserKnownHostsFile=/dev/null"
-scp ${scp_options} -i ${identity} ${pkg} admin@${ec2}:/tmp
-pkg=$(basename ${pkg})
-scp ${scp_options} -i ${identity} ${script} admin@${ec2}:/tmp
+scp ${scp_options} -i ${identity} ${script} ${pkg} admin@${ec2}:/tmp
 script=$(basename ${script})
 
 # 3. invoke the test script via ssh

@@ -4,40 +4,32 @@
 # deb` to build the Debian package, install it (as a free-standing SysV daemon)
 # & minimally test it. For testing the Debian package with systemd, please see
 # `test-debian-package-systemd`.
+#
+# For testing the Debian package used to deploy to AWS, please see
+# `test-debian-aws-package`.
 set -ex
 source $HOME/.cargo/env
 cd /indielinks
-ver="r${GIT_COMMIT}"
-rel="0.0.1~git.${ver}"
+
 # Unhappy, but we need to build everything for Debian here (see the README)
 cargo clean
+admin/build-debian-packages
 
-# We also need to build the workspace ourselves, in order to get the
-# front end built
-cargo build --release
-cd indielinks-fe
-tailwindcss -i style.css -o tailwind.css
-INDIELINKS_FE_API="http://localhost:20676" INDIELINKS_BASE="" INDIELINKS_PAGE_SIZE="20" trunk build --release
+pkg=$(ls -1 target/debian/indielinks_*.deb|head -n1)
+aws_pkg=$(ls -1 target/debian/indielinks-aws_*.deb|head -n1)
 
-cd dist
-wasm=$(ls -1 indielinks-fe*.wasm)
-js=$(ls -1 indielinks-fe*.js)
-css=$(ls -1 tailwind-*.css)
-mv $wasm indielinks-fe.wasm
-mv $js indielinks-fe.js
-mv $css style.css
-sed -i -e s@$wasm@indielinks-fe.wasm@g index.html
-sed -i -e s@$js@indielinks-fe.js@g index.html
-sed -i -e s@$css@style.css@g index.html
-cd ../..
-
-cargo deb --no-build --manifest-path=indielinks/Cargo.toml --deb-version=${rel}
-pkg=$(ls -1 target/debian/indielinks*.deb|head -n1)
 sudo dpkg --debug=2 -i ${pkg}
 indielinksd --version
 indielinks-schemas --version
 indielinks-ctl --version
 indic --help
+
+# Test conflict: the AWS package must fail to install
+if sudo dpkg -i "${aws_pkg}" 2>/dev/null; then
+    echo "The AWS package installed despite the base package being present" >&2
+    exit 1
+fi
+
 # simulate the operator hand-editing the indielinks config file
 scylla=$(dig +short scylla-node-1)
 sudo sed -i -e "s@^hosts = \\[\".*@hosts = [\"${scylla}:9042\"]@" /etc/indielinks.toml

@@ -132,20 +132,20 @@
 
     (if (not layers)
         (begin
-          (display "Error: cycle detected in dependency graph!\n")
+          (format (current-error-port) "Error: cycle detected in dependency graph!\n")
           (let* ((in-deg (compute-in-degrees nodes edges))
                  (graph  (build-graph nodes edges)))
             (let loop ((in-deg in-deg) (emitted '()))
               (let ((queue (filter-map (lambda (e) (and (= (cdr e) 0) (car e))) in-deg)))
                 (if (null? queue)
                     (let ((stuck (map car in-deg)))
-                      (format #t "Stuck nodes: ~a\n" stuck)
+                      (format (current-error-port) "Stuck nodes: ~a\n" stuck)
                       ;; Show which stuck nodes point to other stuck nodes
                       (for-each (lambda (node)
                                   (let ((succs (filter (lambda (s) (member s stuck))
                                                        (cdr (assoc node graph)))))
                                     (when (not (null? succs))
-                                      (format #t "  ~a -> ~a\n" node succs))))
+                                      (format (current-error-port) "  ~a -> ~a\n" node succs))))
                                 stuck))
                     (let ((new-in-deg (filter (lambda (e) (not (member (car e) queue))) in-deg)))
                       (loop (map (lambda (e)

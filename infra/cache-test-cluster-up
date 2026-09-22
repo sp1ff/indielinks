@@ -59,11 +59,11 @@ done
 
 if test -n "${help}"; then
     cat <<EOF
-'$0' -- USAGE MESSAGE HERE
+'cache-test-cluster-up' -- stand-up an indielinks test cluster
 
 Usage:
 
-    $0 [OPTION...] ARGUMENT...
+    cache-test-cluster-up [OPTION...] ARGUMENT...
 
 Options:
 
