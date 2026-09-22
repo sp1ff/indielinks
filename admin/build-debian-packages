@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+
+# Build both Debian package variants (base and AWS) from a clean state.
+# Run this from the repository root.
+
+set -euo pipefail
+
+here=$(dirname "$(realpath "$0")")
+cd "$here/.."
+
+version=$(cargo pkgid -p indielinks | sed 's/.*#//')
+git_rev=$(git rev-parse --short HEAD)
+
+# Build release binaries once.
+cargo build --release
+
+# Build general front-end bundle.
+(
+    cd indielinks-fe
+    rm -rf dist
+    INDIELINKS_FE_API="http://localhost:20676" \
+        INDIELINKS_BASE="" \
+        INDIELINKS_PAGE_SIZE="20" \
+        trunk build --release
+    cd dist
+    wasm=$(ls -1 indielinks-fe*.wasm)
+    js=$(ls -1 indielinks-fe*.js)
+    css=$(ls -1 tailwind-*.css)
+    mv "$wasm" indielinks-fe.wasm
+    mv "$js" indielinks-fe.js
+    mv "$css" style.css
+    sed -i -e "s@${wasm}@indielinks-fe.wasm@g" index.html
+    sed -i -e "s@${js}@indielinks-fe.js@g" index.html
+    sed -i -e "s@${css}@style.css@g" index.html
+)
+
+# Build AWS front-end bundle.
+(
+    cd indielinks-fe
+    rm -rf dist-aws
+    INDIELINKS_FE_API="https://indiemark.sh" \
+        INDIELINKS_BASE="" \
+        INDIELINKS_PAGE_SIZE="20" \
+        trunk build --release --dist dist-aws
+    cd dist-aws
+    wasm=$(ls -1 indielinks-fe*.wasm)
+    js=$(ls -1 indielinks-fe*.js)
+    css=$(ls -1 tailwind-*.css)
+    mv "$wasm" indielinks-fe.wasm
+    mv "$js" indielinks-fe.js
+    mv "$css" style.css
+    sed -i -e "s@${wasm}@indielinks-fe.wasm@g" index.html
+    sed -i -e "s@${js}@indielinks-fe.js@g" index.html
+    sed -i -e "s@${css}@style.css@g" index.html
+)
+
+# Validate the AWS bundle before packaging.
+"$here/validate-aws-frontend" indielinks-fe/dist-aws
+
+# Build Debian packages.
+(
+    cd indielinks
+    cargo deb --no-build
+    cargo deb --no-build --variant=aws
+)
+
+# Emit checksum manifest.
+manifest="packages-${version}-${git_rev}.sha256"
+(
+    cd target/debian
+    sha256sum indielinks_"${version}"*_amd64.deb \
+              indielinks-aws_"${version}"*_amd64.deb > "${manifest}"
+)
+
+echo ""
+echo "Packages built:"
+ls -1 target/debian/*.deb
+echo ""
+echo "Manifest: target/debian/${manifest}"
