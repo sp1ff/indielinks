@@ -98,7 +98,7 @@ here=$(dirname $(realpath $0))
 cd $here/..
 cargo build --release -j ${nproc}
 cd indielinks-fe
-INDIELINKS_FE_API="http://localhost:20676" INDIELINKS_BASE="/fe" INDIELINKS_PAGE_SIZE="20" trunk build --release
+INDIELINKS_FE_API="http://localhost:20676" INDIELINKS_BASE="" INDIELINKS_PAGE_SIZE="20" trunk build --release
 cd ..
 
 install -C -D -t /home/$USER/bin target/release/indielinksd
@@ -114,9 +114,9 @@ css=$(ls -1 tailwind-*.css)
 mv -v $wasm indielinks-fe.wasm
 mv -v $js indielinks-fe.js
 mv -v $css style.css
-sed -i -e s@$wasm@fe/indielinks-fe.wasm@g index.html
-sed -i -e s@$js@fe/indielinks-fe.js@g index.html
-sed -i -e s@$css@fe/style.css@g index.html
+sed -i -e s@$wasm@indielinks-fe.wasm@g index.html
+sed -i -e s@$js@indielinks-fe.js@g index.html
+sed -i -e s@$css@style.css@g index.html
 
 install -C -D index.html         /home/$USER/share/indielinks/assets/index.html
 install -C -D indielinks-fe.js   /home/$USER/share/indielinks/assets/indielinks-fe.js

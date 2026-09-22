@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+# Build the AWS production frontend bundle into indielinks-fe/dist-aws/.
+# This must be run from the repository root.
+
+set -euo pipefail
+
+here=$(dirname $(realpath $0))
+cd "$here/.."
+
+# Ensure the general workspace release binaries are built first.
+cargo build --release
+
+cd indielinks-fe
+
+rm -rf dist-aws
+
+# Build the AWS frontend with production endpoint and empty base path.
+INDIELINKS_FE_API="https://indiemark.sh" \
+    INDIELINKS_BASE="" \
+    INDIELINKS_PAGE_SIZE="20" \
+    trunk build --release --dist dist-aws
+
+# Trunk produces hashed filenames; rename to stable names.
+cd dist-aws
+wasm=$(ls -1 indielinks-fe*.wasm)
+js=$(ls -1 indielinks-fe*.js)
+css=$(ls -1 tailwind-*.css)
+mv "$wasm" indielinks-fe.wasm
+mv "$js" indielinks-fe.js
+mv "$css" style.css
+sed -i -e "s@${wasm}@indielinks-fe.wasm@g" index.html
+sed -i -e "s@${js}@indielinks-fe.js@g" index.html
+sed -i -e "s@${css}@style.css@g" index.html
+
+cd ..
+
+# Validate the bundle before anything else consumes it.
+"$here/validate-aws-frontend" dist-aws
+
+echo "AWS frontend built and validated in indielinks-fe/dist-aws/"
