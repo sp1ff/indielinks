@@ -47,6 +47,11 @@ case "$1" in
         fi
 
         db_stop
+
+        # Mask the general service to prevent port conflicts on upgrade
+        if [ -d /run/systemd/system ]; then
+            systemctl mask indielinks.service >/dev/null || true
+        fi
     ;;
 esac
 
