@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+
+region=$1
+creds=$2
+
+set -ex
+cd /tmp
+# Make sure we've finished provisioning this EC2 instance
+sudo cloud-init status --wait
+
+aws_pkg=$(ls -1 indielinks-aws_*.deb | head -n1)
+base_pkg=$(ls -1 indielinks_*.deb | head -n1)
+
+# Purge any previously installed indielinks package to avoid conffile conflicts.
+sudo dpkg --purge indielinks 2>/dev/null || true
+sudo rm -f /etc/indielinks.toml 2>/dev/null || true
+
+# 1. Pre-seed debconf for node ID.
+echo "indielinks indielinks/node-id string 0" | sudo debconf-set-selections
+
+# 2. Install AWS package.
+sudo DEBIAN_FRONTEND=noninteractive dpkg -i "$aws_pkg"
+
+# 3. Verify binaries.
+indielinksd --version
+indielinks-schemas --version
+indielinks-ctl --version
+indic --help
+
+# 4. Verify config: node ID was replaced.
+grep -q 'this-node = 0' /etc/indielinks.toml
+
+# 5. Verify systemd unit.
+test -f /usr/lib/systemd/system/indielinks-aws.service
+
+# 6. Verify logrotate.
+test -f /etc/logrotate.d/indielinks
+
+# 7. Verify user and group.
+getent passwd indielinks
+getent group indielinks
+
+# 8. Verify directories and ownership.
+test -d /var/log/indielinks
+test -d /var/run/indielinks
+test "$(stat -c '%U:%G' /var/log/indielinks)" = "indielinks:indielinks"
+test "$(stat -c '%U:%G' /var/run/indielinks)" = "indielinks:indielinks"
+
+# 9. Verify front-end assets are at root level.
+test -f /usr/share/indielinks/assets/index.html
+grep -q '/style.css' /usr/share/indielinks/assets/index.html
+! grep -q '/fe/' /usr/share/indielinks/assets/index.html
+
+# 10. Verify config file permissions.
+test "$(stat -c '%a' /etc/indielinks.toml)" = "644"
+
+# 11. Test conflict: base package must fail to install.
+if sudo DEBIAN_FRONTEND=noninteractive dpkg -i "$base_pkg" 2>/dev/null; then
+    echo "ERROR: base package installed despite conflict" >&2
+    exit 1
+fi
+
+# We can't, yet, start the service, because it would reach out to SSM Parameter
+# Store for it's secrets and a) at the time of this writing, they're not there,
+# and b) this instance likely won't have permissions. Leaving this here until
+# we can get that taken care of:
+
+# status=$(systemctl is-active indielinks || true)
+# test "${status}" == "inactive" || exit 1
+
+# # simulate the operator hand-editing the indielinks config file
+# sudo sed -i -e "s@^\\(\\[storage-config.*\\]\\)@# \\1@" /etc/indielinks.toml
+# sudo sed -i -e "s@^\\(hosts = \\[\".*\\)@# \\1@" /etc/indielinks.toml
+# echo "[storage-config.Dynamo]" | sudo tee -a /etc/indielinks.toml
+# echo "location = \"$region\"" | sudo tee -a /etc/indielinks.toml
+# IFS=',' read -r username password <<< "$creds"
+# echo "credentials = [\"$username\", \"$password\"]" | sudo tee -a /etc/indielinks.toml
+# ipi_args="-v -r $region --service-name=indielinks-aws"
+# if test -n "$creds"; then
+#     ipi_args="${ipi_args} -c $creds"
+# fi
+# indielinks-post-install $ipi_args
+# # indielinks now up & running
+# sudo systemctl restart indielinks-aws
+# # Wait a few moments for the service to healthcheck
+# sleep 0.5
+# n=0
+# hc=$(curl -s http://127.0.0.1:20676/healthcheck || true)
+# if [ "${hc}" != "GOOD" ]; then
+#     sleep 0.5
+#     n=$(($n+1))
+#     if [ $n -gt 20 ]; then
+#         echo "indielinks failed to come up" >&2
+#         exit 1
+#     fi
+#     hc=$(curl -s http://127.0.0.1:20676/healthcheck || true)
+# fi
+# # Check that the front-end is being served at the root
+# status_code=$(curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:20676/ || true)
+# if [ ${status_code} -ne 200 ]; then
+#     echo "requesting the front-end returned status code ${status_code}" >&2
+#     exit 1
+# fi
+
+# 13. Remove AWS package.
+sudo dpkg -r indielinks-aws
+
+echo "AWS package harness test passed"

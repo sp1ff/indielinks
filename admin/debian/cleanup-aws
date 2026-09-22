@@ -9,6 +9,12 @@ keypair="ec2-aws-generated"
 here=$(dirname $(realpath $0))
 cd "$here"
 
+for table in users unique_usernames followers following posts raft_log raft_metadata schema_migrations tasks likes_replies_shares incoming_likes_replies_shares; do
+    if aws --region=$region dynamodb describe-table --table-name "$table" >/dev/null 2>&1; then
+        aws --region=$region dynamodb delete-table --table-name "$table"
+    fi
+done
+
 apply_args="-auto-approve"
 apply_args="${apply_args} -var aws_region=${region}"
 apply_args="${apply_args} -var operator_cidr=${operator_ip}/32"

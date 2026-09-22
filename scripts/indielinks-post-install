@@ -1,6 +1,8 @@
 #!/usr/bin/bash
 VERSION=0.0.1
 
+set -euo pipefail
+
 creds=
 help=
 ddb_host=
@@ -16,6 +18,7 @@ no_systemd=
 prev_option=
 region=
 scylla_host=
+service_name=indielinks
 verbose=
 version=
 for option
@@ -76,6 +79,12 @@ do
         -L=* | --local_port=* | --indielinks-local-port=*)
 	        nargs=$(($nargs+1));
             indielinks_local_port=$optarg;;
+        -N | --service-name)
+            nargs=$(($nargs+1));
+            prev_option=service_name;;
+        -N=* | --service-name=*)
+            nargs=$(($nargs+1));
+            service_name=$optarg;;
         -p | --port | --indielinks-port)
 	        nargs=$(($nargs+1));
             prev_option=port;;
@@ -208,10 +217,8 @@ if test -n "${no_systemd}"; then
 
 else
 
-    sudo systemctl stop indielinks
+    sudo systemctl stop ${service_name}
 fi
-
-set -e
 
 # run the schema migrations
 schema_args="-p"
@@ -252,7 +259,7 @@ echo -n "Generating instance secrets if needed..."
 # Depending on where it was installed, `indielinks-schemas` may not be on the
 # `PATH` picked-up by `sudo`.
 schemas=$(type -p indielinks-schemas)
-RUST_LOG=${rust_log} sudo -E RUST_LOG=$RUST_LOG ${schemas} -p secrets ${indielinks_config}
+sudo -E RUST_LOG=$rust_log ${schemas} -p secrets ${indielinks_config}
 sudo chown ${indielinks_user}:${indielinks_group} ${indielinks_config}
 echo "done."
 
@@ -261,24 +268,22 @@ echo -n "Starting indielinks..."
 if test -n "${no_systemd}"; then
     indielinks-ctl -v -u $indielinks_user -g $indielinks_group -L $indielinks_state -c $indielinks_config start
 else
-    sudo systemctl start indielinks
+    sudo systemctl start ${service_name}
 fi
 echo "done."
 
 # healthcheck the new instance
 echo -n "Waiting for your indielinks server to healthcheck"
 sleep=0.5
-# curl can fail if the server isn't up, yet
-set +e
-status=$(curl -s http://localhost:${port}/healthcheck)
+status=$(curl -s http://localhost:${port}/healthcheck || true)
 ntries=1
-while [ "${status}" != "GOOD" ]; do
+while [ "${status}" != "GOOD" ] && [ "${status}" != "READY" ]; do
     echo -n "."
     sleep 0.5
-    status=$(curl -s http://localhost:${port}/healthcheck)
+    status=$(curl -s http://localhost:${port}/healthcheck || true)
     ntries=$(($ntries+1))
     # Give it five seconds
-    if [ ${ntries} -gt 10 ]; then
+    if [ ${ntries} -gt 20 ]; then
         echo
         echo "indielinks failed to come up!" >&2
         exit 1
@@ -286,7 +291,9 @@ while [ "${status}" != "GOOD" ]; do
 done
 echo "done."
 
-echo -n "Initializing the indielinks instance as a single-node Raft cluster..."
-curl -s -H 'Content-Type: application/json' http://localhost:${local_port}/ops/cache/init-cluster \
-    --data "{\"nodes\": [[0, {\"addr\": \"127.0.0.1:${grpc_port}\"}]], \"slots\": [[0,0],[1,0]]}"
-echo "done."
+if [ "${status}" == "GOOD" ]; then
+    echo -n "Initializing the indielinks instance as a single-node Raft cluster..."
+    curl -s -H 'Content-Type: application/json' http://localhost:${local_port}/ops/cache/init-cluster \
+         --data "{\"nodes\": [[0, {\"addr\": \"127.0.0.1:${grpc_port}\"}]], \"slots\": [[0,0],[1,0]]}"
+    echo "done."
+fi

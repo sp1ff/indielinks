@@ -27,9 +27,15 @@ fi
 # See <https://github.com/dtolnay/async-trait/issues/304>,
 # <https://github.com/rust-lang/rust-clippy/pull/16633>
 cargo clippy -j ${nproc} -- --no-deps -Dwarnings --allow clippy::double_must_use
+# check the nightly clippy, too-- this has been a real pain point (stable
+# passes here, then nightly fails during CI)
+cargo +nightly clippy -j 8 -- --no-deps -Dwarnings --allow clippy::double_must_use
 cargo fmt -- --check
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps -j ${nproc}
-# Need to address these two, plus a host of warnings
-# Actually, just turning the thing off, for now.
-# cargo audit --ignore=RUSTSEC-2023-0071 --ignore=RUSTSEC-2026-0001 --ignore=RUSTSEC-2026-0049 --ignore=RUSTSEC-2026-0098 --ignore=RUSTSEC-2026-0099
 
+# If the `neato` and `guile` programs are available, check module dependencies
+if command -v neato >/dev/null 2>&1 && command -v guile >/dev/null 2>&1; then
+    admin/check-dependencies
+else
+    echo "WARNING: unable to check for cyclic module dependencies; consider installing `guile` and `neato`"
+fi
