@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+# Validate an AWS frontend dist directory. Rejects bundles that contain
+# localhost API endpoints, a /fe base path, or an origin other than
+# https://indiemark.sh.
+
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+    cat >&2 <<EOF
+Usage: validate-aws-frontend DIST_DIR
+
+Validate AWS frontend build artifacts.
+EOF
+    exit 1
+fi
+
+dist="$1"
+
+fail=0
+
+if ! [ -d "$dist" ]; then
+    echo "error: '$dist' is not a directory" >&2
+    exit 1
+fi
+
+# 1. index.html must reference root-level assets, not /fe/.
+for needle in "/fe/" "fe/"; do
+    if grep -q "$needle" "$dist/index.html"; then
+        echo "error: index.html contains '$needle' (expected root-level assets)" >&2
+        fail=1
+    fi
+done
+
+# 2. No file may contain a localhost API endpoint.
+for f in "$dist/indielinks-fe.js" "$dist/indielinks-fe.wasm"; do
+    if [ -f "$f" ] && strings "$f" | grep 'http://localhost' >/dev/null; then
+        echo "error: $(basename "$f") contains a localhost API endpoint" >&2
+        fail=1
+    fi
+done
+
+# 3. At least one artifact must contain the production origin.
+origin_found=0
+for f in "$dist/indielinks-fe.js" "$dist/indielinks-fe.wasm"; do
+    if [ -f "$f" ]; then
+        if strings "$f" | grep 'https://indiemark.sh' >/dev/null; then
+            origin_found=1
+        fi
+    fi
+done
+if [ "$origin_found" -eq 0 ]; then
+    echo "error: no artifact contains 'https://indiemark.sh'" >&2
+    fail=1
+fi
+
+# 4. No artifact may contain the old /fe base path.
+for f in "$dist/indielinks-fe.js" "$dist/indielinks-fe.wasm"; do
+    if [ -f "$f" ] && strings "$f" | grep '/fe/' >/dev/null; then
+        echo "error: $(basename "$f") contains '/fe/' base path reference" >&2
+        fail=1
+    fi
+done
+
+if [ "$fail" -ne 0 ]; then
+    echo "validation failed for '$dist'" >&2
+    exit 1
+fi
+
+echo "AWS frontend validation passed for '$dist'"

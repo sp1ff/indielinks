@@ -48,8 +48,8 @@ if [ "${hc}" != "GOOD" ]; then
     fi
     hc=$(curl -s http://127.0.0.1:20676/healthcheck)
 fi
-# Check that the wasm bundle is being served
-status_code=$(curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:20676/fe)
+# Check that the front-end is being served at the root
+status_code=$(curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:20676/)
 if [ ${status_code} -ne 200 ]; then
     echo "requesting the front-end returned status code ${status_code}" >&2
     exit 1
