@@ -1,3 +1,10 @@
 hello-scylla
 target
 .agent-lockbox
+
+# OpenTofu (infra/aws)
+infra/aws/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+terraform.tfvars

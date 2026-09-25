@@ -1,0 +1,9 @@
+# Sample variable values for infra/aws.
+#
+# The operator workflow passes these via admin/aws-tofu, which injects them as
+# -var flags; this file is documentation. Copy it to terraform.tfvars
+# (gitignored) only if you prefer that workflow.
+
+ec2_key_name        = "indielinks-sp1ff-keypair"
+hosted_zone_id      = "Z07598301IF2GN8JH9W19"
+operator_ipv6_cidrs = ["2601:1c2:4080:14c0::/64"]

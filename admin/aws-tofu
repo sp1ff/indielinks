@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Wrap `tofu` for the infra/aws root, injecting operator-specific values as
+# -var flags for the subcommands that accept them. All other subcommands
+# (init, fmt, validate, output, state, ...) pass through unmodified.
+set -euo pipefail
+
+cd "$(dirname "$0")/../infra/aws"
+
+if (($# == 0)); then
+    echo "usage: aws-tofu <tofu-subcommand> [args...]" >&2
+    exit 2
+fi
+
+subcommand="$1"
+shift
+
+case "$subcommand" in
+    plan | apply | destroy | refresh | import | console)
+        exec tofu "$subcommand" \
+            -var='ec2_key_name=indielinks-sp1ff-keypair' \
+            -var='hosted_zone_id=Z07598301IF2GN8JH9W19' \
+            -var='operator_ipv6_cidrs=["2601:1c2:4080:14c0::/64"]' \
+            "$@"
+        ;;
+    *)
+        exec tofu "$subcommand" "$@"
+        ;;
+esac
