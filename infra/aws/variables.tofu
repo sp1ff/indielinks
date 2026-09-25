@@ -43,6 +43,26 @@ variable "ssm_kms_key_arn" {
   default     = null
 }
 
+variable "alert_email" {
+  type        = string
+  description = "Email address subscribed to the alarm SNS topic. Null means no subscription: alarms fire to the console only until a destination is chosen. AWS sends a confirmation email out-of-band when a subscription is created."
+  default     = null
+}
+
+variable "log_retention_days" {
+  type        = number
+  description = "CloudWatch retention for the indielinksd application log group."
+  default     = 30
+
+  validation {
+    condition = contains([
+      1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096,
+      1827, 2192, 2557, 2922, 3288, 3653,
+    ], var.log_retention_days)
+    error_message = "log_retention_days must be one of CloudWatch's allowed retention values."
+  }
+}
+
 variable "nodes" {
   type = map(object({
     subnet_key  = string
@@ -87,19 +107,9 @@ variable "nodes" {
   }
 }
 
-# Plan-time instance-type validation: fails the data source on an unknown type
-# name, and the check block on ARM or non-Nitro types.
+# Plan-time instance-type validation: the data source itself fails on an
+# unknown type name; the preconditions on aws_instance.nodes (instances.tofu)
+# fail the plan on ARM or non-Nitro types.
 data "aws_ec2_instance_type" "selected" {
   instance_type = var.instance_type
-}
-
-check "instance_type_x86_64_nitro" {
-  assert {
-    condition     = contains(data.aws_ec2_instance_type.selected.supported_architectures, "x86_64")
-    error_message = "instance_type must support x86_64; ARM packaging is deferred."
-  }
-  assert {
-    condition     = data.aws_ec2_instance_type.selected.hypervisor == "nitro"
-    error_message = "instance_type must run on the Nitro hypervisor."
-  }
 }

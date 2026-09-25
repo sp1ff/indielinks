@@ -1,6 +1,17 @@
-# Three Raft-ID-keyed Debian 12 nodes with pinned primary IPv6 addresses.
-# No user_data: cloud-init arrives with OPS-001. SSH works out of the box as
-# user "admin" with the configured key pair.
+# Three Raft-ID-keyed Debian 12 nodes. Each node's primary ENI is a
+# first-class resource for two reasons:
+#
+#  1. The AWS provider ignores enable_primary_ipv6 on aws_instance at
+#     instance creation (hashicorp/terraform-provider-aws#41571); the ENI
+#     create path honors it, and IPv6 target-group registration requires a
+#     designated primary IPv6 address.
+#  2. The ENI survives instance termination, so replacing an instance under
+#     an existing node ID reattaches the same ENI and pinned address.
+#
+# Nodes have no public IPv4 addresses by design: all egress is IPv6 (AWS
+# APIs via dual-stack endpoints, Debian mirrors, IPv6-capable ActivityPub
+# peers). No user_data: cloud-init arrives with OPS-001. SSH works out of
+# the box as user "admin" with the configured key pair.
 
 # Latest Debian 12 (Bookworm) AMI in the selected region.
 # Owner 136693071363 is the official Debian AWS account.
@@ -34,32 +45,47 @@ data "aws_key_pair" "operator" {
   key_name = var.ec2_key_name
 }
 
+locals {
+  # The pinned address is derived from the subnet /64 and the node's hex
+  # suffix, so it always lies within the subnet; an out-of-range suffix fails
+  # cidrhost at plan time. Single source of truth for the ENI and outputs.
+  node_ipv6_addresses = {
+    for id, node in var.nodes :
+    id => cidrhost(
+      aws_subnet.public[node.subnet_key].ipv6_cidr_block,
+      parseint(node.ipv6_suffix, 16)
+    )
+  }
+}
+
+resource "aws_network_interface" "nodes" {
+  for_each = var.nodes
+
+  subnet_id       = aws_subnet.public[each.value.subnet_key].id
+  security_groups = [aws_security_group.nodes.id]
+
+  # As the ENI's only GUA, the pinned address becomes its primary IPv6
+  # address and persists across stop/start.
+  ipv6_addresses      = [local.node_ipv6_addresses[each.key]]
+  enable_primary_ipv6 = true
+
+  tags = merge(local.tags, {
+    Name = "${local.name_prefix}-node-${each.key}"
+  })
+}
+
 resource "aws_instance" "nodes" {
   for_each = var.nodes
 
   ami           = data.aws_ami.debian_12.id
   instance_type = var.instance_type
-  subnet_id     = aws_subnet.public[each.value.subnet_key].id
 
-  # The pinned address is derived from the subnet /64 and the node's hex
-  # suffix, so it always lies within the subnet; an out-of-range suffix fails
-  # cidrhost at plan time. As the ENI's only GUA it becomes the primary IPv6
-  # address and persists across stop/start. When replacing an instance,
-  # release the old ENI and reuse the same address for the replacement.
-  ipv6_addresses = [cidrhost(
-    aws_subnet.public[each.value.subnet_key].ipv6_cidr_block,
-    parseint(each.value.ipv6_suffix, 16)
-  )]
-  enable_primary_ipv6 = true
+  primary_network_interface {
+    network_interface_id = aws_network_interface.nodes[each.key].id
+  }
 
-  # Outbound fallback for IPv4-only ActivityPub peers and package mirrors.
-  # There is no IPv4 ingress and the address is not published in DNS; it may
-  # change on stop/start without affecting SSH, Raft, TLS, or the ALB.
-  associate_public_ip_address = true
-
-  key_name               = data.aws_key_pair.operator.key_name
-  iam_instance_profile   = aws_iam_instance_profile.nodes.name
-  vpc_security_group_ids = [aws_security_group.nodes.id]
+  key_name             = data.aws_key_pair.operator.key_name
+  iam_instance_profile = aws_iam_instance_profile.nodes.name
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -78,6 +104,16 @@ resource "aws_instance" "nodes" {
   #   tofu apply -replace='aws_instance.nodes["1"]'
   lifecycle {
     ignore_changes = [ami]
+
+    precondition {
+      condition     = contains(data.aws_ec2_instance_type.selected.supported_architectures, "x86_64")
+      error_message = "instance_type must support x86_64; ARM packaging is deferred."
+    }
+
+    precondition {
+      condition     = data.aws_ec2_instance_type.selected.hypervisor == "nitro"
+      error_message = "instance_type must run on the Nitro hypervisor."
+    }
   }
 
   tags = merge(local.tags, {

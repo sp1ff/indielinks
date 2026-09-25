@@ -88,9 +88,15 @@ data "aws_iam_policy_document" "nodes" {
   }
 
   statement {
-    sid       = "SSMSecrets"
-    actions   = ["ssm:GetParameter"]
-    resources = [data.aws_ssm_parameter.peppers.arn, data.aws_ssm_parameter.signing_keys.arn]
+    sid     = "SSMParameterReads"
+    actions = ["ssm:GetParameter"]
+    resources = [
+      data.aws_ssm_parameter.peppers.arn,
+      data.aws_ssm_parameter.signing_keys.arn,
+      # The CloudWatch Agent configuration (cloudwatch.tofu); cloud-init
+      # fetches it via the instance role when starting the agent. Non-secret.
+      aws_ssm_parameter.cloudwatch_agent_config.arn,
+    ]
   }
 
   # Emitted only when the parameters are encrypted with a customer-managed
@@ -110,6 +116,7 @@ data "aws_iam_policy_document" "nodes" {
       "logs:CreateLogGroup",
       "logs:CreateLogStream",
       "logs:PutLogEvents",
+      "logs:DescribeLogGroups",
       "logs:DescribeLogStreams",
       "logs:PutRetentionPolicy",
     ]

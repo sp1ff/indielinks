@@ -73,7 +73,7 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_nodes" {
 
 resource "aws_security_group" "nodes" {
   name        = "${local.name_prefix}-nodes-sg"
-  description = "indielinks nodes: ALB traffic, Raft gRPC, operator SSH, ICMPv6; no IPv4 ingress"
+  description = "indielinks nodes: ALB traffic, Raft gRPC, operator SSH, ICMPv6; IPv6 only"
   vpc_id      = aws_vpc.main.id
 
   lifecycle {
@@ -140,11 +140,5 @@ resource "aws_vpc_security_group_egress_rule" "nodes_all_ipv6" {
   description = "All outbound IPv6: federation, package mirrors, dual-stack AWS APIs"
 }
 
-resource "aws_vpc_security_group_egress_rule" "nodes_all_ipv4" {
-  security_group_id = aws_security_group.nodes.id
-
-  ip_protocol = "-1"
-  cidr_ipv4   = "0.0.0.0/0"
-
-  description = "All outbound IPv4: IPv4-only ActivityPub peers and package mirrors"
-}
+# No IPv4 rules of any kind: nodes have no public IPv4 addresses and no IPv4
+# ingress; outbound IPv4 federation is sacrificed by design.

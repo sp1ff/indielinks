@@ -16,9 +16,8 @@ locals {
 }
 
 resource "aws_vpc" "main" {
-  # Subnets require an IPv4 CIDR even though nodes have no IPv4 ingress; the
-  # IPv4 space exists only so nodes can hold auto-assigned public IPv4
-  # addresses for outbound fallback.
+  # Subnets require an IPv4 CIDR even though nodes have no public IPv4
+  # addresses; ENIs still hold (free, unused-for-egress) private IPv4.
   cidr_block                       = "10.0.0.0/16"
   assign_generated_ipv6_cidr_block = true
 
@@ -39,10 +38,9 @@ resource "aws_subnet" "public" {
   # /64 carved out of the VPC's Amazon-provided /56.
   ipv6_cidr_block = cidrsubnet(aws_vpc.main.ipv6_cidr_block, 8, each.value.ipv6_netnum)
 
-  # Auto-assigned public IPv4 is the outbound fallback for IPv4-only
-  # ActivityPub peers and package mirrors. Nodes also set
-  # associate_public_ip_address explicitly.
-  map_public_ip_on_launch = true
+  # No public IPv4: nodes are IPv6-only by design (outbound IPv4 federation
+  # is sacrificed; inbound IPv4 terminates at the dual-stack ALB).
+  map_public_ip_on_launch = false
 
   tags = merge(local.tags, {
     Name = "${local.name_prefix}-public-${each.key}"
