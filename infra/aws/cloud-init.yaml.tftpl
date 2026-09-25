@@ -1,0 +1,55 @@
+#cloud-config
+# Per-node bootstrap, rendered by templatefile() in instances.tofu with
+# node_id (the durable Raft node ID) and region. Runs once at first boot.
+# No application package and no secrets appear here: the package arrives by
+# scp/ssh at deploy time and secrets resolve from SSM via the instance role.
+
+package_update: true
+package_upgrade: false
+
+# acl: the indielinks-aws postinst calls setfacl but only declares a debconf
+# dependency, so acl must come from here. ca-certificates/curl: fetching the
+# CloudWatch Agent over TLS. The rest are operator conveniences.
+packages:
+  - acl
+  - ca-certificates
+  - curl
+  - file
+  - htop
+  - less
+  - lsof
+  - net-tools
+  - netcat-openbsd
+  - procps
+  - sudo
+  - vim
+
+groups:
+  - indielinks
+
+users:
+  - default # the Debian AMI's "admin" user
+  - name: indielinks
+    gecos: indielinks service
+    system: true
+    no_create_home: true
+    shell: /usr/sbin/nologin
+    groups: indielinks
+
+runcmd:
+  # Log directory ahead of the package so the CloudWatch Agent can tail it.
+  - [mkdir, -p, /var/log/indielinks]
+  - [chown, indielinks:indielinks, /var/log/indielinks]
+  - [chmod, "0755", /var/log/indielinks]
+  # Pre-seed the debconf database so the indielinks-aws postinst can render
+  # this-node without prompting (the package is installed later, over SSH).
+  - echo "indielinks-aws indielinks/node-id string ${node_id}" | debconf-set-selections
+  # CloudWatch Agent from the region's S3 bucket over the dual-stack endpoint
+  # (nodes are IPv6-only).
+  - curl -fsSL --retry 5 -o /tmp/amazon-cloudwatch-agent.deb "https://amazoncloudwatch-agent-${region}.s3.dualstack.${region}.amazonaws.com/debian/amd64/latest/amazon-cloudwatch-agent.deb"
+  - dpkg -i /tmp/amazon-cloudwatch-agent.deb
+  - rm -f /tmp/amazon-cloudwatch-agent.deb
+  # Pull the agent configuration from the SSM parameter created by
+  # cloudwatch.tofu; aws_instance.nodes depends_on that resource so it always
+  # exists by first boot. -m ec2 detects region and credentials via IMDS.
+  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c ssm:/indielinks/prod/cloudwatch-agent-config

@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Pre-flight checks for the AWS deployment. Run after `admin/aws-tofu apply`
+# and before `admin/aws-bootstrap`. Validates the operator's environment and
+# the freshly applied infrastructure; mutates nothing (aside from adding
+# node host keys to the operator's known_hosts on first contact).
+#
+# Every check fails with a specific message; the first failure aborts.
+set -euo pipefail
+
+cd "$(dirname "$0")/../infra/aws"
+
+fail() {
+    echo "aws-preflight: FAIL: $*" >&2
+    exit 1
+}
+
+ok() {
+    echo "aws-preflight: ok: $*"
+}
+
+# --- Tools ---------------------------------------------------------------
+
+for tool in aws tofu jq dig ssh scp curl ip; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required tool not found on PATH: $tool"
+done
+ok "required tools present"
+
+# --- Account and region --------------------------------------------------
+
+identity=$(aws sts get-caller-identity --output json 2>&1) \
+    || fail "aws sts get-caller-identity failed; check credentials and profile: $identity"
+account=$(jq -r '.Account' <<<"$identity")
+
+region="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region 2>/dev/null || true)}}"
+[[ "$region" == "us-west-2" ]] \
+    || fail "AWS region is '${region:-unset}', expected us-west-2 (set AWS_REGION or configure the profile)"
+ok "authenticated to account $account in us-west-2"
+
+# --- OpenTofu state bucket -----------------------------------------------
+
+bucket=$(sed -n 's/^ *bucket *= *"\([^"]*\)" */\1/p' backend.tofu | head -n 1)
+[[ -n "$bucket" ]] || fail "could not parse state bucket from backend.tofu"
+
+aws s3api head-bucket --bucket "$bucket" >/dev/null 2>&1 \
+    || fail "state bucket $bucket does not exist or is not accessible"
+
+versioning=$(aws s3api get-bucket-versioning --bucket "$bucket" --query 'Status' --output text)
+[[ "$versioning" == "Enabled" ]] \
+    || fail "state bucket $bucket versioning is '${versioning}', expected Enabled"
+
+pab=$(aws s3api get-public-access-block --bucket "$bucket" --output json)
+[[ $(jq '[.PublicAccessBlockConfiguration.BlockPublicAcls,
+          .PublicAccessBlockConfiguration.IgnorePublicAcls,
+          .PublicAccessBlockConfiguration.BlockPublicPolicy,
+          .PublicAccessBlockConfiguration.RestrictPublicBuckets] | all' <<<"$pab") == "true" ]] \
+    || fail "state bucket $bucket does not block all public access"
+ok "state bucket $bucket exists, versioned, and blocks public access"
+
+# --- OpenTofu state (root applied) ----------------------------------------
+
+nodes_json=$(tofu output -json nodes 2>&1) \
+    || fail "tofu output failed; has infra/aws been applied? $nodes_json"
+node_count=$(jq 'length' <<<"$nodes_json")
+((node_count > 0)) || fail "tofu output 'nodes' is empty; has infra/aws been applied?"
+ok "tofu state readable; $node_count nodes applied"
+
+# --- DNS authority ---------------------------------------------------------
+
+zone_id=$(tofu output -raw hosted_zone_id)
+domain=$(tofu output -raw public_url)
+domain="${domain#https://}"
+
+zone_json=$(aws route53 get-hosted-zone --id "$zone_id" --output json 2>&1) \
+    || fail "cannot read hosted zone $zone_id: $zone_json"
+zone_name=$(jq -r '.HostedZone.Name' <<<"$zone_json")
+[[ "${zone_name%.}" == "$domain" ]] \
+    || fail "hosted zone $zone_id is for '${zone_name%.}', expected $domain"
+
+expected_ns=$(jq -r '.DelegationSet.NameServers[]' <<<"$zone_json" | sort)
+public_ns=$(dig +short NS "$domain" | sed 's/\.$//' | sort)
+[[ -n "$public_ns" ]] || fail "no public NS records resolve for $domain; is the registrar delegated?"
+[[ "$public_ns" == "$expected_ns" ]] \
+    || fail "public NS records for $domain do not match the hosted zone's delegation set"
+ok "DNS authority for $domain delegated to hosted zone $zone_id"
+
+# --- SSM parameters --------------------------------------------------------
+
+# Values are decrypted to verify access but never printed; --query extracts
+# only the parameter type.
+for param in /indielinks/prod/peppers /indielinks/prod/signing-keys; do
+    ptype=$(aws ssm get-parameter --name "$param" --with-decryption \
+        --query 'Parameter.Type' --output text 2>/dev/null) \
+        || fail "cannot read SecureString parameter $param (existence, IAM, or KMS access)"
+    [[ "$ptype" == "SecureString" ]] \
+        || fail "parameter $param has type $ptype, expected SecureString"
+done
+ok "SecureString parameters exist and are decryptable (values not displayed)"
+
+ptype=$(aws ssm get-parameter --name /indielinks/prod/cloudwatch-agent-config \
+    --query 'Parameter.Type' --output text 2>/dev/null) \
+    || fail "cannot read CloudWatch Agent config parameter"
+[[ "$ptype" == "String" ]] \
+    || fail "CloudWatch Agent config parameter has type $ptype, expected String"
+ok "CloudWatch Agent config parameter present"
+
+# --- SSH key ----------------------------------------------------------------
+
+key="${INDIELINKS_SSH_KEY:-$HOME/.ssh/id_rsa.indielinks-sp1ff.pem}"
+[[ -f "$key" ]] || fail "SSH private key not found: $key (override with INDIELINKS_SSH_KEY)"
+perms=$(stat -c '%a' "$key")
+[[ "$perms" == "600" || "$perms" == "400" ]] \
+    || fail "SSH private key $key has permissions $perms, expected 600 or 400"
+ok "SSH private key $key present with permissions $perms"
+
+# --- Operator IPv6 connectivity ---------------------------------------------
+
+ip -6 addr show scope global 2>/dev/null | grep -q 'inet6' \
+    || fail "this host has no global IPv6 address; node access is IPv6-only"
+ip -6 route show default 2>/dev/null | grep -q '^default' \
+    || fail "this host has no default IPv6 route; node access is IPv6-only"
+ok "operator host has global IPv6 connectivity"
+
+# --- Node reachability and cloud-init ---------------------------------------
+
+ssh_opts=(-6 -i "$key" -o BatchMode=yes -o ConnectTimeout=10
+    -o StrictHostKeyChecking=accept-new)
+
+while read -r id addr; do
+    echo "aws-preflight: checking node $id ($addr)..."
+    ssh "${ssh_opts[@]}" "admin@$addr" true \
+        || fail "node $id ($addr): SSH unreachable from this host"
+    init_status=$(ssh "${ssh_opts[@]}" "admin@$addr" "cloud-init status --wait" 2>&1) \
+        || fail "node $id ($addr): cloud-init did not complete cleanly: $init_status"
+    agent_status=$(ssh "${ssh_opts[@]}" "admin@$addr" \
+        "systemctl is-active amazon-cloudwatch-agent" 2>/dev/null) \
+        || fail "node $id ($addr): amazon-cloudwatch-agent is not active"
+    [[ "$agent_status" == "active" ]] \
+        || fail "node $id ($addr): amazon-cloudwatch-agent status is '$agent_status'"
+    ok "node $id reachable; cloud-init done; CloudWatch Agent active"
+done < <(jq -r 'to_entries[] | "\(.key) \(.value.ipv6)"' <<<"$nodes_json")
+
+echo "aws-preflight: all checks passed"

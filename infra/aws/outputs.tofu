@@ -57,6 +57,11 @@ output "alarms_topic_arn" {
   value       = aws_sns_topic.alarms.arn
 }
 
+output "hosted_zone_id" {
+  description = "Route 53 hosted zone ID adopted as a data source (used by admin/aws-preflight)."
+  value       = var.hosted_zone_id
+}
+
 output "public_url" {
   description = "Public origin of the service."
   value       = "https://${local.domain}"

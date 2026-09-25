@@ -124,6 +124,22 @@ run "default_plan" {
   }
 
   assert {
+    condition = alltrue([
+      for id, instance in aws_instance.nodes :
+      strcontains(instance.user_data, "indielinks/node-id string ${id}")
+    ])
+    error_message = "each node's cloud-init user_data must pre-seed its Raft node ID via debconf"
+  }
+
+  assert {
+    condition = alltrue([
+      for _id, instance in aws_instance.nodes :
+      strcontains(instance.user_data, "s3.dualstack.us-west-2.amazonaws.com")
+    ])
+    error_message = "cloud-init must fetch the CloudWatch Agent over a dual-stack S3 endpoint"
+  }
+
+  assert {
     condition     = aws_lb_target_group.app.ip_address_type == "ipv6"
     error_message = "target group must be IPv6"
   }

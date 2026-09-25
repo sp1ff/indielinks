@@ -10,8 +10,10 @@
 #
 # Nodes have no public IPv4 addresses by design: all egress is IPv6 (AWS
 # APIs via dual-stack endpoints, Debian mirrors, IPv6-capable ActivityPub
-# peers). No user_data: cloud-init arrives with OPS-001. SSH works out of
-# the box as user "admin" with the configured key pair.
+# peers). user_data renders cloud-init.yaml.tftpl per node: base packages,
+# the indielinks user and log directory, a debconf pre-seed of the Raft node
+# ID, and the CloudWatch Agent fetching its configuration from SSM. SSH works
+# out of the box as user "admin" with the configured key pair.
 
 # Latest Debian 12 (Bookworm) AMI in the selected region.
 # Owner 136693071363 is the official Debian AWS account.
@@ -86,6 +88,17 @@ resource "aws_instance" "nodes" {
 
   key_name             = data.aws_key_pair.operator.key_name
   iam_instance_profile = aws_iam_instance_profile.nodes.name
+
+  # Changing user_data replaces the instance; edit cloud-init.yaml.tftpl
+  # with that in mind (roll one node at a time).
+  user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
+    node_id = each.key
+    region  = local.aws_region
+  })
+
+  # cloud-init's fetch-config reads the agent configuration at first boot;
+  # guarantee the parameter exists before any instance is created.
+  depends_on = [aws_ssm_parameter.cloudwatch_agent_config]
 
   metadata_options {
     http_endpoint               = "enabled"
