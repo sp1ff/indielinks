@@ -89,8 +89,13 @@ resource "aws_instance" "nodes" {
   key_name             = data.aws_key_pair.operator.key_name
   iam_instance_profile = aws_iam_instance_profile.nodes.name
 
-  # Changing user_data replaces the instance; edit cloud-init.yaml.tftpl
-  # with that in mind (roll one node at a time).
+  # user_data_replace_on_change defaults to false, which applies user_data
+  # edits in place via stop/start -- but cloud-init only processes user-data
+  # on an instance's first boot, so in-place updates silently never run.
+  # Require real replacement; the ENI-as-resource design keeps the pinned
+  # IPv6 address across it. Roll one node at a time when editing
+  # cloud-init.yaml.tftpl.
+  user_data_replace_on_change = true
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
     node_id = each.key
     region  = local.aws_region

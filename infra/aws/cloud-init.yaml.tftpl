@@ -24,19 +24,14 @@ packages:
   - sudo
   - vim
 
-groups:
-  - indielinks
-
-users:
-  - default # the Debian AMI's "admin" user
-  - name: indielinks
-    gecos: indielinks service
-    system: true
-    no_create_home: true
-    shell: /usr/sbin/nologin
-    groups: indielinks
-
+# The service user/group and log directory are created in runcmd rather than
+# via the users-groups module: a users-groups failure aborts creation of the
+# default "admin" user too, locking operators out (observed with cloud-init
+# 22.4.2 on the Debian 12 AMI). runcmd failures cannot do that. The guards
+# mirror the indielinks-aws postinst, which skips anything already present.
 runcmd:
+  - getent group indielinks >/dev/null || addgroup --quiet --system indielinks
+  - getent passwd indielinks >/dev/null || adduser --quiet --system --ingroup indielinks --no-create-home --disabled-password indielinks
   # Log directory ahead of the package so the CloudWatch Agent can tail it.
   - [mkdir, -p, /var/log/indielinks]
   - [chown, indielinks:indielinks, /var/log/indielinks]
@@ -52,4 +47,4 @@ runcmd:
   # Pull the agent configuration from the SSM parameter created by
   # cloudwatch.tofu; aws_instance.nodes depends_on that resource so it always
   # exists by first boot. -m ec2 detects region and credentials via IMDS.
-  - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c ssm:/indielinks/prod/cloudwatch-agent-config
+  - AWS_USE_DUALSTACK_ENDPOINT=true /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c ssm:/indielinks/prod/cloudwatch-agent-config

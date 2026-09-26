@@ -7,7 +7,8 @@
 # Every check fails with a specific message; the first failure aborts.
 set -euo pipefail
 
-cd "$(dirname "$0")/../infra/aws"
+here=$(dirname $(realpath $0))
+cd "${here}/../infra/aws"
 
 fail() {
     echo "aws-preflight: FAIL: $*" >&2
@@ -20,7 +21,7 @@ ok() {
 
 # --- Tools ---------------------------------------------------------------
 
-for tool in aws tofu jq dig ssh scp curl ip; do
+for tool in aws tofu jq dig ssh scp curl ip openssl; do
     command -v "$tool" >/dev/null 2>&1 || fail "required tool not found on PATH: $tool"
 done
 ok "required tools present"
@@ -112,6 +113,46 @@ perms=$(stat -c '%a' "$key")
     || fail "SSH private key $key has permissions $perms, expected 600 or 400"
 ok "SSH private key $key present with permissions $perms"
 
+# Existence and permissions are not enough: the file must parse as a private
+# key, must not be passphrase-protected (preflight uses BatchMode, so it can
+# never prompt), and must correspond to the configured EC2 key pair.
+local_pubkey=$(ssh-keygen -y -f "$key" </dev/null 2>/dev/null) \
+    || fail "SSH private key $key cannot be parsed (ssh-keygen -y failed); is it truncated, corrupt, or not a private key?"
+# ssh-keygen -y prompts for a passphrase on encrypted keys; with stdin closed
+# it fails. Detect encryption explicitly for a specific error message.
+if sed -n '2p' "$key" | grep -q 'Proc-Type: 4,ENCRYPTED' \
+    || head -1 "$key" | grep -q 'BEGIN ENCRYPTED PRIVATE KEY'; then
+    fail "SSH private key $key is passphrase-protected; preflight uses BatchMode and cannot prompt (use an unencrypted key or ssh-agent)"
+fi
+
+key_pair_name=$(sed -n "s/.*-var='ec2_key_name=\([^']*\)'.*/\1/p" ../../admin/aws-tofu | head -n 1)
+[[ -n "$key_pair_name" ]] || fail "could not parse ec2_key_name from admin/aws-tofu"
+
+# --include-public-key requires a recent AWS CLI; compare fingerprints
+# instead. AWS-created RSA pairs: SHA-1 of the PKCS#1 DER private key (40
+# hex digits). Imported pairs: MD5 of the OpenSSH public key blob (32 hex
+# digits).
+fingerprint=$(aws ec2 describe-key-pairs --key-names "$key_pair_name" \
+    --query 'KeyPairs[0].KeyFingerprint' --output text 2>/dev/null) \
+    || fail "cannot describe EC2 key pair $key_pair_name"
+fingerprint="${fingerprint//:/}"
+case ${#fingerprint} in
+    40)
+        local_fpr=$(openssl rsa -in "$key" -outform DER 2>/dev/null | openssl dgst -sha1 -r | cut -d' ' -f1)
+        ;;
+    32)
+        local_fpr=$(ssh-keygen -y -f "$key" | ssh-keygen -E md5 -lf /dev/stdin | awk '{print $2}')
+        local_fpr="${local_fpr#MD5:}"
+        local_fpr="${local_fpr//:/}"
+        ;;
+    *)
+        fail "unexpected fingerprint format for key pair $key_pair_name: $fingerprint"
+        ;;
+esac
+[[ "$local_fpr" == "$fingerprint" ]] \
+    || fail "SSH private key $key does not match EC2 key pair $key_pair_name (fingerprint mismatch)"
+ok "SSH private key parses, is unencrypted, and matches EC2 key pair $key_pair_name"
+
 # --- Operator IPv6 connectivity ---------------------------------------------
 
 ip -6 addr show scope global 2>/dev/null | grep -q 'inet6' \
@@ -122,7 +163,7 @@ ok "operator host has global IPv6 connectivity"
 
 # --- Node reachability and cloud-init ---------------------------------------
 
-ssh_opts=(-6 -i "$key" -o BatchMode=yes -o ConnectTimeout=10
+ssh_opts=(-6 -i "$key" -o BatchMode=yes -o ConnectTimeout=10 -o IdentitiesOnly=yes
     -o StrictHostKeyChecking=accept-new)
 
 while read -r id addr; do
