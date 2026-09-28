@@ -394,6 +394,7 @@ async fn verify_signature(
             .get_all("signature")
             .into_iter()
             .exactly_one()
+            .inspect_err(|err| error!("Expected exactly one signature header: {err:?}"))
             .map_err(|_| OneSignatureSnafu.build())?
             .to_str()
             .context(NonUtf8SignatureSnafu)?;
@@ -584,10 +585,10 @@ async fn log_request(
     match axum::body::to_bytes(body, 2097152usize /* 2Mb */).await {
         Ok(bytes) => {
             info!(
-                "{:?}",
+                "Request Signature header: {:?}",
                 parts.headers.get(HeaderName::from_static("signature"))
             );
-            if bytes.len() < 4096 {
+            if bytes.len() < 6144 {
                 info!("Request body: {}", String::from_utf8_lossy(&bytes));
             } else {
                 info!(
@@ -1770,11 +1771,12 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/inbox",
             post(shared_inbox)
-                .route_layer(middleware::from_fn(log_request))
                 .route_layer(middleware::from_fn_with_state(
                     state.clone(),
                     verify_signature,
-                )),
+                ))
+                // Be sure to place this last, to ensure the request is logged even if authn fails
+                .route_layer(middleware::from_fn(log_request)),
         )
         .route(
             "/users/{username}",
