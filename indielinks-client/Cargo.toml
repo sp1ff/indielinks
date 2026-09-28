@@ -24,7 +24,7 @@ tap = "1.0.1"
 tokio = { version = "1.42.0", features = ["rt-multi-thread", "signal", "sync"] }
 toml = "0.8.19"
 tower = { version = "0.5.2", features = ["buffer", "limit", "retry"] }
-tower-http = { version = "0.6.2", features = ["auth", "cors", "request-id", "set-header", "trace"] }
+tower-http = { version = "0.7.1", features = ["auth", "cors", "request-id", "set-header", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 url = { version = "2.5.4", features = ["serde"] }

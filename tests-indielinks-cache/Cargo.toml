@@ -19,7 +19,7 @@ snafu = { version = "0.8.6", features = ["backtrace"] }
 tap = "1.0.1"
 test-log = { version = "0.2.18", default-features = false, features = ["trace"] }
 tokio = { version = "1.45.1", features = ["rt-multi-thread", "signal"] }
-tower-http = { version = "0.6.4", features = ["trace"] }
+tower-http = { version = "0.7.1", features = ["trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["ansi", "env-filter"] }
 

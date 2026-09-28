@@ -90,7 +90,7 @@ toml = "0.8.19"
 tonic = "0.13.1"
 tower = { version = "0.5.2", features = ["retry"] }
 tower-gcra = { git = "https://github.com/sp1ff/tower-gcra.git", version = "0.0.1" }
-tower-http = { version = "0.6.2", features = ["auth", "cors", "request-id", "set-header", "trace"] }
+tower-http = { version = "0.7.1", features = ["auth", "cors", "request-id", "set-header", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 unicode-segmentation = "1.12.0"
