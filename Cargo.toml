@@ -68,7 +68,7 @@ opentelemetry-otlp = { version = "0.30.0", default-features = false }
 opentelemetry-prometheus-text-exporter = "=0.2.0"
 opentelemetry_sdk = "0.30.0"
 ordered-float = "5.3.0"
-password-hash = "0.5.0"
+password-hash = "0.6.1"
 pct-str = "2.0.0"
 picky = "=7.0.0-rc.17"
 pin-project = "1.1.10"
