@@ -104,7 +104,7 @@ time = ">=0.3.47"
 tokio = "1.51.1"
 toml = "0.8.19"
 tonic = "0.13.1"
-tonic-build = "0.13.1"
+tonic-build = "0.14.6"
 tower = "0.5.2"
 tower-gcra = { version = "0.0.1", git = "https://github.com/sp1ff/tower-gcra.git" }
 tower-http = "0.6.4"
