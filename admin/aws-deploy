@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+VERSION=0.0.1
+
+set -euo pipefail
+
+help=
+nargs=0
+prev_option=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -h | --he | --hel | --help)
+	        nargs=$(($nargs+1));
+            help=yes;;
+        -v | --verb | --verbose)
+	        nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+	        nargs=$(($nargs+1));
+            version=yes;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try 'aws-deploy --help' for more information.
+EOF
+            exit 2;;
+	    *)
+	        # $@ now contains the arguments, $# the number of arguments
+	        shift $nargs;
+	        break;;
+    esac
+
+done
+
+if test -n "${help}"; then
+    cat <<EOF
+aws-deploy -- deploy a new build to the live AWS cluster
+
+Usage:
+
+    aws-deploy [OPTION...] PATH-TO-AWS-DEBIAN-PACKAGE
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+
+Discussion:
+
+This script handles rolling package deployment for the AWS cluster. It will
+deploy the new indielinks-aws package to every node in ascending numeric
+Raft-ID order, one node at a time: verify quorum, transfer and check the
+package, restart the node, and wait for direct 202 READY plus a healthy ALB
+target before touching the next node. A three-voter Raft cluster tolerates only
+one unavailable voter, so the script never restarts two nodes concurrently and
+aborts on the first failure.
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+'aws-deploy' $VERSION
+EOF
+    exit 0
+fi
+
+if test -n "${verbose}"; then
+    set -x
+fi
+
+deb="$1"
+
+
+# I'm in the process of rescuing this script from a life of being AI slop. Not
+# sure if these are really worth it, but not ready to rip them out, yet. I went
+# ahead & added some color, at least.
+GREEN=32; RED=31; BLUE=34
+announce() { echo -e "\033[0;$2m$1\033[0m" >&"${3:-1}"; }
+
+fail() {
+    announce "aws-deploy: FAIL: $*" $RED 2
+    exit 1
+}
+
+ok() {
+    announce "aws-deploy: ok: $*" $GREEN
+}
+
+info() {
+    echo "aws-deploy: $*"
+}
+
+
+here=$(dirname "$(realpath "$0")")
+root=$(realpath "${here}/..")
+
+test -f "$deb" || fail "package not found: $deb"
+base=$(basename "$deb")
+sed -n 's/^indielinks-aws_\(.*\)_amd64\.deb$/\1/p' <<<"$base" | grep -q . \
+    || fail "package name does not match indielinks-aws_<version>_amd64.deb: $base"
+
+for tool in aws tofu jq ssh scp curl sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required tool not found on PATH: $tool"
+done
+
+info "deploying package $base"
+
+# --- Node map -------------------------------------------------------------------
+
+nodes_json=$("${here}/aws-tofu" output -json nodes 2>&1) \
+    || fail "tofu output failed; has infra/aws been applied? $nodes_json"
+node_count=$(jq 'length' <<<"$nodes_json")
+((node_count >= 3)) || fail "expected at least three nodes for a quorum-tolerant cluster; found $node_count"
+
+mapfile -t node_lines < <(jq -r 'to_entries | sort_by(.key | tonumber)[] | "\(.key) \(.value.ipv6) \(.value.instance_id)"' <<<"$nodes_json")
+first_addr=${node_lines[0]#* }
+first_addr=${first_addr%% *}
+
+key="${INDIELINKS_SSH_KEY:-$HOME/.ssh/id_rsa.indielinks-sp1ff.pem}"
+[[ -f "$key" ]] || fail "SSH private key not found: $key (override with INDIELINKS_SSH_KEY)"
+
+ssh_opts=(-6 -i "$key" -o BatchMode=yes -o ConnectTimeout=10 -o IdentitiesOnly=yes
+    -o StrictHostKeyChecking=accept-new)
+
+# --- Helpers ----------------------------------------------------------------------
+
+# Direct healthcheck against a node's public listener; succeeds only on an
+# exact 202.
+node_ready() {
+    local addr="$1" status
+    status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+        "http://[${addr}]:20676/healthcheck" 2>/dev/null) || return 1
+    [[ "$status" == "202" ]]
+}
+
+wait_node_ready() {
+    local addr="$1"
+    for _ in $(seq 1 60); do
+        node_ready "$addr" && return 0
+        sleep 5
+    done
+    return 1
+}
+
+# --- Quorum gate --------------------------------------------------------------------
+
+tg_arn=$("${here}/aws-tofu" output -raw target_group_arn) \
+    || fail "cannot read target_group_arn output"
+
+echo "aws-deploy: checking cluster quorum..."
+metrics=$(ssh "${ssh_opts[@]}" "admin@$first_addr" \
+    "curl -s http://127.0.0.1:20677/ops/cache/metrics") \
+    || fail "node ${node_lines[0]%% *} ($first_addr): cannot read /ops/cache/metrics"
+# /ops/cache/metrics is {"id": ..., "raft": <openraft RaftMetrics>}; openraft
+# 0.9 serializes Membership as {"configs": [[voter ids]], "nodes": {...}}.
+leader=$(jq -r '.raft.current_leader // empty' <<<"$metrics")
+voters=$(jq -r '[(.raft.membership_config.membership.configs // [])[]?[]] | unique | length' <<<"$metrics")
+[[ -n "$leader" ]] \
+    || fail "cluster has no current leader; metrics: $metrics"
+[[ "$voters" == "$node_count" ]] \
+    || fail "expected $node_count voting members, found ${voters:-unparseable}; metrics: $metrics"
+ok "quorum present: $voters voters, leader is node $leader"
+
+for line in "${node_lines[@]}"; do
+    id=${line%% *}
+    rest=${line#* }
+    addr=${rest%% *}
+    echo "aws-deploy: node $id ($addr): confirming READY before the rollout..."
+    node_ready "$addr" \
+        || fail "node $id ($addr): /healthcheck is not 202 READY; fix the cluster before deploying"
+done
+ok "all $node_count nodes READY"
+
+# --- Rolling deploy ---------------------------------------------------------------------
+
+workdir=$(mktemp -d)
+trap 'rm -rf "$workdir"' EXIT
+(cd "$(dirname "$deb")" && sha256sum "$base") >"${workdir}/${base}.sha256"
+
+for line in "${node_lines[@]}"; do
+    id=${line%% *}
+    rest=${line#* }
+    addr=${rest%% *}
+    instance_id=${rest#* }
+
+    # Every *other* node must be serving before this one goes down.
+    for other_line in "${node_lines[@]}"; do
+        other_id=${other_line%% *}
+        [[ "$other_id" == "$id" ]] && continue
+        other_rest=${other_line#* }
+        other_addr=${other_rest%% *}
+        node_ready "$other_addr" \
+            || fail "node $other_id ($other_addr) is not 202 READY; aborting before touching node $id"
+    done
+
+    echo "aws-deploy: node $id ($addr): copying package..."
+    scp "${ssh_opts[@]}" "$deb" "${workdir}/${base}.sha256" "admin@[${addr}]:/tmp/" \
+        || fail "node $id ($addr): scp failed; aborting rollout"
+
+    echo "aws-deploy: node $id ($addr): verifying checksum..."
+    ssh "${ssh_opts[@]}" "admin@$addr" "cd /tmp && sha256sum -c '${base}.sha256'" \
+        || fail "node $id ($addr): checksum verification failed; aborting rollout"
+
+    echo "aws-deploy: node $id ($addr): installing package..."
+    ssh "${ssh_opts[@]}" "admin@$addr" \
+        "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y '/tmp/${base}'" \
+        || fail "node $id ($addr): package installation failed; aborting rollout"
+
+    echo "aws-deploy: node $id ($addr): restarting indielinks-aws.service..."
+    ssh "${ssh_opts[@]}" "admin@$addr" "sudo systemctl restart indielinks-aws.service" \
+        || fail "node $id ($addr): restart failed; aborting rollout"
+
+    echo "aws-deploy: node $id ($addr): waiting for 202 READY..."
+    wait_node_ready "$addr" \
+        || fail "node $id ($addr): did not return to 202 READY; aborting rollout (cluster is at reduced redundancy)"
+
+    echo "aws-deploy: node $id ($addr): waiting for its ALB target to become healthy..."
+    target_state=""
+    for _ in $(seq 1 60); do
+        target_state=$(aws elbv2 describe-target-health --target-group-arn "$tg_arn" \
+            --targets "Id=${instance_id}" \
+            --query 'TargetHealthDescriptions[0].TargetHealth.State' --output text 2>/dev/null) || true
+        [[ "$target_state" == "healthy" ]] && break
+        sleep 5
+    done
+    [[ "$target_state" == "healthy" ]] \
+        || fail "node $id ($addr): ALB target is '$target_state', expected healthy; aborting rollout"
+
+    ok "node $id: deployed and healthy"
+done
+
+status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    "https://indiemark.sh/healthcheck" 2>/dev/null) || true
+[[ "$status" == "202" ]] \
+    || fail "rollout completed per-node, but https://indiemark.sh/healthcheck returned '$status'"
+
+ok "aws-deploy: rollout complete; all $node_count nodes run $base. Record this run in deployment-log.md."

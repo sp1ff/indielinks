@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-Environment=RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,openraft=info,opentelemetry_sdk=info,scylla=info,axum::rejection=trace
+Environment=RUST_LOG=debug,aws_config=warn,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_http_client=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,h2=info,hyper=info,hyper_util=info,openraft=info,opentelemetry_sdk=info,scylla=info,tower::buffer=info,axum::rejection=trace
 User=indielinks
 Group=indielinks
 WorkingDirectory=/

@@ -177,6 +177,10 @@ while read -r id addr; do
         || fail "node $id ($addr): amazon-cloudwatch-agent is not active"
     [[ "$agent_status" == "active" ]] \
         || fail "node $id ($addr): amazon-cloudwatch-agent status is '$agent_status'"
+    dual_stack=$(ssh "${ssh_opts[@]}" "admin@$addr" \
+                     "echo \$AWS_USE_DUALSTACK_ENDPOINT" 2>/dev/null)
+    [[ "${dual_stack}" == "true" ]] \
+        || fail "node $id ($addr): AWS_USE_DUALSTACK_ENDPOINT is $dual_stack"
     ok "node $id reachable; cloud-init done; CloudWatch Agent active"
 done < <(jq -r 'to_entries[] | "\(.key) \(.value.ipv6)"' <<<"$nodes_json")
 

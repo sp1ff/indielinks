@@ -2,6 +2,16 @@ indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
 * UNRELEASED
 
+** Front end moved to the origin root
+
+The Leptos front end is now served at the origin root: a browser request
+for =/= returns the application, and the client-side routes =/s=, =/h=,
+=/a=, and =/u= serve it as well (so direct navigation and browser refresh
+work). The =/fe= mount is gone, without a redirect; the bookmarklet
+stylesheet now lives at =/style.css=. API, ActivityPub, WebFinger,
+health-check, and bookmarklet routes are unchanged, and unknown API or
+federation paths still return 404 rather than the SPA.
+
 * 0.0 builds
 
 ** build 0.0.1

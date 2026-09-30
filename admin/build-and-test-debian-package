@@ -90,7 +90,7 @@ done
 if test -n "${help}"; then
     cat <<EOF
 build-and-test-debian-package -- build a Debian binary package for indielinks,
-and test it both as a SysV daemon and as a systemd unit
+and test it both as a System V daemon and as a systemd unit
 
 Usage:
 
@@ -110,6 +110,11 @@ Options:
     -k KEYPAIR | --key-pair=KEYPAIR    Specify the caller's EC2 keypair
     -r REGION | --region=REGION        Specify the region in which to
                     stand-up the EC2 instance (defaults to us-west-2)
+
+Disucssion:
+
+See also 'build-debian-packages', which will *just* build the packages, albeit
+in a Debian container.
 EOF
     exit 0
 fi

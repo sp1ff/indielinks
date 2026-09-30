@@ -14,6 +14,7 @@ packages:
   - acl
   - ca-certificates
   - curl
+  - dnsutils
   - file
   - htop
   - less
@@ -23,6 +24,30 @@ packages:
   - procps
   - sudo
   - vim
+
+# Nodes are IPv6-only, so every AWS-speaking process on the host must use
+# dual-stack endpoints. No single mechanism covers both cases, so set
+# AWS_USE_DUALSTACK_ENDPOINT twice:
+#  - /etc/environment: applied by pam_env to PAM sessions, including
+#    non-interactive SSH (how aws-bootstrap runs indielinks-schemas) and
+#    interactive operator shells;
+#  - systemd DefaultEnvironment: applied to every service on the host
+#    (indielinks-aws.service and the CloudWatch Agent alike). PID 1 reads
+#    system.conf.d only at startup and on daemon-reexec (daemon-reload is
+#    NOT enough), so runcmd reexecs below; the indielinks-aws package is
+#    installed over SSH long after first boot, so it always starts with the
+#    variable in place.
+# cloud-init's own runcmd is neither a PAM session nor a systemd service, so
+# the agent-ctl invocation below keeps its inline prefix.
+write_files:
+  - path: /etc/environment
+    append: true
+    content: |
+      AWS_USE_DUALSTACK_ENDPOINT=true
+  - path: /etc/systemd/system.conf.d/10-dualstack-endpoints.conf
+    content: |
+      [Manager]
+      DefaultEnvironment=AWS_USE_DUALSTACK_ENDPOINT=true
 
 # The service user/group and log directory are created in runcmd rather than
 # via the users-groups module: a users-groups failure aborts creation of the
@@ -44,6 +69,10 @@ runcmd:
   - curl -fsSL --retry 5 -o /tmp/amazon-cloudwatch-agent.deb "https://amazoncloudwatch-agent-${region}.s3.dualstack.${region}.amazonaws.com/debian/amd64/latest/amazon-cloudwatch-agent.deb"
   - dpkg -i /tmp/amazon-cloudwatch-agent.deb
   - rm -f /tmp/amazon-cloudwatch-agent.deb
+  # Make PID 1 re-read system.conf.d so the DefaultEnvironment written above
+  # applies to the agent started below and to indielinks-aws.service when it
+  # is installed later over SSH.
+  - systemctl daemon-reexec
   # Pull the agent configuration from the SSM parameter created by
   # cloudwatch.tofu; aws_instance.nodes depends_on that resource so it always
   # exists by first boot. -m ec2 detects region and credentials via IMDS.

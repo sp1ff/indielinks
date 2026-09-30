@@ -38,8 +38,8 @@ resource "aws_subnet" "public" {
   # /64 carved out of the VPC's Amazon-provided /56.
   ipv6_cidr_block = cidrsubnet(aws_vpc.main.ipv6_cidr_block, 8, each.value.ipv6_netnum)
 
-  # No public IPv4: nodes are IPv6-only by design (outbound IPv4 federation
-  # is sacrificed; inbound IPv4 terminates at the dual-stack ALB).
+  # Automatic public IPv4 is disabled; each instance receives an Elastic IP
+  # for outbound IPv4. Inbound IPv4 terminates at the dual-stack ALB.
   map_public_ip_on_launch = false
 
   tags = merge(local.tags, {

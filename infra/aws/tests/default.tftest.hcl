@@ -140,6 +140,15 @@ run "default_plan" {
   }
 
   assert {
+    condition = alltrue([
+      for _id, instance in aws_instance.nodes :
+      strcontains(instance.user_data, "DefaultEnvironment=AWS_USE_DUALSTACK_ENDPOINT=true") &&
+      strcontains(instance.user_data, "systemctl daemon-reexec")
+    ])
+    error_message = "cloud-init must set AWS_USE_DUALSTACK_ENDPOINT host-wide via systemd DefaultEnvironment and reexec PID 1 (nodes are IPv6-only)"
+  }
+
+  assert {
     condition     = aws_lb_target_group.app.ip_address_type == "ipv6"
     error_message = "target group must be IPv6"
   }
@@ -176,9 +185,21 @@ run "default_plan" {
     condition = (
       aws_vpc_security_group_ingress_rule.nodes_public_from_alb.cidr_ipv4 == null &&
       aws_vpc_security_group_ingress_rule.nodes_raft_grpc.cidr_ipv4 == null &&
-      aws_vpc_security_group_ingress_rule.nodes_icmpv6.cidr_ipv4 == null
+      aws_vpc_security_group_ingress_rule.nodes_icmpv6.cidr_ipv4 == null &&
+      alltrue([
+        for rule in aws_vpc_security_group_ingress_rule.nodes_public_from_operator :
+        rule.cidr_ipv4 == null
+      ])
     )
     error_message = "node security group must have no IPv4 ingress"
+  }
+
+  assert {
+    condition = alltrue([
+      for rule in aws_vpc_security_group_ingress_rule.nodes_public_from_operator :
+      rule.from_port == 20676 && rule.to_port == 20676 && rule.ip_protocol == "tcp"
+    ])
+    error_message = "operator healthcheck ingress must be TCP 20676 only"
   }
 
   assert {

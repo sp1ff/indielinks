@@ -18,12 +18,7 @@ cd ${here}/../..
 # container.
 export GIT_COMMIT="$(git rev-list --count HEAD)"
 cd ${here}
-docker build -t indielinks-debian:latest \
-       -f Dockerfile \
-       --label "indielinks-debian" \
-       --build-arg UID="$(id -u)" \
-       --build-arg GID="$(id -g)" \
-       .
+./build-debian-image
 
 name=debian-packaging
 # Ensure that we're starting from a clean database

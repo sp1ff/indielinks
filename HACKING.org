@@ -138,6 +138,27 @@ Once running, it will listen on three ports:
   - public API :: the indielinks public API (20679 by default)
   - local API :: the administrative API, only accessible from localhost (20680 by default)
   - gRPC API :: the distributed cache API (20681 by default)
+* Deploying to AWS
+
+The production deployment at https://indiemark.sh runs as three EC2 nodes behind a dual-stack Application Load Balancer in =us-west-2=, backed by DynamoDB; its infrastructure lives in =infra/aws= (OpenTofu). The full operator runbook is =infra/aws/RUNBOOK.org=; the short version is:
+
+#+BEGIN_SRC bash
+  admin/aws-tofu apply
+  admin/aws-preflight
+  admin/build-debian-packages
+  admin/aws-bootstrap
+#+END_SRC
+
+Thereafter, =admin/aws-deploy= rolls out new packages one node at a time and =admin/aws-teardown= destroys the service (leaving the data).
+
+Conventions worth knowing before hacking on this:
+
+  - The AWS ports differ from the developer stacks: 20676 public, 20677 admin (loopback only), 20678 Raft gRPC (see =conf/indielinksd-aws.ncl=).
+  - The nodes are IPv6-only: no public IPv4, no NAT; reach them with =ssh -6= / =scp -6=.
+  - Nodes export =AWS_USE_DUALSTACK_ENDPOINT=true= host-wide (via =/etc/environment= for login/SSH sessions and systemd =DefaultEnvironment= for services), so all AWS API traffic uses dual-stack endpoints.
+  - Each node's Raft ID is seeded into debconf by cloud-init and substituted into =/etc/indielinks.toml= by the =indielinks-aws= package's postinst.
+  - Raft membership is *not* in the configuration file: it is supplied once via =POST /ops/cache/init-cluster= and persists in DynamoDB-backed Raft state.
+  - Secrets (peppers, signing keys) resolve from SSM Parameter Store at runtime via the instance profile; they are never in the repo, OpenTofu state, or user data.
 * ScyllaDB Ops
 
 ** ScyllaDB

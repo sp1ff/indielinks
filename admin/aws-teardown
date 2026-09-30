@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Guarded teardown of the AWS service root. Destroys everything OpenTofu owns
+# in infra/aws (EC2, ENIs, ALB, ACM validation records, VPC, CloudWatch
+# resources) and then verifies both halves of the aftermath:
+#
+#   - no orphaned EC2 instances, ENIs, ALBs/target groups, or VPCs remain;
+#   - the durables survive: the eleven DynamoDB tables, the two
+#     operator-created SecureString parameters, the Route 53 hosted zone, and
+#     the S3 state bucket.
+#
+# The guard is deliberate: pass the public origin, exactly, to proceed.
+#
+# Usage: aws-teardown --yes-destroy indiemark.sh
+set -euo pipefail
+
+here=$(dirname "$(realpath "$0")")
+root=$(realpath "${here}/..")
+
+fail() {
+    echo "aws-teardown: FAIL: $*" >&2
+    exit 1
+}
+
+ok() {
+    echo "aws-teardown: ok: $*"
+}
+
+info() {
+    echo "aws-teardown: $*"
+}
+
+# --- Guard ----------------------------------------------------------------------
+
+if (($# != 2)) || [[ "$1" != "--yes-destroy" ]]; then
+    echo "usage: aws-teardown --yes-destroy <public-origin-hostname>" >&2
+    echo "(this destroys the entire service root; the hostname must be typed out)" >&2
+    exit 2
+fi
+
+domain=$("${here}/aws-tofu" output -raw public_url 2>&1) \
+    || fail "cannot read the public_url output; is the root applied (or already destroyed)? $domain"
+domain="${domain#https://}"
+[[ "$2" == "$domain" ]] \
+    || fail "refusing to destroy: you typed '$2', but the deployed origin is '$domain'"
+
+for tool in aws jq; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required tool not found on PATH: $tool"
+done
+
+info "origin confirmed as $domain; proceeding to destroy"
+
+# --- Destroy -----------------------------------------------------------------------
+
+"${here}/aws-tofu" destroy || fail "tofu destroy failed; inspect the root's state before re-running"
+
+# --- Aftermath checks -----------------------------------------------------------------
+# Run every check and report them all; exit non-zero if any failed.
+
+problems=0
+
+check() {
+    # check <description> <command...>
+    local description="$1"
+    shift
+    if "$@"; then
+        ok "$description"
+    else
+        echo "aws-teardown: FAIL: $description" >&2
+        problems=$((problems + 1))
+    fi
+}
+
+# -- Orphans --------------------------------------------------------------------------
+
+no_instances() {
+    local count
+    count=$(aws ec2 describe-instances \
+        --filters "Name=tag:Project,Values=indielinks" \
+                  "Name=tag:Environment,Values=prod" \
+                  "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+        --query 'length(Reservations[].Instances[])' --output text) || return 1
+    [[ "$count" == "0" ]]
+}
+check "no orphaned EC2 instances" no_instances
+
+no_enis() {
+    local count
+    count=$(aws ec2 describe-network-interfaces \
+        --filters "Name=tag:Project,Values=indielinks" \
+                  "Name=tag:Environment,Values=prod" \
+        --query 'length(NetworkInterfaces)' --output text) || return 1
+    [[ "$count" == "0" ]]
+}
+check "no orphaned network interfaces (pinned IPv6 addresses released)" no_enis
+
+no_albs() {
+    local count
+    count=$(aws elbv2 describe-load-balancers \
+        --query 'length(LoadBalancers[?starts_with(LoadBalancerName, `indielinks-prod`)])' \
+        --output text) || return 1
+    [[ "$count" == "0" ]]
+}
+check "no orphaned load balancers" no_albs
+
+no_target_groups() {
+    local count
+    count=$(aws elbv2 describe-target-groups \
+        --query 'length(TargetGroups[?starts_with(TargetGroupName, `indielinks-prod`)])' \
+        --output text) || return 1
+    [[ "$count" == "0" ]]
+}
+check "no orphaned target groups" no_target_groups
+
+no_vpcs() {
+    local count
+    count=$(aws ec2 describe-vpcs \
+        --filters "Name=tag:Project,Values=indielinks" \
+                  "Name=tag:Environment,Values=prod" \
+        --query 'length(Vpcs)' --output text) || return 1
+    [[ "$count" == "0" ]]
+}
+check "no orphaned VPCs (subnets, routes, and IGW go with them)" no_vpcs
+
+# -- Durables ---------------------------------------------------------------------------
+
+for table in users unique_usernames following posts post_shares \
+    likes_replies_shares incoming_likes_replies_shares tasks \
+    raft_log raft_metadata schema_migrations; do
+    check "DynamoDB table '$table' survives" \
+        aws dynamodb describe-table --table-name "$table" --query 'Table.TableName' --output text
+done
+
+for param in /indielinks/prod/peppers /indielinks/prod/signing-keys; do
+    check "SSM parameter '$param' survives" \
+        aws ssm get-parameter --name "$param" --query 'Parameter.Type' --output text
+done
+
+zone_id=$(sed -n "s/.*-var='hosted_zone_id=\([^']*\)'.*/\1/p" "${here}/aws-tofu" | head -n 1)
+[[ -n "$zone_id" ]] || fail "could not parse hosted_zone_id from admin/aws-tofu"
+check "hosted zone $zone_id survives" \
+    aws route53 get-hosted-zone --id "$zone_id" --query 'HostedZone.Id' --output text
+
+bucket=$(sed -n 's/^ *bucket *= *"\([^"]*\)" */\1/p' "${root}/infra/aws/backend.tofu" | head -n 1)
+[[ -n "$bucket" ]] || fail "could not parse state bucket from backend.tofu"
+check "OpenTofu state bucket $bucket survives" \
+    aws s3api head-bucket --bucket "$bucket"
+
+if ((problems > 0)); then
+    fail "$problems aftermath check(s) failed"
+fi
+
+echo "aws-teardown: service destroyed; durables intact. Record this run in deployment-log.md."

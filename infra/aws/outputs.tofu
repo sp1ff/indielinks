@@ -2,11 +2,12 @@
 # with ALB/DNS identifiers and plan-test support.
 
 output "nodes" {
-  description = "Node ID -> instance ID, pinned IPv6 address, and ready-to-use SSH command."
+  description = "Node ID -> instance ID, pinned IPv6 address, allocated IPv4 address, and ready-to-use SSH command."
   value = {
     for id, instance in aws_instance.nodes : id => {
       instance_id = instance.id
       ipv6        = local.node_ipv6_addresses[id]
+      ipv4        = aws_eip.nodes[id].public_ip
       ssh         = "ssh -6 admin@${local.node_ipv6_addresses[id]}"
     }
   }

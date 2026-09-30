@@ -1,0 +1,398 @@
+#!/usr/bin/env bash
+VERSION=0.0.1
+
+set -euo pipefail
+
+help=
+nargs=0
+only_ids=()
+prev_option=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        case "$prev_option" in
+            only)
+                only_ids+=("$option");;
+            *) 
+                eval $prev_option=\$option;;
+        esac
+        nargs=$(($nargs+1))
+        prev_option=
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -h | --he | --hel | --help)
+	        nargs=$(($nargs+1));
+            help=yes;;
+        -v | --verb | --verbose)
+	        nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+	        nargs=$(($nargs+1));
+            version=yes;;
+        -n | --only)
+	        nargs=$(($nargs+1));
+            prev_option=only;;
+        -n=* | --only=*)
+	        nargs=$(($nargs+1));
+            only_ids+=("$optarg");;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try 'aws-bootstrap --help' for more information.
+EOF
+            exit 2;;
+	    *)
+	        # $@ now contains the arguments, $# the number of arguments
+	        shift $nargs;
+	        break;;
+    esac
+
+done
+
+if test -n "${help}"; then
+    cat <<EOF
+'aws-bootstrap' -- USAGE MESSAGE HERE
+
+Usage:
+
+    aws-bootstrap [OPTION...] PACKAGE
+
+Options:
+
+    -h, --help       Print this message & exit
+    -V, --version    Print this script's version & exit
+    -v, --verbose    Produce prolix output
+    -n ID, --only=ID Only bootstrap node ID
+
+Arguments:
+
+    PACKAGE path (relative or absolute) to the Debian package to be installed
+
+Discussion:
+
+First cluster bootstrap for the AWS deployment. Run after
+`admin/build-debian-packages`, `admin/aws-tofu apply`, and
+`admin/aws-preflight`. Transfers and installs the indielinks-aws package on
+every node over IPv6 SSH, runs indielinks-schemas on the lowest-ID node, starts
+indielinks-aws.service cluster-wide, initializes the Raft cluster once through
+the lowest-ID node's loopback ops listener, and waits for 202 READY everywhere
+(direct, ALB targets, and the public origin).
+
+Every step checks observed state first, so the script is safe to resume after a
+failure: re-running it picks up where the last run stopped. It never
+re-initializes an initialized cluster as a new cluster (the init-cluster
+endpoint is idempotent, and the observed slot assignment is verified
+afterwards).
+
+With --only, only the named nodes are provisioned (package, configuration,
+service start); the schema run, Raft initialization, and cluster-wide readiness
+gates are skipped. This is the documented way to provision a new node before
+adding it to Raft membership (see `infra/aws/RUNBOOK.org`).
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+'aws-bootstrap' $VERSION
+EOF
+    exit 0
+fi
+
+if test -n "${verbose}"; then
+    set -x
+fi
+
+
+fail() {
+    echo "aws-bootstrap: FAIL: $*" >&2
+    exit 1
+}
+
+ok() {
+    echo "aws-bootstrap: ok: $*"
+}
+
+info() {
+    echo "aws-bootstrap: $*"
+}
+
+
+here=$(dirname "$(realpath "$0")")
+root=$(realpath "${here}/..")
+
+deb="$1"
+if [[ -z "$deb" ]]; then
+    deb=$(ls -1t "${root}"/target/debian/indielinks-aws_*_amd64.deb 2>/dev/null | head -n 1) \
+        || true
+    [[ -n "$deb" ]] || fail "no package given and none found under target/debian; run admin/build-debian-packages"
+fi
+
+[[ -f "$deb" ]] || fail "package not found: $deb"
+base=$(basename "$deb")
+deb_version=$(sed -n 's/^indielinks-aws_\(.*\)_amd64\.deb$/\1/p' <<<"$base")
+[[ -n "$deb_version" ]] || fail "package name does not match indielinks-aws_<version>_amd64.deb: $base"
+info "deploying package $base (version $deb_version)"
+
+for tool in aws tofu jq ssh scp curl sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required tool not found on PATH: $tool"
+done
+
+
+# --- Node map ---------------------------------------------------------------
+
+nodes_json=$("${here}/aws-tofu" output -json nodes 2>&1) \
+    || fail "tofu output failed; has infra/aws been applied? $nodes_json"
+node_count=$(jq 'length' <<<"$nodes_json")
+((node_count >= 3)) \
+    || fail "expected at least three nodes for a quorum-tolerant cluster; found $node_count"
+
+# Node IDs and addresses, ascending numeric node-ID order.
+mapfile -t node_lines < <(jq -r 'to_entries | sort_by(.key | tonumber)[] | "\(.key) \(.value.ipv6)"' <<<"$nodes_json")
+first_id=${node_lines[0]%% *}
+first_addr=${node_lines[0]#* }
+ok "found $node_count nodes; bootstrap node is $first_id ($first_addr)"
+
+# With --only, restrict the per-node work to the named nodes and skip the
+# cluster-level steps (schema, Raft init, readiness gates).
+partial=false
+if ((${#only_ids[@]})); then
+    partial=true
+    filtered=()
+    for want in "${only_ids[@]}"; do
+        found=""
+        for line in "${node_lines[@]}"; do
+            [[ ${line%% *} == "$want" ]] && found="$line"
+        done
+        [[ -n "$found" ]] || fail "--only names a node not in the node map: $want"
+        filtered+=("$found")
+    done
+    node_lines=("${filtered[@]}")
+    info "partial run: provisioning only node(s) ${only_ids[*]}"
+fi
+
+key="${INDIELINKS_SSH_KEY:-$HOME/.ssh/id_rsa.indielinks-sp1ff.pem}"
+[[ -f "$key" ]] || fail "SSH private key not found: $key (override with INDIELINKS_SSH_KEY)"
+
+ssh_opts=(-6 -i "$key" -o BatchMode=yes -o ConnectTimeout=10 -o IdentitiesOnly=yes
+    -o StrictHostKeyChecking=accept-new)
+
+# --- Reachability (cheap re-check of the preflight invariants) --------------
+
+for line in "${node_lines[@]}"; do
+    id=${line%% *}
+    addr=${line#* }
+    echo "aws-bootstrap: node $id ($addr): checking SSH and cloud-init..."
+    ssh "${ssh_opts[@]}" "admin@$addr" true \
+        || fail "node $id ($addr): SSH unreachable from this host"
+    ssh "${ssh_opts[@]}" "admin@$addr" "cloud-init status --wait" >/dev/null 2>&1 \
+        || fail "node $id ($addr): cloud-init did not complete cleanly"
+done
+ok "all nodes reachable; cloud-init complete"
+
+# --- Package transfer and installation ---------------------------------------
+
+workdir=$(mktemp -d)
+trap 'rm -rf "$workdir"' EXIT
+(cd "$(dirname "$deb")" && sha256sum "$base") >"${workdir}/${base}.sha256"
+
+for line in "${node_lines[@]}"; do
+    id=${line%% *}
+    addr=${line#* }
+    echo "aws-bootstrap: node $id ($addr): copying package..."
+    scp "${ssh_opts[@]}" "$deb" "${workdir}/${base}.sha256" "admin@[${addr}]:/tmp/" \
+        || fail "node $id ($addr): scp failed"
+
+    echo "aws-bootstrap: node $id ($addr): verifying checksum..."
+    ssh "${ssh_opts[@]}" "admin@$addr" "cd /tmp && sha256sum -c '${base}.sha256'" \
+        || fail "node $id ($addr): checksum verification failed"
+
+    installed=$(ssh "${ssh_opts[@]}" "admin@$addr" \
+        "dpkg-query -W -f='\${Version}' indielinks-aws 2>/dev/null || true")
+    if [[ "$installed" == "$deb_version" ]]; then
+        ok "node $id: indielinks-aws $deb_version already installed; skipping install"
+    else
+        echo "aws-bootstrap: node $id ($addr): installing package (replacing '${installed:-none}')..."
+        ssh "${ssh_opts[@]}" "admin@$addr" \
+            "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y '/tmp/${base}'" \
+            || fail "node $id ($addr): package installation failed"
+    fi
+
+    echo "aws-bootstrap: node $id ($addr): checking configuration..."
+    ssh "${ssh_opts[@]}" "admin@$addr" \
+        "grep -q '^this-node = ${id}\$' /etc/indielinks.toml" \
+        || fail "node $id ($addr): /etc/indielinks.toml does not have 'this-node = ${id}' (debconf seed or postinst substitution failed)"
+    masked=$(ssh "${ssh_opts[@]}" "admin@$addr" "systemctl show --property=LoadState --value indielinks.service || true")
+    [[ "$masked" == "masked" ]] \
+        || fail "node $id ($addr): indielinks.service is '$masked', expected masked"
+    # TODO(sp1ff): seems wrong? is-enabled returns "masked"
+    # enabled=$(ssh "${ssh_opts[@]}" "admin@$addr" "systemctl is-enabled indielinks-aws.service || true")
+    # [[ "$enabled" == "enabled" ]] \
+    #     || fail "node $id ($addr): indielinks-aws.service is '$enabled', expected enabled"
+    ok "node $id: package installed and configured"
+done
+
+# --- Schema creation / migration (lowest-ID node only; full runs only) -------
+
+if [[ "$partial" == "false" ]]; then
+    echo "aws-bootstrap: node $first_id ($first_addr): running indielinks-schemas..."
+    ssh "${ssh_opts[@]}" "admin@$first_addr" "indielinks-schemas -p ddb us-west-2" \
+        || fail "node $first_id ($first_addr): indielinks-schemas failed"
+    ok "DynamoDB schema current"
+fi
+
+# --- Start the service cluster-wide -------------------------------------------
+
+for line in "${node_lines[@]}"; do
+    id=${line%% *}
+    addr=${line#* }
+    echo "aws-bootstrap: node $id ($addr): starting indielinks-aws.service..."
+    ssh "${ssh_opts[@]}" "admin@$addr" "sudo systemctl start indielinks-aws.service" \
+        || fail "node $id ($addr): systemctl start failed"
+done
+
+# Wait for each node to serve its public listener. Accept 201 (alive, Raft
+# uninitialized) or 202 (already initialized -- e.g. a resumed run).
+for line in "${node_lines[@]}"; do
+    id=${line%% *}
+    addr=${line#* }
+    echo "aws-bootstrap: node $id ($addr): waiting for the public listener..."
+    for _ in $(seq 1 60); do
+        status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+            "http://[${addr}]:20676/healthcheck" 2>/dev/null) || true
+        [[ "$status" == "201" || "$status" == "202" ]] && break
+        sleep 5
+    done
+    [[ "$status" == "201" || "$status" == "202" ]] \
+        || fail "node $id ($addr): /healthcheck returned '$status', expected 201 (or 202 on a resumed run)"
+    ok "node $id: alive (healthcheck $status)"
+done
+
+# --- Initialize the Raft cluster (once; full runs only) ------------------------
+
+# Slot 0 (recent-posts) goes to the lowest-ID node, slot 1 (top-k-tags) to the
+# next -- mirroring tests-indielinks/src/cache.rs. SlotIndex serializes as a
+# plain number (hand-written serde impl in indielinks-shared/src/fin.rs).
+if [[ "$partial" == "false" ]]; then
+
+init_json=$(jq -c '
+    (to_entries | sort_by(.key | tonumber)) as $nodes
+    | {
+        nodes: [$nodes[] | [(.key | tonumber), {addr: ("[" + .value.ipv6 + "]:20678")}]],
+        slots: [[0, ($nodes[0].key | tonumber)], [1, ($nodes[1].key | tonumber)]]
+      }' <<<"$nodes_json")
+
+# Fresh init or resume? On an uninitialized node the metrics show no voters;
+# on an initialized one they do. The distinction matters: on a fresh init we
+# verify the resulting state strictly, but on a resume (a re-run after a
+# successful bootstrap, or a node-replacement run against a cluster whose
+# membership is restored from DynamoDB) the membership is the operator's, not
+# this script's, so init-cluster is simply skipped.
+pre_metrics=$(ssh "${ssh_opts[@]}" "admin@$first_addr" \
+    "curl -s http://127.0.0.1:20677/ops/cache/metrics") \
+    || fail "node $first_id ($first_addr): cannot read /ops/cache/metrics"
+existing_voters=$(jq -r '[(.raft.membership_config.membership.configs // [])[]?[]] | unique | length' <<<"$pre_metrics")
+
+if [[ "$existing_voters" == "0" ]]; then
+    echo "aws-bootstrap: node $first_id ($first_addr): initializing the Raft cluster..."
+    status=$(ssh "${ssh_opts[@]}" "admin@$first_addr" \
+        "curl -s -o /tmp/aws-bootstrap-init-response.json -w '%{http_code}' -X POST \
+           -H 'Content-Type: application/json' \
+           -d '${init_json}' \
+           http://127.0.0.1:20677/ops/cache/init-cluster") \
+        || fail "node $first_id ($first_addr): init-cluster request failed"
+    [[ "$status" == "200" ]] \
+        || fail "node $first_id ($first_addr): init-cluster returned HTTP $status"
+
+    # Verify the observed state. RaftState (indielinks-shared/src/api.rs)
+    # serializes the hash ring under the kebab-case key "hash-ring" as
+    # [[ring-position, [node-id, virtual]]...] and the slots as a flat
+    # 16-element array with nulls for unassigned slots.
+    state_json=$(ssh "${ssh_opts[@]}" "admin@$first_addr" \
+        "curl -s http://127.0.0.1:20677/ops/cache/state") \
+        || fail "node $first_id ($first_addr): cannot read /ops/cache/state"
+    expected_ring=$(jq -c '[to_entries | sort_by(.key | tonumber)[] | .key | tonumber] | unique' <<<"$nodes_json")
+    slot_owners=$(jq -c '(to_entries | sort_by(.key | tonumber)) as $n | [$n[0].key, $n[1].key] | map(tonumber)' <<<"$nodes_json")
+    jq -e --argjson ring "$expected_ring" --argjson owners "$slot_owners" '
+        ([."hash-ring"[] | .[1][0]] | unique) == $ring
+        and ((.slots | length) == 16)
+        and (.slots[0] == $owners[0])
+        and (.slots[1] == $owners[1])
+        and ([.slots[2:][] | select(. != null)] | length == 0)' \
+        <<<"$state_json" >/dev/null \
+        || fail "node $first_id ($first_addr): observed Raft state drifted from the requested initialization; expected ring $expected_ring with slot owners $slot_owners, observed: $state_json"
+    ok "Raft cluster initialized with $node_count members; slot owners $slot_owners"
+else
+    ok "Raft cluster already initialized ($existing_voters voters); skipping init-cluster"
+fi
+
+fi # partial
+
+# --- Readiness (full runs only) --------------------------------------------------
+
+if [[ "$partial" == "true" ]]; then
+    echo "aws-bootstrap: node(s) ${only_ids[*]} provisioned. Complete the membership change per infra/aws/RUNBOOK.org, then re-run a full aws-bootstrap to verify the cluster."
+    exit 0
+fi
+
+for line in "${node_lines[@]}"; do
+    id=${line%% *}
+    addr=${line#* }
+    echo "aws-bootstrap: node $id ($addr): waiting for 202 READY..."
+    for _ in $(seq 1 60); do
+        status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+            "http://[${addr}]:20676/healthcheck" 2>/dev/null) || true
+        [[ "$status" == "202" ]] && break
+        sleep 5
+    done
+    [[ "$status" == "202" ]] \
+        || fail "node $id ($addr): /healthcheck returned '$status', expected 202"
+    ok "node $id: READY"
+done
+
+tg_arn=$("${here}/aws-tofu" output -raw target_group_arn) \
+    || fail "cannot read target_group_arn output"
+
+# True iff describe-target-health reports one state per registered target and
+# every one of them is 'healthy'. (--output text flattens the states onto one
+# whitespace-separated line, so test word by word.)
+targets_healthy() {
+    local states s
+    states=$(aws elbv2 describe-target-health --target-group-arn "$tg_arn" \
+        --query 'TargetHealthDescriptions[].TargetHealth.State' --output text 2>/dev/null) || return 1
+    [[ -n "$states" ]] || return 1
+    for s in $states; do
+        [[ "$s" == "healthy" ]] || return 1
+    done
+    # shellcheck disable=SC2086
+    [[ $(wc -w <<<"$states") -eq $node_count ]] || return 1
+}
+
+echo "aws-bootstrap: waiting for all ALB targets to become healthy..."
+for _ in $(seq 1 60); do
+    targets_healthy && break
+    sleep 5
+done
+targets_healthy || fail "ALB targets not healthy: $(aws elbv2 describe-target-health --target-group-arn "$tg_arn" --query 'TargetHealthDescriptions[].{Id:Target.Id,State:TargetHealth.State}' --output text 2>/dev/null || echo unavailable)"
+ok "all ALB targets healthy"
+
+status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    "https://indiemark.sh/healthcheck" 2>/dev/null) || true
+[[ "$status" == "202" ]] \
+    || fail "https://indiemark.sh/healthcheck returned '$status', expected 202"
+ok "https://indiemark.sh/healthcheck returns 202 READY"
+
+echo "aws-bootstrap: cluster is up. Record this run in deployment-log.md."

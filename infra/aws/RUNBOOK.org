@@ -1,0 +1,318 @@
+#+TITLE: indielinks on AWS — operator runbook
+#+AUTHOR: Michael Herstine
+
+This is the operator runbook for the production indielinks deployment at
+https://indiemark.sh: three Debian 12 EC2 nodes in =us-west-2= behind a
+dual-stack Application Load Balancer, backed by DynamoDB. The authoritative
+design document is =../aws-plan-fourth-draft.md= (repository root, untracked);
+this runbook is the operational companion.
+
+* Permanence note — read this first
+
+=indiemark.sh= is part of the system's identity. Once the instance
+federates, ActivityPub actor IDs containing =https://indiemark.sh= are
+stored locally and on remote servers. Changing the origin after launch is a
+data migration, not an infrastructure edit. Do not treat any step in this
+runbook as a way to rename the service.
+
+* Prerequisites
+
+All of these are one-time, operator-owned steps (AWS-001 through AWS-005 in
+the plan). Everything here should already be done; verify before proceeding.
+
+| Input                | Value                                                       |
+|----------------------+-------------------------------------------------------------|
+| AWS account/region   | production account, =us-west-2=                             |
+| Hosted zone          | =Z07598301IF2GN8JH9W19= (indiemark.sh, registrar-delegated) |
+| State bucket         | =s3-713005939292-indielinks= (versioned, encrypted, locked) |
+| EC2 key pair         | =indielinks-sp1ff-keypair=                                  |
+| Operator IPv6 CIDRs  | =2601:1c2:4080:14c0::/64=                                   |
+| SSM secrets          | =/indielinks/prod/peppers=, =/indielinks/prod/signing-keys= |
+| SNS alert email      | wired through =admin/aws-tofu= (=alert_email=)              |
+
+Local tools: =aws= CLI v2, =tofu=, =jq=, =dig=, =ssh=, =scp=, =curl=,
+=openssl=, and an IPv6-capable network path (the nodes have no public IPv4).
+
+The private key defaults to =~/.ssh/id_rsa.indielinks-sp1ff.pem=; override
+with =INDIELINKS_SSH_KEY=. The key must be unencrypted (all scripts use
+=BatchMode= and can never prompt).
+
+Ports (from =conf/indielinksd-aws.ncl=, deliberately different from the
+developer stacks): 20676 public, 20677 admin (loopback only), 20678 Raft
+gRPC.
+
+The nodes are IPv6-only. cloud-init exports =AWS_USE_DUALSTACK_ENDPOINT=true=
+host-wide (=/etc/environment= for login and SSH sessions, systemd
+=DefaultEnvironment= for every service) so that all AWS API traffic — the
+daemon's DynamoDB/SSM clients, =indielinks-schemas= run over SSH, the
+CloudWatch Agent — uses dual-stack endpoints.
+
+* Standing up the service
+
+From a clean checkout of the =ops/aws= branch:
+
+#+BEGIN_SRC bash
+  admin/aws-tofu apply
+  admin/aws-preflight
+  admin/build-debian-packages
+  admin/aws-bootstrap
+#+END_SRC
+
+What to expect:
+
+1. =apply= creates the VPC, ENIs with pinned IPv6 addresses, instances, ALB,
+   ACM certificate, DNS, IAM, and CloudWatch resources. Review the plan; the
+   resolved AMI ID is printed at every plan.
+2. =preflight= mutates nothing; it validates the operator environment and
+   waits for cloud-init and the CloudWatch Agent on every node.
+3. Between bootstrap and Raft initialization the ALB returns *503* and the
+   unhealthy-hosts alarm is in ALARM. That is the designed state, not a
+   failure: the target group matcher is exactly =202=, and a node returns
+   =201 GOOD= until it joins a Raft cluster.
+4. =aws-bootstrap= installs the package, runs =indielinks-schemas= on node
+   0, starts the service, initializes Raft, and waits for =202 READY= at
+   =https://indiemark.sh/healthcheck=. It is safe to re-run after a failure;
+   every step checks observed state first.
+
+Record every run — resource IDs, commands, and evidence, never secrets — in
+=deployment-log.md= (untracked, repository root).
+
+* Day-to-day operations
+
+** SSH
+
+Node IDs, pinned IPv6 addresses, and ready-to-use commands:
+
+#+BEGIN_SRC bash
+  admin/aws-tofu output nodes
+  ssh -6 admin@<node-ipv6>
+#+END_SRC
+
+The node security group also admits TCP 20676 from the operator CIDRs, so
+individual nodes can be healthchecked directly (this is what
+=aws-bootstrap= and =aws-deploy= do for their readiness gates):
+
+#+BEGIN_SRC bash
+  curl -s -o /dev/null -w '%{http_code}\n' http://[<node-ipv6>]:20676/healthcheck
+#+END_SRC
+
+** The admin listener
+
+The admin API (=20677=) is loopback-only. For a single command, run =curl=
+on the node:
+
+#+BEGIN_SRC bash
+  ssh -6 admin@<node-ipv6> curl -s http://127.0.0.1:20677/ops/cache/state
+#+END_SRC
+
+For interactive use, forward the port:
+
+#+BEGIN_SRC bash
+  ssh -6 -L 20677:127.0.0.1:20677 admin@<node-ipv6>
+  curl -s http://127.0.0.1:20677/ops/cache/metrics | jq
+#+END_SRC
+
+** Logs
+
+On-node:
+
+#+BEGIN_SRC bash
+  journalctl -u indielinks-aws -f
+  tail -f /var/log/indielinks/indielinksd.log
+#+END_SRC
+
+In CloudWatch (log group =/indielinks/prod/indielinksd=, one stream per
+instance; retention per the =log_retention_days= variable):
+
+#+BEGIN_SRC text
+  fields @timestamp, @message
+  | filter @message like /ERROR/
+  | sort @timestamp desc
+  | limit 50
+#+END_SRC
+
+** Alarms
+
+All alarms publish to the SNS topic =indielinks-prod-alarms=:
+
+- =indielinks-prod-alb-unhealthy-hosts= :: a target has failed health checks.
+  Expect this *between* bootstrap and Raft initialization, and *during* a
+  rolling deploy (one node at a time, briefly). Sustained ALARM otherwise
+  means a node is down or stuck pre-Raft.
+- =indielinks-prod-alb-target-5xx= :: elevated 5xx from the targets. Check
+  the application logs first.
+- =indielinks-prod-node-N-status-check= :: EC2 status check failure on node
+  N. Usually host-level; consider replacement (see below).
+- =indielinks-prod-node-N-memory=, =-disk= :: CloudWatch Agent host metrics.
+  The disk alarm's device/fstype is a best guess (=nvme0n1p1=, =ext4=); if
+  it sits in INSUFFICIENT_DATA on a healthy node, fix the dimensions in
+  =cloudwatch.tofu=.
+
+* Rolling deploys
+
+#+BEGIN_SRC bash
+  admin/build-debian-packages        # produces target/debian/indielinks-aws_*.deb
+  admin/aws-deploy target/debian/indielinks-aws_<version>_amd64.deb
+#+END_SRC
+
+=aws-deploy= verifies quorum (three voters, one leader, every node =202=),
+then walks the nodes in ascending Raft-ID order: copy, checksum, install,
+restart, wait for direct =202=, wait for the ALB target. It aborts on the
+first failure and never restarts two voters concurrently.
+
+If it aborts mid-rollout: the failed node and all later nodes are untouched
+beyond what the output reports; earlier nodes run the new package. Mixed
+versions are safe for a Raft cluster; fix the cause and re-run — already
+updated nodes reinstall quickly and roll forward.
+
+* Raft membership and node lifecycle
+
+All commands below run against the loopback admin listener of a node — run
+them over SSH as shown. Socket addresses are bracketed IPv6.
+
+** Discover the leader
+
+#+BEGIN_SRC bash
+  ssh -6 admin@<any-node> curl -s http://127.0.0.1:20677/ops/cache/metrics \
+    | jq '{leader: .raft.current_leader, voters: .raft.membership_config.membership.configs}'
+#+END_SRC
+
+** Add a node
+
+To add node =3= at =<new-ipv6>=:
+
+1. Add it to the node map and apply (the =nodes= variable is *not* injected
+   by =aws-tofu=; override via the environment):
+
+   #+BEGIN_SRC bash
+     TF_VAR_nodes='{"0"={"subnet_key"="a","ipv6_suffix"="10"},"1"={"subnet_key"="b","ipv6_suffix"="11"},"2"={"subnet_key"="a","ipv6_suffix"="12"},"3"={"subnet_key"="b","ipv6_suffix"="13"}}' \
+       admin/aws-tofu apply
+   #+END_SRC
+
+   Verify the plan touches only the new key and its attachments.
+
+2. Provision it (package, debconf-derived configuration, service start)
+   without touching the cluster-level steps:
+
+   #+BEGIN_SRC bash
+     admin/aws-bootstrap --only 3
+   #+END_SRC
+
+   A full =aws-bootstrap= run would fail at its readiness gates here, since
+   node 3 is not (yet) a Raft member and cannot return =202=.
+
+3. Add it as a *learner* on the leader:
+
+   #+BEGIN_SRC bash
+     ssh -6 admin@<leader-ipv6> curl -s -X POST \
+       -H 'Content-Type: application/json' \
+       -d '[3, "[<new-ipv6>]:20678"]' \
+       http://127.0.0.1:20677/ops/cache/add-learner
+   #+END_SRC
+
+4. Watch it catch up (its replication entry converges on the leader's
+   =last_log_index=):
+
+   #+BEGIN_SRC bash
+     ssh -6 admin@<leader-ipv6> curl -s http://127.0.0.1:20677/ops/cache/metrics \
+       | jq '.raft.replication'
+   #+END_SRC
+
+5. Commit the new membership:
+
+   #+BEGIN_SRC bash
+     ssh -6 admin@<leader-ipv6> curl -s -X POST \
+       -H 'Content-Type: application/json' \
+       -d '[0, 1, 2, 3]' \
+       http://127.0.0.1:20677/ops/cache/membership
+   #+END_SRC
+
+Rollback of a failed addition: remove the learner (commit membership without
+it: =-d '[0, 1, 2]'=), then remove the OpenTofu map entry and apply.
+
+** Remove a node
+
+Change Raft membership *first*, infrastructure second:
+
+1. Commit membership without the node (e.g. removing node 2):
+
+   #+BEGIN_SRC bash
+     ssh -6 admin@<leader-ipv6> curl -s -X POST \
+       -H 'Content-Type: application/json' \
+       -d '[0, 1]' \
+       http://127.0.0.1:20677/ops/cache/membership
+   #+END_SRC
+
+2. Verify quorum and request handling on the survivors.
+3. Remove its map entry (=TF_VAR_nodes= without key =2=) and apply; the plan
+   must touch only that key's resources.
+
+** Replace a node under its existing ID
+
+The ENI keeps the pinned IPv6 address and the Raft state is restored from
+DynamoDB, so *no membership edit is needed*:
+
+#+BEGIN_SRC bash
+  admin/aws-tofu apply -replace='aws_instance.nodes["1"]'
+#+END_SRC
+
+Then re-run =admin/aws-bootstrap= (idempotent) to reinstall the package and
+restart the service, and watch =/ops/cache/metrics= until the node catches
+up.
+
+** Reassign cache slots
+
+Slot 0 is recent-posts, slot 1 is top-k-tags. Move them, e.g. to nodes 2 and
+1:
+
+#+BEGIN_SRC bash
+  ssh -6 admin@<leader-ipv6> curl -s -X POST \
+    -H 'Content-Type: application/json' \
+    -d '[[0, 2], [1, 1]]' \
+    http://127.0.0.1:20677/ops/cache/slots
+#+END_SRC
+
+* Secrets
+
+The peppers and signing keys live only in SSM Parameter Store
+(=/indielinks/prod/peppers=, =/indielinks/prod/signing-keys=, standard-tier
+SecureStrings on the AWS-managed key). They must never appear in Git, OpenTofu
+state, user data, command output, shell history, or =deployment-log.md=.
+
+Rotation:
+
+1. Generate and store the new values with =aws ssm put-parameter
+   --overwrite= (take care that the values do not land in shell history —
+   use =--value file:///path= and shred the file, or the console).
+2. Restart the nodes one at a time, exactly as a rolling deploy does
+   (=admin/aws-deploy= with a rebuilt package, or by hand:
+   =sudo systemctl restart indielinks-aws.service=, waiting for direct =202=
+   and a healthy ALB target between nodes).
+
+Note that rotating peppers invalidates existing password hashes and tokens;
+treat pepper rotation as a breaking operation and prefer signing-key
+rotation when that suffices.
+
+* Recovery
+
+- *One node lost* :: the cluster keeps quorum and serves reads/writes;
+  requests routed to the lost node's slots fail until it returns. Replace it
+  under its existing ID (above).
+- *Two nodes lost* :: quorum is gone. Restore at least one node before the
+  cluster can elect a leader. The ALB will serve 5xx; do not re-run
+  =init-cluster= on a surviving node — membership is persisted in DynamoDB
+  and returns with the nodes.
+- *ALB 503 with healthy nodes* :: the matcher is exactly =202=; a node
+  returning =201= is alive but has lost (or never gained) Raft membership.
+  Check =/ops/cache/metrics= on each node.
+
+* Teardown
+
+#+BEGIN_SRC bash
+  admin/aws-teardown --yes-destroy indiemark.sh
+#+END_SRC
+
+Destroys the entire service root and then verifies that no EC2 instances,
+ENIs, load balancers, target groups, or VPCs remain, and that the DynamoDB
+tables, both SecureString parameters, the hosted zone, and the S3 state
+bucket survive. Record the run in =deployment-log.md=.

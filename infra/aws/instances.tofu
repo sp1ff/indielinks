@@ -5,8 +5,10 @@
 #     instance creation (hashicorp/terraform-provider-aws#41571); the ENI
 #     create path honors it, and IPv6 target-group registration requires a
 #     designated primary IPv6 address.
-#  2. The ENI survives instance termination, so replacing an instance under
-#     an existing node ID reattaches the same ENI and pinned address.
+#  2. The ENI survives instance termination because AWS forbids
+#     delete_on_termination on an attachment that references an existing
+#     network interface ID. A replacement instance reattaches the same ENI
+#     and keeps the same pinned IPv6 address.
 #
 # Nodes have no public IPv4 addresses by design: all egress is IPv6 (AWS
 # APIs via dual-stack endpoints, Debian mirrors, IPv6-capable ActivityPub
@@ -133,6 +135,23 @@ resource "aws_instance" "nodes" {
       error_message = "instance_type must run on the Nitro hypervisor."
     }
   }
+
+  tags = merge(local.tags, {
+    Name = "${local.name_prefix}-node-${each.key}"
+  })
+}
+
+# One Elastic IP per instance for outbound IPv4 connectivity (ActivityPub
+# federation with IPv4-only peers). Inbound IPv4 remains closed: the node
+# security group has no IPv4 rules. Addresses are not pinned; they change
+# across instance replacement.
+resource "aws_eip" "nodes" {
+  for_each = var.nodes
+
+  instance = aws_instance.nodes[each.key].id
+  domain   = "vpc"
+
+  depends_on = [aws_internet_gateway.main]
 
   tags = merge(local.tags, {
     Name = "${local.name_prefix}-node-${each.key}"

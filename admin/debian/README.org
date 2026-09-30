@@ -1,7 +1,7 @@
 #+TITLE: README
 #+AUTHOR: Michael Herstine
 #+EMAIL: sp1ff@pobox.com
-#+DATE: <2026-09-24 Thu 13:54>
+#+DATE: <2026-09-29 Tue 16:01>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -93,16 +93,16 @@ The flow of control:
   - =admin/build-and-test-debian-packages=
     + first runs =admin/debian/build-and-test-debian-package-sysv=
       - builds a Docker image, then uses docker compose to stand-up
-        that image along with a ScyllaDB backend
+        a container along with a ScyllaDB backend
       - in the image, run 
       - run =admin/debian/sysv-driver=
-        + uses the helper script =admin/build-debian-packages= to
+        + uses the helper script =admin/debian/build-packages= to
           * builds indielinks with the release profile
           * builds the frontend
           * builds deb & deb-aws
-          * installs deb in the docker container
-          * tests the install
-          * removes the package
+        + installs deb in the docker container
+        + tests the install
+        + removes the package
     + runs =admin/debian/test-debian-package-systemd=
       - spins-up an EC2 instance
       - scp's the packages *built in step 1* along with
@@ -121,3 +121,9 @@ The flow of control:
         + tests it
         + removes it
       - cleans-up
+  - =build-debian-packages=
+    + builds the same docker image, then uses docker run to stand-up a
+      container
+    + in the image run =admin/debian/build-packages=
+
+Either way, the packages are left in =target/debian=

@@ -88,8 +88,10 @@ data "aws_iam_policy_document" "nodes" {
   }
 
   statement {
-    sid     = "SSMParameterReads"
-    actions = ["ssm:GetParameter"]
+    sid = "SSMParameterReads"
+    # GetParameters (plural) as well: when both secrets resolve to SSM, the
+    # daemon fetches them with one batched call (indielinks/src/indielinks.rs).
+    actions = ["ssm:GetParameter", "ssm:GetParameters"]
     resources = [
       data.aws_ssm_parameter.peppers.arn,
       data.aws_ssm_parameter.signing_keys.arn,

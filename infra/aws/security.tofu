@@ -120,6 +120,23 @@ resource "aws_vpc_security_group_ingress_rule" "nodes_ssh" {
   description = "SSH from operator IPv6 CIDR ${each.value}"
 }
 
+resource "aws_vpc_security_group_ingress_rule" "nodes_public_from_operator" {
+  for_each = toset(var.operator_ipv6_cidrs)
+
+  security_group_id = aws_security_group.nodes.id
+
+  ip_protocol = "tcp"
+  from_port   = 20676
+  to_port     = 20676
+  cidr_ipv6   = each.value
+
+  # Lets the operator healthcheck individual nodes directly (bootstrap and
+  # rolling-deploy readiness gates probe this exact address:port before ALB
+  # health converges). The port serves public content and the CIDRs are
+  # already SSH-trusted, so the added exposure is minimal.
+  description = "indielinksd public listener (healthchecks) from operator IPv6 CIDR ${each.value}"
+}
+
 resource "aws_vpc_security_group_ingress_rule" "nodes_icmpv6" {
   security_group_id = aws_security_group.nodes.id
 
@@ -140,5 +157,15 @@ resource "aws_vpc_security_group_egress_rule" "nodes_all_ipv6" {
   description = "All outbound IPv6: federation, package mirrors, dual-stack AWS APIs"
 }
 
-# No IPv4 rules of any kind: nodes have no public IPv4 addresses and no IPv4
-# ingress; outbound IPv4 federation is sacrificed by design.
+resource "aws_vpc_security_group_egress_rule" "nodes_all_ipv4" {
+  security_group_id = aws_security_group.nodes.id
+
+  ip_protocol = "-1"
+  cidr_ipv4   = "0.0.0.0/0"
+
+  description = "All outbound IPv4: ActivityPub federation with IPv4-only peers"
+}
+
+# IPv4 ingress remains closed by design. The EIP enables outbound IPv4 only;
+# all inbound traffic is via IPv6 (ALB target group, SSH) or terminates at
+# the dual-stack ALB.

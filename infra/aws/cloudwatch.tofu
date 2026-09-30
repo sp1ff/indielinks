@@ -34,6 +34,16 @@ resource "aws_ssm_parameter" "cloudwatch_agent_config" {
               file_path       = "/var/log/indielinks/indielinksd.log"
               log_group_name  = local.log_group_name
               log_stream_name = "{instance_id}"
+              filters = [
+                {
+                  type       = "exclude"
+                  expression = "\"method\"\\s*:\\s*\"GET\".*\"uri\"\\s*:\\s*\"/healthcheck\"|\"uri\"\\s*:\\s*\"/healthcheck\".*\"method\"\\s*:\\s*\"GET\""
+                },
+                {
+                  type       = "exclude"
+                  expression = "\"name\"\\s*:\\s*\"ReqwestBlockingClient.Send\""
+                }
+              ]
             }
           ]
         }
