@@ -20,7 +20,8 @@
 //! Both palettes are built from the same brand ramp and share typography, radii & timing
 //! customization ([customize]); only color and shadow choices differ. [light] is the canonical
 //! indielinks appearance: its values must remain unchanged. [dark] targets the design laid out in
-//! the dark-theme plan, with individual values tuned during browser review.
+//! the dark-theme plan, with individual values tuned during browser review. Palette values live in
+//! `indielinks-shared/assets/theme.css`; this module gives Thaw references to those CSS tokens.
 
 use std::collections::HashMap;
 
@@ -29,26 +30,32 @@ use thaw::Theme;
 const SYSTEM_FONT: &str = "'Segoe UI', 'Segoe UI Web (West European)', ui-sans-serif, system-ui, \
                           -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue', sans-serif";
 
+const BRAND_COLORS: [(i32, &str); 16] = [
+    (10, "var(--indielinks-brand-10)"),
+    (20, "var(--indielinks-brand-20)"),
+    (30, "var(--indielinks-brand-30)"),
+    (40, "var(--indielinks-brand-40)"),
+    (50, "var(--indielinks-brand-50)"),
+    (60, "var(--indielinks-brand-60)"),
+    (70, "var(--indielinks-brand-70)"),
+    (80, "var(--indielinks-brand-80)"),
+    (90, "var(--indielinks-brand-90)"),
+    (100, "var(--indielinks-brand-100)"),
+    (110, "var(--indielinks-brand-110)"),
+    (120, "var(--indielinks-brand-120)"),
+    (130, "var(--indielinks-brand-130)"),
+    (140, "var(--indielinks-brand-140)"),
+    (150, "var(--indielinks-brand-150)"),
+    (160, "var(--indielinks-brand-160)"),
+];
+
+fn token(name: &str) -> String {
+    format!("var(--indielinks-{name})")
+}
+
 /// The indielinks brand ramp, shared by both palettes.
 fn brand_colors() -> HashMap<i32, &'static str> {
-    HashMap::from([
-        (10, "#061333"),
-        (20, "#0B1F52"),
-        (30, "#102B70"),
-        (40, "#16388F"),
-        (50, "#1944AD"),
-        (60, "#1B4DC4"),
-        (70, "#1D4ED8"),
-        (80, "#2563EB"),
-        (90, "#3B73EE"),
-        (100, "#5385F1"),
-        (110, "#6D98F4"),
-        (120, "#88AAF6"),
-        (130, "#A5BDF8"),
-        (140, "#C0D0FA"),
-        (150, "#DCE5FC"),
-        (160, "#F1F5FE"),
-    ])
+    HashMap::from(BRAND_COLORS)
 }
 
 /// Apply the typography, radii & timing customization common to both palettes.
@@ -73,112 +80,110 @@ pub fn light() -> Theme {
 
     theme
         .color
-        .set_color_neutral_background_1("#FFFFFF".to_owned());
+        .set_color_neutral_background_1(token("background-1"));
     theme
         .color
-        .set_color_neutral_background_1_hover("#F8FAFC".to_owned());
+        .set_color_neutral_background_1_hover(token("background-1-hover"));
     theme
         .color
-        .set_color_neutral_background_1_pressed("#F4F6F8".to_owned());
+        .set_color_neutral_background_1_pressed(token("background-1-pressed"));
     theme
         .color
-        .set_color_neutral_background_3("#F4F6F8".to_owned());
+        .set_color_neutral_background_3(token("background-3"));
     theme
         .color
-        .set_color_neutral_background_3_hover("#E9EDF2".to_owned());
+        .set_color_neutral_background_3_hover(token("background-3-hover"));
     theme
         .color
-        .set_color_neutral_background_3_pressed("#DEE4EB".to_owned());
+        .set_color_neutral_background_3_pressed(token("background-3-pressed"));
     theme
         .color
-        .set_color_neutral_background_4("#F8FAFC".to_owned());
+        .set_color_neutral_background_4(token("background-4"));
     theme
         .color
-        .set_color_neutral_background_4_hover("#F4F6F8".to_owned());
+        .set_color_neutral_background_4_hover(token("background-4-hover"));
     theme
         .color
-        .set_color_neutral_background_4_pressed("#E9EDF2".to_owned());
+        .set_color_neutral_background_4_pressed(token("background-4-pressed"));
 
     theme
         .color
-        .set_color_neutral_foreground_1("#172033".to_owned());
+        .set_color_neutral_foreground_1(token("foreground-1"));
     theme
         .color
-        .set_color_neutral_foreground_1_hover("#172033".to_owned());
+        .set_color_neutral_foreground_1_hover(token("foreground-1-hover"));
     theme
         .color
-        .set_color_neutral_foreground_1_pressed("#172033".to_owned());
+        .set_color_neutral_foreground_1_pressed(token("foreground-1-pressed"));
     theme
         .color
-        .set_color_neutral_foreground_2("#5F6B7A".to_owned());
+        .set_color_neutral_foreground_2(token("foreground-2"));
     theme
         .color
-        .set_color_neutral_foreground_2_hover("#465365".to_owned());
+        .set_color_neutral_foreground_2_hover(token("foreground-2-hover"));
     theme
         .color
-        .set_color_neutral_foreground_2_pressed("#344153".to_owned());
+        .set_color_neutral_foreground_2_pressed(token("foreground-2-pressed"));
     theme
         .color
-        .set_color_neutral_foreground_3("#5F6B7A".to_owned());
+        .set_color_neutral_foreground_3(token("foreground-3"));
     theme
         .color
-        .set_color_neutral_foreground_on_brand("#FFFFFF".to_owned());
+        .set_color_neutral_foreground_on_brand(token("foreground-on-brand"));
 
-    theme.color.set_color_neutral_stroke_1("#D8DEE8".to_owned());
+    theme.color.set_color_neutral_stroke_1(token("stroke-1"));
     theme
         .color
-        .set_color_neutral_stroke_1_hover("#BCC5D1".to_owned());
+        .set_color_neutral_stroke_1_hover(token("stroke-1-hover"));
     theme
         .color
-        .set_color_neutral_stroke_1_pressed("#9FAAB8".to_owned());
-    theme.color.set_color_neutral_stroke_2("#D8DEE8".to_owned());
+        .set_color_neutral_stroke_1_pressed(token("stroke-1-pressed"));
+    theme.color.set_color_neutral_stroke_2(token("stroke-2"));
     theme
         .color
-        .set_color_neutral_stroke_accessible("#5F6B7A".to_owned());
+        .set_color_neutral_stroke_accessible(token("stroke-accessible"));
     theme
         .color
-        .set_color_neutral_stroke_accessible_hover("#465365".to_owned());
+        .set_color_neutral_stroke_accessible_hover(token("stroke-accessible-hover"));
     theme
         .color
-        .set_color_neutral_stroke_accessible_pressed("#344153".to_owned());
-
-    theme.color.set_color_brand_background("#2563EB".to_owned());
-    theme
-        .color
-        .set_color_brand_background_hover("#1D4ED8".to_owned());
-    theme
-        .color
-        .set_color_brand_background_pressed("#1D4ED8".to_owned());
-    theme
-        .color
-        .set_color_brand_foreground_1("#2563EB".to_owned());
-    theme
-        .color
-        .set_color_brand_foreground_2("#1D4ED8".to_owned());
-    theme
-        .color
-        .set_color_brand_foreground_link("#2563EB".to_owned());
-    theme
-        .color
-        .set_color_brand_foreground_link_hover("#1D4ED8".to_owned());
-    theme
-        .color
-        .set_color_brand_foreground_link_pressed("#1D4ED8".to_owned());
-    theme.color.set_color_brand_stroke_1("#2563EB".to_owned());
-    theme.color.set_color_stroke_focus_2("#2563EB".to_owned());
+        .set_color_neutral_stroke_accessible_pressed(token("stroke-accessible-pressed"));
 
     theme
         .color
-        .set_color_neutral_shadow_ambient("rgb(23 32 51 / 12%)".to_owned());
+        .set_color_brand_background(token("brand-background"));
     theme
         .color
-        .set_color_neutral_shadow_key("rgb(23 32 51 / 12%)".to_owned());
+        .set_color_brand_background_hover(token("brand-background-hover"));
     theme
         .color
-        .set_shadow16("0 8px 24px rgb(23 32 51 / 12%)".to_owned());
+        .set_color_brand_background_pressed(token("brand-background-pressed"));
     theme
         .color
-        .set_shadow64("0 8px 24px rgb(23 32 51 / 12%)".to_owned());
+        .set_color_brand_foreground_1(token("brand-foreground-1"));
+    theme
+        .color
+        .set_color_brand_foreground_2(token("brand-foreground-2"));
+    theme
+        .color
+        .set_color_brand_foreground_link(token("brand-link"));
+    theme
+        .color
+        .set_color_brand_foreground_link_hover(token("brand-link-hover"));
+    theme
+        .color
+        .set_color_brand_foreground_link_pressed(token("brand-link-pressed"));
+    theme
+        .color
+        .set_color_brand_stroke_1(token("brand-stroke-1"));
+    theme.color.set_color_stroke_focus_2(token("focus"));
+
+    theme
+        .color
+        .set_color_neutral_shadow_ambient(token("shadow"));
+    theme.color.set_color_neutral_shadow_key(token("shadow"));
+    theme.color.set_shadow16(token("shadow"));
+    theme.color.set_shadow64(token("shadow"));
 
     theme
 }
@@ -193,118 +198,116 @@ pub fn dark() -> Theme {
     // the light palette.
     theme
         .color
-        .set_color_neutral_background_1("#161E2B".to_owned());
+        .set_color_neutral_background_1(token("background-1"));
     theme
         .color
-        .set_color_neutral_background_1_hover("#1D2735".to_owned());
+        .set_color_neutral_background_1_hover(token("background-1-hover"));
     theme
         .color
-        .set_color_neutral_background_1_pressed("#242F40".to_owned());
+        .set_color_neutral_background_1_pressed(token("background-1-pressed"));
     theme
         .color
-        .set_color_neutral_background_3("#0F1520".to_owned());
+        .set_color_neutral_background_3(token("background-3"));
     theme
         .color
-        .set_color_neutral_background_3_hover("#161E2B".to_owned());
+        .set_color_neutral_background_3_hover(token("background-3-hover"));
     theme
         .color
-        .set_color_neutral_background_3_pressed("#1D2735".to_owned());
+        .set_color_neutral_background_3_pressed(token("background-3-pressed"));
     theme
         .color
-        .set_color_neutral_background_4("#1D2735".to_owned());
+        .set_color_neutral_background_4(token("background-4"));
     theme
         .color
-        .set_color_neutral_background_4_hover("#242F40".to_owned());
+        .set_color_neutral_background_4_hover(token("background-4-hover"));
     theme
         .color
-        .set_color_neutral_background_4_pressed("#2A3648".to_owned());
+        .set_color_neutral_background_4_pressed(token("background-4-pressed"));
 
     theme
         .color
-        .set_color_neutral_foreground_1("#EDF2F7".to_owned());
+        .set_color_neutral_foreground_1(token("foreground-1"));
     theme
         .color
-        .set_color_neutral_foreground_1_hover("#EDF2F7".to_owned());
+        .set_color_neutral_foreground_1_hover(token("foreground-1-hover"));
     theme
         .color
-        .set_color_neutral_foreground_1_pressed("#EDF2F7".to_owned());
+        .set_color_neutral_foreground_1_pressed(token("foreground-1-pressed"));
     theme
         .color
-        .set_color_neutral_foreground_2("#A9B4C3".to_owned());
+        .set_color_neutral_foreground_2(token("foreground-2"));
     theme
         .color
-        .set_color_neutral_foreground_2_hover("#C3CDDA".to_owned());
+        .set_color_neutral_foreground_2_hover(token("foreground-2-hover"));
     theme
         .color
-        .set_color_neutral_foreground_2_pressed("#D7DEE8".to_owned());
+        .set_color_neutral_foreground_2_pressed(token("foreground-2-pressed"));
     theme
         .color
-        .set_color_neutral_foreground_3("#A9B4C3".to_owned());
+        .set_color_neutral_foreground_3(token("foreground-3"));
     theme
         .color
-        .set_color_neutral_foreground_on_brand("#FFFFFF".to_owned());
+        .set_color_neutral_foreground_on_brand(token("foreground-on-brand"));
 
-    theme.color.set_color_neutral_stroke_1("#344154".to_owned());
+    theme.color.set_color_neutral_stroke_1(token("stroke-1"));
     theme
         .color
-        .set_color_neutral_stroke_1_hover("#42506B".to_owned());
+        .set_color_neutral_stroke_1_hover(token("stroke-1-hover"));
     theme
         .color
-        .set_color_neutral_stroke_1_pressed("#536284".to_owned());
-    theme.color.set_color_neutral_stroke_2("#344154".to_owned());
+        .set_color_neutral_stroke_1_pressed(token("stroke-1-pressed"));
+    theme.color.set_color_neutral_stroke_2(token("stroke-2"));
     theme
         .color
-        .set_color_neutral_stroke_accessible("#A9B4C3".to_owned());
+        .set_color_neutral_stroke_accessible(token("stroke-accessible"));
     theme
         .color
-        .set_color_neutral_stroke_accessible_hover("#C3CDDA".to_owned());
+        .set_color_neutral_stroke_accessible_hover(token("stroke-accessible-hover"));
     theme
         .color
-        .set_color_neutral_stroke_accessible_pressed("#D7DEE8".to_owned());
+        .set_color_neutral_stroke_accessible_pressed(token("stroke-accessible-pressed"));
 
     // Primary actions stay recognizably blue with white text; links & other brand foregrounds
     // move up the brand ramp to retain contrast against dark surfaces.
-    theme.color.set_color_brand_background("#2563EB".to_owned());
     theme
         .color
-        .set_color_brand_background_hover("#3B73EE".to_owned());
+        .set_color_brand_background(token("brand-background"));
     theme
         .color
-        .set_color_brand_background_pressed("#1D4ED8".to_owned());
+        .set_color_brand_background_hover(token("brand-background-hover"));
     theme
         .color
-        .set_color_brand_background_2("#1A2740".to_owned());
+        .set_color_brand_background_pressed(token("brand-background-pressed"));
     theme
         .color
-        .set_color_brand_foreground_1("#88AAF6".to_owned());
+        .set_color_brand_background_2(token("brand-background-2"));
     theme
         .color
-        .set_color_brand_foreground_2("#A5BDF8".to_owned());
+        .set_color_brand_foreground_1(token("brand-foreground-1"));
     theme
         .color
-        .set_color_brand_foreground_link("#88AAF6".to_owned());
+        .set_color_brand_foreground_2(token("brand-foreground-2"));
     theme
         .color
-        .set_color_brand_foreground_link_hover("#A5BDF8".to_owned());
+        .set_color_brand_foreground_link(token("brand-link"));
     theme
         .color
-        .set_color_brand_foreground_link_pressed("#C0D0FA".to_owned());
-    theme.color.set_color_brand_stroke_1("#88AAF6".to_owned());
-    theme.color.set_color_stroke_focus_2("#88AAF6".to_owned());
+        .set_color_brand_foreground_link_hover(token("brand-link-hover"));
+    theme
+        .color
+        .set_color_brand_foreground_link_pressed(token("brand-link-pressed"));
+    theme
+        .color
+        .set_color_brand_stroke_1(token("brand-stroke-1"));
+    theme.color.set_color_stroke_focus_2(token("focus"));
 
     // Darker, lower-opacity shadows, so overlays separate from the canvas without a light halo.
     theme
         .color
-        .set_color_neutral_shadow_ambient("rgb(0 0 0 / 40%)".to_owned());
-    theme
-        .color
-        .set_color_neutral_shadow_key("rgb(0 0 0 / 40%)".to_owned());
-    theme
-        .color
-        .set_shadow16("0 8px 24px rgb(0 0 0 / 40%)".to_owned());
-    theme
-        .color
-        .set_shadow64("0 8px 24px rgb(0 0 0 / 40%)".to_owned());
+        .set_color_neutral_shadow_ambient(token("shadow"));
+    theme.color.set_color_neutral_shadow_key(token("shadow"));
+    theme.color.set_shadow16(token("shadow"));
+    theme.color.set_shadow64(token("shadow"));
 
     theme
 }

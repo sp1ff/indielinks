@@ -1,3 +1,4 @@
+@import "../indielinks-shared/assets/theme.css";
 @import "tailwindcss";
 
 @theme inline {
@@ -44,32 +45,29 @@
 
 :root {
     color-scheme: light;
-    --indielinks-color-link-visited: #6d4aff;
-    --indielinks-color-heritage: #0000ff;
+    --indielinks-color-link-visited: var(--indielinks-link-visited);
+    --indielinks-color-heritage: var(--indielinks-heritage);
     --indielinks-duration-interaction: 150ms;
 }
 
-/* Dark values for the few things Thaw does not own. `:root` above stays light so that a script
-   failure retains the usable light presentation; the application sets `data-theme` on the
-   document element before mounting, so an enabled dark preference never paints light first. */
+/* The application sets `data-theme` before mounting, so an enabled dark preference never paints
+   the complete light interface first. */
 :root[data-theme="dark"] {
     color-scheme: dark;
-    --indielinks-color-link-visited: #c4a7ff;
-    --indielinks-color-heritage: #6d7cff;
 }
 
 /* Until the Thaw provider mounts, `--colorNeutralBackground3` is undefined; cover the document
    background explicitly so a dark preference never flashes the light fallback. */
 :root[data-theme="dark"],
 :root[data-theme="dark"] body {
-    background-color: #0f1520;
+    background-color: var(--indielinks-background-3);
 }
 
 html,
 body {
     min-height: 100%;
     margin: 0;
-    background-color: var(--colorNeutralBackground3, #f4f6f8);
+    background-color: var(--colorNeutralBackground3, var(--indielinks-background-3));
 }
 
 .indielinks-app {
