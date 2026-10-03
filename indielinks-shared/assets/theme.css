@@ -1,0 +1,111 @@
+/* Copyright (C) 2026 Michael Herstine <sp1ff@pobox.com>
+ *
+ * This file is part of indielinks.
+ *
+ * indielinks is free software: you can redistribute it and/or modify it under the terms of the GNU
+ * General Public License as published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * indielinks is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+ * even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with indielinks.  If not,
+ * see <http://www.gnu.org/licenses/>.
+ */
+
+/* The canonical indielinks color palette. Both the browser frontend and server-rendered
+   bookmarklet pages consume these tokens. */
+:root {
+    --indielinks-brand-10: #061333;
+    --indielinks-brand-20: #0b1f52;
+    --indielinks-brand-30: #102b70;
+    --indielinks-brand-40: #16388f;
+    --indielinks-brand-50: #1944ad;
+    --indielinks-brand-60: #1b4dc4;
+    --indielinks-brand-70: #1d4ed8;
+    --indielinks-brand-80: #2563eb;
+    --indielinks-brand-90: #3b73ee;
+    --indielinks-brand-100: #5385f1;
+    --indielinks-brand-110: #6d98f4;
+    --indielinks-brand-120: #88aaf6;
+    --indielinks-brand-130: #a5bdf8;
+    --indielinks-brand-140: #c0d0fa;
+    --indielinks-brand-150: #dce5fc;
+    --indielinks-brand-160: #f1f5fe;
+    --indielinks-background-1: #ffffff;
+    --indielinks-background-1-hover: #f8fafc;
+    --indielinks-background-1-pressed: #f4f6f8;
+    --indielinks-background-3: #f4f6f8;
+    --indielinks-background-3-hover: #e9edf2;
+    --indielinks-background-3-pressed: #dee4eb;
+    --indielinks-background-4: #f8fafc;
+    --indielinks-background-4-hover: #f4f6f8;
+    --indielinks-background-4-pressed: #e9edf2;
+    --indielinks-foreground-1: #172033;
+    --indielinks-foreground-1-hover: #172033;
+    --indielinks-foreground-1-pressed: #172033;
+    --indielinks-foreground-2: #5f6b7a;
+    --indielinks-foreground-2-hover: #465365;
+    --indielinks-foreground-2-pressed: #344153;
+    --indielinks-foreground-3: #5f6b7a;
+    --indielinks-foreground-on-brand: #ffffff;
+    --indielinks-stroke-1: #d8dee8;
+    --indielinks-stroke-1-hover: #bcc5d1;
+    --indielinks-stroke-1-pressed: #9faab8;
+    --indielinks-stroke-2: #d8dee8;
+    --indielinks-stroke-accessible: #5f6b7a;
+    --indielinks-stroke-accessible-hover: #465365;
+    --indielinks-stroke-accessible-pressed: #344153;
+    --indielinks-brand-background: #2563eb;
+    --indielinks-brand-background-hover: #1d4ed8;
+    --indielinks-brand-background-pressed: #1d4ed8;
+    --indielinks-brand-foreground-1: #2563eb;
+    --indielinks-brand-foreground-2: #1d4ed8;
+    --indielinks-brand-link: #2563eb;
+    --indielinks-brand-link-hover: #1d4ed8;
+    --indielinks-brand-link-pressed: #1d4ed8;
+    --indielinks-brand-stroke-1: #2563eb;
+    --indielinks-focus: #2563eb;
+    --indielinks-shadow: 0 8px 24px rgb(23 32 51 / 12%);
+    --indielinks-heritage: #0000ff;
+    --indielinks-link-visited: #6d4aff;
+}
+
+:root[data-theme="dark"] {
+    --indielinks-background-1: #161e2b;
+    --indielinks-background-1-hover: #1d2735;
+    --indielinks-background-1-pressed: #242f40;
+    --indielinks-background-3: #0f1520;
+    --indielinks-background-3-hover: #161e2b;
+    --indielinks-background-3-pressed: #1d2735;
+    --indielinks-background-4: #1d2735;
+    --indielinks-background-4-hover: #242f40;
+    --indielinks-background-4-pressed: #2a3648;
+    --indielinks-foreground-1: #edf2f7;
+    --indielinks-foreground-1-hover: #edf2f7;
+    --indielinks-foreground-1-pressed: #edf2f7;
+    --indielinks-foreground-2: #a9b4c3;
+    --indielinks-foreground-2-hover: #c3cdda;
+    --indielinks-foreground-2-pressed: #d7dee8;
+    --indielinks-foreground-3: #a9b4c3;
+    --indielinks-stroke-1: #344154;
+    --indielinks-stroke-1-hover: #42506b;
+    --indielinks-stroke-1-pressed: #536284;
+    --indielinks-stroke-2: #344154;
+    --indielinks-stroke-accessible: #a9b4c3;
+    --indielinks-stroke-accessible-hover: #c3cdda;
+    --indielinks-stroke-accessible-pressed: #d7dee8;
+    --indielinks-brand-background-hover: #3b73ee;
+    --indielinks-brand-background-2: #1a2740;
+    --indielinks-brand-foreground-1: #88aaf6;
+    --indielinks-brand-foreground-2: #a5bdf8;
+    --indielinks-brand-link: #88aaf6;
+    --indielinks-brand-link-hover: #a5bdf8;
+    --indielinks-brand-link-pressed: #c0d0fa;
+    --indielinks-brand-stroke-1: #88aaf6;
+    --indielinks-focus: #88aaf6;
+    --indielinks-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+    --indielinks-heritage: #6d7cff;
+    --indielinks-link-visited: #c4a7ff;
+}
