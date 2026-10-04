@@ -1,4 +1,4 @@
-// Copyright (C) 2024-2025 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2024-2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -25,7 +25,8 @@ use std::fmt::Display;
 
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use chrono::{DateTime, SecondsFormat, Utc};
-use password_hash::{rand_core::OsRng, PasswordHashString, SaltString};
+use getrandom;
+use phc::SaltString;
 use scylla::{
     deserialize::{
         row::ColumnIterator, value::DeserializeValue, DeserializationError, FrameSlice,
@@ -76,7 +77,7 @@ pub enum Error {
     BrokenInReply { backtrace: Backtrace },
     CheckPassword {
         username: Username,
-        source: password_hash::errors::Error,
+        source: password_hash::Error,
         backtrace: Backtrace,
     },
     #[snafu(display(
@@ -88,12 +89,12 @@ pub enum Error {
     },
     #[snafu(display("Failed to hash password: {source}"))]
     HashPassword {
-        source: password_hash::errors::Error,
+        source: password_hash::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Bad hash string: {source}"))]
     HashString {
-        source: password_hash::errors::Error,
+        source: phc::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to build an Argon2id password hasher: {source}"))]
@@ -105,6 +106,11 @@ pub enum Error {
     InReplySortDe { i: i8, backtrace: Backtrace },
     #[snafu(display("Invalid tag value {tag}"))]
     InvalidTag { tag: i8 },
+    #[snafu(display("failed to randomly generate key material"))]
+    KeyMaterial {
+        source: getrandom::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("While generating the user's keypair, {source}"))]
     Keypair {
         source: indielinks_shared::entities::Error,
@@ -201,7 +207,6 @@ impl ApiKeyV1 {
     /// drop it.
     pub fn new(expiry: Option<DateTime<Utc>>) -> Result<(ApiKeyV1, SecretBox<[u8]>)> {
         // Let's start with the key material
-        use rand::RngCore;
         use std::ops::DerefMut;
 
         if let Some(expiry) = expiry {
@@ -211,9 +216,8 @@ impl ApiKeyV1 {
             );
         }
 
-        let mut rng = OsRng;
         let mut key_material = Box::new([0u8; 64]);
-        rng.fill_bytes(key_material.deref_mut());
+        getrandom::fill(key_material.deref_mut()).context(KeyMaterialSnafu)?;
 
         Ok((
             ApiKeyV1 {
@@ -337,17 +341,15 @@ impl<'frame, 'metadata> DeserializeValue<'frame, 'metadata> for ApiKeys {
 
 /// Newtype idiom to work around Rust's orphaned trait rule
 ///
-/// I've chosen to serialize the hash string as a [PasswordHashString], rather than a
-/// [PasswordHash], since the latter doesn't support serde.
+/// I originally chose to serialize the hash string as a `PasswordHashString`, rather than a
+/// [PasswordHash], since the latter didn't support serde. With `password-hash` 0.6, that changed.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct UserHashString(
-    #[serde(serialize_with = "serde_hash_string::serialize")] PasswordHashString,
-);
+pub struct UserHashString(#[serde(serialize_with = "serde_hash_string::serialize")] PasswordHash);
 
 impl UserHashString {
-    pub fn password_hash(&self) -> PasswordHash<'_> {
-        self.0.password_hash()
+    pub fn password_hash(&self) -> PasswordHash {
+        self.0.clone()
     }
 }
 
@@ -387,7 +389,7 @@ impl SerializeValue for UserHashString {
         typ: &ColumnType<'_>,
         writer: CellWriter<'b>,
     ) -> StdResult<WrittenCellProof<'b>, SerializationError> {
-        SerializeValue::serialize(&self.0.as_str(), typ, writer)
+        SerializeValue::serialize(&self.0.to_string(), typ, writer)
     }
 }
 
@@ -395,9 +397,9 @@ impl TryFrom<String> for UserHashString {
     type Error = Error;
 
     fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
-        Ok(UserHashString(
-            PasswordHashString::new(&s).context(HashStringSnafu)?,
-        ))
+        s.parse::<PasswordHash>()
+            .context(HashStringSnafu)
+            .map(UserHashString)
     }
 }
 
@@ -406,12 +408,12 @@ mod serde_hash_string {
     use serde::Serializer;
 
     pub fn serialize<S: Serializer>(
-        hash_string: &PasswordHashString,
+        hash_string: &PasswordHash,
         ser: S,
     ) -> StdResult<S::Ok, S::Error> {
         hash_string
-            .as_str()
-            .pipe(|s| <str as serde::Serialize>::serialize(s, ser))
+            .to_string()
+            .pipe(|s| <str as serde::Serialize>::serialize(&s, ser))
     }
 }
 
@@ -505,7 +507,9 @@ impl User {
             &self.password_hash.password_hash(),
         ) {
             Ok(_) => Ok(()),
-            Err(password_hash::errors::Error::Password) => BadPasswordSnafu.fail(),
+            Err(password_hash::Error::Algorithm) | Err(password_hash::Error::PasswordInvalid) => {
+                BadPasswordSnafu.fail()
+            }
             Err(err) => Err(CheckPasswordSnafu {
                 username: self.username.clone(),
             }
@@ -626,13 +630,12 @@ impl User {
     /// `new_with_secret()` constructor.
     ///
     /// [this]: https://github.com/RustCrypto/traits/pull/699#issuecomment-891105093
-    fn hash_password(pepper: &Pepper, password: &SecretString) -> Result<PasswordHashString> {
-        let salt = SaltString::generate(&mut OsRng);
+    fn hash_password(pepper: &Pepper, password: &SecretString) -> Result<PasswordHash> {
+        let salt = SaltString::generate();
         let hasher = User::create_password_hasher(pepper)?;
-        Ok(hasher
-            .hash_password(password.expose_secret().as_bytes(), &salt)
-            .context(HashPasswordSnafu)?
-            .serialize())
+        hasher
+            .hash_password_with_salt(password.expose_secret().as_bytes(), salt.as_bytes())
+            .context(HashPasswordSnafu)
     }
 }
 

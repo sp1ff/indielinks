@@ -12,6 +12,8 @@ snafu = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 console_error_panic_hook = "0.1.7"
 futures = { workspace = true }
+# This is actually a transitive dependnecy, but I need the "js" feature
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 gloo-net = { version = "0.6.0", features = ["http"] }
 gloo-timers = { version = "0.4.0", features = ["futures"] }
 icondata = "0.7.0"

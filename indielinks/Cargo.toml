@@ -8,7 +8,7 @@ description = "Social bookmarking in the Fediverse"
 [dependencies]
 ammonia = { workspace = true }
 approx = { workspace = true }
-argon2 = { workspace = true, features = ["password-hash", "std"] }
+argon2 = { version = "0.6.0" }
 askama = { workspace = true, features = ["code-in-doc"] }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
@@ -34,6 +34,7 @@ enum-map = { workspace = true }
 errno = { workspace = true }
 form_urlencoded = { workspace = true }
 futures = { workspace = true }
+getrandom = { workspace = true }
 governor = { workspace = true }
 hex = { workspace = true }
 hkdf = { workspace = true, features = ["std"] }
@@ -60,8 +61,9 @@ opentelemetry-otlp = { workspace = true, features = ["metrics", "http-proto", "r
 opentelemetry-prometheus-text-exporter = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 ordered-float = { workspace = true, features = ["libm", "serde"] }
-password-hash = { workspace = true }
+password-hash = { version = "0.6.1", features = ["rand_core"] }
 pct-str = { workspace = true }
+phc = { version = "0.6.1", features = ["getrandom"] }
 picky = { workspace = true }
 pin-project = { workspace = true }
 pkcs8 = { workspace = true }

@@ -249,7 +249,7 @@ mod test_postkey {
 
     #[test]
     fn serde() {
-        let key = SigningKey::new([0; 64].to_vec()).unwrap(/* known good */);
+        let key = SigningKey::try_from_vec([0; 64].to_vec()).unwrap(/* known good */);
         let x = PostKey {
             timestamp: chrono::DateTime::UNIX_EPOCH,
             id: Url::parse("https://example.com").unwrap(/* known good */),
