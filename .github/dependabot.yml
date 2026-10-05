@@ -3,7 +3,12 @@ updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      interval: "weekly"
+      # I'm going to run this daily until we're caught-up
+      # interval: "weekly"
+      interval: "daily"
+    # The default seems to be five, but, again, I want to accelerate
+    # this until we're all caught-up
+    open-pull-requests-limit: 10
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
