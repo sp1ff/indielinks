@@ -100,7 +100,7 @@ tests-support = { path = "tests-support" }
 thaw = { git = "https://github.com/thaw-ui/thaw", branch = "thaw/v0.5" }
 time = ">=0.3.47"
 tokio = "1.51.1"
-toml = "0.8.19"
+toml = "1.1.6"
 tonic = "0.13.1"
 tonic-build = "0.13.1"
 tower = "0.5.2"
