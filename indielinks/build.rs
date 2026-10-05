@@ -120,8 +120,8 @@ fn configure_stack(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate Rust bindings for the `indielinks` protobuf definitions.
     println!("cargo:rerun-if-changed=proto/indielinks.proto");
-    tonic_build::configure().compile_protos_with_config(
-        tonic_build::Config::default(),
+    tonic_prost_build::configure().compile_with_config(
+        prost_build::Config::default(),
         &["proto/indielinks.proto"],
         &["proto"],
     )?;
