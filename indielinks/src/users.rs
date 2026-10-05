@@ -21,7 +21,7 @@
 //!
 //! indielinks uses what I believe to be a fairly standard approach to authenticating browser-based
 //! web front ends: authentication is performed by having the client transmit the username &
-//! password in the body of a request to `/usrs/login` (this is presumably done over TLS, so that's
+//! password in the body of a request to `/users/login` (this is presumably done over TLS, so that's
 //! secure). The password is then salted, peppered, hashed and compared against the stored hash (so
 //! that the password need never be stored on the server). On success, the `/users/login` endpoint
 //! vends a short-lived token in the response payload meant to be used by the front end
