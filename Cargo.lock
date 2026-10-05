@@ -3583,7 +3583,7 @@ dependencies = [
  "picky",
  "pin-project",
  "pkcs8",
- "prost 0.13.5",
+ "prost 0.14.4",
  "prost-build 0.14.4",
  "rand 0.8.8",
  "regex",
