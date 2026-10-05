@@ -231,7 +231,7 @@ mod access_token_tests {
         let username = Username::new("johndoe").unwrap(/* known good */);
         let key_id = KeyId::new("keyid:20250817").unwrap(/* known good */);
         // With apologies to J.R.R. Tolkein, but I needed 64 bytes exactly.
-        let signing_key = SigningKey::new(b"All that is gold does not glitter-- Not all who wander are lost.".to_vec()).unwrap(/* known good */);
+        let signing_key = SigningKey::try_from_vec(b"All that is gold does not glitter-- Not all who wander are lost.".to_vec()).unwrap(/* known good */);
         let issuer = Host::new("indiepin.net").unwrap(/* known good */);
 
         let token_result = mint_token(
@@ -589,7 +589,7 @@ pub mod refresh_token_tests {
         let username = Username::new("johndoe").unwrap(/* known good */);
         let key_id = KeyId::new("keyid:20250817").unwrap(/* known good */);
         // With apologies to J.R.R. Tolkein, but I needed 64 bytes exactly.
-        let signing_key = SigningKey::new(b"All that is gold does not glitter-- Not all who wander are lost.".to_vec()).unwrap(/* known good */);
+        let signing_key = SigningKey::try_from_vec(b"All that is gold does not glitter-- Not all who wander are lost.".to_vec()).unwrap(/* known good */);
         let issuer = Host::new("indiepin.net").unwrap(/* known good */);
 
         let tokens_result = mint_refresh_and_csrf_tokens(

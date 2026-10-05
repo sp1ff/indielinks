@@ -128,6 +128,12 @@ pub enum Error {
     EnvFilter {
         source: tracing_subscriber::filter::FromEnvError,
     },
+    #[snafu(display("failed to generate new peppers"))]
+    NewPeppers { source: indielinks::peppers::Error },
+    #[snafu(display("failed to generate new signing keys"))]
+    NewSigningKeys {
+        source: indielinks::signing_keys::Error,
+    },
     #[snafu(display("No endpoint URLs specified"))]
     NoEndpoints { backtrace: Backtrace },
     #[snafu(display("No sub-command given; try --help"))]
@@ -361,13 +367,13 @@ fn generate_secrets<P: AsRef<Path>>(path: P) -> Result<()> {
     // The `Default` implementations of these two types generate new values-- I know, I know...
     // don't judge me.
     let peppers = toml::to_string(&Pepper {
-        pepper: Peppers::default(),
+        pepper: Peppers::new().context(NewPeppersSnafu)?,
     })
     .context(PepperSnafu)?;
 
     let signing_keys = toml::to_string(&SigningKeysOuter {
         signing_keys: SigningKeysInner {
-            signing_keys: SigningKeys::default(),
+            signing_keys: SigningKeys::new().context(NewSigningKeysSnafu)?,
         },
     })
     .context(SigningKeysSnafu)?;

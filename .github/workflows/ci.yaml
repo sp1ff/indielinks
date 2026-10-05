@@ -26,17 +26,14 @@ jobs:
           - stable
           - nightly
         # I suppose I could add older ubuntu versions, but why?
-        os: [ubuntu-latest]
+        os: [ubuntu-24.04]
         include:
         - rust-build: pinned
-          os: ubuntu-latest
           rust: 1.94.1
         - rust-build: stable
-          os: ubuntu-latest
-          rust: stable
+          rust: 1.98.1
         - rust-build: nightly
-          os: ubuntu-latest
-          rust: nightly
+          rust: nightly-2026-09-03
     runs-on: ${{ matrix.os }}
     env:
       RUST_BACKTRACE: 1
@@ -52,7 +49,7 @@ jobs:
 
     # Cf. <https://university.scylladb.com/setup-a-scylla-cluster>
     - name: Configure System
-      if: matrix.os == 'ubuntu-latest'
+      if: matrix.os == 'ubuntu-24.04'
       shell: bash
       run: |
         set -xeuo pipefail

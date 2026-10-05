@@ -67,8 +67,11 @@ use crate::util::Key;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    // #[snafu(display("{text} is not a valid version string"))]
-    // BadVersionString { text: String, backtrace: Backtrace },
+    #[snafu(display("failed to create a new, random, pepper"))]
+    NewPepper {
+        source: getrandom::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("No pepper available"))]
     NoPepper { backtrace: Backtrace },
     #[snafu(display("Peppers must be 32 octets in length"))]
@@ -161,7 +164,12 @@ impl SerializeValue for Version {
 pub struct Pepper(Key);
 
 impl Pepper {
-    pub fn new(key: Key) -> Result<Pepper> {
+    pub fn new() -> Result<Pepper> {
+        let mut bytes: Vec<u8> = vec![0; 32]; // 128 bits
+        getrandom::fill(&mut bytes).context(NewPepperSnafu)?;
+        Ok(Pepper(bytes.into()))
+    }
+    pub fn try_from_key(key: Key) -> Result<Pepper> {
         if key.len() == 32 {
             Ok(Pepper(key))
         } else {
@@ -170,20 +178,11 @@ impl Pepper {
     }
 }
 
-impl Default for Pepper {
-    fn default() -> Self {
-        use rand::RngCore;
-        let mut bytes: Vec<u8> = vec![0; 32]; // 128 bits
-        argon2::password_hash::rand_core::OsRng.fill_bytes(&mut bytes);
-        Pepper(bytes.into())
-    }
-}
-
 impl TryFrom<Key> for Pepper {
     type Error = Error;
 
     fn try_from(value: Key) -> std::result::Result<Self, Self::Error> {
-        Pepper::new(value)
+        Pepper::try_from_key(value)
     }
 }
 
@@ -208,18 +207,15 @@ pub struct Peppers {
     peppers: BTreeMap<Version, Pepper>,
 }
 
-impl Default for Peppers {
-    fn default() -> Self {
-        Peppers {
+impl Peppers {
+    pub fn new() -> Result<Self> {
+        Ok(Peppers {
             peppers: BTreeMap::from_iter(vec![(
                 Version(chrono::Local::now().format("pepper-ver:%Y%m%d").to_string()),
-                Pepper::default(),
+                Pepper::new()?,
             )]),
-        }
+        })
     }
-}
-
-impl Peppers {
     /// Retrieve the current (i.e. the most recent) Pepper
     pub fn current_pepper(&self) -> Result<(Version, Pepper)> {
         let (key, value) = self.peppers.last_key_value().context(NoPepperSnafu)?;

@@ -86,6 +86,11 @@ pub enum Error {
     KeyId { text: String, backtrace: Backtrace },
     #[snafu(display("No pepper available"))]
     NoKey { backtrace: Backtrace },
+    #[snafu(display("failed to generate a NONCE"))]
+    Random {
+        source: getrandom::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Signing keys must be 64 octets in length"))]
     SigningKey { backtrace: Backtrace },
     #[snafu(display("While deserializing the sort key, {source}"))]
@@ -160,21 +165,17 @@ impl From<KeyId> for String {
 pub struct SigningKey(Key);
 
 impl SigningKey {
-    pub fn new(b: Vec<u8>) -> Result<SigningKey> {
+    pub fn new() -> Result<Self> {
+        let mut bytes: Vec<u8> = vec![0; 64];
+        getrandom::fill(&mut bytes).context(RandomSnafu)?;
+        Ok(SigningKey(bytes.into()))
+    }
+    pub fn try_from_vec(b: Vec<u8>) -> Result<SigningKey> {
         if b.len() == 64 {
             Ok(SigningKey(b.into()))
         } else {
             SigningKeySnafu.fail()
         }
-    }
-}
-
-impl Default for SigningKey {
-    fn default() -> Self {
-        use rand::RngCore;
-        let mut bytes: Vec<u8> = vec![0; 64];
-        argon2::password_hash::rand_core::OsRng.fill_bytes(&mut bytes);
-        SigningKey(bytes.into())
     }
 }
 
@@ -194,6 +195,14 @@ pub struct SigningKeys {
 }
 
 impl SigningKeys {
+    pub fn new() -> Result<Self> {
+        Ok(SigningKeys {
+            keys: BTreeMap::from_iter(vec![(
+                KeyId(chrono::Local::now().format("keyid:%Y%m%d").to_string()),
+                SigningKey::new()?,
+            )]),
+        })
+    }
     /// Retrieve the current (i.e. the most recent) SigningKey
     pub fn current(&self) -> Result<(KeyId, SigningKey)> {
         let (key, value) = self.keys.last_key_value().context(NoKeySnafu)?;
@@ -202,17 +211,6 @@ impl SigningKeys {
     /// Retrieve a pepper by version
     pub fn find_by_version(&self, keyid: &KeyId) -> Result<SigningKey> {
         Ok(self.keys.get(keyid).context(NoKeySnafu)?.clone())
-    }
-}
-
-impl Default for SigningKeys {
-    fn default() -> Self {
-        SigningKeys {
-            keys: BTreeMap::from_iter(vec![(
-                KeyId(chrono::Local::now().format("keyid:%Y%m%d").to_string()),
-                SigningKey::default(),
-            )]),
-        }
     }
 }
 
