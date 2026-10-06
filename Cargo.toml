@@ -117,7 +117,7 @@ wiremock = "0.6.5"
 xxhash-rust = "0.8.15"
 zxcvbn = "3.1.0"
 itertools = "0.14.0"
-lru = "0.16.3"
+lru = "0.18.5"
 snafu = "0.9.0"
 opentelemetry = "0.30.0"
 
