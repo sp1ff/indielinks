@@ -212,13 +212,40 @@ pub async fn test_mint_key(
         .await?;
     assert_eq!(StatusCode::OK, rsp.status());
 
-    match rsp.json::<GetKeysResponse>().await? {
+    let senior = match rsp.json::<GetKeysResponse>().await? {
         GetKeysResponse::NoKeys => panic!("There should be two keys"),
         GetKeysResponse::OneKey(_) => panic!("There should be two keys"),
         GetKeysResponse::TwoKeys { junior, senior } => {
             assert!(junior.expiry.is_some());
             assert!(senior.expiry.is_none());
+            senior
         }
+    };
+
+    // Now let's revoke one...
+    let rsp = client
+        .post(url.join("/api/v1/users/revoke-key")?)
+        .header("Authorization", format!("Bearer johndoe:{key_text2}"))
+        .json(&json!({"id": senior.id}))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::ACCEPTED, rsp.status());
+
+    // and re-fetch:
+    let rsp = client
+        .get(url.join("/api/v1/users/keys")?)
+        .header("Authorization", format!("Bearer johndoe:{key_text2}"))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::OK, rsp.status());
+
+    match rsp.json::<GetKeysResponse>().await? {
+        GetKeysResponse::NoKeys => panic!("There should be a single key"),
+        GetKeysResponse::OneKey(key) => {
+            // This should be the "junior" key from above-- i.e. the one with an expiration.
+            assert!(key.expiry.is_some());
+        }
+        GetKeysResponse::TwoKeys { .. } => panic!("There should be a single key"),
     }
 
     Ok(())

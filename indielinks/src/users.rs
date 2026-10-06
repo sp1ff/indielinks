@@ -113,9 +113,9 @@ use indielinks_shared::{
     api::{
         ApiKey as PublicApiKey, ChangePasswordRequest, FollowReq, GetKeysResponse, LikeRequest,
         LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, RecentPostsRequest, ReplyRequest,
-        ThreadContextRequest, ThreadContextResponse, TimelineReq, TopKTagsRequest,
-        TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
-        REFRESH_CSRF_HEADER_NAME_LC,
+        RevokeKeyRequest, ThreadContextRequest, ThreadContextResponse, TimelineReq,
+        TopKTagsRequest, TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
+        REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::Username,
     origin::Origin,
@@ -201,6 +201,8 @@ pub enum Error {
     },
     #[snafu(display("Invalid credentials: {source}"))]
     InvalidCredentials { source: authn::Error },
+    #[snafu(display("{id} is not a valid API key identifier"))]
+    InvalidApiKeyId { id: usize, backtrace: Backtrace },
     #[snafu(display("Failed to find a colon in '{text}'"))]
     MissingColon { text: String, backtrace: Backtrace },
     #[snafu(display("A required authentication cookie was missing from the request"))]
@@ -338,6 +340,13 @@ impl axum::response::IntoResponse for Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
+
+// Could be a macro, I suppose, but regardless, this cleans-up error handling code considerably.
+// Unfortunately, I wrote it after implementing most of these endpoints, so I'll have to introduce
+// it as I work on them.
+fn mk_error_response(status_code: StatusCode, error: String) -> axum::response::Response {
+    (status_code, Json(ErrorResponseBody { error })).into_response()
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         Authorization                                          //
@@ -754,11 +763,6 @@ async fn change_password(
             .context(UpdatePasswordSnafu { user: user.clone() })
     }
 
-    // Should promote this to the module level & use in other handlers.
-    fn mk_error_response(status_code: StatusCode, error: String) -> axum::response::Response {
-        (status_code, Json(ErrorResponseBody { error })).into_response()
-    }
-
     match user {
         Ok(Extension(mut user)) => {
             info!("Changing the password for {}", user.username());
@@ -1040,10 +1044,7 @@ async fn mint_key(
 define_metric! { "user.keys.successful", user_keys_successful, Sort::IntegralCounter }
 define_metric! { "user.keys.failures", user_keys_failures, Sort::IntegralCounter }
 
-async fn keys(
-    // State(_): State<Arc<Indielinks>>,
-    user: StdResult<Extension<User>, ExtensionRejection>,
-) -> axum::response::Response {
+async fn keys(user: StdResult<Extension<User>, ExtensionRejection>) -> axum::response::Response {
     fn mk_response(user: &User) -> GetKeysResponse {
         match user.api_keys() {
             entities::ApiKeys::Zero => GetKeysResponse::NoKeys,
@@ -1072,6 +1073,85 @@ async fn keys(
         Err(err) => {
             error!("{err:?}");
             user_keys_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                      `/users/revoke-key`                                       //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.key-revocations.successful", user_key_revocations_successful, Sort::IntegralCounter }
+define_metric! { "user.key-revocation.failures", user_key_revocation_failures, Sort::IntegralCounter }
+
+async fn revoke_key(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(request): Json<RevokeKeyRequest>,
+) -> axum::response::Response {
+    async fn revoke_key1(
+        storage: &(dyn StorageBackend + Send + Sync),
+        user: &mut User,
+        id: usize,
+    ) -> Result<()> {
+        match user.api_keys() {
+            entities::ApiKeys::Zero => InvalidApiKeyIdSnafu { id }.fail(),
+            entities::ApiKeys::One(_) => match id {
+                0 => {
+                    user.update_api_keys(entities::ApiKeys::Zero);
+                    storage
+                        .update_user_api_keys(user)
+                        .await
+                        .context(UpdateKeySnafu {
+                            user: Box::new(user.clone()),
+                        })
+                }
+                _ => InvalidApiKeyIdSnafu { id }.fail(),
+            },
+            entities::ApiKeys::Two((senior, junior)) => match id {
+                0 => {
+                    user.update_api_keys(entities::ApiKeys::One(senior.clone()));
+                    storage
+                        .update_user_api_keys(user)
+                        .await
+                        .context(UpdateKeySnafu {
+                            user: Box::new(user.clone()),
+                        })
+                }
+                1 => {
+                    user.update_api_keys(entities::ApiKeys::One(junior.clone()));
+                    storage
+                        .update_user_api_keys(user)
+                        .await
+                        .context(UpdateKeySnafu {
+                            user: Box::new(user.clone()),
+                        })
+                }
+                _ => InvalidApiKeyIdSnafu { id }.fail(),
+            },
+        }
+    }
+
+    match user {
+        Ok(Extension(mut user)) => {
+            match revoke_key1(state.storage.as_ref(), &mut user, request.id).await {
+                Ok(_) => {
+                    user_key_revocations_successful
+                        .add(1, &[KeyValue::new("username", user.username())]);
+                    StatusCode::ACCEPTED.into_response()
+                }
+                Err(err) => {
+                    error!("{err:?}");
+                    user_key_revocation_failures
+                        .add(1, &[KeyValue::new("username", user.username())]);
+                    mk_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{err}"))
+                }
+            }
+        }
+        Err(err) => {
+            error!("{err:?}");
+            user_key_revocation_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()
         }
     }
@@ -1638,6 +1718,17 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/users/keys",
             get(keys)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    http::Method::GET,
+                    AllowOrigin::any(),
+                )),
+        )
+        .route(
+            "/users/revoke-key",
+            post(revoke_key)
                 .route_layer(from_fn_with_state(state.clone(), authenticate))
                 .layer(mk_cors(
                     false,

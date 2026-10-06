@@ -270,6 +270,12 @@ pub enum GetKeysResponse {
     TwoKeys { junior: ApiKey, senior: ApiKey },
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct RevokeKeyRequest {
+    pub id: usize,
+}
+
 /// Opaque type representing a timeline pagination token
 ///
 /// Callers cannot create instances of this type; they are returned in response to timeline requests
