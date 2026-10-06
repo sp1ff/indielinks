@@ -655,11 +655,10 @@ mod test {
         ) -> StdResult<(), storage::Error> {
             unreachable!()
         }
-        async fn update_user_api_keys(
-            &self,
-            _user: &User,
-            _keys: &ApiKeys,
-        ) -> StdResult<(), storage::Error> {
+        async fn update_user_api_keys(&self, _user: &User) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
+        async fn update_user_password_hash(&self, _user: &User) -> StdResult<(), storage::Error> {
             unreachable!()
         }
         async fn update_user_post_times(

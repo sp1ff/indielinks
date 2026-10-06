@@ -48,9 +48,8 @@ use indielinks_shared::{
 use crate::{
     ap_entities::Note,
     entities::{
-        ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShare,
-        IncomingReply, IncomingShare, LikeReplyShare, OutgoingLike, OutgoingReply, OutgoingShare,
-        User,
+        FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShare, IncomingReply,
+        IncomingShare, LikeReplyShare, OutgoingLike, OutgoingReply, OutgoingShare, User,
     },
     util::UpToThree,
 };
@@ -277,7 +276,9 @@ pub trait Backend {
     /// special logic here for rate-limiting.
     async fn rename_tag(&self, user: &User, from: &Tagname, to: &Tagname) -> Result<(), Error>;
     /// Update the `api_keys` fields for the given user
-    async fn update_user_api_keys(&self, user: &User, keys: &ApiKeys) -> Result<(), Error>;
+    async fn update_user_api_keys(&self, user: &User) -> Result<(), Error>;
+    /// Update the `password_hash` field for the given user
+    async fn update_user_password_hash(&self, user: &User) -> Result<(), Error>;
     /// Update the `first_update` and `last_update` for the given user
     async fn update_user_post_times(&self, user: &User, dt: &DateTime<Utc>) -> Result<(), Error>;
     /// Retrieve a [User] instance given a textual username. None means there is no user by that

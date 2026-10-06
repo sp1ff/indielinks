@@ -232,6 +232,13 @@ pub struct LoginRsp {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct ChangePasswordRequest {
+    #[serde(rename = "new-password")]
+    pub new_password: SecretPassword,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FollowReq {
     pub id: Url,
 }

@@ -95,6 +95,25 @@ pub async fn test_signup(
         .await?;
     assert_eq!(StatusCode::OK, rsp.status());
 
+    let token = rsp.json::<LoginRsp>().await?.token;
+
+    // We're logged-in: now change our password
+    let rsp = client
+        .post(url.join("/api/v1/users/change-password")?)
+        .json(&json!({"new-password": "f00-b@r-sp1at"}))
+        .send()
+        .await?;
+    // Can't change a password when you're not authorized
+    assert_eq!(StatusCode::UNAUTHORIZED, rsp.status());
+
+    let rsp = client
+        .post(url.join("/api/v1/users/change-password")?)
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({"new-password": "f00-b@r-sp1at"}))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::ACCEPTED, rsp.status());
+
     Ok(())
 }
 

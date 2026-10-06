@@ -468,15 +468,53 @@ fn validate_password(password: &SecretString, user_inputs: &[&str]) -> Result<()
     Ok(())
 }
 
+/// Create an indielinks user password hasher
+///
+/// This function returns a [PasswordHasher] employing the Argon2id algorithm (with pepper) with
+/// parameters m=19456 (19 MiB), t=2, p=1 (Do not use with Argon2i) Per the OWASP Password
+/// Storage [Cheat Sheet], Argon2id is the first algorithm which should be considered, and those
+/// are one of the recommended configurations for this algorithm.
+///
+/// [Cheat Sheet]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#password-hashing-algorithms
+fn create_password_hasher(pepper: &Pepper) -> Result<Argon2<'_>> {
+    Argon2::new_with_secret(
+        pepper.as_ref().expose_secret(),
+        Algorithm::Argon2id,
+        Version::default(),
+        Params::default(),
+    )
+    .context(HasherSnafu)
+}
+/// Hash a password
+///
+/// This function will first salt the password, then hash it using Argon2id with the default version
+/// (19 at the time of this writing) & parameters (m=19, t=2, m=1 at the time of this writing). Note
+/// that the parameters, as of February 12, 2025, comport with the OWASP [recommendations].
+///
+/// [recomendations]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#password-hashing-algorithms
+///
+/// Per [this] Github issue comment, the pepper is supplied via the `secret` field in the
+/// `new_with_secret()` constructor.
+///
+/// [this]: https://github.com/RustCrypto/traits/pull/699#issuecomment-891105093
+fn hash_password(pepper: &Pepper, password: &SecretString) -> Result<PasswordHash> {
+    let salt = SaltString::generate();
+    let hasher = create_password_hasher(pepper)?;
+    hasher
+        .hash_password_with_salt(password.expose_secret().as_bytes(), salt.as_bytes())
+        .context(HashPasswordSnafu)
+}
+
 impl User {
     /// Mint a new key & add it to this users's collection, ejecting an earlier key if need be
-    pub fn add_key(&self, expiry: Option<DateTime<Utc>>) -> Result<(ApiKeys, String)> {
+    pub fn add_key(&mut self, expiry: Option<DateTime<Utc>>) -> Result<(ApiKeys, String)> {
         let (api_key, key_text) = ApiKey::new(expiry)?;
         let new_keys = match &self.api_keys {
             ApiKeys::Zero => ApiKeys::One(api_key),
             ApiKeys::One(first_api_key) => ApiKeys::Two((first_api_key.clone(), api_key)),
             ApiKeys::Two((_, last_api_key)) => ApiKeys::Two((last_api_key.clone(), api_key)),
         };
+        self.api_keys = new_keys.clone();
         Ok((new_keys, key_text))
     }
     pub fn api_keys(&self) -> &ApiKeys {
@@ -485,6 +523,17 @@ impl User {
     /// Validate key material against this users API key(s)
     pub fn check_key(&self, key_material: &SecretSlice<u8>) -> Result<()> {
         self.api_keys.check(key_material)
+    }
+    pub fn change_password(
+        &mut self,
+        pepper_version: &PepperVersion,
+        pepper_key: &Pepper,
+        password: &SecretString,
+    ) -> Result<&UserHashString> {
+        validate_password(password, &[self.username.as_ref()])?;
+        self.password_hash = UserHashString(hash_password(pepper_key, password)?);
+        self.pepper_version = pepper_version.clone();
+        Ok(&self.password_hash)
     }
     /// Validate a password
     ///
@@ -496,7 +545,7 @@ impl User {
             .context(NoPepperSnafu {
                 username: self.username.clone(),
             })?;
-        let hasher = User::create_password_hasher(&pepper)?;
+        let hasher = create_password_hasher(&pepper)?;
         match hasher.verify_password(
             password.expose_secret().as_bytes(),
             &self.password_hash.password_hash(),
@@ -556,7 +605,7 @@ impl User {
     ) -> Result<User> {
         validate_password(password, &[username.as_ref(), email.as_ref()])?;
         let (pub_key, priv_key) = generate_rsa_keypair().context(KeypairSnafu)?;
-        let password_hash = User::hash_password(pepper_key, password)?;
+        let password_hash = hash_password(pepper_key, password)?;
         let _ = display_name.unwrap_or(username.as_ref()).to_string();
         Ok(User {
             id: UserId::default(),
@@ -595,42 +644,6 @@ impl User {
     }
     pub fn username(&self) -> &Username {
         &self.username
-    }
-    /// Create an indielinks user password hasher
-    ///
-    /// This function returns a [PasswordHasher] employing the Argon2id algorithm (with pepper) with
-    /// parameters m=19456 (19 MiB), t=2, p=1 (Do not use with Argon2i) Per the OWASP Password
-    /// Storage [Cheat Sheet], Argon2id is the first algorithm which should be considered, and those
-    /// are one of the recommended configurations for this algorithm.
-    ///
-    /// [Cheat Sheet]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#password-hashing-algorithms
-    fn create_password_hasher(pepper: &Pepper) -> Result<Argon2<'_>> {
-        Argon2::new_with_secret(
-            pepper.as_ref().expose_secret(),
-            Algorithm::Argon2id,
-            Version::default(),
-            Params::default(),
-        )
-        .context(HasherSnafu)
-    }
-    /// Hash a password
-    ///
-    /// This function will first salt the password, then hash it using Argon2id with the default version
-    /// (19 at the time of this writing) & parameters (m=19, t=2, m=1 at the time of this writing). Note
-    /// that the parameters, as of February 12, 2025, comport with the OWASP [recommendations].
-    ///
-    /// [recomendations]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#password-hashing-algorithms
-    ///
-    /// Per [this] Github issue comment, the pepper is supplied via the `secret` field in the
-    /// `new_with_secret()` constructor.
-    ///
-    /// [this]: https://github.com/RustCrypto/traits/pull/699#issuecomment-891105093
-    fn hash_password(pepper: &Pepper, password: &SecretString) -> Result<PasswordHash> {
-        let salt = SaltString::generate();
-        let hasher = User::create_password_hasher(pepper)?;
-        hasher
-            .hash_password_with_salt(password.expose_secret().as_bytes(), salt.as_bytes())
-            .context(HashPasswordSnafu)
     }
 }
 

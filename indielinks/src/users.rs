@@ -98,7 +98,7 @@ use http::{header::SET_COOKIE, HeaderMap, Method};
 use itertools::Itertools;
 use nonzero::nonzero;
 use opentelemetry::KeyValue;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use snafu::{prelude::*, Backtrace};
 use tap::Pipe;
 use tokio::sync::Mutex;
@@ -111,10 +111,10 @@ use url::Url;
 
 use indielinks_shared::{
     api::{
-        FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, RecentPostsRequest,
-        ReplyRequest, ThreadContextRequest, ThreadContextResponse, TimelineReq, TopKTagsRequest,
-        TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
-        REFRESH_CSRF_HEADER_NAME_LC,
+        ChangePasswordRequest, FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp,
+        RecentPostsRequest, ReplyRequest, ThreadContextRequest, ThreadContextResponse, TimelineReq,
+        TopKTagsRequest, TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
+        REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::Username,
     origin::Origin,
@@ -172,6 +172,11 @@ pub enum Error {
         #[snafu(source(from(crate::entities::Error, Box::new)))]
         source: Box<crate::entities::Error>,
         backtrace: Backtrace,
+    },
+    #[snafu(display("failed to change password"))]
+    ChangePassword {
+        #[snafu(source(from(crate::entities::Error, Box::new)))]
+        source: Box<crate::entities::Error>,
     },
     #[snafu(display(
         "The CSRF token {token} doesn't match the CSRF header {header}; this is likely a bug, but could also result from a CSRF attack"
@@ -271,6 +276,12 @@ pub enum Error {
         #[snafu(source(from(crate::storage::Error, Box::new)))]
         source: Box<crate::storage::Error>,
         backtrace: Backtrace,
+    },
+    #[snafu(display("failed to write a new password for {user:?}"))]
+    UpdatePassword {
+        user: Box<User>,
+        #[snafu(source(from(crate::storage::Error, Box::new)))]
+        source: Box<crate::storage::Error>,
     },
     #[snafu(display("Failed to lookup user {username}: {source}"))]
     User {
@@ -699,6 +710,113 @@ async fn logout(
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                    `/users/change-password`                                    //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! {
+    "user.password-changes.successful", user_password_changes_successful, Sort::IntegralCounter
+}
+define_metric! { "user.password-changes.failures", user_password_changes_failures, Sort::IntegralCounter }
+
+/// Change a user's password
+///
+/// The new password will be validated. On success, write-down the new hash in the datastore. Return
+/// 202 Accepted.
+async fn change_password(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(request): Json<ChangePasswordRequest>,
+) -> axum::response::Response {
+    async fn change_password1(
+        state: Arc<Indielinks>,
+        user: &mut User,
+        request: ChangePasswordRequest,
+    ) -> Result<()> {
+        // While the salt is generated per-user, the pepper is system-wide-- pull it from state:
+        let (pepper_version, pepper_key) = state.pepper.current_pepper().context(NoPepperSnafu)?;
+        // `User::change_password()` returns the new hash, which we really don't need (since it's
+        // also updated in `user`).
+        let _ = user
+            .change_password(
+                &pepper_version,
+                &pepper_key,
+                // I really need to fix this. See also `ops::signup()`.
+                &request.new_password.expose_secret().0.clone().into(),
+            )
+            .context(ChangePasswordSnafu)?;
+        // Finally, commit this to the datastore.
+        state
+            .storage
+            .as_ref()
+            .update_user_password_hash(user)
+            .await
+            .context(UpdatePasswordSnafu { user: user.clone() })
+    }
+
+    // Should promote this to the module level & use in other handlerse.
+    fn mk_error_response(status_code: StatusCode, error: String) -> axum::response::Response {
+        (status_code, Json(ErrorResponseBody { error })).into_response()
+    }
+
+    match user {
+        Ok(Extension(mut user)) => {
+            info!("Changing the password for {}", user.username());
+            match change_password1(state, &mut user, request).await {
+                Ok(_) => {
+                    info!("Password changed for user {}", user.username());
+                    user_password_changes_successful
+                        .add(1, &[KeyValue::new("username", user.username())]);
+                    StatusCode::ACCEPTED.into_response()
+                }
+                Err(err) => {
+                    user_password_changes_failures
+                        .add(1, &[KeyValue::new("username", user.username())]);
+
+                    // Really irritating workaround for the fact that `matches!` doesn't bind any names.
+                    let source = match &err {
+                        Error::ChangePassword { source, .. } => Some(&**source),
+                        _ => None,
+                    };
+
+                    match source {
+                        Some(entities::Error::PasswordEntropy { feedback, .. }) => {
+                            info!(
+                                "password rejected due to insufficient strength: {}",
+                                feedback
+                            );
+                            mk_error_response(
+                                StatusCode::BAD_REQUEST,
+                                format!("Insufficient password strength: {feedback}"),
+                            )
+                        }
+                        Some(entities::Error::PasswordWhitespace { .. }) => {
+                            info!(
+                                "New password rejected due to leading and/or trailing whitespace"
+                            );
+                            mk_error_response(
+                                StatusCode::BAD_REQUEST,
+                                "Password rejected due to leading and/or trailing whitespace"
+                                    .to_owned(),
+                            )
+                        }
+                        _ => {
+                            error!("{err:?}");
+                            mk_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{err}"))
+                        }
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            // This was an unauthenticated request-- just return 401 Unauthorized
+            error!("{err:?}");
+            user_password_changes_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                        `/users/follow`                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -868,14 +986,14 @@ async fn mint_key(
 ) -> axum::response::Response {
     async fn mint_key1(
         storage: &(dyn StorageBackend + Send + Sync),
-        user: &User,
+        user: &mut User,
         expiry: Option<DateTime<Utc>>,
     ) -> Result<MintKeyRsp> {
-        let (keys, key_text) = user.add_key(expiry).context(AddKeySnafu {
+        let (_, key_text) = user.add_key(expiry).context(AddKeySnafu {
             user: Box::new(user.clone()),
         })?;
         storage
-            .update_user_api_keys(user, &keys)
+            .update_user_api_keys(user)
             .await
             .context(UpdateKeySnafu {
                 user: Box::new(user.clone()),
@@ -1397,6 +1515,23 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/users/logout",
             post(logout)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    true,
+                    [
+                        CONTENT_TYPE,
+                        http::header::USER_AGENT,
+                        http::header::REFERER,
+                        http::header::AUTHORIZATION,
+                        http::header::HeaderName::from_static(REFRESH_CSRF_HEADER_NAME_LC),
+                    ],
+                    http::Method::POST,
+                    allow_origin.clone(),
+                )),
+        )
+        .route(
+            "/users/change-password",
+            post(change_password)
                 .route_layer(from_fn_with_state(state.clone(), authenticate))
                 .layer(mk_cors(
                     true,

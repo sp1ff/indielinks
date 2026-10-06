@@ -245,6 +245,11 @@ pub enum Error {
         source: aws_sdk_dynamodb::error::BuildError,
         backtrace: Backtrace,
     },
+    #[snafu(display("failed to serialize a user's password hash"))]
+    PasswordHash {
+        source: serde_dynamo::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to deserialize a Post: {source}"))]
     PostDe {
         source: serde_dynamo::Error,
@@ -357,6 +362,12 @@ pub enum Error {
     #[snafu(display("expected an S attribute for task ID, got {attribute_value:?}"))]
     TaskIdType {
         attribute_value: AttributeValue,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("failed to update a user's password hash"))]
+    UpdatePasswordHash {
+        #[snafu(source(from(SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>, Box::new)))]
+        source: Box<SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>>,
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to update post counts: {source}"))]
@@ -2255,7 +2266,7 @@ impl storage::Backend for Client {
         Ok(())
     }
 
-    async fn update_user_api_keys(&self, user: &User, keys: &ApiKeys) -> StdResult<(), StorError> {
+    async fn update_user_api_keys(&self, user: &User) -> StdResult<(), StorError> {
         self.client
             .update_item()
             .table_name("users")
@@ -2263,11 +2274,11 @@ impl storage::Backend for Client {
             .update_expression("set api_keys=:k")
             .expression_attribute_values(
                 ":k",
-                AttributeValue::M(to_item(keys).map_err(|err| {
+                AttributeValue::M(to_item(user.api_keys()).map_err(|err| {
                     StorError::new(
                         SerApiKeysSnafu {
                             user: user.clone(),
-                            keys: keys.clone(),
+                            keys: user.api_keys().clone(),
                         }
                         .into_error(err),
                     )
@@ -2279,11 +2290,28 @@ impl storage::Backend for Client {
                 StorError::new(
                     UpdateUserApiKeysSnafu {
                         user: user.clone(),
-                        keys: keys.clone(),
+                        keys: user.api_keys().clone(),
                     }
                     .into_error(err),
                 )
             })
+            .map(|_| ())
+    }
+
+    async fn update_user_password_hash(&self, user: &User) -> StdResult<(), StorError> {
+        self.client
+            .update_item()
+            .table_name("users")
+            .key("id", AttributeValue::S(user.id().to_string()))
+            .update_expression("set password_hash=:h")
+            .expression_attribute_values(
+                ":h",
+                serde_dynamo::to_attribute_value(user.password_hash())
+                    .map_err(|err| StorError::new(PasswordHashSnafu.into_error(err)))?,
+            )
+            .send()
+            .await
+            .map_err(|err| StorError::new(UpdatePasswordHashSnafu.into_error(err)))
             .map(|_| ())
     }
 
