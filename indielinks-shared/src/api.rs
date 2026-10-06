@@ -255,6 +255,21 @@ pub struct MintKeyRsp {
     pub key_text: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct ApiKey {
+    pub id: usize,
+    pub expiry: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub enum GetKeysResponse {
+    NoKeys,
+    OneKey(ApiKey),
+    TwoKeys { junior: ApiKey, senior: ApiKey },
+}
+
 /// Opaque type representing a timeline pagination token
 ///
 /// Callers cannot create instances of this type; they are returned in response to timeline requests

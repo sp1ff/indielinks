@@ -19,12 +19,13 @@
 
 use std::{future::Future, sync::Arc};
 
+use chrono::{TimeDelta, Utc};
 use libtest_mimic::Failed;
 use reqwest::{Client, StatusCode, Url};
 use serde_json::json;
 
 use indielinks_shared::{
-    api::{LoginRsp, MintKeyRsp, SignupRsp},
+    api::{GetKeysResponse, LoginRsp, MintKeyRsp, SignupRsp},
     entities::Username,
 };
 
@@ -171,10 +172,12 @@ pub async fn test_mint_key(
     assert_eq!(StatusCode::CREATED, rsp.status());
     let key_text1 = rsp.json::<MintKeyRsp>().await?.key_text;
 
-    // and a third-- this should push the first key off the end of the list.
+    // and a third-- this should push the first key off the end of the list. This time, set an
+    // expiry, as well.
     let rsp = client
         .get(url.join("/api/v1/users/mint-key")?)
         .header("Authorization", format!("Bearer {token}"))
+        .json(&json!({"expiry": Utc::now() + TimeDelta::minutes(10)}))
         .send()
         .await?;
     assert_eq!(StatusCode::CREATED, rsp.status());
@@ -200,6 +203,23 @@ pub async fn test_mint_key(
         .send()
         .await?;
     assert_eq!(StatusCode::OK, rsp.status());
+
+    // Fetch the keys: the "junior" key should be the one on which we set an expiry.
+    let rsp = client
+        .get(url.join("/api/v1/users/keys")?)
+        .header("Authorization", format!("Bearer johndoe:{key_text2}"))
+        .send()
+        .await?;
+    assert_eq!(StatusCode::OK, rsp.status());
+
+    match rsp.json::<GetKeysResponse>().await? {
+        GetKeysResponse::NoKeys => panic!("There should be two keys"),
+        GetKeysResponse::OneKey(_) => panic!("There should be two keys"),
+        GetKeysResponse::TwoKeys { junior, senior } => {
+            assert!(junior.expiry.is_some());
+            assert!(senior.expiry.is_none());
+        }
+    }
 
     Ok(())
 }

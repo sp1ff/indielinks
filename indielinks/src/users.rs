@@ -111,10 +111,11 @@ use url::Url;
 
 use indielinks_shared::{
     api::{
-        ChangePasswordRequest, FollowReq, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp,
-        RecentPostsRequest, ReplyRequest, ThreadContextRequest, ThreadContextResponse, TimelineReq,
-        TopKTagsRequest, TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
-        REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
+        ApiKey as PublicApiKey, ChangePasswordRequest, FollowReq, GetKeysResponse, LikeRequest,
+        LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, RecentPostsRequest, ReplyRequest,
+        ThreadContextRequest, ThreadContextResponse, TimelineReq, TopKTagsRequest,
+        TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
+        REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::Username,
     origin::Origin,
@@ -753,7 +754,7 @@ async fn change_password(
             .context(UpdatePasswordSnafu { user: user.clone() })
     }
 
-    // Should promote this to the module level & use in other handlerse.
+    // Should promote this to the module level & use in other handlers.
     fn mk_error_response(status_code: StatusCode, error: String) -> axum::response::Response {
         (status_code, Json(ErrorResponseBody { error })).into_response()
     }
@@ -1027,6 +1028,50 @@ async fn mint_key(
         },
         Err(_) => {
             user_mint_key_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                         `/users/keys`                                          //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.keys.successful", user_keys_successful, Sort::IntegralCounter }
+define_metric! { "user.keys.failures", user_keys_failures, Sort::IntegralCounter }
+
+async fn keys(
+    // State(_): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+) -> axum::response::Response {
+    fn mk_response(user: &User) -> GetKeysResponse {
+        match user.api_keys() {
+            entities::ApiKeys::Zero => GetKeysResponse::NoKeys,
+            entities::ApiKeys::One(key) => GetKeysResponse::OneKey(PublicApiKey {
+                id: 0,
+                expiry: key.expiry().cloned(),
+            }),
+            entities::ApiKeys::Two((senior, junior)) => GetKeysResponse::TwoKeys {
+                junior: PublicApiKey {
+                    id: 0,
+                    expiry: junior.expiry().cloned(),
+                },
+                senior: PublicApiKey {
+                    id: 1,
+                    expiry: senior.expiry().cloned(),
+                },
+            },
+        }
+    }
+
+    match user {
+        Ok(Extension(user)) => {
+            user_keys_successful.add(1, &[KeyValue::new("username", user.username())]);
+            (StatusCode::OK, Json(mk_response(&user))).into_response()
+        }
+        Err(err) => {
+            error!("{err:?}");
+            user_keys_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()
         }
     }
@@ -1582,6 +1627,17 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         .route(
             "/users/mint-key",
             get(mint_key)
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    http::Method::GET,
+                    AllowOrigin::any(),
+                )),
+        )
+        .route(
+            "/users/keys",
+            get(keys)
                 .route_layer(from_fn_with_state(state.clone(), authenticate))
                 .layer(mk_cors(
                     false,

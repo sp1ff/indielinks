@@ -222,6 +222,9 @@ impl ApiKeyV1 {
             SecretBox::new(key_material),
         ))
     }
+    pub fn expiry(&self) -> Option<&DateTime<Utc>> {
+        self.expiry.as_ref()
+    }
     /// Create a new key with infinite lifetime from pre-allocated key material
     pub fn from_key_material(key_material: &[u8; 64]) -> ApiKeyV1 {
         ApiKeyV1 {
@@ -273,6 +276,11 @@ impl ApiKey {
     pub fn check(&self, key_material: &SecretSlice<u8>) -> Result<()> {
         match self {
             ApiKey::V1(api_key_v1) => Ok(api_key_v1.check(key_material)?),
+        }
+    }
+    pub fn expiry(&self) -> Option<&DateTime<Utc>> {
+        match self {
+            ApiKey::V1(api_key_v1) => api_key_v1.expiry(),
         }
     }
 }

@@ -388,9 +388,8 @@ mod test {
 
     use crate::{
         entities::{
-            ApiKeys, FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShare,
-            IncomingReply, IncomingShare, LikeReplyShare, OutgoingLike, OutgoingReply,
-            OutgoingShare,
+            FollowId, Follower, Following, IncomingLike, IncomingLikeReplyShare, IncomingReply,
+            IncomingShare, LikeReplyShare, OutgoingLike, OutgoingReply, OutgoingShare,
         },
         storage::{self, Backend, Counts, DateRange},
         util::UpToThree,
