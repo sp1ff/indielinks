@@ -17,7 +17,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 snafu = { workspace = true, features = ["backtrace"] }
 tap = { workspace = true }
-test-log = { workspace = true, features = ["trace"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
@@ -28,6 +27,7 @@ nickel-lang = { workspace = true }
 
 [dev-dependencies]
 inventory = { workspace = true }
+test-log = { workspace = true, features = ["trace"] }
 tests-support = { workspace = true }
 
 [[test]]
