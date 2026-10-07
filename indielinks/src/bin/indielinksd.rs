@@ -64,7 +64,7 @@ use tower_http::{
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use tracing::{debug, error, info, Level};
+use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::{
     filter::EnvFilter,
     fmt::{self, MakeWriter},
@@ -382,6 +382,15 @@ fn parse_config(cfg: &Option<PathBuf>) -> Result<ConfigV1> {
         },
         Err(err) => {
             if defaulted {
+                // Running with a "default" configuration might seem a bit odd, but as I've noted
+                // elsewhere, one of my design goals is operational simplicity; if you've got a
+                // build, I want you to be able to run with without having to fuss around with
+                // configuration files, if only to poke at the thing with `curl`.
+                warn!(
+                    "indielinks is running with a default configuration. \
+                       This is only suitable for testing/debugging, since keys will be \
+                       randomly generated and not recoverable or preserved."
+                );
                 Ok(ConfigV1::default())
             } else {
                 Err(ConfigNotFoundSnafu { pth }.into_error(err))

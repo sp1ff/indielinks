@@ -115,12 +115,12 @@ pub struct SigningKeysConfig {
     pub signing_keys: Either<SsmParameter, SigningKeys>,
 }
 
-impl Default for SigningKeysConfig {
-    fn default() -> Self {
+impl SigningKeysConfig {
+    pub fn from_entropy() -> Self {
         SigningKeysConfig {
             token_lifetime: Duration::minutes(5),
             refresh_token_lifetime: Duration::hours(36),
-            signing_keys: Either::Right(SigningKeys::default()),
+            signing_keys: Either::Right(SigningKeys::from_entropy()),
         }
     }
 }
@@ -312,8 +312,8 @@ impl Default for ConfigV1 {
             raft_grpc_address: "0.0.0.0:20681".parse::<SocketAddr>().unwrap(/* known good */),
             storage_config: StorageConfig::default(),
             public_origin: "http://localhost:20679".parse::<Origin>().unwrap(/* known good */),
-            pepper: Either::Right(Peppers::default()),
-            signing_keys: SigningKeysConfig::default(),
+            pepper: Either::Right(Peppers::from_entropy()),
+            signing_keys: SigningKeysConfig::from_entropy(),
             users_config: UsersConfiguration::default(),
             user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
             client_exponential_backoff: Default::default(),

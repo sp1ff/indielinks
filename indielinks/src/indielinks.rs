@@ -439,14 +439,14 @@ mod test {
 
     #[test]
     fn select_source_prefers_the_environment() {
-        let json = serde_json::to_string(&Peppers::default())
+        let json = serde_json::to_string(&Peppers::from_entropy())
             .expect("the peppers should serialize to JSON");
         // The environment variable wins over an inline configuration value...
         assert!(matches!(
             select_source::<Peppers>(
                 Some(&json),
                 "INDIELINKS_PEPPERS",
-                &Either::Right(Peppers::default())
+                &Either::Right(Peppers::from_entropy())
             ),
             Ok(Source::Inline(_))
         ));
@@ -471,7 +471,7 @@ mod test {
             select_source::<Peppers>(
                 None,
                 "INDIELINKS_PEPPERS",
-                &Either::Right(Peppers::default())
+                &Either::Right(Peppers::from_entropy())
             ),
             Ok(Source::Inline(_))
         ));
@@ -494,7 +494,7 @@ mod test {
             select_source::<Peppers>(
                 Some("not json"),
                 "INDIELINKS_PEPPERS",
-                &Either::Right(Peppers::default())
+                &Either::Right(Peppers::from_entropy())
             ),
             Err(Error::EnvSerde { .. })
         ));

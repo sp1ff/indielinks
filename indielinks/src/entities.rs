@@ -25,8 +25,8 @@ use std::fmt::Display;
 
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use chrono::{DateTime, SecondsFormat, Utc};
-use getrandom;
 use phc::SaltString;
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 use scylla::{
     deserialize::{
         row::ColumnIterator, value::DeserializeValue, DeserializationError, FrameSlice,
@@ -106,11 +106,6 @@ pub enum Error {
     InReplySortDe { i: i8, backtrace: Backtrace },
     #[snafu(display("Invalid tag value {tag}"))]
     InvalidTag { tag: i8 },
-    #[snafu(display("failed to randomly generate key material"))]
-    KeyMaterial {
-        source: getrandom::Error,
-        backtrace: Backtrace,
-    },
     #[snafu(display("While generating the user's keypair, {source}"))]
     Keypair {
         source: indielinks_shared::entities::Error,
@@ -217,7 +212,7 @@ impl ApiKeyV1 {
         }
 
         let mut key_material = Box::new([0u8; 64]);
-        getrandom::fill(key_material.deref_mut()).context(KeyMaterialSnafu)?;
+        StdRng::from_entropy().fill_bytes(key_material.deref_mut());
 
         Ok((
             ApiKeyV1 {

@@ -3524,7 +3524,6 @@ dependencies = [
  "errno",
  "form_urlencoded",
  "futures",
- "getrandom 0.4.3",
  "governor",
  "hex",
  "hkdf",

@@ -50,6 +50,7 @@
 use std::{collections::BTreeMap, ops::Deref, str::FromStr};
 
 use lazy_static::lazy_static;
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 use regex::Regex;
 use scylla::{
     deserialize::{value::DeserializeValue, DeserializationError, FrameSlice, TypeCheckError},
@@ -67,11 +68,6 @@ use crate::util::Key;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("failed to create a new, random, pepper"))]
-    NewPepper {
-        source: getrandom::Error,
-        backtrace: Backtrace,
-    },
     #[snafu(display("No pepper available"))]
     NoPepper { backtrace: Backtrace },
     #[snafu(display("Peppers must be 32 octets in length"))]
@@ -164,10 +160,10 @@ impl SerializeValue for Version {
 pub struct Pepper(Key);
 
 impl Pepper {
-    pub fn new() -> Result<Pepper> {
+    pub fn from_entropy() -> Pepper {
         let mut bytes: Vec<u8> = vec![0; 32]; // 128 bits
-        getrandom::fill(&mut bytes).context(NewPepperSnafu)?;
-        Ok(Pepper(bytes.into()))
+        StdRng::from_entropy().fill_bytes(&mut bytes);
+        Pepper(bytes.into())
     }
     pub fn try_from_key(key: Key) -> Result<Pepper> {
         if key.len() == 32 {
@@ -208,13 +204,13 @@ pub struct Peppers {
 }
 
 impl Peppers {
-    pub fn new() -> Result<Self> {
-        Ok(Peppers {
+    pub fn from_entropy() -> Self {
+        Peppers {
             peppers: BTreeMap::from_iter(vec![(
                 Version(chrono::Local::now().format("pepper-ver:%Y%m%d").to_string()),
-                Pepper::new()?,
+                Pepper::from_entropy(),
             )]),
-        })
+        }
     }
     /// Retrieve the current (i.e. the most recent) Pepper
     pub fn current_pepper(&self) -> Result<(Version, Pepper)> {

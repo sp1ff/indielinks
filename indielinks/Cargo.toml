@@ -33,7 +33,6 @@ enum-map = { workspace = true }
 errno = { workspace = true }
 form_urlencoded = { workspace = true }
 futures = { workspace = true }
-getrandom = { workspace = true }
 governor = { workspace = true }
 hex = { workspace = true }
 hkdf = { workspace = true, features = ["std"] }
@@ -64,7 +63,7 @@ picky = { workspace = true }
 pin-project = { workspace = true }
 pkcs8 = { workspace = true }
 prost = "0.14.4"
-rand = { workspace = true }
+rand = { workspace = true, features = ["std_rng"] }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 rmp-serde = { workspace = true }
@@ -101,8 +100,9 @@ prost-build = "0.14.4"
 tonic-prost-build = "0.14.6"
 
 [dev-dependencies]
-wiremock = { workspace = true }
 approx = { workspace = true }
+serde_json = { workspace = true }
+wiremock = { workspace = true }
 
 [package.metadata.deb]
 copyright = "Copyright (C) 2024-2026 Michael Herstine"

@@ -48,6 +48,7 @@
 use std::{collections::BTreeMap, fmt::Display, result::Result as StdResult, str::FromStr};
 
 use lazy_static::lazy_static;
+use rand::{rngs::StdRng, RngCore, SeedableRng};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, Snafu};
@@ -86,11 +87,6 @@ pub enum Error {
     KeyId { text: String, backtrace: Backtrace },
     #[snafu(display("No pepper available"))]
     NoKey { backtrace: Backtrace },
-    #[snafu(display("failed to generate a NONCE"))]
-    Random {
-        source: getrandom::Error,
-        backtrace: Backtrace,
-    },
     #[snafu(display("Signing keys must be 64 octets in length"))]
     SigningKey { backtrace: Backtrace },
     #[snafu(display("While deserializing the sort key, {source}"))]
@@ -165,10 +161,10 @@ impl From<KeyId> for String {
 pub struct SigningKey(Key);
 
 impl SigningKey {
-    pub fn new() -> Result<Self> {
+    pub fn from_entropy() -> Self {
         let mut bytes: Vec<u8> = vec![0; 64];
-        getrandom::fill(&mut bytes).context(RandomSnafu)?;
-        Ok(SigningKey(bytes.into()))
+        StdRng::from_entropy().fill_bytes(&mut bytes);
+        SigningKey(bytes.into())
     }
     pub fn try_from_vec(b: Vec<u8>) -> Result<SigningKey> {
         if b.len() == 64 {
@@ -195,13 +191,13 @@ pub struct SigningKeys {
 }
 
 impl SigningKeys {
-    pub fn new() -> Result<Self> {
-        Ok(SigningKeys {
+    pub fn from_entropy() -> Self {
+        SigningKeys {
             keys: BTreeMap::from_iter(vec![(
                 KeyId(chrono::Local::now().format("keyid:%Y%m%d").to_string()),
-                SigningKey::new()?,
+                SigningKey::from_entropy(),
             )]),
-        })
+        }
     }
     /// Retrieve the current (i.e. the most recent) SigningKey
     pub fn current(&self) -> Result<(KeyId, SigningKey)> {

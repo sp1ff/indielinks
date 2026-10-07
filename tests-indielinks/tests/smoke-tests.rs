@@ -498,7 +498,7 @@ impl Default for Configuration {
             api_key: "v1:5eb56ceebb7425aafe36eabca8b923054b4907d9375acd0b9950c51b57b201fb73e437428050f451b57632f99a3bbd5bed1c0f51cc0df752147090ed26e975f4".to_owned(),
             // I hate this; it ultimately stems from the fact that `getrandom::fil()` is a fallible
             // operation, now. Perhaps introduce a constructor that just takes a `Vec<u8>`?
-            pepper: Peppers::new().expect("random number generation should work"),
+            pepper: Peppers::from_entropy(),
         }
     }
 }

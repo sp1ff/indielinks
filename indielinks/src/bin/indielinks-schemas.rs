@@ -367,13 +367,13 @@ fn generate_secrets<P: AsRef<Path>>(path: P) -> Result<()> {
     // The `Default` implementations of these two types generate new values-- I know, I know...
     // don't judge me.
     let peppers = toml::to_string(&Pepper {
-        pepper: Peppers::new().context(NewPeppersSnafu)?,
+        pepper: Peppers::from_entropy(),
     })
     .context(PepperSnafu)?;
 
     let signing_keys = toml::to_string(&SigningKeysOuter {
         signing_keys: SigningKeysInner {
-            signing_keys: SigningKeys::new().context(NewSigningKeysSnafu)?,
+            signing_keys: SigningKeys::from_entropy(),
         },
     })
     .context(SigningKeysSnafu)?;
