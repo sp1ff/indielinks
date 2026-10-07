@@ -28,8 +28,9 @@ fi
 # <https://github.com/rust-lang/rust-clippy/pull/16633>
 cargo clippy -j ${nproc} -- --no-deps -Dwarnings --allow clippy::double_must_use
 # check the nightly clippy, too-- this has been a real pain point (stable
-# passes here, then nightly fails during CI)
-cargo +nightly clippy -j 8 -- --no-deps -Dwarnings --allow clippy::double_must_use
+# passes here, then nightly fails during CI). I'm trying to address that by
+# using a fixed, dated nightly build. This needs to be kept in-sync with CI.
+cargo +nightly-2026-09-03 clippy -j 8 -- --no-deps -Dwarnings --allow clippy::double_must_use
 cargo fmt -- --check
 RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps -j ${nproc}
 
