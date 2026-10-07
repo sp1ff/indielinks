@@ -17,7 +17,6 @@ getrandom = { workspace = true, features = ["wasm_js"] }
 hex = { workspace = true }
 http = { workspace = true }
 lazy_static = { workspace = true }
-lz4_flex = { workspace = true } # RUSTSEC-2026-0041
 nonempty-collections = { workspace = true, features = ["serde"] }
 opentelemetry = { workspace = true }
 picky = { workspace = true }

@@ -158,7 +158,7 @@
 //! the runner (infeasible since we need to reuse them), cloning them and moving the clones into the
 //! runner (better, but still imposes a non-trivial obligation on caller code), or require `'static`
 //! references to the caller-supplied tests. Since at the time of this writing, I'm using the
-//! [inventory] crate throughout, which provides iterators yielding static references to the
+//! `inventory` crate throughout, which provides iterators yielding static references to the
 //! inventoried items, I chose the third option. The other obvious idiom, a static array of
 //! test structures, would also produce static references.
 //!

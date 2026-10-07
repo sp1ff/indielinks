@@ -26,7 +26,6 @@ itertools = { workspace = true }
 lazy_static = { workspace = true }
 libc = { workspace = true }
 libtest-mimic = { workspace = true }
-lz4_flex = { workspace = true } # RUSTSEC-2026-0041
 nonempty-collections = { workspace = true, features = ["serde"] }
 nonzero = { workspace = true }
 once_cell = { workspace = true }
@@ -40,11 +39,9 @@ secrecy = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
 serde_dynamo = { workspace = true }
 serde_json = { workspace = true }
-serde_toml = { workspace = true }
 sha2 = { workspace = true }
 snafu = { workspace = true, features = ["backtrace"] }
 tap = { workspace = true }
-tests-support = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "rt-multi-thread", "time"] }
 toml = { workspace = true }
 tower-gcra = { workspace = true }
@@ -54,6 +51,9 @@ url = { workspace = true }
 uuid = { workspace = true }
 waitpid-any = { workspace = true }
 wiremock = { workspace = true }
+
+[dev-dependencies]
+tests-support = { workspace = true }
 
 [build-dependencies]
 nickel-lang = { workspace = true }
