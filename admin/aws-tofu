@@ -19,7 +19,7 @@ case "$subcommand" in
         exec tofu "$subcommand" \
             -var='ec2_key_name=indielinks-sp1ff-keypair' \
             -var='hosted_zone_id=Z07598301IF2GN8JH9W19' \
-            -var='operator_ipv6_cidrs=["2601:1c2:4080:14c0::/64"]' \
+            -var='operator_ipv6_cidrs=["2601:1c2:4080:14c0::/64","2601:1c2:4001:27d7::/64"]' \
             -var='alert_email=sp1ff@pobox.com' \
             "$@"
         ;;

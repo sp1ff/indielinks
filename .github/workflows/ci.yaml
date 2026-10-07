@@ -46,6 +46,7 @@ jobs:
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ matrix.rust }}
+        components: "clippy"
 
     # Cf. <https://university.scylladb.com/setup-a-scylla-cluster>
     - name: Configure System
