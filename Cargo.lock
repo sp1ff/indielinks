@@ -3566,7 +3566,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "lru",
- "lz4_flex 0.11.6",
+ "lz4_flex",
  "nickel-lang",
  "nonempty-collections",
  "nonzero",
@@ -3729,7 +3729,7 @@ dependencies = [
  "hex",
  "http 1.5.0",
  "lazy_static",
- "lz4_flex 0.11.6",
+ "lz4_flex",
  "nonempty-collections",
  "opentelemetry",
  "picky",
@@ -4238,15 +4238,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
 dependencies = [
  "hashbrown 0.17.1",
-]
-
-[[package]]
-name = "lz4_flex"
-version = "0.11.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
-dependencies = [
- "twox-hash",
 ]
 
 [[package]]
@@ -6444,7 +6435,7 @@ dependencies = [
  "bytes",
  "chrono",
  "itertools 0.15.0",
- "lz4_flex 0.14.0",
+ "lz4_flex",
  "num-bigint 0.3.3",
  "num-bigint 0.4.8",
  "scylla-cql-core",
@@ -7326,7 +7317,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "libtest-mimic",
- "lz4_flex 0.11.6",
+ "lz4_flex",
  "nickel-lang",
  "nonempty-collections",
  "nonzero",
