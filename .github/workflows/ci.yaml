@@ -46,7 +46,8 @@ jobs:
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ matrix.rust }}
-        components: "clippy"
+        components: "clippy, rustfmt"
+        targets: "wasm32-unknown-unknown"
 
     # Cf. <https://university.scylladb.com/setup-a-scylla-cluster>
     - name: Configure System
@@ -64,9 +65,7 @@ jobs:
         set -xeuo pipefail
         sudo apt-get update && sudo apt-get install -y --no-install-recommends \
         protobuf-compiler libprotobuf-dev haproxy
-        rustup component add clippy
-        rustup component add rustfmt
-        rustup target add wasm32-unknown-unknown
+        rustup set auto-install disable
         cargo install --force ripgrep
         cargo install --force nickel-lang-cli
         # Turning this off, since as of 0.22.2 it requires a fairly
