@@ -150,10 +150,12 @@ pub enum Error {
         text: String,
         backtrace: Backtrace,
     },
-    #[snafu(display("{text} is not correctly percent-encoded: {source}"))]
+    #[snafu(display("{text} is not correctly percent-encoded"))]
     PctStr {
         text: String,
-        source: pct_str::InvalidPctString<String>,
+        // Irritatingly, in version 3.0.1, the `pct-str` crate removed the `Error` implementation
+        // from `InvalidPctString`. See <https://github.com/timothee-haudebourg/pct-str/issues/6>
+        // source: pct_str::InvalidPctString<String>,
     },
     #[snafu(display("{text} cannot be interpreted as an acct URI"))]
     Uri {
@@ -215,8 +217,7 @@ impl Username {
         }
         Ok(Username(
             PctStr::new(s)
-                .map_err(|err| err.into_owned())
-                .context(PctStrSnafu { text: s.to_owned() })?
+                .map_err(|_| PctStrSnafu { text: s.to_owned() }.build())?
                 .decode(),
         ))
     }
