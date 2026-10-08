@@ -17,10 +17,10 @@ use std::{cmp::min, collections::HashSet, net::SocketAddr, result::Result as Std
 
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::{AttributeValue, DeleteRequest, Select, WriteRequest};
-use crypto_common::rand_core::{OsRng, RngCore};
 use itertools::Itertools;
 use libtest_mimic::Failed;
 use nonempty_collections::{NEVec, NonEmptyIterator};
+use rand::{rngs::StdRng, Rng};
 use secrecy::SecretString;
 use serde::Deserialize;
 use serde_dynamo::aws_sdk_dynamodb_1::{from_items, to_item};
@@ -350,9 +350,8 @@ impl Helper for DynamoDBHelper {
         followers: &HashSet<StorUrl>,
         following: &HashSet<(StorUrl, FollowId)>,
     ) -> std::result::Result<String, Failed> {
-        use crypto_common::rand_core::{OsRng, RngCore};
         let mut api_key = [0u8; 64];
-        OsRng.fill_bytes(api_key.as_mut_slice());
+        rand::make_rng::<StdRng>().fill_bytes(&mut api_key);
         let textual_api_key = format!("v1:{}", hex::encode(api_key));
         let user = User::new(
             pepper_version,
@@ -544,7 +543,7 @@ impl Helper for ScyllaHelper {
         following: &HashSet<(StorUrl, FollowId)>,
     ) -> std::result::Result<String, Failed> {
         let mut api_key = [0u8; 64];
-        OsRng.fill_bytes(api_key.as_mut_slice());
+        rand::make_rng::<StdRng>().fill_bytes(&mut api_key);
         let textual_api_key = format!("v1:{}", hex::encode(api_key));
         let user = User::new(
             pepper_version,

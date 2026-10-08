@@ -1338,7 +1338,7 @@ mod serde_privatekey {
 pub fn generate_rsa_keypair() -> Result<(UserPublicKey, UserPrivateKey)> {
     use pkcs8::{EncodePrivateKey, EncodePublicKey};
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let rsa_priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).context(RsaPrivateKeyGenSnafu)?;
     let rsa_pub_key = rsa::RsaPublicKey::from(&rsa_priv_key);
 

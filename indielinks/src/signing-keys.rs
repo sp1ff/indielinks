@@ -48,7 +48,7 @@
 use std::{collections::BTreeMap, fmt::Display, result::Result as StdResult, str::FromStr};
 
 use lazy_static::lazy_static;
-use rand::{rngs::StdRng, RngCore, SeedableRng};
+use rand::{rngs::StdRng, Rng};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, Snafu};
@@ -163,7 +163,7 @@ pub struct SigningKey(Key);
 impl SigningKey {
     pub fn from_entropy() -> Self {
         let mut bytes: Vec<u8> = vec![0; 64];
-        StdRng::from_entropy().fill_bytes(&mut bytes);
+        rand::make_rng::<StdRng>().fill_bytes(&mut bytes);
         SigningKey(bytes.into())
     }
     pub fn try_from_vec(b: Vec<u8>) -> Result<SigningKey> {
@@ -253,10 +253,10 @@ impl<const N: usize> From<[(KeyId, SigningKey); N]> for SigningKeys {
 pub mod pagination {
 
     use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, Nonce};
+    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305};
     use crypto_common::KeyInit;
     use hkdf::Hkdf;
-    use rand::{rngs::OsRng, RngCore};
+    use indielinks_shared::known_good;
     use secrecy::ExposeSecret;
     use serde::{de::DeserializeOwned, Serialize};
     use sha2::Sha256;
@@ -289,12 +289,12 @@ pub mod pagination {
         // managing per pagination token state! So, we'll just prepend the nonce to the cipher text
         // (it's only a 12-byte nonce).
         let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        rand::make_rng::<StdRng>().fill_bytes(&mut nonce_bytes);
+        let nonce = nonce_bytes.into();
         // OK-- serialize ourselves to JSON & encrypt.
         let mut cipher_text = cipher
             .encrypt(
-                nonce,
+                &nonce,
                 serde_json::to_vec(&sort_key)
                     .context(SortKeySerSnafu)?
                     .as_slice(),
@@ -328,11 +328,14 @@ pub mod pagination {
         // what's used by ChaCha20Poly1305.
         let key = derive_key(signing_key)?;
         let cipher = ChaCha20Poly1305::new(&key);
-        let nonce = Nonce::from_slice(nonce);
+        // This is known good because we split the buffer at index 12, above. It's a small
+        // pity that there's no way to do this provably at compile-time-- might be a fun
+        // rainy-day project.
+        let nonce = known_good!(nonce.try_into());
 
         serde_json::from_slice::<K>(
             cipher
-                .decrypt(nonce, cipher_text)
+                .decrypt(&nonce, cipher_text)
                 .context(DecryptSnafu)?
                 .as_slice(),
         )

@@ -65,7 +65,7 @@ use axum::{
 use axum_extra::extract::{cookie::Cookie, CookieJar};
 use chrono::Utc;
 use crypto_common::KeyInit;
-use hmac::Hmac;
+use hmac::HmacReset;
 use http::{
     header::{CONTENT_TYPE, SET_COOKIE},
     HeaderMap, HeaderValue, Method, Request, StatusCode,
@@ -78,7 +78,7 @@ use indielinks_shared::{
 use itertools::Itertools;
 use jwt::VerifyWithKey;
 use opentelemetry::KeyValue;
-use rand::{rngs::OsRng, RngCore};
+use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -500,9 +500,9 @@ struct SaveForm {
 fn mint_csrf_token(signing_key: &SigningKey) -> Result<String> {
     // Arguably abusing `RefreshCsrfToken`, here...
     let session = Uuid::new_v4();
-    let nonce = OsRng.next_u64();
-    let key: Hmac<Sha256> =
-        Hmac::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
+    let nonce = rand::rng().next_u64();
+    let key: HmacReset<Sha256> =
+        HmacReset::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
     RefreshCsrfToken::new(session, nonce)
         .sign_with_key(&key)
         .context(SignatureSnafu)?
@@ -735,8 +735,8 @@ async fn add(
         }
 
         let (_, signing_key) = state.signing_keys.current().context(SigningKeySnafu)?;
-        let key: Hmac<Sha256> =
-            Hmac::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
+        let key: HmacReset<Sha256> =
+            HmacReset::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
         let _: RefreshCsrfToken<Verified> = csrf_cookie
             .verify_with_key(&key)
             .context(VerificationSnafu)?;
