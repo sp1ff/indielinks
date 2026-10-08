@@ -33,7 +33,6 @@ jobs:
         - rust-build: stable
           rust: 1.98.1
         - rust-build: nightly
-          # Nb that this needs to be kept in sync with `admin/run-linters`.
           rust: nightly-2026-09-03
     runs-on: ${{ matrix.os }}
     env:
@@ -66,6 +65,7 @@ jobs:
         set -xeuo pipefail
         sudo apt-get update && sudo apt-get install -y --no-install-recommends \
         protobuf-compiler libprotobuf-dev haproxy
+        rustup set auto-install disable
         cargo install --force ripgrep
         cargo install --force nickel-lang-cli
         # Turning this off, since as of 0.22.2 it requires a fairly
