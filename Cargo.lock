@@ -3551,7 +3551,7 @@ dependencies = [
  "nickel-lang",
  "nonempty-collections",
  "nonzero",
- "num-bigint 0.3.3",
+ "num-bigint 0.4.8",
  "openraft",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -4586,7 +4586,6 @@ dependencies = [
  "autocfg",
  "num-integer",
  "num-traits",
- "serde",
 ]
 
 [[package]]
@@ -4597,6 +4596,7 @@ checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
 dependencies = [
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
