@@ -889,9 +889,9 @@ dependencies = [
 
 [[package]]
 name = "axum-accept"
-version = "0.0.6"
+version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "593bb4484347481a25d7a70bd7c29c396bc99f6bf89973ba571ed7088c1acd26"
+checksum = "179b79b5e261d519dd0e9b60c986d2c22d15ef73ee21d7d487cb98a906f14299"
 dependencies = [
  "axum-accept-macros",
  "axum-accept-shared",
@@ -899,9 +899,9 @@ dependencies = [
 
 [[package]]
 name = "axum-accept-macros"
-version = "0.0.6"
+version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e900d3a070fac26da6460180feb51a337d633ff83d665dc0c4da6a0dd20ab3a"
+checksum = "bb7fd36d6422954b635b263a701bc63f08497fd0b82cd2c8c8716d76424259be"
 dependencies = [
  "axum",
  "axum-accept-shared",
@@ -913,9 +913,9 @@ dependencies = [
 
 [[package]]
 name = "axum-accept-shared"
-version = "0.0.6"
+version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06ac1e7d2d3f2541d4765691bf13894f99ede31ceb80d8aab5c09134863ab870"
+checksum = "5bd46bd00406c143b2dead3cbb632dced50f37106be9a9736d7cc61514dbde40"
 dependencies = [
  "axum",
  "mediatype",
