@@ -26,7 +26,7 @@ use std::fmt::Display;
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use chrono::{DateTime, SecondsFormat, Utc};
 use phc::SaltString;
-use rand::{rngs::StdRng, RngCore, SeedableRng};
+use rand::{rngs::StdRng, Rng};
 use scylla::{
     deserialize::{
         row::ColumnIterator, value::DeserializeValue, DeserializationError, FrameSlice,
@@ -202,8 +202,6 @@ impl ApiKeyV1 {
     /// drop it.
     pub fn new(expiry: Option<DateTime<Utc>>) -> Result<(ApiKeyV1, SecretBox<[u8]>)> {
         // Let's start with the key material
-        use std::ops::DerefMut;
-
         if let Some(expiry) = expiry {
             ensure!(
                 expiry - Utc::now() >= chrono::Duration::seconds(30),
@@ -212,7 +210,7 @@ impl ApiKeyV1 {
         }
 
         let mut key_material = Box::new([0u8; 64]);
-        StdRng::from_entropy().fill_bytes(key_material.deref_mut());
+        rand::make_rng::<StdRng>().fill_bytes(key_material.as_mut_slice());
 
         Ok((
             ApiKeyV1 {

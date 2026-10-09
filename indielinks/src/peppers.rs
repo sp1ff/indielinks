@@ -50,7 +50,7 @@
 use std::{collections::BTreeMap, ops::Deref, str::FromStr};
 
 use lazy_static::lazy_static;
-use rand::{rngs::StdRng, RngCore, SeedableRng};
+use rand::{rngs::StdRng, Rng};
 use regex::Regex;
 use scylla::{
     deserialize::{value::DeserializeValue, DeserializationError, FrameSlice, TypeCheckError},
@@ -162,7 +162,7 @@ pub struct Pepper(Key);
 impl Pepper {
     pub fn from_entropy() -> Pepper {
         let mut bytes: Vec<u8> = vec![0; 32]; // 128 bits
-        StdRng::from_entropy().fill_bytes(&mut bytes);
+        rand::make_rng::<StdRng>().fill_bytes(&mut bytes);
         Pepper(bytes.into())
     }
     pub fn try_from_key(key: Key) -> Result<Pepper> {

@@ -24,9 +24,9 @@
 use std::{convert::AsRef, result::Result as StdResult};
 
 use chrono::{DateTime, Duration, Utc};
-use hmac::{Hmac, Mac};
+use hmac::{HmacReset, KeyInit};
 use jwt::{FromBase64, Header, SignWithKey, ToBase64, Token, VerifyWithKey, VerifyingAlgorithm};
-use rand::{rngs::OsRng, RngCore};
+use rand::{rngs::StdRng, Rng};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -153,8 +153,8 @@ pub fn mint_token(
     issuer: &Host,
     lifetime: &Duration,
 ) -> Result<String> {
-    let key: Hmac<Sha256> =
-        Hmac::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
+    let key: HmacReset<Sha256> =
+        HmacReset::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
     let header = Header {
         key_id: Some(keyid.to_string()),
         ..Default::default()
@@ -185,8 +185,8 @@ pub fn verify_token(token_string: &str, keys: &SigningKeys, issuer: &Host) -> Re
         .ok_or(MissingKeyIdSnafu.build())?;
     let keyid = KeyId::new(&keyid).context(KeyIdSnafu)?;
     let signing_key = keys.find_by_version(&keyid).context(NoKeySnafu { keyid })?;
-    let key: Hmac<Sha256> =
-        Hmac::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
+    let key: HmacReset<Sha256> =
+        HmacReset::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
     let token: Token<Header, AccessClaims, _> = token_string
         .verify_with_key(&key)
         .context(VerificationSnafu)?;
@@ -449,8 +449,8 @@ pub fn mint_refresh_and_csrf_tokens(
 ) -> Result<(String, String)> {
     let now = Utc::now();
     let session = Uuid::new_v4();
-    let key: Hmac<Sha256> =
-        Hmac::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
+    let key: HmacReset<Sha256> =
+        HmacReset::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
 
     // Refresh token
     let header = Header {
@@ -468,7 +468,7 @@ pub fn mint_refresh_and_csrf_tokens(
     };
 
     // CSRF token
-    let nonce = OsRng.next_u64();
+    let nonce = rand::make_rng::<StdRng>().next_u64();
 
     Ok((
         Token::new(header, claims)
@@ -495,7 +495,7 @@ pub fn verify_refresh_token(
     Token<Header, RefreshClaims, jwt::Verified>,
     KeyId,
     SigningKey,
-    Hmac<Sha256>,
+    HmacReset<Sha256>,
 )> {
     let now = Utc::now();
     let token: Token<Header, AccessClaims, _ /* Unverified<'_> */> =
@@ -509,8 +509,8 @@ pub fn verify_refresh_token(
     let signing_key = keys.find_by_version(&keyid).context(NoKeySnafu {
         keyid: keyid.clone(),
     })?;
-    let key: Hmac<Sha256> =
-        Hmac::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
+    let key: HmacReset<Sha256> =
+        HmacReset::new_from_slice(signing_key.as_ref().expose_secret()).context(HmacSnafu)?;
     let token: Token<Header, RefreshClaims, _> = refresh_token_text
         .verify_with_key(&key)
         .context(VerificationSnafu)?;

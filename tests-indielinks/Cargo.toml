@@ -31,6 +31,7 @@ nonzero = { workspace = true }
 once_cell = { workspace = true }
 openraft = { workspace = true, features = ["serde", "storage-v2"] }
 picky = { workspace = true }
+rand = { workspace = true, features = ["std_rng"] }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ["blocking", "json"] }
 rmp-serde = { workspace = true }
