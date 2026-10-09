@@ -43,7 +43,7 @@ indielinks = { path = "indielinks" }
 indielinks-cache = { path = "indielinks-cache" }
 indielinks-shared = { path = "indielinks-shared" }
 inventory = "0.3.24"
-itertools = "0.14.0"
+itertools = "0.15.0"
 jwt = { git = "https://github.com/mikkyang/rust-jwt.git", rev = "refs/pull/105/head" } # was 0.16.0
 keyed_priority_queue = "0.4.2"
 lazy_static = "1.5.0"
