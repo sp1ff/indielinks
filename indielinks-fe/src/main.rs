@@ -108,6 +108,7 @@ use tracing_subscriber_wasm::MakeConsoleWriter;
 use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
 use indielinks_fe::{
+    account::{AccountApiKeys, AccountLanding, AccountPassword, AccountProfile},
     add_link::AddLink,
     components::{
         feedback::{LoadingPlacement, LoadingState},
@@ -158,6 +159,7 @@ fn App(initial_theme: InitialTheme) -> impl IntoView {
 
     let base = expect_context::<Base>().0;
     let paths = Paths::new(&base);
+    provide_context(paths.clone());
 
     // OK-- we store the access token here, but I'm probably going to revisit, since it needs to be
     // refreshed periodically. Something else to consider at that time: should this be a
@@ -266,6 +268,30 @@ fn App(initial_theme: InitialTheme) -> impl IntoView {
                                                     }
                                                     redirect_path = || "/"
                                                     view=AddLink
+                                                />
+                                                <ProtectedRoute
+                                                    path=path!("/m")
+                                                    condition = move || Some(token.get().is_some())
+                                                    redirect_path = || "/"
+                                                    view=AccountLanding
+                                                />
+                                                <ProtectedRoute
+                                                    path=path!("/m/profile")
+                                                    condition = move || Some(token.get().is_some())
+                                                    redirect_path = || "/"
+                                                    view=AccountProfile
+                                                />
+                                                <ProtectedRoute
+                                                    path=path!("/m/password")
+                                                    condition = move || Some(token.get().is_some())
+                                                    redirect_path = || "/"
+                                                    view=AccountPassword
+                                                />
+                                                <ProtectedRoute
+                                                    path=path!("/m/api-keys")
+                                                    condition = move || Some(token.get().is_some())
+                                                    redirect_path = || "/"
+                                                    view=AccountApiKeys
                                                 />
                                             </Routes>
                                         </Shell>

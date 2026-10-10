@@ -279,6 +279,8 @@ pub trait Backend {
     async fn update_user_api_keys(&self, user: &User) -> Result<(), Error>;
     /// Update the `password_hash` field for the given user
     async fn update_user_password_hash(&self, user: &User) -> Result<(), Error>;
+    /// Update the `display_name` and `summary` fields for the given user
+    async fn update_user_profile(&self, user: &User) -> Result<(), Error>;
     /// Update the `first_update` and `last_update` for the given user
     async fn update_user_post_times(&self, user: &User, dt: &DateTime<Utc>) -> Result<(), Error>;
     /// Retrieve a [User] instance given a textual username. None means there is no user by that

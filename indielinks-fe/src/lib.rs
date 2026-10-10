@@ -20,6 +20,7 @@
 //! every target so that its logic can be unit-tested on the host via `cargo test -p indielinks-fe
 //! --lib`.
 
+pub mod account;
 #[cfg(target_arch = "wasm32")]
 #[path = "add-link.rs"]
 pub mod add_link;

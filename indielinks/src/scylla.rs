@@ -1099,6 +1099,7 @@ enum PreparedStatements {
     GetRaftLogEntries9,
     UpdateApiKeys,
     UpdatePasswordHash,
+    UpdateProfile,
     AddOutgoingLikeReplyShare,
     AddIncomingLikeReplyShare,
     OutgoingLikeReplyShare,
@@ -1262,6 +1263,7 @@ impl Session {
             "select * from raft_log where node_id = ?", // GetRaftLogEntries9
             "update users set api_keys=? where id=?",
             "update users set password_hash=? where id=?",
+            "update users set display_name=?, summary=? where id=?",
             "insert into likes_replies_shares (user_id, posted, id, content, in_reply_to, sort, visibility) values (?, ?, ?, ?, ?, ?, ?) if not exists", // AddOutgoingLikeReplyShare
             "insert into incoming_likes_replies_shares (sort, user_id, received, ap_id, attributed_to, in_reply_to_sort, in_reply_to, visibility, content, replies, shares) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) if not exists", // AddIncomingLikeReplyShare,
             "select * from likes_replies_shares where id = ?", // OutgoingLikeReplyShare
@@ -1288,7 +1290,7 @@ impl Session {
         // *precisely the right length*, and in the right order. We can't test for the latter, but
         // we can for the former: this will fail at compile time if we don't have a prepared
         // statement corresponding to each element of `PreparedStatements`.
-        let prepared_statements: [PreparedStatement; 99] = prepared_statements
+        let prepared_statements: [PreparedStatement; 100] = prepared_statements
             .try_into()
             .map_err(|_| BadPreparedStatementCountSnafu.build())?;
 
@@ -2328,6 +2330,17 @@ impl storage::Backend for Session {
             .execute_unpaged(
                 &self.prepared_statements[PreparedStatements::UpdatePasswordHash],
                 (user.password_hash(), user.id()),
+            )
+            .await
+            .map_err(|err| StorageError::new(ExecutionSnafu.into_error(err)))
+            .map(|_| ())
+    }
+
+    async fn update_user_profile(&self, user: &User) -> StdResult<(), StorageError> {
+        self.session
+            .execute_unpaged(
+                &self.prepared_statements[PreparedStatements::UpdateProfile],
+                (user.display_name(), user.summary(), user.id()),
             )
             .await
             .map_err(|err| StorageError::new(ExecutionSnafu.into_error(err)))

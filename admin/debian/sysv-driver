@@ -13,7 +13,7 @@ cd /indielinks
 
 # Unhappy, but we need to build everything for Debian here (see the README)
 cargo clean
-admin/debian/build-packages ${GIT_COMMIT}
+admin/debian/build-packages -v ${GIT_COMMIT}
 
 pkg=$(ls -1 target/debian/indielinks_*.deb|head -n1)
 aws_pkg=$(ls -1 target/debian/indielinks-aws_*.deb|head -n1)

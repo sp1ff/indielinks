@@ -44,6 +44,10 @@ pub struct Paths {
     popular: String,
     sign_in: String,
     sign_up: String,
+    account: String,
+    account_profile: String,
+    account_password: String,
+    account_api_keys: String,
 }
 
 impl Paths {
@@ -55,6 +59,10 @@ impl Paths {
             popular: format!("{base}/"),
             sign_in: format!("{base}/s"),
             sign_up: format!("{base}/u"),
+            account: format!("{base}/m"),
+            account_profile: format!("{base}/m/profile"),
+            account_password: format!("{base}/m/password"),
+            account_api_keys: format!("{base}/m/api-keys"),
         }
     }
 
@@ -74,6 +82,22 @@ impl Paths {
                     "indielinks"
                 }
             })
+    }
+
+    pub fn account(&self) -> &str {
+        &self.account
+    }
+
+    pub fn account_profile(&self) -> &str {
+        &self.account_profile
+    }
+
+    pub fn account_password(&self) -> &str {
+        &self.account_password
+    }
+
+    pub fn account_api_keys(&self) -> &str {
+        &self.account_api_keys
     }
 }
 
@@ -208,6 +232,7 @@ fn AccountControls(
     });
     let sign_in = StoredValue::new(paths.sign_in);
     let sign_up = StoredValue::new(paths.sign_up);
+    let account = StoredValue::new(paths.account);
 
     view! {
         <div class=format!("shell-account {class}")>
@@ -232,6 +257,12 @@ fn AccountControls(
                     }
                 }
             >
+                <a class="shell-account__link" href=account.get_value()>
+                    <span aria-hidden="true" class="shell-account__icon">
+                        <Icon icon=icondata::FiUser />
+                    </span>
+                    <span class="shell-account__label">"account"</span>
+                </a>
                 <button
                     class="shell-account__button"
                     type="button"
