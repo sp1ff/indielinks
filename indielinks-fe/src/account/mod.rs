@@ -1,4 +1,4 @@
-// Copyright (C) 2025-2026 Michael Herstine <sp1ff@pobox.com>
+// Copyright (C) 2026 Michael Herstine <sp1ff@pobox.com>
 //
 // This file is part of indielinks.
 //
@@ -13,33 +13,24 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-//! Route modules, shared components, and client-side services for the indielinks frontend.
+//! Account management page frame and section navigation.
 //!
-//! Almost everything in this crate only makes sense in the browser, so all modules except [theme]
-//! are compiled only for `wasm32`. The theme module's pure [model](theme::model) is compiled on
-//! every target so that its logic can be unit-tested on the host via `cargo test -p indielinks-fe
-//! --lib`.
+//! The account area lives under `/m` and is structured so that future sections (Profile, Blocks,
+//! Follows, Followers) can be added without redesigning the route prefix or responsive layout.
+//!
+//! The [page] submodule (browser builds only) contains the Leptos components and route wrappers.
+//! Pure helpers live in [model], which compiles on all targets so they can be unit-tested.
 
-pub mod account;
+pub mod model;
+
 #[cfg(target_arch = "wasm32")]
-#[path = "add-link.rs"]
-pub mod add_link;
+mod api_keys;
 #[cfg(target_arch = "wasm32")]
-pub mod components;
+mod page;
 #[cfg(target_arch = "wasm32")]
-pub mod feeds;
+mod password;
 #[cfg(target_arch = "wasm32")]
-pub mod home;
+mod profile;
+
 #[cfg(target_arch = "wasm32")]
-pub mod http;
-#[cfg(target_arch = "wasm32")]
-pub mod instance;
-#[cfg(target_arch = "wasm32")]
-pub mod personal;
-#[cfg(target_arch = "wasm32")]
-pub mod signin;
-#[cfg(target_arch = "wasm32")]
-pub mod signup;
-pub mod theme;
-#[cfg(target_arch = "wasm32")]
-pub mod types;
+pub use page::*;

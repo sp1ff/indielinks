@@ -6,10 +6,10 @@ edition = "2024"
 # Only the pure theme model (`theme::model`) compiles off-wasm; everything else is a browser
 # dependency and is declared in the wasm32 target section below.
 [dependencies]
+chrono = { workspace = true, features = ["serde"] }
 snafu = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-chrono = { workspace = true, features = ["serde"] }
 console_error_panic_hook = "0.1.7"
 futures = { workspace = true }
 # This is actually a transitive dependnecy, but I need the "js" feature
@@ -38,7 +38,7 @@ url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 wasm-bindgen = "0.2.100"
 wasm-cookies = "0.2.1"
-web-sys = { version = "0.3.77", features = ["Document", "Element", "EventTarget", "MediaQueryList", "MediaQueryListEvent", "Storage", "Window"] }
+web-sys = { version = "0.3.77", features = ["Clipboard", "Document", "Element", "EventTarget", "MediaQueryList", "MediaQueryListEvent", "Navigator", "Storage", "Window"] }
 
 [build-dependencies]
 url = "2.5.4"

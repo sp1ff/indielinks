@@ -370,6 +370,12 @@ pub enum Error {
         source: Box<SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>>,
         backtrace: Backtrace,
     },
+    #[snafu(display("failed to update a user's profile"))]
+    UpdateProfile {
+        #[snafu(source(from(SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>, Box::new)))]
+        source: Box<SdkError<UpdateItemError, aws_smithy_runtime_api::http::Response>>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to update post counts: {source}"))]
     UpdatePostCounts {
         #[snafu(source(from(aws_smithy_runtime_api::client::result::SdkError<
@@ -2312,6 +2318,20 @@ impl storage::Backend for Client {
             .send()
             .await
             .map_err(|err| StorError::new(UpdatePasswordHashSnafu.into_error(err)))
+            .map(|_| ())
+    }
+
+    async fn update_user_profile(&self, user: &User) -> StdResult<(), StorError> {
+        self.client
+            .update_item()
+            .table_name("users")
+            .key("id", AttributeValue::S(user.id().to_string()))
+            .update_expression("set display_name=:d, summary=:s")
+            .expression_attribute_values(":d", AttributeValue::S(user.display_name().to_string()))
+            .expression_attribute_values(":s", AttributeValue::S(user.summary().to_string()))
+            .send()
+            .await
+            .map_err(|err| StorError::new(UpdateProfileSnafu.into_error(err)))
             .map(|_| ())
     }
 

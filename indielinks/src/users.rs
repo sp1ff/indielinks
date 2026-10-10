@@ -114,8 +114,8 @@ use indielinks_shared::{
         ApiKey as PublicApiKey, ChangePasswordRequest, FollowReq, GetKeysResponse, LikeRequest,
         LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, RecentPostsRequest, ReplyRequest,
         RevokeKeyRequest, ThreadContextRequest, ThreadContextResponse, TimelineReq,
-        TopKTagsRequest, TopKTagsResponse, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
-        REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
+        TopKTagsRequest, TopKTagsResponse, UpdateProfileReq, UserProfile, REFRESH_COOKIE,
+        REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::Username,
     origin::Origin,
@@ -282,6 +282,12 @@ pub enum Error {
     },
     #[snafu(display("failed to write a new password for {user:?}"))]
     UpdatePassword {
+        user: Box<User>,
+        #[snafu(source(from(crate::storage::Error, Box::new)))]
+        source: Box<crate::storage::Error>,
+    },
+    #[snafu(display("failed to update profile for {user:?}: {source}"))]
+    UpdateProfile {
         user: Box<User>,
         #[snafu(source(from(crate::storage::Error, Box::new)))]
         source: Box<crate::storage::Error>,
@@ -816,6 +822,85 @@ async fn change_password(
             // This was an unauthenticated request-- just return 401 Unauthorized
             error!("{err:?}");
             user_password_changes_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                   `/users/profile`                                           //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.profile-gets.successful", user_profile_gets_successful, Sort::IntegralCounter }
+define_metric! { "user.profile-gets.failures", user_profile_gets_failures, Sort::IntegralCounter }
+define_metric! { "user.profile-updates.successful", user_profile_updates_successful, Sort::IntegralCounter }
+define_metric! { "user.profile-updates.failures", user_profile_updates_failures, Sort::IntegralCounter }
+
+async fn get_profile(
+    user: StdResult<Extension<User>, ExtensionRejection>,
+) -> axum::response::Response {
+    match user {
+        Ok(Extension(user)) => {
+            user_profile_gets_successful.add(1, &[KeyValue::new("username", user.username())]);
+            (
+                StatusCode::OK,
+                Json(UserProfile {
+                    username: user.username().to_string(),
+                    display_name: user.display_name().to_string(),
+                    summary: user.summary().to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!("{err:?}");
+            user_profile_gets_failures.add(1, &[]);
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    }
+}
+
+async fn update_profile(
+    State(state): State<Arc<Indielinks>>,
+    user: StdResult<Extension<User>, ExtensionRejection>,
+    Json(request): Json<UpdateProfileReq>,
+) -> axum::response::Response {
+    async fn update_profile1(
+        state: Arc<Indielinks>,
+        user: &mut User,
+        request: UpdateProfileReq,
+    ) -> crate::users::Result<()> {
+        let display_name = request
+            .display_name
+            .unwrap_or_else(|| user.display_name().to_string());
+        let summary = request
+            .summary
+            .unwrap_or_else(|| user.summary().to_string());
+        user.update_profile(display_name, summary);
+        state
+            .storage
+            .as_ref()
+            .update_user_profile(user)
+            .await
+            .context(UpdateProfileSnafu { user: user.clone() })
+    }
+
+    match user {
+        Ok(Extension(mut user)) => match update_profile1(state, &mut user, request).await {
+            Ok(()) => {
+                user_profile_updates_successful
+                    .add(1, &[KeyValue::new("username", user.username())]);
+                StatusCode::ACCEPTED.into_response()
+            }
+            Err(err) => {
+                user_profile_updates_failures.add(1, &[KeyValue::new("username", user.username())]);
+                error!("{err:?}");
+                mk_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{err}"))
+            }
+        },
+        Err(err) => {
+            error!("{err:?}");
+            user_profile_updates_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()
         }
     }
@@ -1669,6 +1754,18 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
                     ],
                     http::Method::POST,
                     allow_origin.clone(),
+                )),
+        )
+        .route(
+            "/users/profile",
+            get(get_profile)
+                .merge(post(update_profile))
+                .route_layer(from_fn_with_state(state.clone(), authenticate))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    [http::Method::GET, http::Method::POST],
+                    AllowOrigin::any(),
                 )),
         )
         .route(

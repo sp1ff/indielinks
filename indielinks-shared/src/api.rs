@@ -276,6 +276,21 @@ pub struct RevokeKeyRequest {
     pub id: usize,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct UserProfile {
+    pub username: String,
+    pub display_name: String,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct UpdateProfileReq {
+    pub display_name: Option<String>,
+    pub summary: Option<String>,
+}
+
 /// Opaque type representing a timeline pagination token
 ///
 /// Callers cannot create instances of this type; they are returned in response to timeline requests

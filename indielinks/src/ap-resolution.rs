@@ -660,6 +660,9 @@ mod test {
         async fn update_user_password_hash(&self, _user: &User) -> StdResult<(), storage::Error> {
             unreachable!()
         }
+        async fn update_user_profile(&self, _user: &User) -> StdResult<(), storage::Error> {
+            unreachable!()
+        }
         async fn update_user_post_times(
             &self,
             _user: &User,

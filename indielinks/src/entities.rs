@@ -653,6 +653,10 @@ impl User {
     pub fn update_api_keys(&mut self, keys: ApiKeys) {
         self.api_keys = keys;
     }
+    pub fn update_profile(&mut self, display_name: String, summary: String) {
+        self.display_name = display_name;
+        self.summary = summary;
+    }
     pub fn username(&self) -> &Username {
         &self.username
     }
