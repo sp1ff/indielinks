@@ -1,6 +1,6 @@
-#+TITLE: indielinks
+ #+TITLE: indielinks
 #+DESCRIPTION: Bookmarks in the Fediverse
-#+DATE: <2026-07-22 Wed 16:48>
+#+DATE: <2026-10-11 Sun 09:34>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -11,45 +11,56 @@ indielinks brings [[https://web.archive.org/web/20080906021806/http://delicious.
 
 [[https://en.wikipedia.org/wiki/Delicious_(website)][del.icio.us]] was a web service in the aughts & early teens to which you could not only upload your bookmarks, but share them, discuss them and discover content shared by others (AKA "social bookmarking"). The [[https://en.wikipedia.org/wiki/Fediverse][Fediverse]] is a collection of decentralized social networking services that federate with one another over the [[https://www.w3.org/TR/activitypub/][ActivityPub]] protocol; the one you've mostly likely heard of is [[https://joinmastodon.org/][Mastodon]].
 
-indielinks is a web service that offers social bookmarking
+indielinks is a web service that offers social bookmarking:
 
 #+ATTR_HTML: :style margin-left: auto; margin-right: auto; display: block; :width 80%
 #+NAME: indielinks
-#+CAPTION: My "daily hacking" reading list
+#+CAPTION: My reading list
 [[assets/daily-hacking.png]]
 
-but it's federated: when you add a (public) link
+but it's federated: when you add a (public) link...
 
 #+ATTR_HTML: :style margin-left: auto; margin-right: auto; display: block; :width 90%
 #+NAME: fediverse
 #+CAPTION: Adding a public link
 [[assets/add-link.png]]
 
-it will show up in your followers' Mastodon feeds, where they can comment, boost & re-post.
+it will show up in your followers' feeds (Mastodon, here), where they can comment, boost & re-post...
 
 #+ATTR_HTML: :style margin-left: auto; margin-right: auto; display: block;
 #+NAME: fediverse
 #+CAPTION: The link showing up in my indieweb.social timeline
 [[assets/mastodon-timeline.png]]
+
+as well as their indielinks feeds:
+
+#+ATTR_HTML: :style margin-left: auto; margin-right: auto; display: block;
+#+NAME: fediverse
+#+CAPTION: The link showing up in my indieweb.social timeline
+[[assets/indielinks-timeline.png]]
+
+Either way, you can like, share or discuss whatever you & your friends are reading.
 * License
 
 indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.html][GPL v3.0]].
 * Pre-requisites
+:PROPERTIES:
+:CUSTOM_ID: pre_requisites
+:END:
 
 To run indielinks locally, you'll need to have [[https://www.scylladb.com/][ScyllaDB]] installed, or Docker (to pull & run ScyllaDB images). See the [[INSTALL.org]] file for details.
 
-To build from source, the Rust stable [[https://rustup.rs/][toolchain]] is required. The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend, along with [[https://tailwindcss.com/][TailwindCSS]].
-
-If you're going to hack on anything related to configuration, you'll probably want to install the [[https://nickel-lang.org/getting-started/][nickel]] configuration language tool.
+To build from source, the Rust stable [[https://rustup.rs/][toolchain]] is required. The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend, along with [[https://tailwindcss.com/][TailwindCSS]], and the [[https://nickel-lang.org/getting-started/][nickel]] configuration language tool (see [[file:HACKING.org][HACKING.org]] for more information on, well, on hacking on the project).
 * Installation
+:PROPERTIES:
+:CUSTOM_ID: installation
+:END:
 
-I hope that in the not-too-distant future, an indielinks instance will be available on the web. In the meantime, indielinks can be installed locally, running against ScyllaDB. I also maintain an Arch package on the [[https://aur.archlinux.org/packages/indielinks-git][AUR]], and a Debian binary package on my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]]. See [[INSTALL.org]] for details.
+I'm in the process of standing-up the first indielinks instance (it will be called [[https://indiemark.sh][indiemark.sh]]; it's up intermittently at the time of this writing). In the meantime, indielinks can be installed locally, running against ScyllaDB. You can [[#pre_requisites][build]] the proejct from source, but I maintain an Arch package on the [[https://aur.archlinux.org/packages/indielinks-git][AUR]], and a Debian binary package on my personal [[https://www.unwoundstack.com/distros.html#indielinks][site]]. See [[INSTALL.org]] for details.
 * Status & Roadmap
 
-I'm using indielinks today, running locally on bare metal to save bookmarks, maintain reading lists, & post to the Fediverse (via a CloudFlare tunnel). That said, it's early code, and I haven't even stood-up the first public instance, yet. I've built out the old del.icio.us API, a user management API, (most of) the ActivityPub support on the backend, have made an indielinks cluster into a Raft consensus cluster (in anticipation of caching). Outside of installation, the front end is probably the most lacking: it's incomplete, and generally looks like it was written, well, by a back end developer.
+I'm using indielinks today, running it as a systemd unit on bare metal to save bookmarks, maintain reading lists, & post to the Fediverse (via a CloudFlare tunnel-- I'm [[https://indiemark.net/.well-known/webfinger?resource=acct:sp1ff@indiemark.net][sp1ff@indiemark.net]], there). The screenshots above were taken from there. I'm currently focused on standing-up the first instance at [[https://indiemark.sh][indiemark.sh]] (perhaps publicly, perhaps by invitation); knocking-off known issues, adding this or that "must have" feature, & so on.
 
-I've only recently made this project public. You can read more about the project & goals [[https://www.unwoundstack.com/blog/indielinks.html][here]]. I presented on the project at the [[https://www.meetup.com/vancouver-rust/events/307731034/][Vancouver Rust Meetup]] (recording [[https://www.youtube.com/watch?v=aztJzpBRFAQ][here]]).
-
-Beyond packaging and the front end, my next focus will be on deploying to the cloud & making an instance available, perhaps publicly, perhaps by invitation.
+You can read more about the project & goals [[https://www.unwoundstack.com/blog/indielinks.html][here]]. I presented on the project last year at the [[https://www.meetup.com/vancouver-rust/events/307731034/][Vancouver Rust Meetup]] (recording [[https://www.youtube.com/watch?v=aztJzpBRFAQ][here]]).
 
 In the meantime, comments, suggestions and contributions are welcome, on [[https://indieweb.social/@sp1ff][Mastodon]], in the [[https://github.com/sp1ff/indielinks/issues][issues]] or at [[mailto:sp1ff@pobox.com][sp1ff@pobox.com]]. In particular, if you're a frontend developer who'd be interested in helping out, I'd love to hear from you.

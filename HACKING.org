@@ -1,6 +1,6 @@
 #+TITLE: HACKING
 #+DESCRIPTION: How to hack on indielinks
-#+DATE: <2026-08-07 Fri 17:18>
+#+DATE: <2026-10-11 Sun 09:42>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -53,6 +53,8 @@ To run integration tests, you will need to add this to your hosts file:
 127.0.0.1   indiemark.local
 ```
 
+and then
+
 #+BEGIN_SRC bash
   cargo test
 #+END_SRC
@@ -72,7 +74,7 @@ This will stand-up a containerized three-node ScyllaDB cluster on the local mach
 
 #+BEGIN_SRC bash
   cd indielinks && \
-  RUST_BACKTRACE=1 RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info,opentelemetry_sdk=info,axum::rejection=trace cargo run --bin indielinksd -- -D -p -c ../conf/indielinksd-scylla.toml -F
+  RUST_BACKTRACE=1 RUST_LOG=debug,aws_config=info,aws_runtime=info,aws_sdk_dynamodb=info,aws_sdk_sts=info,aws_sigv4=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,hyper=info,scylla=info,openraft=info,opentelemetry_sdk=info,axum::rejection=trace cargo run --bin indielinksd -- -D -p -c ../target/conf/master/indielinksd-master-scylla.toml -F
 #+END_SRC
 
 This will start the server, in the foreground, talking to the ScyllaDB cluster over the native ScyllaDB protocol.
@@ -131,7 +133,7 @@ Before pushing, go over your commits & consider squashing some or all. The goal 
 Cut a PR.
 * Operational Overview
 
-The indielinks server may be run in the foreground, in which case it will log to stdout. It may also be run as a standard SysV daemon. Run =indielinks --help= for a full list of command-line options.
+The indielinks server may be run in the foreground, in which case it will log to stdout. It may also be run as a standard System V daemon. Run =indielinks --help= for a full list of command-line options.
 
 Once running, it will listen on three ports:
 
@@ -154,7 +156,7 @@ Thereafter, =admin/aws-deploy= rolls out new packages one node at a time and =ad
 Conventions worth knowing before hacking on this:
 
   - The AWS ports differ from the developer stacks: 20676 public, 20677 admin (loopback only), 20678 Raft gRPC (see =conf/indielinksd-aws.ncl=).
-  - The nodes are IPv6-only: no public IPv4, no NAT; reach them with =ssh -6= / =scp -6=.
+  - Only the nodes' IPv6 addresses are fixed; the Ipv4 are transient; reach them with =ssh -6= / =scp -6=.
   - Nodes export =AWS_USE_DUALSTACK_ENDPOINT=true= host-wide (via =/etc/environment= for login/SSH sessions and systemd =DefaultEnvironment= for services), so all AWS API traffic uses dual-stack endpoints.
   - Each node's Raft ID is seeded into debconf by cloud-init and substituted into =/etc/indielinks.toml= by the =indielinks-aws= package's postinst.
   - Raft membership is *not* in the configuration file: it is supplied once via =POST /ops/cache/init-cluster= and persists in DynamoDB-backed Raft state.
