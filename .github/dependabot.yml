@@ -3,12 +3,17 @@ updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
-      # I'm going to run this daily until we're caught-up
-      # interval: "weekly"
-      interval: "daily"
-    # The default seems to be five, but, again, I want to accelerate
-    # this until we're all caught-up
-    open-pull-requests-limit: 10
+      interval: "cron"
+      # Let's run it at 06:00 Pacific time on Mondays & Thursdays
+      cronjob: "0 6 * * 1,4"
+      timezone: "America/Los_Angeles"
+    # Extend the cooldown window to 7 days from the default 3 (or set
+    # to 0 to opt out entirely)
+    cooldown:
+      default-days: 7
+    # The default seems to be five, but, I'd prefer to be explicit
+    # about it
+    open-pull-requests-limit: 5
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
