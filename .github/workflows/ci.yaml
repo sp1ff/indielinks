@@ -31,9 +31,9 @@ jobs:
         - rust-build: pinned
           rust: 1.95.0
         - rust-build: stable
-          rust: 1.98.1
+          rust: 1.99.0
         - rust-build: nightly
-          rust: nightly-2026-09-03
+          rust: nightly-2026-09-28
     runs-on: ${{ matrix.os }}
     env:
       RUST_BACKTRACE: 1
