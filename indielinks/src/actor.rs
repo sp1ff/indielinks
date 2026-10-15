@@ -51,6 +51,7 @@ use uuid::Uuid;
 use indielinks_shared::{
     api::{FeedRequest, PostRepliesRequest, UserOutboxRequest},
     entities::{PostId, StorUrl, UserPrivateKey, Username},
+    mk_cors,
     origin::Origin,
 };
 
@@ -1767,6 +1768,18 @@ pub async fn atom_feed(
 
 /// Return a [Router] handling all ActivityPub-related activity
 pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
+    let allow_headers = [
+        CONTENT_TYPE,
+        http::header::USER_AGENT,
+        http::header::REFERER,
+        http::header::AUTHORIZATION,
+    ];
+    let allow_origin = state
+        .allowed_origins
+        .iter()
+        .map(|o| o.to_string().parse().unwrap())
+        .collect::<Vec<HeaderValue>>();
+
     Router::new()
         .route(
             "/inbox",
@@ -1799,8 +1812,24 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
                 verify_signature,
             )),
         )
-        .route("/users/{username}/followers", get(followers))
-        .route("/users/{username}/following", get(following))
+        .route(
+            "/users/{username}/followers",
+            get(followers).layer(mk_cors(
+                false,
+                allow_headers.clone(),
+                [Method::GET],
+                allow_origin.clone(),
+            )),
+        )
+        .route(
+            "/users/{username}/following",
+            get(following).layer(mk_cors(
+                false,
+                allow_headers.clone(),
+                [Method::GET],
+                allow_origin.clone(),
+            )),
+        )
         .route("/users/{username}/posts/{postid}", get(get_post))
         .route(
             "/users/{username}/posts/{postid}/replies",

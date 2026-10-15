@@ -31,7 +31,7 @@
 //! stack.
 //!
 //! [RFC]: https://datatracker.ietf.org/doc/html/rfc7565
-//! [Username]: indielinks_shared::entities::Username
+//! [Username]: crate::entities::Username
 //!
 //! # Syntax
 //!
@@ -120,11 +120,9 @@ use lazy_static::lazy_static;
 use pct_str::{Encoder, PctStr, PctString};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use snafu::{prelude::*, Backtrace};
+use snafu::{Backtrace, prelude::*};
 
-use indielinks_shared::origin::Host;
-
-use crate::util::exactly_two;
+use crate::origin::Host;
 
 type StdResult<T, E> = std::result::Result<T, E>;
 
@@ -143,7 +141,7 @@ pub enum Error {
     #[snafu(display("{host} could not be parsed as an acct host: {source}"))]
     Host {
         host: String,
-        source: indielinks_shared::origin::Error,
+        source: crate::origin::Error,
     },
     #[snafu(display("{text} is not a valid percent-encoded username"))]
     PctEncodedUsername {
@@ -170,6 +168,29 @@ pub enum Error {
 }
 
 type Result<T> = StdResult<T, Error>;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                     user/host splitting                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Split `s` into the user and host parts of an `acct` URI.
+///
+/// An RFC 7565 `acct` URI contains exactly one unencoded `@` separating the userpart from the
+/// host. Percent-encoded `@` characters (`%40`) are part of the userpart and must not be treated
+/// as separators.
+fn split_user_host(s: &str) -> Result<(&str, &str)> {
+    let mut iter = s.split('@');
+    let user = iter
+        .next()
+        .ok_or_else(|| BadUserAndHostSnafu { text: s.to_owned() }.build())?;
+    let host = iter
+        .next()
+        .ok_or_else(|| BadUserAndHostSnafu { text: s.to_owned() }.build())?;
+    if iter.next().is_some() {
+        return BadUserAndHostSnafu { text: s.to_owned() }.fail();
+    }
+    Ok((user, host))
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                            Username                                            //
@@ -268,12 +289,10 @@ impl From<Username> for String {
 ///
 /// [RFC-7565]: https://datatracker.ietf.org/doc/html/rfc7565
 ///
-/// In order for this type to work with the axum [Query] extractor, it must deserialize from strings
+/// In order for this type to work with the axum `Query` extractor, it must deserialize from strings
 /// of the form "acct:{percent-encoded-username}@{host}". Therefore, this type hand- implements both
 /// [Serialize] & [Deserialize] to work in this format. [Display] & [FromStr], while inverses, work
 /// with the more natural "{percent-decoded-username}@{host}" format.
-///
-/// [Query]: axum::extract::Query
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Account {
     user: Username,
@@ -283,7 +302,7 @@ pub struct Account {
 impl Account {
     /// Given a string of the form "user@host", derive an [Account]
     pub fn new(s: &str) -> Result<Account> {
-        let (user, host) = exactly_two(s.split('@')).unwrap();
+        let (user, host) = split_user_host(s)?;
         Ok(Self {
             user: Username::new(user)?,
             host: host.parse::<Host>().context(HostSnafu {
@@ -296,7 +315,7 @@ impl Account {
         if !s.starts_with("acct:") {
             return UriSnafu { text: s.to_owned() }.fail();
         }
-        let (user, host) = exactly_two(s[5..].split('@')).unwrap();
+        let (user, host) = split_user_host(&s[5..])?;
         Ok(Self {
             user: Username::from_percent_encoded(user)?,
             host: host.parse::<Host>().context(HostSnafu {
@@ -356,7 +375,12 @@ impl<'de> Deserialize<'de> for Account {
             where
                 E: Error,
             {
-                Account::from_uri(s).map_err(|err| {
+                let account = if s.starts_with("acct:") {
+                    Account::from_uri(s)
+                } else {
+                    Account::new(s)
+                };
+                account.map_err(|err| {
                     let err_s = format!("{err}");
                     Error::invalid_value(Unexpected::Str(s), &err_s.as_str())
                 })
@@ -384,7 +408,7 @@ pub mod test {
     fn smoke() {
         // OK
         assert!(Account::new("sp1ff@indiemark.sh").is_ok());
-        // Not OK
+        // Not OK (the local part contains a literal `@`)
         assert!(Account::new("juliet%40capulet.example@shoppingsite.example").is_err());
         // OK
         assert!(Account::from_uri("acct:juliet%40capulet.example@shoppingsite.example").is_ok());
@@ -403,5 +427,12 @@ pub mod test {
         let acct: Account =
             serde_json::from_str("\"acct:juliet%40capulet.example@shoppingsite.example\"").unwrap();
         assert_eq!(acct.user().as_ref(), "juliet@capulet.example")
+    }
+
+    #[test]
+    fn account_deserializes_from_plain_handle() {
+        let acct: Account = serde_json::from_str("\"sp1ff@indiemark.sh\"").unwrap();
+        assert_eq!(acct.user().as_ref(), "sp1ff");
+        assert_eq!(format!("{}", acct.host()), "indiemark.sh");
     }
 }

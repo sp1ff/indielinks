@@ -27,6 +27,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::{
+    acct::Account,
     entities::{Post, PostDay, StorUrl, Tagname, UserEmail, Username},
     nonempty_string::NonEmptyString,
     origin::Origin,
@@ -237,10 +238,26 @@ pub struct ChangePasswordRequest {
     pub new_password: SecretPassword,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum FollowTarget {
+    ActivityPubId(Url),
+    Account(Account),
+}
+
+impl Display for FollowTarget {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match self {
+            FollowTarget::ActivityPubId(url) => write!(f, "{url}"),
+            FollowTarget::Account(account) => write!(f, "{account}"),
+        }
+    }
+}
+
+/// A request to follow another actor. The `id` field names the target via [FollowTarget].
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct FollowReq {
-    pub id: Url,
+pub struct FollowRequest {
+    pub id: FollowTarget,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -599,4 +616,49 @@ pub enum CleanupTasksRequest {
     DoneOlderThan { days: NonZero<i32> },
     /// A particular task, named by ID
     SingleTask { id: Uuid },
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn follow_request_activity_pub_id_round_trips() {
+        let req = FollowRequest {
+            id: FollowTarget::ActivityPubId(
+                Url::parse("https://indieweb.social/users/sp1ff").unwrap(),
+            ),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert_eq!(
+            json,
+            r#"{"id":{"ActivityPubId":"https://indieweb.social/users/sp1ff"}}"#
+        );
+        let de: FollowRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.id, req.id);
+    }
+
+    #[test]
+    fn follow_request_account_round_trips() {
+        let req = FollowRequest {
+            id: FollowTarget::Account(Account::new("sp1ff@indieweb.social").unwrap()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert_eq!(json, r#"{"id":{"Account":"acct:sp1ff@indieweb.social"}}"#);
+        let de: FollowRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.id, req.id);
+    }
+
+    #[test]
+    fn follow_request_accepts_plain_account_handle() {
+        let json = r#"{"id":{"Account":"sp1ff@indieweb.social"}}"#;
+        let req: FollowRequest = serde_json::from_str(json).unwrap();
+        match req.id {
+            FollowTarget::Account(account) => {
+                assert_eq!(account.user().as_ref(), "sp1ff");
+                assert_eq!(format!("{}", account.host()), "indieweb.social");
+            }
+            _ => panic!("expected Account variant"),
+        }
+    }
 }

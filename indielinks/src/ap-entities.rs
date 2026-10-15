@@ -147,8 +147,9 @@ use indielinks_shared::{
     origin::Origin,
 };
 
+use indielinks_shared::acct::Account;
+
 use crate::{
-    acct::Account,
     entities::{
         FollowId, InReply, IncomingReply, LikeId, OutgoingReply, OutgoingShare, ReplyId, ShareId,
         User, Visibility,

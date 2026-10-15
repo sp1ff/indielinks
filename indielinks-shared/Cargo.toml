@@ -19,6 +19,7 @@ http = { workspace = true }
 lazy_static = { workspace = true }
 nonempty-collections = { workspace = true, features = ["serde"] }
 opentelemetry = { workspace = true }
+pct-str = { workspace = true }
 picky = { workspace = true }
 pin-project = { workspace = true }
 pkcs8 = { workspace = true }
@@ -34,6 +35,7 @@ snafu = { workspace = true, features = ["backtrace"] }
 tap = { workspace = true }
 time = { workspace = true } # RUSTSEC-2026-0009
 tower = { workspace = true, features = ["retry"] }
+tower-http = { workspace = true, features = ["cors"] }
 typenum = { workspace = true }
 unicode-segmentation = { workspace = true }
 url = { workspace = true, features = ["serde"] }

@@ -45,8 +45,9 @@ use indielinks_cache::{
 };
 use url::Url;
 
+use indielinks_shared::acct::Account;
+
 use crate::{
-    acct::Account,
     ap_entities::{Actor, Item, Note},
     app_logic,
     cache::{GrpcClientFactory, SLOT_TOP_K_TAGS},

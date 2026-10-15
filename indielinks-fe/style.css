@@ -2375,6 +2375,74 @@ body {
         line-height: var(--text-body--line-height);
     }
 
+    /* Follow form and actor list */
+    .follow-form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        margin: 0 0 24px;
+    }
+
+    .follow-form .form-field {
+        flex: 1 1 16rem;
+        min-width: 0;
+        margin: 0;
+    }
+
+    .follow-form .form-field__label {
+        display: block;
+        margin: 0 0 4px;
+        color: var(--colorNeutralForeground1);
+        font-size: var(--text-control);
+        line-height: var(--text-control--line-height);
+        font-weight: 500;
+    }
+
+    .follow-form .form-control {
+        width: 100%;
+    }
+
+    .follow-form .form-actions {
+        flex: 0 0 auto;
+        margin: 0;
+    }
+
+    .actor-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .actor-list__item {
+        border-bottom: 1px solid var(--colorNeutralStroke2);
+    }
+
+    .actor-list__item:first-child {
+        border-top: 1px solid var(--colorNeutralStroke2);
+    }
+
+    .actor-list__link {
+        display: block;
+        padding: 10px 0;
+        overflow: hidden;
+        color: var(--colorBrandForegroundLink);
+        font-size: var(--text-body);
+        line-height: var(--text-body--line-height);
+        text-decoration: none;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .actor-list__link:visited {
+        color: var(--colorBrandForegroundLink);
+    }
+
+    .actor-list__link:hover {
+        color: var(--colorBrandForegroundLinkHover);
+        text-decoration: underline;
+    }
+
     @media (min-width: 768px) {
         .account-layout {
             grid-template-columns: 14rem 1fr;

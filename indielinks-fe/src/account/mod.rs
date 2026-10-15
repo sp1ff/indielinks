@@ -26,6 +26,12 @@ pub mod model;
 #[cfg(target_arch = "wasm32")]
 mod api_keys;
 #[cfg(target_arch = "wasm32")]
+mod collection;
+#[cfg(target_arch = "wasm32")]
+mod followers;
+#[cfg(target_arch = "wasm32")]
+mod following;
+#[cfg(target_arch = "wasm32")]
 mod page;
 #[cfg(target_arch = "wasm32")]
 mod password;

@@ -108,7 +108,10 @@ use tracing_subscriber_wasm::MakeConsoleWriter;
 use indielinks_shared::api::REFRESH_CSRF_COOKIE;
 
 use indielinks_fe::{
-    account::{AccountApiKeys, AccountLanding, AccountPassword, AccountProfile},
+    account::{
+        AccountApiKeys, AccountFollowers, AccountFollowing, AccountLanding, AccountPassword,
+        AccountProfile,
+    },
     add_link::AddLink,
     components::{
         feedback::{LoadingPlacement, LoadingState},
@@ -292,6 +295,18 @@ fn App(initial_theme: InitialTheme) -> impl IntoView {
                                                     condition = move || Some(token.get().is_some())
                                                     redirect_path = || "/"
                                                     view=AccountApiKeys
+                                                />
+                                                <ProtectedRoute
+                                                    path=path!("/m/following")
+                                                    condition = move || Some(token.get().is_some())
+                                                    redirect_path = || "/"
+                                                    view=AccountFollowing
+                                                />
+                                                <ProtectedRoute
+                                                    path=path!("/m/followers")
+                                                    condition = move || Some(token.get().is_some())
+                                                    redirect_path = || "/"
+                                                    view=AccountFollowers
                                                 />
                                             </Routes>
                                         </Shell>

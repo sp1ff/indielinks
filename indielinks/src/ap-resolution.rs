@@ -44,8 +44,9 @@ use indielinks_shared::{
 use bytes::Bytes;
 use indielinks_cache::{cache::Cache, network::ClientFactory};
 
+use indielinks_shared::acct::Account;
+
 use crate::{
-    acct::Account,
     ap_entities::{
         ap_request, username_and_postid_from_url, username_from_url, Actor, Note, WebfingerResponse,
     },
@@ -73,7 +74,7 @@ where
     },
     #[snafu(display("The handle username {username} isn't a valid indielinks username"))]
     Handle {
-        username: crate::acct::Username,
+        username: indielinks_shared::acct::Username,
         #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
         source: Box<indielinks_shared::entities::Error>,
     },
@@ -329,12 +330,10 @@ where
             actor
         } else {
             // Cache miss-- webfinger this handle
-            let url = Url::parse(&format!(
-                "https://{}/.well-known/webfinger?resource={}",
-                handle.host(),
-                handle
-            ))
-            .context(UrlSnafu)?;
+            let mut url = Url::parse(&format!("https://{}/.well-known/webfinger", handle.host()))
+                .context(UrlSnafu)?;
+            url.query_pairs_mut()
+                .append_pair("resource", &handle.to_uri());
             let response: WebfingerResponse = ap_request(
                 &mut self.client,
                 &self.origin,
@@ -777,7 +776,7 @@ mod test {
     async fn test_handle_to_actor() {
         let actor_url = "https://indieweb.social/users/sp1ff";
         let webfinger_url =
-            "https://indieweb.social/.well-known/webfinger?resource=sp1ff@indieweb.social";
+            "https://indieweb.social/.well-known/webfinger?resource=acct%3Asp1ff%40indieweb.social";
 
         let client = MockHttpClient::new([
             (
@@ -900,4 +899,64 @@ mod test {
         }
     ]
 }"#;
+
+    fn actor_response_with_id(id: &str) -> http::Response<Bytes> {
+        let body = format!(
+            "{{\"@context\":[\"https://www.w3.org/ns/activitystreams\"],\"id\":\"{0}\",\"type\":\"Person\",\"inbox\":\"{0}/inbox\",\"outbox\":\"{0}/outbox\",\"preferredUsername\":\"juliet\",\"publicKey\":{{\"id\":\"{0}#main-key\",\"owner\":\"{0}\",\"publicKeyPem\":\"-----BEGIN PUBLIC KEY----- MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvT9wAaYPOvFLUU0eqMlz RI0ze26hkCYcYdwF3+CM986TmOEUhdQCRAQi4GruqPe6AIK9H4OjftnVbJ8B6Bwc ocIkAM4H7uk2nafcH6lVMvA2LeRQ40gY72D8n+8k1a5bZAl36Dq95uUolKsX6xq/ MnDs3N23YdNEAtIoSWGYWJGLhc0hZ/j1rmowlSTzRanpC+JhUMrG6/av9OSSoc7Y lJkG38TrPP/zPmWAUN3YYFrNR9+KlthKkBiE+ixRxMEz6WUT8m9s8zNOXfY1AgWo OBt7VRgdJucWZKvh53QLkbFN5Q7lYEAENvt2ZCNPTmrDXmtJ631J6+V8sVmR4mzf cwIDAQAB -----END PUBLIC KEY----- \"}}}}",
+            id
+        );
+        http::Response::builder()
+            .status(200)
+            .body(Bytes::from(body))
+            .unwrap()
+    }
+
+    static TEST_ENCODED_WEBFINGER_DOCUMENT: &str = r#"{
+    "subject":"acct:juliet%40capulet.example@shoppingsite.example",
+    "aliases":["https://shoppingsite.example/users/juliet"],
+    "links":[
+        {
+            "rel":"self",
+            "type":"application/activity+json",
+            "href":"https://shoppingsite.example/users/juliet"
+        }
+    ]
+}"#;
+
+    #[tokio::test]
+    async fn test_handle_to_actor_with_encoded_username() {
+        let actor_url = "https://shoppingsite.example/users/juliet";
+        // handle.to_uri() = "acct:juliet%40capulet.example@shoppingsite.example"
+        // After query_pairs_mut encoding: resource=acct%3Ajuliet%2540capulet.example%40shoppingsite.example
+        let webfinger_url = "https://shoppingsite.example/.well-known/webfinger?resource=acct%3Ajuliet%2540capulet.example%40shoppingsite.example";
+
+        let client = MockHttpClient::new([
+            (
+                webfinger_url.to_string(),
+                http::Response::builder()
+                    .status(200)
+                    .body(Bytes::from(TEST_ENCODED_WEBFINGER_DOCUMENT))
+                    .unwrap(),
+            ),
+            (actor_url.to_string(), actor_response_with_id(actor_url)),
+        ]);
+        let mut resolver = make_resolver(client).await;
+
+        let (_, private_key) = generate_rsa_keypair().unwrap();
+        let handle: Account =
+            Account::from_uri("acct:juliet%40capulet.example@shoppingsite.example").unwrap();
+
+        let actor = resolver
+            .handle_to_actor(Right(&private_key), &handle)
+            .await
+            .expect("Failed to resolve handle with encoded username to actor");
+        assert_eq!(actor.id().as_str(), actor_url);
+
+        // Second call should hit the cache
+        let actor2 = resolver
+            .handle_to_actor(Right(&private_key), &handle)
+            .await
+            .expect("Failed on second call");
+        assert_eq!(actor2.id().as_str(), actor_url);
+    }
 }

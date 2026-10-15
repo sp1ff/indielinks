@@ -79,8 +79,9 @@ use indielinks_cache::{
     types::NodeId,
 };
 
+use indielinks_shared::acct::Account;
+
 use indielinks::{
-    acct::Account,
     actor::make_router as make_actor_router,
     ap_entities::{Actor, Note},
     ap_resolution::ApResolver,

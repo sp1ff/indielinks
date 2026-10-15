@@ -102,22 +102,21 @@ use secrecy::{ExposeSecret, SecretString};
 use snafu::{prelude::*, Backtrace};
 use tap::Pipe;
 use tokio::sync::Mutex;
-use tower_http::{
-    cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
-    set_header::SetResponseHeaderLayer,
-};
+use tower_http::{cors::AllowOrigin, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info, warn};
 use url::Url;
 
 use indielinks_shared::{
     api::{
-        ApiKey as PublicApiKey, ChangePasswordRequest, FollowReq, GetKeysResponse, LikeRequest,
-        LoginReq, LoginRsp, MintKeyReq, MintKeyRsp, RecentPostsRequest, ReplyRequest,
-        RevokeKeyRequest, ThreadContextRequest, ThreadContextResponse, TimelineReq,
-        TopKTagsRequest, TopKTagsResponse, UpdateProfileReq, UserProfile, REFRESH_COOKIE,
-        REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
+        ApiKey as PublicApiKey, ChangePasswordRequest, FollowRequest, FollowTarget,
+        GetKeysResponse, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp,
+        RecentPostsRequest, ReplyRequest, RevokeKeyRequest, ThreadContextRequest,
+        ThreadContextResponse, TimelineReq, TopKTagsRequest, TopKTagsResponse, UpdateProfileReq,
+        UserProfile, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
+        REFRESH_CSRF_HEADER_NAME_LC,
     },
     entities::Username,
+    mk_cors,
     origin::Origin,
 };
 
@@ -245,11 +244,11 @@ pub enum Error {
         source: Box<crate::ap_resolution::Error>,
     },
     #[snafu(display(
-        "Couldn't create background task for {username} following {actorid}: {source}"
+        "Couldn't create background task for {username} following {target}: {source}"
     ))]
     SendFollow {
         username: Username,
-        actorid: Box<Url>,
+        target: Box<FollowTarget>,
         #[snafu(source(from(background_tasks::Error, Box::new)))]
         source: Box<background_tasks::Error>,
     },
@@ -922,19 +921,23 @@ type StdResult<T, E> = std::result::Result<T, E>;
 async fn follow(
     State(state): State<Arc<Indielinks>>,
     user: StdResult<Extension<User>, ExtensionRejection>,
-    Json(req): Json<FollowReq>,
+    Json(req): Json<FollowRequest>,
 ) -> axum::response::Response {
-    async fn follow1(user: &User, id: &Url, sender: &Arc<BackgroundTasks>) -> Result<()> {
+    async fn follow1(
+        user: &User,
+        target: &FollowTarget,
+        sender: &Arc<BackgroundTasks>,
+    ) -> Result<()> {
         sender
             .send(SendFollow::new(
                 user.clone(),
-                id.clone(),
+                target.clone(),
                 FollowId::default(),
             ))
             .await
             .context(SendFollowSnafu {
                 username: user.username().clone(),
-                actorid: Box::new(id.clone()),
+                target: Box::new(target.clone()),
             })?;
         Ok(())
     }
@@ -1647,25 +1650,6 @@ async fn cluster_stats(State(state): State<Arc<Indielinks>>) -> axum::response::
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-fn mk_cors<H, M, O>(
-    allow_credentials: bool,
-    allow_headers: H,
-    allow_methods: M,
-    allow_origin: O,
-) -> CorsLayer
-where
-    H: Into<AllowHeaders>,
-    M: Into<AllowMethods>,
-    O: Into<AllowOrigin>,
-{
-    CorsLayer::new()
-        .allow_credentials(allow_credentials)
-        .allow_private_network(true)
-        .allow_headers(allow_headers)
-        .allow_methods(allow_methods)
-        .allow_origin(allow_origin)
-}
 
 /// Return a router for the User API
 ///

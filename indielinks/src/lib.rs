@@ -20,7 +20,6 @@
 //!
 //! [here]: crate::_docs
 pub mod _docs;
-pub mod acct;
 #[path = "activity-pub.rs"]
 pub mod activity_pub;
 pub mod actor;

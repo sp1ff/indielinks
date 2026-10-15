@@ -41,8 +41,9 @@ use indielinks_cache::{
     raft::{make_shared_cache_node, InMemoryBackend},
 };
 
+use indielinks_shared::acct::Account;
+
 use indielinks::{
-    acct::Account,
     ap_entities::{Actor, Note},
     ap_resolution::ApResolver,
     background_tasks::{

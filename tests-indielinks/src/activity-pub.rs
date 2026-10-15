@@ -32,7 +32,8 @@ use wiremock::{
 };
 
 use indielinks_shared::{
-    api::{FollowReq, ThreadContextRequest, ThreadContextResponse},
+    acct::Account,
+    api::{FollowRequest, FollowTarget, ThreadContextRequest, ThreadContextResponse},
     entities::Username,
     origin::Origin,
 };
@@ -44,7 +45,7 @@ use indielinks::{
     peppers::{Pepper, Version as PepperVersion},
 };
 
-use crate::{helper::Helper, make_signed_request, peer_actor, PeerUser};
+use crate::{helper::Helper, make_signed_request, peer_actor, PeerUser, TEST_USER_AGENT};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           utilities                                            //
@@ -239,9 +240,10 @@ pub async fn send_follow(
         )
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(
-            serde_json::to_string(&FollowReq {
-            id: mock_user.id(&mock_origin)?,
-        }).unwrap(/* known good */),
+            serde_json::to_string(&FollowRequest {
+                id: FollowTarget::ActivityPubId(mock_user.id(&mock_origin)?),
+            })
+            .unwrap(/* known good */),
         )
         .send()
         .await?;
@@ -317,6 +319,122 @@ pub async fn send_follow(
         items[0],
         Url::parse(&format!("{}/users/{}", mock_origin, mock_user.name()))?.into()
     );
+    Ok(())
+}
+
+/// Test following a local user by account handle via the API.
+///
+/// This verifies that `FollowTarget::Account` is accepted by `/api/v1/users/follow`, resolved
+/// locally (same origin), and the full follow/accept cycle completes.
+pub async fn send_follow_by_handle(
+    url: Url,
+    pepper_version: PepperVersion,
+    pepper_key: Pepper,
+    helper: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
+    let alice = Username::new("alice_send_follow").unwrap(/* known good */);
+    let bob = Username::new("bob_send_follow").unwrap(/* known good */);
+
+    helper.remove_user(&alice).await?;
+    helper.remove_user(&bob).await?;
+
+    let client = Client::builder().user_agent(TEST_USER_AGENT).build()?;
+
+    // Create Bob (the target user)
+    helper
+        .create_user(
+            &pepper_version,
+            &pepper_key,
+            &bob,
+            &TEST_PASSWORD,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .await?;
+
+    // Create Alice (the follower)
+    let api_key = helper
+        .create_user(
+            &pepper_version,
+            &pepper_key,
+            &alice,
+            &TEST_PASSWORD,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .await?;
+
+    let host = url.host_str().expect("URL should have a host");
+    let handle: Account = format!("{}@{}", bob, host)
+        .parse()
+        .expect("handle should parse as Account");
+
+    // Alice follows Bob by handle
+    let rsp = client
+        .post(format!("{url}api/v1/users/follow"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {alice}:{api_key}"),
+        )
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(
+            serde_json::to_string(&FollowRequest {
+                id: FollowTarget::Account(handle),
+            })
+            .unwrap(/* known good */),
+        )
+        .send()
+        .await?;
+    assert!(
+        rsp.status().is_success(),
+        "follow by handle should succeed, got {}",
+        rsp.status()
+    );
+
+    // Poll until both collections show the relationship (background tasks are async)
+    let mut n = 0;
+    let mut alice_following = Vec::new();
+    let mut bob_followers = Vec::new();
+    while (alice_following.is_empty() || bob_followers.is_empty()) && n < 20 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let following = client
+            .get(format!("{url}users/{alice}/following?page=0"))
+            .send()
+            .await?
+            .json::<CollectionPage>()
+            .await?;
+        alice_following = following.ordered_items.unwrap_or_default();
+
+        let followers = client
+            .get(format!("{url}users/{bob}/followers?page=0"))
+            .send()
+            .await?
+            .json::<CollectionPage>()
+            .await?;
+        bob_followers = followers.ordered_items.unwrap_or_default();
+
+        n += 1;
+    }
+
+    let bob_actor_id = format!("{url}users/{bob}");
+    assert_eq!(
+        alice_following.len(),
+        1,
+        "Alice should be following Bob (got {:?})",
+        alice_following
+    );
+    assert_eq!(alice_following[0].to_string(), bob_actor_id);
+
+    let alice_actor_id = format!("{url}users/{alice}");
+    assert_eq!(
+        bob_followers.len(),
+        1,
+        "Bob should have Alice as a follower (got {:?})",
+        bob_followers
+    );
+    assert_eq!(bob_followers[0].to_string(), alice_actor_id);
+
     Ok(())
 }
 

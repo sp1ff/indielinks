@@ -48,6 +48,8 @@ pub struct Paths {
     account_profile: String,
     account_password: String,
     account_api_keys: String,
+    account_following: String,
+    account_followers: String,
 }
 
 impl Paths {
@@ -63,6 +65,8 @@ impl Paths {
             account_profile: format!("{base}/m/profile"),
             account_password: format!("{base}/m/password"),
             account_api_keys: format!("{base}/m/api-keys"),
+            account_following: format!("{base}/m/following"),
+            account_followers: format!("{base}/m/followers"),
         }
     }
 
@@ -78,6 +82,10 @@ impl Paths {
                     "sign in"
                 } else if pathname == self.sign_up || pathname == "/u" {
                     "sign up"
+                } else if pathname == self.account_following || pathname == "/m/following" {
+                    "following"
+                } else if pathname == self.account_followers || pathname == "/m/followers" {
+                    "followers"
                 } else {
                     "indielinks"
                 }
@@ -98,6 +106,14 @@ impl Paths {
 
     pub fn account_api_keys(&self) -> &str {
         &self.account_api_keys
+    }
+
+    pub fn account_following(&self) -> &str {
+        &self.account_following
+    }
+
+    pub fn account_followers(&self) -> &str {
+        &self.account_followers
     }
 }
 

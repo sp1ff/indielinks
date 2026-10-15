@@ -46,7 +46,7 @@ use indielinks_cache::{
 };
 use indielinks_shared::{
     api::{
-        ClusterStatsResponse, OutboxToken, RecentPostsPage, RecentPostsRequest,
+        ClusterStatsResponse, FollowTarget, OutboxToken, RecentPostsPage, RecentPostsRequest,
         RecentPostsResponse, RepliesToken, ReplyRequest, TimelineBeforePage, TimelineBeforeRsp,
         TimelineInitialPage, TimelineInitialRsp, TimelineReq, TimelineSincePage, TimelineSinceRsp,
         TimelineToken, UserOutboxRequest,
@@ -1316,13 +1316,13 @@ const SEND_FOLLOW: Uuid = Uuid::from_fields(
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendFollow {
     user: User,
-    actorid: Url,
+    target: FollowTarget,
     id: FollowId,
 }
 
 impl SendFollow {
-    pub fn new(user: User, actorid: Url, id: FollowId) -> SendFollow {
-        SendFollow { user, actorid, id }
+    pub fn new(user: User, target: FollowTarget, id: FollowId) -> SendFollow {
+        SendFollow { user, target, id }
     }
 }
 
@@ -1331,32 +1331,46 @@ impl Task<Context> for SendFollow {
     async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
         debug!(
             "Sending a Follow request to {} for {}",
-            AsRef::<str>::as_ref(&self.actorid), // Ugh
+            self.target,
             self.user.username()
         );
 
         async fn exec1(this: Box<SendFollow>, context: Context) -> Result<()> {
             let mut client = context.ap_client.clone();
 
-            // It's possible that `actorid` may not be the ActivityPub ID of the actor we wish to
-            // follow. For instance, when testing against Mastodon locally,
-            // `http://localhost:3001/users/admin` might have an ID of
-            // `http://localhost:3001/ap/users/116133685929577914`. Since that's what will come back
-            // in the Accept message, we need them to match.
-            let actor: Actor = ap_request(
-                &mut client,
-                &context.origin,
-                Left(&this.user),
-                &this.actorid,
-                Method::GET,
-                None,
-                &(),
-            )
-            .await
-            .context(ApSnafu)?;
-            let actorid = actor.id().clone();
+            // Resolve the target to a canonical ActivityPub actor ID.
+            let actorid = match &this.target {
+                FollowTarget::ActivityPubId(url) => {
+                    // It's possible that `url` may not be the canonical ActivityPub ID of the
+                    // actor we wish to follow. For instance, when testing against Mastodon locally,
+                    // `http://localhost:3001/users/admin` might have an ID of
+                    // `http://localhost:3001/ap/users/116133685929577914`. Since that's what will
+                    // come back in the Accept message, we need them to match.
+                    let actor: Actor = ap_request(
+                        &mut client,
+                        &context.origin,
+                        Left(&this.user),
+                        url,
+                        Method::GET,
+                        None,
+                        &(),
+                    )
+                    .await
+                    .context(ApSnafu)?;
+                    actor.id().clone()
+                }
+                FollowTarget::Account(account) => context
+                    .ap_resolver
+                    .lock()
+                    .await
+                    .handle_to_actor(Left(&this.user), account)
+                    .await
+                    .context(ApResolverSnafu)?
+                    .id()
+                    .clone(),
+            };
 
-            debug!("Resolved the ActorID to {actorid}");
+            debug!("Resolved the target to {actorid}");
 
             let inbox = context
                 .ap_resolver

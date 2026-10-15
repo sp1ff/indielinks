@@ -15,9 +15,7 @@
 
 //! Integration tests for the webfinger endpoint.
 
-use indielinks_shared::{entities::Username, origin::Origin};
-
-use indielinks::acct::Account;
+use indielinks_shared::{acct::Account, entities::Username, origin::Origin};
 
 use libtest_mimic::Failed;
 use reqwest::{StatusCode, Url};

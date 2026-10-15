@@ -24,16 +24,26 @@ use crate::components::shell::Paths;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Section {
     Profile,
+    Following,
+    Followers,
     Password,
     ApiKeys,
 }
 
 impl Section {
-    const ALL: [Self; 3] = [Self::Profile, Self::Password, Self::ApiKeys];
+    const ALL: [Self; 5] = [
+        Self::Profile,
+        Self::Following,
+        Self::Followers,
+        Self::Password,
+        Self::ApiKeys,
+    ];
 
     fn href(self, paths: &Paths) -> String {
         match self {
             Self::Profile => paths.account_profile().to_owned(),
+            Self::Following => paths.account_following().to_owned(),
+            Self::Followers => paths.account_followers().to_owned(),
             Self::Password => paths.account_password().to_owned(),
             Self::ApiKeys => paths.account_api_keys().to_owned(),
         }
@@ -42,6 +52,8 @@ impl Section {
     fn label(self) -> &'static str {
         match self {
             Self::Profile => "Profile",
+            Self::Following => "Following",
+            Self::Followers => "Followers",
             Self::Password => "Password",
             Self::ApiKeys => "API keys",
         }
@@ -50,6 +62,8 @@ impl Section {
     fn relative_path(self) -> &'static str {
         match self {
             Self::Profile => "/m/profile",
+            Self::Following => "/m/following",
+            Self::Followers => "/m/followers",
             Self::Password => "/m/password",
             Self::ApiKeys => "/m/api-keys",
         }
@@ -114,7 +128,7 @@ fn AccountPage(children: Children) -> impl IntoView {
             <div class="account-layout__panel">
                 <h1 class="account-layout__heading">"Account"</h1>
                 <p class="account-layout__introduction">
-                    "Manage your password, API keys, and other account settings."
+                    "Manage your profile, password, API keys, and Fediverse connections."
                 </p>
                 {children()}
             </div>
@@ -163,6 +177,26 @@ pub fn AccountApiKeys() -> impl IntoView {
     view! {
         <AccountPage>
             <super::api_keys::ApiKeysSection />
+        </AccountPage>
+    }
+}
+
+/// `/m/following` route view.
+#[component]
+pub fn AccountFollowing() -> impl IntoView {
+    view! {
+        <AccountPage>
+            <super::following::FollowingSection />
+        </AccountPage>
+    }
+}
+
+/// `/m/followers` route view.
+#[component]
+pub fn AccountFollowers() -> impl IntoView {
+    view! {
+        <AccountPage>
+            <super::followers::FollowersSection />
         </AccountPage>
     }
 }

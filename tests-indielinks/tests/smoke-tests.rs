@@ -86,7 +86,10 @@ use url::Url;
 use indielinks::{grpc::InitClusterRequest, peppers::Peppers, scylla::execute_cql};
 
 use tests_indielinks::{
-    activity_pub::{as_follower, context_with_mastodon, posting_creates_note, send_follow},
+    activity_pub::{
+        as_follower, context_with_mastodon, posting_creates_note, send_follow,
+        send_follow_by_handle,
+    },
     counts::test_counts,
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
@@ -945,6 +948,20 @@ inventory::submit!(Test {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(send_follow(helper.indielinks(), version, pepper, helper))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode,]),
+});
+
+inventory::submit!(Test {
+    name: "061send_follow_by_handle",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(send_follow_by_handle(
+            helper.indielinks(),
+            version,
+            pepper,
+            helper,
+        ))
     },
     fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode,]),
 });

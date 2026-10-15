@@ -59,7 +59,7 @@ use lazy_static::lazy_static;
 use indielinks_shared::entities::Tagname;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::acct::Account;
+use indielinks_shared::acct::Account;
 
 /// Refined type that can only be instantiated by sanitizing input HTML
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

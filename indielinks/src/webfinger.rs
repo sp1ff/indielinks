@@ -49,10 +49,9 @@
 
 use std::sync::Arc;
 
-use indielinks_shared::origin::Origin;
+use indielinks_shared::{acct::Account, origin::Origin};
 
 use crate::{
-    acct::Account,
     ap_entities::WebfingerResponse,
     define_metric,
     http::ErrorResponseBody,

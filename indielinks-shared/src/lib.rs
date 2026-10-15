@@ -13,6 +13,9 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
+use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
+
+pub mod acct;
 pub mod api;
 pub mod entities;
 pub mod fin;
@@ -28,4 +31,23 @@ macro_rules! known_good {
     ($e:expr) => {
         $e.expect(concat!(stringify!($e), " is expected to be valid!"))
     };
+}
+
+pub fn mk_cors<H, M, O>(
+    allow_credentials: bool,
+    allow_headers: H,
+    allow_methods: M,
+    allow_origin: O,
+) -> CorsLayer
+where
+    H: Into<AllowHeaders>,
+    M: Into<AllowMethods>,
+    O: Into<AllowOrigin>,
+{
+    CorsLayer::new()
+        .allow_credentials(allow_credentials)
+        .allow_private_network(true)
+        .allow_headers(allow_headers)
+        .allow_methods(allow_methods)
+        .allow_origin(allow_origin)
 }

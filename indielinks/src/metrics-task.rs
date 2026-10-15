@@ -24,8 +24,9 @@ use tokio::sync::Notify;
 use tracing::{info, trace};
 use url::Url;
 
+use indielinks_shared::acct::Account;
+
 use crate::{
-    acct::Account,
     ap_entities::{Actor, Note},
     cache::GrpcClientFactory,
     define_metric,
