@@ -4,8 +4,8 @@ updates:
     directory: "/"
     schedule:
       interval: "cron"
-      # Let's run it at 06:00 Pacific time on Mondays & Thursdays
-      cronjob: "0 6 * * 1,4"
+      # Let's run it at 06:00 Pacific time on Tuesdays & Thursdays
+      cronjob: "0 6 * * 2,4"
       timezone: "America/Los_Angeles"
     # Extend the cooldown window to 7 days from the default 3 (or set
     # to 0 to opt out entirely)
