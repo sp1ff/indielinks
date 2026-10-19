@@ -31,6 +31,7 @@ use axum::{
 };
 use axum_accept::AcceptExtractor;
 use axum_extra::extract::Query;
+use bytes::Bytes;
 use chrono::Utc;
 use either::Either::{self, Left, Right};
 use futures::{future, stream::iter, StreamExt, TryStreamExt};
@@ -93,6 +94,14 @@ pub enum Error {
     AcceptRejected,
     #[snafu(display("Failed to produce an AP Actor: {source}"))]
     Actor { source: ap_entities::Error },
+    #[snafu(display(
+        "While attempting to fetch a public key for signature validation, we \
+                     received a 410 Gone"
+    ))]
+    ActorIsGone {
+        request: Box<http::request::Request<Bytes>>,
+        backtrace: Backtrace,
+    },
     #[snafu(display(
         "An AP request was signed by {bearer}, but the payload indicated an actor of {payload}"
     ))]
@@ -426,7 +435,22 @@ async fn verify_signature(
             Either::Right(private_key) => Either::Right(private_key.clone()),
         };
 
-        let actor = ap_resolver
+        // Our next step is to resolve the signing `Actor`. If they're gone, we'll need
+        // to toss the incoming request back up to our caller, so split it up now (we'll
+        // need to do that, anyway), and resolve the body to `Bytes` (something Send + Sync
+        // that we can include in our `Error`).
+        let (parts, body) = request.into_parts();
+
+        let bytes = axum::body::to_bytes(body, 16384)
+            .await
+            .context(ToBytesSnafu)?;
+
+        // This is a little odd, and characteristic of the sort of thing I'm finding in the wild. If
+        // we've received a `Delete` of an `Actor`, that entity is likely gone at this point, and if
+        // they're not cached, the resulting HTTP call will fail with 410 Gone.
+        use crate::ap_entities::Error::FailedAp as FailedApError;
+        use crate::ap_resolution::Error::Ap as ApError;
+        let actor = match ap_resolver
             .lock()
             .await
             .get_actor(
@@ -434,7 +458,24 @@ async fn verify_signature(
                 &Url::parse(key_id).context(BadKeyIdSnafu)?,
             )
             .await
-            .context(ResolveKeyIdSnafu)?;
+        {
+            Ok(actor) => actor,
+            Err(ApError {
+                source: FailedApError { rsp, backtrace: _ },
+            }) if rsp.status() == StatusCode::GONE => {
+                warn!(
+                    "While attempting to fetch public key {key_id}, ification, I was \
+                               told that the signing Actor was Gone."
+                );
+                return Err(ActorIsGoneSnafu {
+                    request: Box::new(http::request::Request::from_parts(parts, bytes)),
+                }
+                .build());
+            }
+            Err(err) => {
+                return Err(ResolveKeyIdSnafu.into_error(err));
+            }
+        };
 
         let public_key = actor.public_key().context(PublicKeySnafu)?;
 
@@ -463,17 +504,10 @@ async fn verify_signature(
 
         authn::enforce_cavage_2_3_2_3(&parsed_http_signature).context(Cavage2323Snafu)?;
 
-        // Ok-- let's actually validate the request; split the request...
-        let (parts, body) = request.into_parts();
-
-        // & verify the body digest.
-        let bytes = axum::body::to_bytes(body, 16384)
-            .await
-            .context(ToBytesSnafu)?;
-
-        // If there's a request body, and the content digest is not part of the signature, I'm going
-        // to deny the request. To be fair, I haven't seen this mandated anywhere, but I'm not sure
-        // what the point of signing a message and not covering the body (unless the body's empty).
+        // Ok-- let's actually validate the request: verify the body digest. If there's a request
+        // body, and the content digest is not part of the signature, I'm going to deny the request.
+        // To be fair, I haven't seen this mandated anywhere, but I'm not sure what the point of
+        // signing a message and not covering the body (unless the body's empty).
         if !bytes.is_empty() {
             check_sha_256_content_digest(&parts, &bytes).context(ContentDigestSnafu)?;
         }
@@ -516,6 +550,20 @@ async fn verify_signature(
             request.extensions_mut().insert(actor);
             actor_verification_successes.add(1, &[]);
             next.run(request).await
+        }
+        Err(Error::ActorIsGone {
+            request: _,
+            backtrace: _,
+        }) => {
+            // For now, we just respond "202 Accepted". Soon, we'll spawn a background task to
+            // remove all references to this actor (that's why we included the original request in
+            // the error).
+            warn!(
+                "The Actor who signed this request is Gone. We need to check to see that this \
+                   is a Delete, and if so, scrub the actor from our datastore."
+            );
+            actor_verification_successes.add(1, &[]);
+            StatusCode::ACCEPTED.into_response()
         }
         Err(err) => {
             error!("indielinks failed to verify an HTTP signature: {:#?}", err);
