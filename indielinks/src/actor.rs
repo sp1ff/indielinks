@@ -94,6 +94,8 @@ pub enum Error {
     AcceptRejected,
     #[snafu(display("Failed to produce an AP Actor: {source}"))]
     Actor { source: ap_entities::Error },
+    #[snafu(display("Actor {id} cannot be a base for an URL"))]
+    ActorCannotBeABase { id: Box<Url>, backtrace: Backtrace },
     #[snafu(display(
         "While attempting to fetch a public key for signature validation, we \
                      received a 410 Gone"
@@ -169,6 +171,12 @@ pub enum Error {
     FollowGetStream { source: storage::Error },
     #[snafu(display("While computing following, our stream yielded: {source}"))]
     FollowStream { source: storage::Error },
+    #[snafu(display("failed to create a '/followers' url for {id}"))]
+    Followers {
+        id: Url,
+        #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
+        source: Box<crate::ap_entities::Error>,
+    },
     #[snafu(display("While serving /followers, failed to obtain a stream: {source}"))]
     FollowersGetStream { source: storage::Error },
     #[snafu(display("While computing followers, our stream yielded: {source}"))]
@@ -705,22 +713,6 @@ async fn accept_create(
     origin: &Origin,
     timelines: Arc<Mutex<HomeTimelines>>,
 ) -> Result<()> {
-    // I expect to have a `Create` whose `object` field is a `Note` containing an `inReplyTo` field
-    // naming a post on this instance. Ah... ActivityPub!
-    if actor.id() != create.actor() {
-        warn!(
-            "I have a `Create` signed by {}, while the `Create` itself reports an actor of {}. \
-             This seems weird and I'm not comfortable with it: rejecting this request.",
-            actor.id(), // Url::url
-            create.actor()
-        );
-        return ActorMismatchSnafu {
-            bearer: Box::new(actor.id().clone()),
-            payload: Box::new(create.actor().clone()),
-        }
-        .fail();
-    }
-
     // I'm going to log aggressively here, as I explore the corners of the ActivityPub protocol:
     warn!("In receipt of a Create: {:?}", create);
 
@@ -732,8 +724,37 @@ async fn accept_create(
 
     debug!("The Create denotes the creation of the note {:?}", note);
 
-    let (visibility, local_recipients) =
+    let (visibility, mut local_recipients) =
         derive_visibility(create.to(), create.cc(), origin).context(VisibilitySnafu)?;
+
+    // I expected to have a `Create` whose `object` field is a `Note` containing an `inReplyTo`
+    // field naming a post on this instance. *However*, sometimes Mastodon relays replies to people
+    // I follow. In that case, the message will be signed by my followee. Ah... ActivityPub!
+    if actor.id() != create.actor() {
+        info!(
+            "I have a `Create` signed by {}, while the `Create` itself reports an actor of {}. \
+             I'm assuming this is a reply to {} who has followers on this instance.",
+            actor.id(), // Url::url
+            create.actor(),
+            actor.id(), // Url::url
+        );
+
+        let mut followers = actor.id().clone();
+        followers
+            .path_segments_mut()
+            .map_err(|_| {
+                ActorCannotBeABaseSnafu {
+                    id: Box::new(actor.id().clone()),
+                }
+                .build()
+            })?
+            .pop_if_empty()
+            .push("followers");
+
+        local_recipients.push(Recipient::new(origin, &followers).context(FollowersSnafu {
+            id: actor.id().clone(),
+        })?);
+    }
 
     debug!(
         "This Create has visibility {:?} and local recipients {:?}",
