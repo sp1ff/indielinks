@@ -574,6 +574,7 @@ pub enum Type {
     Application,
     Collection,
     Create,
+    Delete,
     Follow,
     Like,
     Note,
@@ -595,6 +596,7 @@ impl std::fmt::Display for Type {
                 Type::Application => "Application",
                 Type::Collection => "Collection",
                 Type::Create => "Create",
+                Type::Delete => "Delete",
                 Type::Follow => "Follow",
                 Type::Like => "Like",
                 Type::Note => "Note",
@@ -1012,6 +1014,26 @@ impl Announce {
 impl ToJld for Announce {
     fn get_type(&self) -> Type {
         Type::Announce
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                             Delete                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Delete {
+    id: Url,
+    actor: Url,
+    to: Vec<Url>,
+    cc: Vec<Url>,
+    object: Url,
+}
+
+impl Delete {
+    pub fn object(&self) -> &Url {
+        &self.object
     }
 }
 
@@ -1708,6 +1730,15 @@ impl From<Item> for FeedPost {
 pub enum AnnounceOrCreate {
     Announce(Announce),
     Create(Create),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
+pub enum AnnounceCreateOrDelete {
+    Announce(Announce),
+    Create(Create),
+    Delete(Delete),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

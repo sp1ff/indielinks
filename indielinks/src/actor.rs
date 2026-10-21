@@ -60,8 +60,8 @@ use crate::{
     activity_pub::{derive_visibility, resolve_recipients},
     ap_entities::{
         self, ap_request_no_response, make_user_followers, make_user_following,
-        username_and_postid_from_url, Accept, Actor, Announce, AnnounceOrCreate, Create, Follow,
-        InboxPayload, InstanceActor, Item, Jld, Like, Recipient, Share, ToJld, Undo,
+        username_and_postid_from_url, Accept, Actor, Announce, AnnounceCreateOrDelete, Create,
+        Follow, InboxPayload, InstanceActor, Item, Jld, Like, Recipient, Share, ToJld, Undo,
     },
     ap_resolution::ApResolver,
     app_logic::{handle_outbox_or_redirect, OutboxResponse, RepliesResponse},
@@ -933,11 +933,11 @@ async fn accept_share(
 async fn shared_inbox(
     State(state): State<Arc<Indielinks>>,
     Extension(actor): Extension<ap_entities::Actor>,
-    axum::extract::Json(body): axum::extract::Json<AnnounceOrCreate>,
+    axum::extract::Json(body): axum::extract::Json<AnnounceCreateOrDelete>,
 ) -> axum::response::Response {
     async fn shared_inbox1(
         actor: &ap_entities::Actor,
-        body: &AnnounceOrCreate,
+        body: &AnnounceCreateOrDelete,
         storage: &(dyn StorageBackend + Send + Sync),
         origin: &Origin,
         instance_actor_priv: &UserPrivateKey,
@@ -947,7 +947,7 @@ async fn shared_inbox(
         match body {
             // AFAIK, an `Announce` is strictly used to notify us that someone has shared one of our
             // posts.
-            AnnounceOrCreate::Announce(announce) => {
+            AnnounceCreateOrDelete::Announce(announce) => {
                 shared_inbox_announcements.add(1, &[]);
                 accept_share(
                     actor,
@@ -960,9 +960,17 @@ async fn shared_inbox(
                 )
                 .await
             }
-            AnnounceOrCreate::Create(create) => {
+            AnnounceCreateOrDelete::Create(create) => {
                 shared_inbox_creates.add(1, &[]);
                 accept_create(actor, create, storage, origin, timelines).await
+            }
+            AnnounceCreateOrDelete::Delete(delete) => {
+                warn!(
+                    "We have received a request to Delete {}. This request will be silently \
+                       ignored for now, but we should remove it from our datastore.",
+                    delete.object()
+                );
+                Ok(())
             }
         }
     }
