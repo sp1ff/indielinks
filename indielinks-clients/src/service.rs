@@ -106,26 +106,26 @@ pub enum Error {
 // I'm not sure what other request bodies this tool will need to send, but for now I'm experimenting
 // with a sum type
 #[derive(Clone, Debug)]
-pub enum ReqBody {
+pub enum RequestBody {
     None,
     Signup(SignupReq),
     Login(LoginReq),
     MintKey(MintKeyReq),
 }
 
-impl TryFrom<ReqBody> for reqwest::Body {
+impl TryFrom<RequestBody> for reqwest::Body {
     type Error = Error;
 
-    fn try_from(value: ReqBody) -> Result<Self, Self::Error> {
+    fn try_from(value: RequestBody) -> Result<Self, Self::Error> {
         match value {
-            ReqBody::None => Ok((&[] as &'static [u8]).into()),
-            ReqBody::Signup(signup_req) => {
+            RequestBody::None => Ok((&[] as &'static [u8]).into()),
+            RequestBody::Signup(signup_req) => {
                 Ok(serde_json::to_string(&signup_req).context(SerSnafu)?.into())
             }
-            ReqBody::Login(login_req) => {
+            RequestBody::Login(login_req) => {
                 Ok(serde_json::to_string(&login_req).context(SerSnafu)?.into())
             }
-            ReqBody::MintKey(mint_key_req) => Ok(serde_json::to_string(&mint_key_req)
+            RequestBody::MintKey(mint_key_req) => Ok(serde_json::to_string(&mint_key_req)
                 .context(SerSnafu)?
                 .into()),
         }

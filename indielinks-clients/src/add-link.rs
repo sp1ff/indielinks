@@ -26,39 +26,20 @@ use indielinks_shared::{
     api::PostAddReq, entities::Tagname, nonempty_string::NonEmptyString, origin::Origin,
 };
 
-use crate::service::ReqBody;
+use crate::service::RequestBody;
 
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum Error {
-    #[snafu(display("The API origin must be specified, either in config or on the command line"))]
-    Api,
-    #[snafu(display("The tower service returns {source}"))]
+    #[snafu(display("failed to invoke the client Service"))]
     Call {
-        source: Box<dyn std::error::Error + Send + Sync>,
-        backtrace: Backtrace,
+        source: indielinks_shared::service::Error,
     },
-    #[snafu(display("Exhausted the buffer without matching the predicate"))]
-    Eob { backtrace: Backtrace },
-    #[snafu(display("Failed to find the initial '[']"))]
-    InitialParse,
-    #[snafu(display("The API key must be specified, either in config or on the command line"))]
-    MissingToken,
-    #[snafu(display("No sub-command given; try --help"))]
-    NoSubCommand,
-    #[snafu(display(
-        "Missing token; specify it with the --token option or in your configuration file"
-    ))]
-    NoToken,
-    #[snafu(display("Failed to find the next ',' or ']'"))]
-    Parse,
-    #[snafu(display("Premature EOF while deserializing array elements"))]
-    PrematureEof { backtrace: Backtrace },
-    #[snafu(display("While waiting for the tower service to be ready: {source}"))]
+    #[snafu(display("the client Service failed to become ready"))]
     Ready {
-        source: Box<dyn std::error::Error + Send + Sync>,
-        backtrace: Backtrace,
+        source: indielinks_shared::service::Error,
     },
-    #[snafu(display("Failed to build an http::Request: {source}"))]
+    #[snafu(display("failed to build an HTTP request"))]
     Request {
         source: http::Error,
         backtrace: Backtrace,
@@ -68,7 +49,7 @@ pub enum Error {
         status: http::StatusCode,
         backtrace: Backtrace,
     },
-    #[snafu(display("While encoding {url} to a query string: {source}"))]
+    #[snafu(display("failed to encode {url} to a query string"))]
     UrlEncoding {
         url: Box<Url>,
         #[snafu(source(from(serde_urlencoded::ser::Error, Box::new)))]
@@ -100,16 +81,17 @@ pub async fn add_link<'a, C, I>(
 where
     // It would be nice to have an alias for this, but the trait_alias feature is only on nightly
     C: Service<
-            http::Request<ReqBody>,
+            http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = Box<dyn std::error::Error + Send + Sync>,
+            Error = indielinks_shared::service::Error,
         > + Clone,
     I: Iterator<Item = &'a Tagname>,
 {
     use secrecy::ExposeSecret;
 
     let tags = tags.map(|tag| tag.to_string()).join(",");
-    let add_req = PostAddReq {
+
+    let add_request = PostAddReq {
         url,
         title,
         notes: notes.cloned(),
@@ -119,20 +101,24 @@ where
         shared: Some(shared),
         to_read: Some(to_read),
     };
-    let req = Request::builder()
+
+    let request = Request::builder()
         .method(Method::POST)
         .uri(format!(
             "{api}/api/v1/posts/add?{}",
-            serde_urlencoded::to_string(&add_req).context(UrlEncodingSnafu { url: add_req.url })?
+            serde_urlencoded::to_string(&add_request).context(UrlEncodingSnafu {
+                url: add_request.url
+            })?
         ))
         .header(AUTHORIZATION, format!("Bearer {}", token.expose_secret()))
-        .body(ReqBody::None)
+        .body(RequestBody::None)
         .context(RequestSnafu)?;
+
     let response = client
         .ready()
         .await
         .context(ReadySnafu)?
-        .call(req)
+        .call(request)
         .await
         .context(CallSnafu)?;
 

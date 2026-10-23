@@ -35,7 +35,7 @@ use indielinks_shared::{
     api::PostAddReq, entities::Tagname, nonempty_string::NonEmptyString, origin::Origin,
 };
 
-use crate::{import::import_posts, service::ReqBody};
+use crate::{import::import_posts, service::RequestBody};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -376,9 +376,9 @@ pub async fn import_pinboard<C, P>(
 where
     // It would be nice to have an alias for this, but the trait_alias feature is only on nightly
     C: Service<
-            http::Request<ReqBody>,
+            http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = Box<dyn std::error::Error + Send + Sync>,
+            Error = indielinks_shared::service::Error,
         > + Clone,
     P: AsRef<Path>,
 {

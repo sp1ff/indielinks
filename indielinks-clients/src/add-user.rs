@@ -32,31 +32,30 @@ use indielinks_shared::{
     origin::Origin,
 };
 
-use crate::service::ReqBody;
+use crate::service::RequestBody;
 
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum Error {
-    #[snafu(display("The tower service returns {source}"))]
+    #[snafu(display("failed to invoke the client Service"))]
     Call {
-        source: Box<dyn std::error::Error + Send + Sync>,
-        backtrace: Backtrace,
+        source: indielinks_shared::service::Error,
     },
-    #[snafu(display("While deserializing the login response body, {source}"))]
+    #[snafu(display("failed to deserialize the login response body"))]
     LoginBody {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("While deserializing the \"mint key\" response body, {source}"))]
+    #[snafu(display("failed to deserialize the \"mint key\" response body"))]
     MintKeyBody {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("While waiting for the tower service to be ready: {source}"))]
+    #[snafu(display("the client Service failed to become ready"))]
     Ready {
-        source: Box<dyn std::error::Error + Send + Sync>,
-        backtrace: Backtrace,
+        source: indielinks_shared::service::Error,
     },
-    #[snafu(display("Failed to build an http::Request: {source}"))]
+    #[snafu(display("failed to build an HTTP request"))]
     Request {
         source: http::Error,
         backtrace: Backtrace,
@@ -81,9 +80,9 @@ pub async fn add_user<C>(
 where
     // It would be nice to have an alias for this, but the trait_alias feature is only on nightly
     C: Service<
-            http::Request<ReqBody>,
+            http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = Box<dyn std::error::Error + Send + Sync>,
+            Error = indielinks_shared::service::Error,
         > + Clone,
 {
     // If the response body can be deserialized to a JSON document with an "error" field, log it.
@@ -115,7 +114,7 @@ where
         .method(Method::POST)
         .uri(format!("{ops}/ops/users/signup"))
         .header(CONTENT_TYPE, "application/json")
-        .body(ReqBody::Signup(request))
+        .body(RequestBody::Signup(request))
         .context(RequestSnafu)?;
     let response = client
         .ready()
@@ -137,7 +136,7 @@ where
         .method(Method::POST)
         .uri(format!("{api}/api/v1/users/login"))
         .header(CONTENT_TYPE, "application/json")
-        .body(ReqBody::Login(LoginReq {
+        .body(RequestBody::Login(LoginReq {
             username: username.clone(),
             password: password.clone(),
         }))
@@ -167,7 +166,7 @@ where
         .uri(format!("{api}/api/v1/users/mint-key"))
         .header(CONTENT_TYPE, "application/json")
         .header(AUTHORIZATION, format!("Bearer {token}"))
-        .body(ReqBody::MintKey(MintKeyReq {
+        .body(RequestBody::MintKey(MintKeyReq {
             // Should probably make the key expiry configurable
             expiry: Utc::now() + Duration::days(365),
         }))

@@ -21,35 +21,34 @@ use snafu::{Backtrace, ResultExt, Snafu};
 use tower::{Service, ServiceExt};
 use url::Url;
 
-use crate::service::ReqBody;
+use crate::service::RequestBody;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum Error {
-    #[snafu(display("The tower service returns {source}"))]
+    #[snafu(display("failed to invoke the client Service"))]
     Call {
-        source: Box<dyn std::error::Error + Send + Sync>,
-        backtrace: Backtrace,
+        source: indielinks_shared::service::Error,
     },
-    #[snafu(display("posts/add response: {status}"))]
+    #[snafu(display("failed response from the `/posts/add` endpoint: {status}"))]
     Failure {
         status: http::StatusCode,
         backtrace: Backtrace,
     },
-    #[snafu(display("While waiting for the tower service to be ready: {source}"))]
+    #[snafu(display("the client Service failed to become ready"))]
     Ready {
-        source: Box<dyn std::error::Error + Send + Sync>,
-        backtrace: Backtrace,
+        source: indielinks_shared::service::Error,
     },
-    #[snafu(display("Failed to build an http::Request: {source}"))]
+    #[snafu(display("failed to build an HTTP request"))]
     Request {
         source: http::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("While encoding {url} to a query string: {source}"))]
+    #[snafu(display("failed to encode {url} to a query string"))]
     UrlEncoding {
         url: Box<Url>,
         #[snafu(source(from(serde_urlencoded::ser::Error, Box::new)))]
@@ -73,9 +72,9 @@ async fn import_post<C>(
 ) -> Result<()>
 where
     C: Service<
-            http::Request<ReqBody>,
+            http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = Box<dyn std::error::Error + Send + Sync>,
+            Error = indielinks_shared::service::Error,
         > + Clone,
 {
     use secrecy::ExposeSecret;
@@ -87,7 +86,7 @@ where
             serde_urlencoded::to_string(&add_req).context(UrlEncodingSnafu { url: add_req.url })?
         ))
         .header(AUTHORIZATION, format!("Bearer {}", token.expose_secret()))
-        .body(ReqBody::None)
+        .body(RequestBody::None)
         .context(RequestSnafu)?;
     let rsp = client
         .ready()
@@ -116,9 +115,9 @@ pub async fn import_posts<C, I>(
 ) -> Result<usize>
 where
     C: Service<
-            http::Request<ReqBody>,
+            http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = Box<dyn std::error::Error + Send + Sync>,
+            Error = indielinks_shared::service::Error,
         > + Clone,
     I: Iterator<Item = PostAddReq>,
 {

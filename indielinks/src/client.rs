@@ -272,7 +272,7 @@ where
         // <https://github.com/rust-lang/rust/issues/68185>: Box<dyn Error...> does not implement
         // `Error` (!), which is problematic for us because there are multiple places where we
         // require the `Err` variant to, you know, *implement Error*. As a workaround, I created a
-        // newtype to wrap the boxed error & manuall implemented `Error` on that.
+        // newtype to wrap the boxed error & manually implemented `Error` on that.
         .map_err(BoxedError)
         .layer(TimeoutLayer::new(timeout))
         .layer(InstrumentedLayer)

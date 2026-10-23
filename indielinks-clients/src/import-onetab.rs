@@ -34,7 +34,7 @@ use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tower::Service;
 use url::Url;
 
-use crate::{import::import_posts, service::ReqBody};
+use crate::{import::import_posts, service::RequestBody};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
@@ -136,9 +136,9 @@ pub async fn import_onetab<'a, C, P, I>(
 where
     // It would be nice to have an alias for this, but the trait_alias feature is only on nightly
     C: Service<
-            http::Request<ReqBody>,
+            http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = Box<dyn std::error::Error + Send + Sync>,
+            Error = indielinks_shared::service::Error,
         > + Clone,
     P: AsRef<Path>,
     I: Iterator<Item = &'a Tagname>,

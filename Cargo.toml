@@ -1,6 +1,6 @@
 [workspace]
-members = ["indielinks-shared", "indielinks-cache", "tests-indielinks-cache", "indielinks", "tests-indielinks", "indielinks-fe", "indielinks-client", "tests-support"]
-default-members = ["indielinks-shared", "indielinks-cache", "tests-indielinks-cache", "indielinks", "tests-indielinks", "indielinks-client", "tests-support"]
+members = ["indielinks-shared", "indielinks-cache", "tests-indielinks-cache", "indielinks", "tests-indielinks", "indielinks-fe", "indielinks-clients", "tests-support"]
+default-members = ["indielinks-shared", "indielinks-cache", "tests-indielinks-cache", "indielinks", "tests-indielinks", "indielinks-clients", "tests-support"]
 resolver = "2"
 
 [workspace.dependencies]
