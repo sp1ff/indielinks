@@ -50,8 +50,10 @@ use indielinks_cache::{
     raft::{LogEntryIterator, StoredSnapshot, StoredSnapshotRef},
     types::{ClusterNode, NodeId, TypeConfig},
 };
-use indielinks_shared::nonempty_string::NonEmptyString;
 use indielinks_shared::{api::CleanupTasksRequest, instance_state::InstanceStateV0};
+use indielinks_shared::{
+    credentials::Credentials, nonempty_string::NonEmptyString, scylla::create_client,
+};
 use itertools::Itertools;
 use num_bigint::BigInt;
 use openraft::{
@@ -60,7 +62,6 @@ use openraft::{
 };
 use pin_project::pin_project;
 use rmp_serde::{from_slice, to_vec};
-use secrecy::ExposeSecret;
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
 use tracing::{debug, error, info};
@@ -68,9 +69,7 @@ use url::Url;
 use uuid::Uuid;
 
 use scylla::{
-    client::{session::Session as InnerSession, session_builder::SessionBuilder},
-    errors::TranslationError,
-    policies::address_translator::UntranslatedPeer,
+    client::session::Session as InnerSession,
     response::{PagingState, PagingStateResponse},
     statement::{
         batch::{Batch, BatchStatement, BatchType},
@@ -92,7 +91,7 @@ use crate::{
         OutgoingLike, OutgoingReply, OutgoingShare, User,
     },
     storage::{self, Counts, DateRange, SchemaSnafu, UsernameClaimedSnafu},
-    util::{Credentials, UpToThree},
+    util::UpToThree,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -211,9 +210,8 @@ pub enum Error {
     },
     #[snafu(display("Failed to create a ScyllaDB session: {source}"))]
     NewSession {
-        #[snafu(source(from(scylla::errors::NewSessionError, Box::new)))]
-        source: Box<scylla::errors::NewSessionError>,
-        backtrace: Backtrace,
+        #[snafu(source(from(indielinks_shared::scylla::Error, Box::new)))]
+        source: Box<indielinks_shared::scylla::Error>,
     },
     #[snafu(display("While paging a query, {source}"))]
     Pager {
@@ -771,62 +769,6 @@ where
         .pipe(Ok)
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                          Translations                                          //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// [Scylla] [AddressTranslator] implementation
-///
-/// Scylla allows for cluster members identify one another by different addresses than clients. I
-/// gather this is intended to allow clients to work with clusters that are behind NAT (or similar),
-/// but I find it handy for allowing integration tests to work with containerized clusters.
-struct Translations {
-    addresses: HashMap<SocketAddr, SocketAddr>,
-}
-
-impl Translations {
-    pub fn new(addresses: impl IntoIterator<Item = (SocketAddr, SocketAddr)>) -> Self {
-        Self {
-            addresses: addresses.into_iter().collect(),
-        }
-    }
-}
-
-#[async_trait]
-impl scylla::policies::address_translator::AddressTranslator for Translations {
-    async fn translate_address(
-        &self,
-        untranslated_peer: &UntranslatedPeer,
-    ) -> StdResult<SocketAddr, TranslationError> {
-        self.addresses
-            .get(&untranslated_peer.untranslated_address())
-            .ok_or(TranslationError::NoRuleForAddress(
-                untranslated_peer.untranslated_address(),
-            ))
-            .copied()
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                 the Indielinks ScyllaDB client                                 //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Create an instance of the native ScyllaDB SDK client
-pub async fn create_client(
-    hosts: impl IntoIterator<Item = impl Borrow<SocketAddr>>,
-    credentials: Option<&Credentials>,
-    translations: Option<impl IntoIterator<Item = (SocketAddr, SocketAddr)>>,
-) -> Result<InnerSession> {
-    let mut builder = SessionBuilder::new().known_nodes_addr(hosts);
-    if let Some(Credentials((user, pass))) = credentials {
-        builder = builder.user(user.expose_secret(), pass.expose_secret())
-    }
-    if let Some(translations) = translations {
-        builder = builder.address_translator(Arc::new(Translations::new(translations)))
-    }
-    builder.build().await.context(NewSessionSnafu)
-}
-
 /// Retrieve the current schema version (or None, if the database doesn't exist)
 pub async fn get_current_schema_version(session: &InnerSession) -> Result<Option<u32>> {
     if let Err(err) = session.use_keyspace("indielinks", false).await {
@@ -1158,7 +1100,9 @@ impl Session {
         node_id: NodeId,
         translations: Option<impl IntoIterator<Item = (SocketAddr, SocketAddr)>>,
     ) -> Result<Session> {
-        let scylla = create_client(hosts, credentials, translations).await?;
+        let scylla = create_client(hosts, credentials, translations)
+            .await
+            .context(NewSessionSnafu)?;
         scylla
             .use_keyspace("indielinks", false)
             .await

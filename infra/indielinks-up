@@ -6,6 +6,7 @@ set -euo pipefail
 grpc_endpoint="127.0.0.1:20681"
 help=
 local_state_dir="."
+no_raft_init=
 nargs=0
 num_polls=120 # generous limit of two minutes
 prev_option=
@@ -62,6 +63,9 @@ do
         -P=* | --public=* | --public-endpoint=*)
             nargs=$(($nargs+1));
             public_endpoint="${optarg}";;
+        -R | --no-raft | --no-raft-init)
+            nargs=$(($nargs+1));
+            no_raft_init=yes;;
         -h | --he | --hel | --help)
             nargs=$(($nargs+1));
             help=yes;;
@@ -116,6 +120,7 @@ Options:
     -P PUB, --public-endpoint=PUB  Specify the URL of
                     the public endpoint for the indielinksd instance.
                     Default: http://localhost:20679
+    -R, --no-raft-init   Don't initialize the Raft cluster
 
 Argument:
 
@@ -161,7 +166,7 @@ sleep=0.5
 # curl can fail if the server isn't up, yet
 status=$(curl -s ${public_endpoint}healthcheck || true)
 ntries=1
-while [ "${status}" != "GOOD" ]; do
+while [ "${status}" != "GOOD" -a "${status}" != "READY" ]; do
     sleep 1.0
     status=$(curl -s ${public_endpoint}healthcheck || true)
     ntries=$(($ntries+1))
@@ -171,5 +176,7 @@ while [ "${status}" != "GOOD" ]; do
     fi
 done
 
-# Initialize this instance as a single-node Raft cluster
-curl -v -H 'Content-Type: application/json' ${ops_endpoint}ops/cache/init-cluster --data "{\"nodes\": [[0, {\"addr\": \"${grpc_endpoint}\"}]], \"slots\": [[0, 0],[1,0]]}"
+if test -z "${no_raft_init}"; then
+    # Initialize this instance as a single-node Raft cluster
+    curl -v -H 'Content-Type: application/json' ${ops_endpoint}ops/cache/init-cluster --data "{\"nodes\": [[0, {\"addr\": \"${grpc_endpoint}\"}]], \"slots\": [[0, 0],[1,0]]}"
+fi

@@ -17,13 +17,20 @@ use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
 pub mod acct;
 pub mod api;
+pub mod credentials;
+#[cfg(feature = "backend")]
+pub mod dynamodb;
 pub mod entities;
+#[path = "exactly-two.rs"]
+pub mod exactly_two;
 pub mod fin;
 #[path = "instance-state.rs"]
 pub mod instance_state;
 #[path = "nonempty-string.rs"]
 pub mod nonempty_string;
 pub mod origin;
+#[cfg(feature = "backend")]
+pub mod scylla;
 pub mod service;
 
 #[macro_export]

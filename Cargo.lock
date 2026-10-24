@@ -3732,6 +3732,7 @@ name = "indielinks-clients"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "aws-sdk-dynamodb",
  "bytes",
  "chrono",
  "clap",
@@ -3746,6 +3747,7 @@ dependencies = [
  "pin-project",
  "reqwest 0.12.28",
  "rpassword",
+ "scylla",
  "secrecy 0.10.3",
  "serde",
  "serde_json",
@@ -3804,13 +3806,17 @@ version = "0.0.1"
 dependencies = [
  "async-trait",
  "atom_syndication",
+ "aws-config",
+ "aws-sdk-dynamodb",
  "bytes",
  "chrono",
+ "clap",
  "either",
  "email_address",
  "getrandom 0.4.3",
  "hex",
  "http 1.5.0",
+ "itertools 0.15.0",
  "lazy_static",
  "nonempty-collections",
  "opentelemetry",

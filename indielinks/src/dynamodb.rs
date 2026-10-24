@@ -26,7 +26,6 @@
 //! [Backend]: crate::storage::Backend
 
 use std::{
-    borrow::Cow,
     cmp::min,
     collections::{HashMap, HashSet, VecDeque},
     ops::Bound,
@@ -37,7 +36,6 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use either::Either;
 use futures::{stream::BoxStream, Stream};
 use indielinks_cache::{
     raft::{LogEntryIterator, StoredSnapshot, StoredSnapshotRef},
@@ -49,16 +47,13 @@ use openraft::{
 };
 use pin_project::pin_project;
 use rmp_serde::{from_slice, to_vec};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use snafu::{Backtrace, IntoError, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use tracing::{debug, error};
 use url::Url;
 use uuid::Uuid;
 
-use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use aws_sdk_dynamodb::{
-    config::Region as AwsSdkRegion,
     operation::{
         batch_write_item::BatchWriteItemError,
         get_item::GetItemError,
@@ -77,6 +72,8 @@ use serde_dynamo::{
 
 use indielinks_shared::{
     api::CleanupTasksRequest,
+    credentials::Credentials,
+    dynamodb::{create_client, Location},
     entities::{Post, PostDay, PostId, StorUrl, Tagname, UserId, Username},
     instance_state::InstanceStateV0,
     nonempty_string::NonEmptyString,
@@ -93,7 +90,7 @@ use crate::{
         OutgoingLike, OutgoingReply, OutgoingShare, User,
     },
     storage::{self, Counts, DateRange, UsernameClaimedSnafu},
-    util::{Credentials, UpToThree},
+    util::UpToThree,
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -234,10 +231,13 @@ pub enum Error {
     NoCountWithUpdateItemOutput { backtrace: Backtrace },
     #[snafu(display("The ID attribute wasn't returned with UpdateItemOutput"))]
     NoIdWithUpdateItemOutput { backtrace: Backtrace },
-    #[snafu(display("No endpoint URLs specified"))]
-    NoEndpoints { backtrace: Backtrace },
     #[snafu(display("No tags attribute in QueryOutput"))]
     NoTagsWithQueryOutput { backtrace: Backtrace },
+    #[snafu(display("Failed to create DynamoDB client: {source}"))]
+    NewClient {
+        source: indielinks_shared::dynamodb::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("The UpdateItemOutput was missing"))]
     NoUpdateItemOutput { backtrace: Backtrace },
     #[snafu(display("Failed to build an Operation: {source}"))]
@@ -848,243 +848,6 @@ macro_rules! add_attr_value {
     };
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                   creating DynamoDB clients                                    //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// Let's tighten-up the types for this, a bit.
-
-/// A serializable [Region](aws_sdk_dynamodb::config::Region). Implemented as a newtype around the
-/// AWS SDK's [Region] to work around Rust's orphan traits rule
-// Not making this sortable since the AWS SDK doesn't
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct Region(AwsSdkRegion);
-
-impl Region {
-    /// Creates a new `Region` from the given string.
-    pub fn new(region: impl Into<Cow<'static, str>>) -> Self {
-        Self(AwsSdkRegion::new(region))
-    }
-
-    /// Const function that creates a new `Region` from a static str.
-    pub const fn from_static(region: &'static str) -> Self {
-        Self(AwsSdkRegion::from_static(region))
-    }
-}
-
-impl std::fmt::Display for Region {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::ops::Deref for Region {
-    type Target = AwsSdkRegion;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::convert::AsRef<AwsSdkRegion> for Region {
-    fn as_ref(&self) -> &AwsSdkRegion {
-        &self.0
-    }
-}
-
-impl std::convert::AsRef<str> for Region {
-    fn as_ref(&self) -> &str {
-        self.0.as_ref()
-    }
-}
-
-impl<'de> Deserialize<'de> for Region {
-    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(Region::new(s))
-    }
-}
-
-impl Serialize for Region {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.0.as_ref())
-    }
-}
-
-/// Where to find DynamoDB on the network. Again implemented as a newtype due to orphan traits
-/// rules. [Location] is not only serializable, but also parsable by [clap].
-// Not making this sortable since `Region` isn't
-#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, Serialize)]
-pub struct Location(#[serde(with = "either::serde_untagged")] Either<Region, Vec<Url>>);
-
-impl std::fmt::Display for Location {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0 {
-            Either::Left(region) => write!(f, "{region}"),
-            Either::Right(urls) => write!(
-                f,
-                "[{}]",
-                urls.iter()
-                    .map(Url::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        }
-    }
-}
-
-impl std::ops::Deref for Location {
-    type Target = Either<Region, Vec<Url>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<Region> for Location {
-    fn from(value: Region) -> Self {
-        Location(Either::Left(value))
-    }
-}
-
-impl From<Vec<Url>> for Location {
-    fn from(value: Vec<Url>) -> Self {
-        Location(Either::Right(value))
-    }
-}
-
-impl std::convert::AsRef<Either<Region, Vec<Url>>> for Location {
-    fn as_ref(&self) -> &Either<Region, Vec<Url>> {
-        &self.0
-    }
-}
-
-impl clap::builder::ValueParserFactory for Location {
-    type Parser = LocationParser;
-
-    fn value_parser() -> Self::Parser {
-        LocationParser
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct LocationParser;
-
-impl clap::builder::TypedValueParser for LocationParser {
-    type Value = Location;
-
-    fn parse_ref(
-        &self,
-        _cmd: &clap::Command,
-        _arg: Option<&clap::Arg>,
-        value: &std::ffi::OsStr,
-    ) -> std::result::Result<Self::Value, clap::Error> {
-        use clap::error::ErrorKind;
-        let vals = value
-            .to_str()
-            .ok_or(clap::Error::new(ErrorKind::InvalidValue))?
-            .split(',')
-            .collect::<Vec<&str>>();
-        match vals.iter().exactly_one() {
-            Ok(s) => Ok(Location(match Url::parse(s) {
-                Ok(url) => Either::Right(vec![url]),
-                Err(_) => Either::Left(Region::new(s.to_string())),
-            })),
-            Err(_) => Ok(Location(Either::Right(
-                vals.iter()
-                    .cloned()
-                    .map(Url::parse)
-                    .collect::<std::result::Result<Vec<Url>, _>>()
-                    .map_err(|_| clap::Error::new(ErrorKind::InvalidValue))?,
-            ))),
-        }
-    }
-}
-
-/// How a DynamoDB client should source its AWS credentials
-#[derive(Clone, Debug)]
-enum CredentialsSource {
-    /// Use the credentials explicitly supplied by the operator
-    Explicit(aws_sdk_dynamodb::config::Credentials),
-    /// Leave the AWS SDK's default credential provider chain in place. On EC2, the chain will
-    /// resolve the node's instance profile through IMDS, so no static credentials are required.
-    DefaultChain,
-    /// Install throwaway credentials so that request signing succeeds against a local Alternator
-    /// (which doesn't verify them)
-    Test,
-}
-
-/// Decide how a DynamoDB client created for `location` should source its AWS credentials
-fn credentials_source(location: &Location, credentials: &Option<Credentials>) -> CredentialsSource {
-    use secrecy::ExposeSecret;
-
-    match (&location.0, credentials) {
-        (_, Some(Credentials((id, secret)))) => {
-            CredentialsSource::Explicit(aws_sdk_dynamodb::config::Credentials::new(
-                id.expose_secret(),
-                secret.expose_secret(),
-                None,
-                None,
-                "indielinks",
-            ))
-        }
-        (Either::Left(_), None) => CredentialsSource::DefaultChain,
-        (Either::Right(_), None) => CredentialsSource::Test,
-    }
-}
-
-/// Build the AWS SDK [ConfigLoader](aws_config::ConfigLoader) from which our DynamoDB client is
-/// created
-fn client_config_loader(
-    location: &Location,
-    credentials: &Option<Credentials>,
-) -> Result<aws_config::ConfigLoader> {
-    match &location.0 {
-        Either::Left(region) => Ok(aws_config::defaults(BehaviorVersion::latest()).region(
-            RegionProviderChain::first_try(Some(region.0.clone()))
-                .or_default_provider()
-                .or_else(AwsSdkRegion::new("us-west-2")),
-        )),
-        Either::Right(endpoints) => endpoints
-            .first()
-            .map(|endpoint_url| {
-                aws_config::defaults(BehaviorVersion::latest())
-                    // We *have* to specify a region for request signing (see below); for a local
-                    // Alternator the value doesn't matter, so just pick one.
-                    .region("us-west-2")
-                    .endpoint_url(endpoint_url.as_str())
-            })
-            .ok_or(NoEndpointsSnafu {}.build()),
-    }
-    .map(|loader| match credentials_source(location, credentials) {
-        CredentialsSource::Explicit(credentials) => loader.credentials_provider(credentials),
-        // Omitting explicit credentials against a regional DynamoDB endpoint leaves the AWS
-        // SDK's default credential provider chain in place.
-        CredentialsSource::DefaultChain => loader,
-        // The DynamoDB client always signs its requests and, per
-        // <https://github.com/awslabs/aws-sdk-rust/issues/971>, that's by design & won't be
-        // changed. Alternator doesn't verify credentials, so install throwaway ones purely to
-        // make signing succeed.
-        CredentialsSource::Test => loader.test_credentials(),
-    })
-}
-
-/// Create an AWS SDK DynamoDB Client
-pub async fn create_client(
-    location: &Location,
-    credentials: &Option<Credentials>,
-) -> Result<aws_sdk_dynamodb::Client> {
-    Ok(aws_sdk_dynamodb::Client::new(
-        &client_config_loader(location, credentials)?.load().await,
-    ))
-}
-
 /// Retrieve the current schema version (or None, if the database doesn't exist)
 pub async fn get_current_schema_version(client: &aws_sdk_dynamodb::Client) -> Result<Option<u32>> {
     fn convert(map: HashMap<String, AttributeValue>) -> Result<u32> {
@@ -1147,11 +910,13 @@ pub struct Client {
 impl Client {
     pub async fn new(
         location: &Location,
-        credentials: &Option<crate::util::Credentials>,
+        credentials: &Option<Credentials>,
         node_id: NodeId,
     ) -> Result<Client> {
         Ok(Client {
-            client: create_client(location, credentials).await?,
+            client: create_client(location, credentials.as_ref())
+                .await
+                .context(NewClientSnafu)?,
             node_id,
         })
     }
@@ -3082,87 +2847,5 @@ impl CacheBackend for Client {
         try_get_log_entries1(&self.client, self.node_id, lower_bound, upper_bound)
             .await
             .map_err(|err| to_storage_io_err(ErrorSubject::<NodeId>::Logs, ErrorVerb::Read, &err))
-    }
-}
-
-#[cfg(test)]
-mod test {
-
-    use super::*;
-
-    use aws_sdk_dynamodb::config::ProvideCredentials;
-
-    fn region_location() -> Location {
-        Location::from(Region::new("us-west-2"))
-    }
-
-    fn alternator_location() -> Location {
-        Location::from(vec![
-            Url::parse("http://localhost:8000").expect("the Alternator URL should parse")
-        ])
-    }
-
-    fn explicit_credentials() -> Credentials {
-        Credentials(("test-access-key-id".into(), "test-secret-access-key".into()))
-    }
-
-    #[test]
-    fn regional_location_without_credentials_preserves_default_chain() {
-        assert!(matches!(
-            credentials_source(&region_location(), &None),
-            CredentialsSource::DefaultChain
-        ));
-    }
-
-    #[test]
-    fn explicit_credentials_override_wherever_supplied() {
-        for location in [region_location(), alternator_location()] {
-            match credentials_source(&location, &Some(explicit_credentials())) {
-                CredentialsSource::Explicit(credentials) => {
-                    assert_eq!(credentials.access_key_id(), "test-access-key-id");
-                    assert_eq!(credentials.secret_access_key(), "test-secret-access-key");
-                }
-                source => panic!("explicit credentials should be selected, got {source:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn alternator_without_credentials_uses_test_credentials() {
-        assert!(matches!(
-            credentials_source(&alternator_location(), &None),
-            CredentialsSource::Test
-        ));
-    }
-
-    #[tokio::test]
-    async fn regional_loader_resolves_explicit_credentials() {
-        let config = client_config_loader(&region_location(), &Some(explicit_credentials()))
-            .expect("the loader should build")
-            .load()
-            .await;
-        let credentials = config
-            .credentials_provider()
-            .expect("a credentials provider should be installed")
-            .provide_credentials()
-            .await
-            .expect("explicit credentials should resolve");
-        assert_eq!(credentials.access_key_id(), "test-access-key-id");
-        assert_eq!(credentials.secret_access_key(), "test-secret-access-key");
-    }
-
-    #[tokio::test]
-    async fn alternator_loader_resolves_test_credentials() {
-        let config = client_config_loader(&alternator_location(), &None)
-            .expect("the loader should build")
-            .load()
-            .await;
-        let credentials = config
-            .credentials_provider()
-            .expect("a credentials provider should be installed")
-            .provide_credentials()
-            .await
-            .expect("test credentials should resolve");
-        assert_eq!(credentials.access_key_id(), "ANOTREAL");
     }
 }

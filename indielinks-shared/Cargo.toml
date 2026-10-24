@@ -6,9 +6,12 @@ edition = "2024"
 [dependencies]
 async-trait = { workspace = true }
 atom_syndication = { workspace = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-dynamodb = { workspace = true, optional = true }
 bytes = { workspace = true } # RUSTSEC-2026-0007
 chrono = { workspace = true, features = ["serde"] }
-either = { workspace = true }
+clap = { workspace = true }
+either = { workspace = true, features = [ "serde" ] }
 email_address = { workspace = true }
 # `getrandom` is really a transitive dependency, but we need the "js"
 # feature for indielinks-fe builds (indielinks-fe depends on this
@@ -16,6 +19,7 @@ email_address = { workspace = true }
 getrandom = { workspace = true, features = ["wasm_js"] }
 hex = { workspace = true }
 http = { workspace = true }
+itertools = { workspace = true }
 lazy_static = { workspace = true }
 nonempty-collections = { workspace = true, features = ["serde"] }
 opentelemetry = { workspace = true }
@@ -49,4 +53,9 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 default = []
 
 __internal = []
-backend = ["scylla", "__internal"]
+backend = [
+    "dep:aws-config",
+    "dep:aws-sdk-dynamodb",
+    "dep:scylla",
+    "__internal"
+]

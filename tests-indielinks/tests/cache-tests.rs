@@ -33,7 +33,7 @@ use std::{
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use indielinks_cache::types::{ClusterNode, NodeId};
-use indielinks_shared::known_good;
+use indielinks_shared::{credentials::Credentials, known_good};
 use libtest_mimic::Failed;
 use serde::Deserialize;
 use snafu::{IntoError, ResultExt, Snafu};
@@ -43,7 +43,9 @@ use url::Url;
 
 use indielinks_cache::raft::Backend as CacheBackend;
 
-use indielinks::{dynamodb::Location, scylla::Session, util::Credentials};
+use indielinks_shared::dynamodb::Location;
+
+use indielinks::scylla::Session;
 
 use tests_indielinks::{
     cache::{openraft_test_suite, raft_ops, raft_snapshot},

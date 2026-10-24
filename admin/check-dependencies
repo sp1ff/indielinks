@@ -12,4 +12,9 @@ cargo modules dependencies --package indielinks --lib \
       --layout=neato > indielinks-deps.neato
 neato -G"mode=hier" -Tpng indielinks-deps.neato -o indielinks-deps.png
 ../admin/topsort indielinks-deps.neato
+status=$?
+if [ ${status} -eq 0 ]; then
+    rm indielinks-deps.{neato,png}
+fi
+exit $?
 

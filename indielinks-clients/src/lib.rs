@@ -23,4 +23,6 @@ pub mod import;
 pub mod import_onetab;
 #[path = "import-pinboard.rs"]
 pub mod import_pinboard;
+#[path = "raft-logs.rs"]
+pub mod raft_logs;
 pub mod service;

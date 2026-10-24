@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-trait = { workspace = true }
+aws-sdk-dynamodb = { workspace = true }
 bytes = { workspace = true } # RUSTSEC-2026-0007
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["cargo", "env", "string", "wrap_help"] }
@@ -19,13 +20,14 @@ nonzero = { workspace = true }
 pin-project = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 rpassword = { workspace = true }
+scylla = { workspace = true, features = ["full-serialization"] }
 secrecy = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_urlencoded = { workspace = true }
 snafu = { workspace = true }
 tap = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "signal", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "sync", "time"] }
 toml = { workspace = true }
 tower = { workspace = true, features = ["buffer", "limit", "retry"] }
 tower-gcra = { workspace = true }

@@ -71,7 +71,11 @@ use std::{
 
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use futures::{future::BoxFuture, stream::iter, StreamExt};
-use indielinks_shared::known_good;
+use indielinks_shared::{
+    credentials::Credentials,
+    known_good,
+    scylla::{create_client as create_scylla_client, Translation},
+};
 use serde::Serialize;
 use snafu::{prelude::*, Backtrace, Report};
 use tap::Pipe;
@@ -83,20 +87,19 @@ use tracing_subscriber::{
     EnvFilter, Layer, Registry,
 };
 
+use indielinks_shared::dynamodb::{
+    create_client as create_dynamodb_client, Location as DynamoLocation,
+};
+
 use indielinks::{
-    dynamodb::{
-        create_client as create_dynamodb_client,
-        get_current_schema_version as get_current_dynamodb_schema_version,
-        Location as DynamoLocation,
-    },
+    dynamodb::get_current_schema_version as get_current_dynamodb_schema_version,
     dynamodb_schemas::create_schema as create_dynamodb_schema,
     peppers::Peppers,
     scylla::{
-        create_client as create_scylla_client, create_schema as create_scylladb_schema,
+        create_schema as create_scylladb_schema,
         get_current_schema_version as get_current_scylla_schema_version,
     },
     signing_keys::SigningKeys,
-    util::{exactly_two, Credentials},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -115,7 +118,9 @@ pub enum Error {
     #[snafu(display("While creating the schema, {source}"))]
     CreateSchema { source: indielinks::scylla::Error },
     #[snafu(display("When creating the DDB client, {source}"))]
-    DdbClient { source: indielinks::dynamodb::Error },
+    DdbClient {
+        source: indielinks_shared::dynamodb::Error,
+    },
     #[snafu(display("While updating the DynamoDB schema, {source:#?}"))]
     DdbSchemaUpdate {
         #[snafu(source(from(indielinks::dynamodb_schemas::Error, Box::new)))]
@@ -157,7 +162,9 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("When creating the Scylla client, {source}"))]
-    ScyllaClient { source: indielinks::scylla::Error },
+    ScyllaClient {
+        source: indielinks_shared::scylla::Error,
+    },
     #[snafu(display("While updating the schema, {source:#?}"))]
     ScyllaSchemaUpdate { source: indielinks::scylla::Error },
     #[snafu(display("While fetching the current schema version, {source:#?}"))]
@@ -296,49 +303,6 @@ const DDB_FNS: &[DynamoDbSchemaUpdate] = &[
     //     })
     // },
 ];
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Clone, Debug)]
-pub struct Translation(pub (SocketAddr, SocketAddr));
-
-impl clap::builder::ValueParserFactory for Translation {
-    type Parser = TranslationParser;
-
-    fn value_parser() -> Self::Parser {
-        TranslationParser
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct TranslationParser;
-
-impl clap::builder::TypedValueParser for TranslationParser {
-    type Value = Translation;
-
-    fn parse_ref(
-        &self,
-        _cmd: &clap::Command,
-        _arg: Option<&clap::Arg>,
-        value: &std::ffi::OsStr,
-    ) -> std::result::Result<Self::Value, clap::Error> {
-        use clap::error::ErrorKind;
-        value
-            .to_str()
-            .ok_or(clap::Error::new(ErrorKind::InvalidValue))?
-            .split(',')
-            .collect::<Vec<&str>>()
-            .into_iter()
-            .pipe(exactly_two)
-            .map_err(|_| clap::Error::new(ErrorKind::WrongNumberOfValues))?
-            .pipe(
-                |(from, to)| match (from.parse::<SocketAddr>(), to.parse::<SocketAddr>()) {
-                    (Ok(from), Ok(to)) => Ok(Translation((from, to))),
-                    (_, _) => Err(clap::Error::new(ErrorKind::InvalidValue)),
-                },
-            )
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       Secrets Generation                                       //
@@ -536,7 +500,7 @@ For each node in the cluster, give this argument once, specify it as local/inter
                 let creds = matches.remove_one::<Credentials>("creds");
                 let location =
                     matches.remove_one::<DynamoLocation>("location").unwrap(/* required */);
-                let client = create_dynamodb_client(&location, &creds)
+                let client = create_dynamodb_client(&location, creds.as_ref())
                     .await
                     .context(DdbClientSnafu)?;
                 let to_apply = get_current_dynamodb_schema_version(&client)

@@ -93,10 +93,15 @@ use tests_indielinks::{
     counts::test_counts,
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
-    helper::{DynamoConfig, DynamoDBHelper, Helper, ScyllaConfig, ScyllaHelper},
+    helper::{
+        DynamoConfig, DynamoDBHelper, Helper, IndielinksDownClustered, IndielinksDownParams,
+        IndielinksDownSingleNode, IndielinksUpClustered, IndielinksUpParams,
+        IndielinksUpSingleNode, PurgeRaftLogsParams, ScyllaConfig, ScyllaHelper,
+    },
     home_timeline::{timeline_before, timeline_empty, timeline_initial},
     outboxes::outbox_smoke_test,
     post_reply_timeline::{post_replies_endpoint, post_reply_timeline},
+    raft_logs::smoke as raft_logs_smoke,
     run::run,
     schema::tables_use_on_demand_billing,
     test_healthcheck,
@@ -506,6 +511,58 @@ impl Default for Configuration {
     }
 }
 
+impl From<&Configuration> for IndielinksUpParams {
+    fn from(value: &Configuration) -> Self {
+        Self {
+            single_node: IndielinksUpSingleNode {
+                public: value.single_node.indielinks.clone(),
+                ops: value.single_node.ops.clone(),
+                grpc: value.single_node.grpc.clone(),
+                local_state_dir: value.single_node.local_state_dir.clone(),
+                alternator_config_file: value.single_node.indielinks_alternator_config_file.clone(),
+                scylla_config_file: value.single_node.indielinks_scylla_config_file.clone(),
+            },
+            clustered: IndielinksUpClustered {
+                alternator_config_base: value
+                    .clustered
+                    .indielinks_alternator_cluster_config_base
+                    .clone(),
+                scylla_config_base: value
+                    .clustered
+                    .indielinks_scylla_cluster_config_base
+                    .clone(),
+                haproxy_port: value.clustered.haproxy_port,
+                haproxy_id: value.clustered.haproxy_id,
+                local_state_base: value.clustered.cluster_local_state_base.clone(),
+                cluster_size: value.clustered.cluster_size,
+            },
+        }
+    }
+}
+
+impl From<&Configuration> for IndielinksDownParams {
+    fn from(value: &Configuration) -> Self {
+        Self {
+            single_node: IndielinksDownSingleNode {
+                local_state_dir: value.single_node.local_state_dir.clone(),
+            },
+            clustered: IndielinksDownClustered {
+                haproxy_id: value.clustered.haproxy_id,
+                local_state_base: value.clustered.cluster_local_state_base.clone(),
+            },
+        }
+    }
+}
+
+impl From<&Configuration> for PurgeRaftLogsParams {
+    fn from(value: &Configuration) -> Self {
+        Self {
+            scylla: value.scylla.clone(),
+            dynamo: value.dynamo.clone(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Fixture {
     id: FixtureId,
@@ -789,6 +846,19 @@ impl tests_support::AsyncIntegrationTest for Test {
         (self.test_fn)(config, backend).await
     }
 }
+
+// /// Common body for the purge-raft-logs black-box test.
+// ///
+// /// Relies on fixture setup to have started the datastore, service, and initialized Raft. Stops
+// /// only the service, purges the Raft tables with `indio`, restarts uninitialized, asserts the
+// /// purged state, then reinitializes Raft and asserts it is initialized again.
+// async fn purge_raft_logs_test(
+//     config: Configuration,
+//     backend: Arc<dyn Helper + Send + Sync>,
+//     fixture: FixtureId,
+// ) -> StdResult<(), Failed> {
+
+// }
 
 inventory::collect!(Test);
 
@@ -1100,6 +1170,27 @@ inventory::submit!(Test {
             helper.indielinks(),
             version,
             pepper,
+            helper,
+        ))
+    },
+    fixtures: Some(&[
+        FixtureId::ScyllaSingleNode,
+        FixtureId::ScyllaCluster,
+        FixtureId::DynamoDBSingleNode,
+        FixtureId::DynamoDBCluster
+    ]),
+});
+
+inventory::submit!(Test {
+    name: "200purge_raft_logs",
+    test_fn: |configuration, helper| {
+        let up_params = IndielinksUpParams::from(&configuration);
+        let down_params = IndielinksDownParams::from(&configuration);
+        let purge_raft_logs_params = PurgeRaftLogsParams::from(&configuration);
+        Box::pin(raft_logs_smoke(
+            up_params,
+            down_params,
+            purge_raft_logs_params,
             helper,
         ))
     },

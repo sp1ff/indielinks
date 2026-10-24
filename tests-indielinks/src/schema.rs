@@ -26,7 +26,7 @@ use aws_sdk_dynamodb::types::BillingMode;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use libtest_mimic::Failed;
 
-use indielinks::dynamodb::create_client;
+use indielinks_shared::dynamodb::create_client;
 
 use crate::helper::DynamoConfig;
 
@@ -53,7 +53,7 @@ const TABLES: [&str; 11] = [
 /// indexes (task APP-004 of the AWS deployment plan). Global secondary indexes on an on-demand
 /// table inherit its billing mode, so checking each table suffices.
 pub async fn tables_use_on_demand_billing(cfg: DynamoConfig) -> StdResult<(), Failed> {
-    let client = create_client(&cfg.location, &cfg.credentials).await?;
+    let client = create_client(&cfg.location, cfg.credentials.as_ref()).await?;
     stream::iter(TABLES)
         .then(|table| {
             let client = &client;

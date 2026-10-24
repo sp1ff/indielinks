@@ -75,3 +75,36 @@ where
         ))
     }
 }
+
+/// Run `indio` as a subprocess via `cargo run -p indielinks-clients --bin indio -- ARGS...`.
+pub fn run_indio<I, S>(args: I) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = Command::new("cargo")
+        .arg("run")
+        .arg("-p")
+        .arg("indielinks-clients")
+        .arg("--bin")
+        .arg("indio")
+        .arg("--")
+        .args(args)
+        .output()
+        .context(ProcessSnafu {
+            command: "indio".to_string(),
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(Box::new(
+            CommandSnafu {
+                command: "indio".to_string(),
+                code: output.status.code(),
+                stdout: String::from_utf8_lossy(&output.stdout),
+                stderr: String::from_utf8_lossy(&output.stderr),
+            }
+            .build(),
+        ))
+    }
+}

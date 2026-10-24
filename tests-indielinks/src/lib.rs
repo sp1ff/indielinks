@@ -62,6 +62,8 @@ pub mod home_timeline;
 pub mod outboxes;
 #[path = "post-reply-timeline.rs"]
 pub mod post_reply_timeline;
+#[path = "raft-logs.rs"]
+pub mod raft_logs;
 #[path = "recent-posts.rs"]
 pub mod recent_posts;
 pub mod run;

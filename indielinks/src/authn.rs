@@ -40,7 +40,7 @@ use sha2::Digest;
 use snafu::{ensure, Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 
-use indielinks_shared::{entities::Username, origin::Host};
+use indielinks_shared::{entities::Username, exactly_two::exactly_two, origin::Host};
 use tower::{Layer, Service};
 
 use crate::{
@@ -49,7 +49,6 @@ use crate::{
     signing_keys::SigningKeys,
     storage::Backend as StorageBackend,
     token::{self, verify_token},
-    util::exactly_two,
 };
 
 /// authorization Error type

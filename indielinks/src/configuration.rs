@@ -29,6 +29,7 @@ use clap::crate_version;
 use either::Either;
 use http::HeaderName;
 use indielinks_shared::{
+    credentials::Credentials,
     entities::SsmParameter,
     origin::{NetLoc, Origin},
     service::ExponentialBackoffParameters,
@@ -41,10 +42,9 @@ use url::Url;
 
 use indielinks_cache::raft::Configuration as RaftConfiguration;
 
-use crate::{
-    background_tasks, dynamodb::Location as DynamoLocation, http::SameSite, peppers::Peppers,
-    signing_keys::SigningKeys, util::Credentials,
-};
+use indielinks_shared::dynamodb::Location as DynamoLocation;
+
+use crate::{background_tasks, http::SameSite, peppers::Peppers, signing_keys::SigningKeys};
 
 #[derive(Debug, Snafu)]
 #[non_exhaustive]

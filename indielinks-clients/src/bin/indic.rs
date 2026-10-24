@@ -249,9 +249,10 @@ impl Configuration {
         // command line and/or environment).
         Ok(match from_file {
             ConfigurationRepr::V1(from_file) => Self {
-                token: token.unwrap_or(from_file.token.ok_or(MissingTokenSnafu.build())?),
+                token: token.or(from_file.token).ok_or(MissingTokenSnafu.build())?,
                 public_api: public_api
-                    .unwrap_or(from_file.public_api.ok_or(MissingPublicApiSnafu.build())?),
+                    .or(from_file.public_api)
+                    .ok_or(MissingPublicApiSnafu.build())?,
                 requests_per_minute: from_file.requests_per_minute.unwrap_or(nonzero!(120u32)),
                 targets: from_file.targets,
             },

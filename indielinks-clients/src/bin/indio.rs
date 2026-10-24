@@ -28,6 +28,7 @@ use std::{
     env::{self, VarError},
     fs,
     io::ErrorKind,
+    net::SocketAddr,
     num::NonZero,
     path::PathBuf,
     result::Result as StdResult,
@@ -38,20 +39,28 @@ use clap::{
     value_parser, Arg, ArgAction, ArgMatches, Command,
 };
 use http::HeaderValue;
-use indielinks_clients::{add_user::add_user, client::make_indielinks_client};
 use nonzero::nonzero;
 use rpassword::prompt_password;
 use secrecy::SecretString;
 use serde::Deserialize;
 use snafu::{prelude::*, Backtrace, IntoError};
-use tracing::{debug, Level};
+use tracing::{debug, info, Level};
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter, FmtSubscriber};
 
 use indielinks_shared::{
     api::{Password, SecretPassword},
+    credentials::Credentials,
+    dynamodb::Location as DynamoLocation,
     entities::{UserEmail, Username},
     known_good,
     origin::Origin,
+    scylla::Translation,
+};
+
+use indielinks_clients::{
+    add_user::add_user,
+    client::make_indielinks_client,
+    raft_logs::{clean_dynamodb_raft_logs, clean_scylla_raft_logs},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -89,6 +98,10 @@ enum Error {
         source: Box<toml::de::Error>,
         backtrace: Backtrace,
     },
+    #[snafu(display("failed to clean the Raft logs (DynamoDb/Alternator)"))]
+    DynamoDbRaftLogs {
+        source: indielinks_clients::raft_logs::Error,
+    },
     #[snafu(display("failed to read the API key from the environment"))]
     IndioApiKey {
         source: std::env::VarError,
@@ -108,6 +121,11 @@ enum Error {
         "the token/API key must be given in either the configuration file or INDIO_API_KEY"
     ))]
     MissingToken { backtrace: Backtrace },
+    #[snafu(display(
+        "you must designate a DynamodDB or ScyllaDB host by specifying one of \
+                     --location or --node"
+    ))]
+    NoHost { backtrace: Backtrace },
     #[snafu(display("No sub-command given; try --help"))]
     NoSubCommand,
     #[snafu(display("unable to "))]
@@ -115,11 +133,17 @@ enum Error {
         source: std::io::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("failed to clean the Raft logs (Scylla/CQL)"))]
+    ScyllaRaftLogs {
+        source: indielinks_clients::raft_logs::Error,
+    },
     #[snafu(display("failed to initialize logging"))]
     Subscriber {
         source: tracing_subscriber::util::TryInitError,
         backtrace: Backtrace,
     },
+    #[snafu(display("{name} is not a known sub-command; try --help"))]
+    UnknownSubCommand { name: String, backtrace: Backtrace },
 }
 
 impl std::fmt::Debug for Error {
@@ -130,7 +154,13 @@ impl std::fmt::Debug for Error {
 
 type Result<T> = StdResult<T, Error>;
 
+const CONFIGURATION: &str = "configuration";
+
 const INDIO_API_KEY: &str = "INDIO_API_KEY";
+
+const OPS_API: &str = "ops-api";
+
+const PUBLIC_API: &str = "public-api";
 
 static USER_AGENT: HeaderValue = HeaderValue::from_static(concat!(
     "indio/",
@@ -201,10 +231,13 @@ impl Configuration {
         // command line and/or environment).
         Ok(match from_file {
             ConfigurationRepr::V1(from_file) => Self {
-                token: token.unwrap_or(from_file.token.ok_or(MissingTokenSnafu.build())?),
+                token: token.or(from_file.token).ok_or(MissingTokenSnafu.build())?,
                 public_api: public_api
-                    .unwrap_or(from_file.public_api.ok_or(MissingPublicApiSnafu.build())?),
-                ops_api: ops_api.unwrap_or(from_file.ops_api.ok_or(MissingOpsApiSnafu.build())?),
+                    .or(from_file.public_api)
+                    .ok_or(MissingPublicApiSnafu.build())?,
+                ops_api: ops_api
+                    .or(from_file.ops_api)
+                    .ok_or(MissingOpsApiSnafu.build())?,
                 requests_per_minute: from_file.requests_per_minute.unwrap_or(nonzero!(120u32)),
             },
         })
@@ -264,7 +297,7 @@ indio (think "indie-o") is a small command-line utility for operators of the ind
                 )
         )
         .arg(
-            Arg::new("ops-api")
+            Arg::new(OPS_API)
                 .short('O')
                 .long("ops-api")
                 .num_args(1)
@@ -277,7 +310,7 @@ This option may also be specified in the configuration file."#,
                 )
         )
         .arg(
-            Arg::new("public-api")
+            Arg::new(PUBLIC_API)
                 .short('A')
                 .long("public-api")
                 .num_args(1)
@@ -342,7 +375,58 @@ Add the user & mint an API key. Note that password validation causes a noticable
                 .about("Purge all Raft logs for the cluster")
                 .long_about(color_print::cstr!(r#"<s><u>Purge all Raft logs for the cluster</></>
 
-This sub-command will go straight to the datastore to purge the <u>raft_log</> and <u>raft_meta</u> tables, erasing the clustser state. Consequently, this command should <s>only</s> be run when the cluster is down."#))
+This sub-command will go straight to the datastore to purge the <u>raft_log</> and <u>raft_metadata</u> tables, erasing the cluster state. Consequently, this command should <s>only</s> be run when the cluster is down."#))
+
+                .arg(
+                    Arg::new("credentials")
+                        .short('c')
+                        .long("credentials")
+                        .num_args(1)
+                        .action(ArgAction::Set)
+                        .env("INDIO_CREDENTIALS")
+                        .value_parser(value_parser!(Credentials))
+                        .help("Specify credentals as \"USERNAME,PASSWORD\""),
+                )
+                .arg(
+                    Arg::new("location")
+                        .required_unless_present("node")
+                        .conflicts_with("node")
+                        .short('L')
+                        .long("location")
+                        .num_args(1)
+                        .action(ArgAction::Set)
+                        .value_parser(value_parser!(DynamoLocation))
+                        .help("Network location of the DynamoDB cluster")
+                        .long_help(
+                            "Network location of the DynamoDB/ScyllaDB cluster.
+
+Specify as either an AWS region ('us-west-2', e.g.) or as an URL ('http://localhost:8042, e.g.)",
+                        )
+                )
+                .arg(
+                    Arg::new("node")
+                        .required_unless_present("location")
+                        .conflicts_with("location")
+                        .short('N')
+                        .long("node")
+                        .num_args(1)
+                        .action(ArgAction::Append)
+                        .value_parser(value_parser!(SocketAddr))
+                        .help("Network location of a ScyllaDB native/CQL node")
+                )
+                .arg(
+                    Arg::new("translation")
+                        .conflicts_with("location")
+                        .short('t')
+                        .long("translation")
+                        .num_args(1)
+                        .action(ArgAction::Append)
+                        .value_parser(value_parser!(Translation))
+                        .help("Specify an address translation as \"FROM:TO\"")
+                        .long_help("Can be handy with either NAT or Docker & may be given more than once.
+
+For each node in the cluster, give this argument once, specify it as local/internal address, comma, address as viewed from where this program is being run.")
+                )
         )
 
         // ...and parse:
@@ -376,8 +460,8 @@ fn configure_logging(verbose: bool) -> Result<()> {
 // All the logic for finding the configuration file, parsing it & combining that with assorted
 // command-line arguments & environment variables is in here.
 fn parse_configuration(
-    configuration_path: PathBuf,
     configuration_path_source: ValueSource,
+    configuration_path: PathBuf,
     ops_api: Option<Origin>,
     public_api: Option<Origin>,
 ) -> Result<Configuration> {
@@ -435,18 +519,22 @@ async fn main() -> Result<()> {
 
     debug!("Logging configured.");
 
-    let configuration = parse_configuration(
-        known_good!(matches.remove_one::<PathBuf>("configuration")),
-        known_good!(matches.value_source("configuration")),
-        matches.remove_one("ops_api"),
-        matches.remove_one("public_api"),
-    )?;
+    // Pull these values out of the top-level matches before dispatching. The `add-user`
+    // sub-command needs the full HTTP API configuration; `purge-raft-logs` does not.
+    let configuration_path_source = known_good!(matches.value_source(CONFIGURATION));
+    let configuration_path = known_good!(matches.remove_one::<PathBuf>(CONFIGURATION));
+    let ops_api = matches.remove_one(OPS_API);
+    let public_api = matches.remove_one(PUBLIC_API);
 
     match matches.remove_subcommand() {
-        Some((name, _matches)) if name == "add-user" => {
-            unimplemented!()
-        }
         Some((name, matches)) if name == "add-user" => {
+            let configuration = parse_configuration(
+                configuration_path_source,
+                configuration_path,
+                ops_api,
+                public_api,
+            )?;
+
             let client = make_indielinks_client(
                 USER_AGENT.clone(),
                 Some(configuration.token().clone()),
@@ -487,7 +575,39 @@ async fn main() -> Result<()> {
 
             Ok(())
         }
-        Some(_) => unimplemented!(/* impossible */),
+        Some((name, mut matches)) if name == "purge-raft-logs" => {
+            match (
+                matches.remove_one::<DynamoLocation>("location"),
+                matches.remove_many::<SocketAddr>("node"),
+            ) {
+                (Some(location), None) => {
+                    info!("Scrubbing the Raft logs (DynamoDB/Alternator)...");
+                    clean_dynamodb_raft_logs(
+                        &location,
+                        matches.get_one::<Credentials>("credentials"),
+                    )
+                    .await
+                    .context(DynamoDbRaftLogsSnafu)
+                    .inspect(|_| info!("Scrubbing the Raft logs (DynamoDB/Alternator)...done."))
+                }
+                (None, Some(nodes)) => {
+                    info!("Scrubbing the Raft logs (ScyllaDB/Cassandra)...");
+                    clean_scylla_raft_logs(
+                        nodes,
+                        matches.remove_one::<Credentials>("credentials").as_ref(),
+                        matches
+                            .remove_many::<Translation>("translation")
+                            .map(|t| t.into_iter().map(|x| x.0)),
+                    )
+                    .await
+                    .context(ScyllaRaftLogsSnafu)
+                    .inspect(|_| info!("Scrubbing the Raft logs (ScyllaDB/Cassandra)...done."))
+                }
+                (None, None) => NoHostSnafu.fail(),
+                (_, _) => unimplemented!(/* impossible */),
+            }
+        }
+        Some((name, _)) => UnknownSubCommandSnafu { name }.fail(),
         None => NoSubCommandSnafu.fail(),
     }
 }

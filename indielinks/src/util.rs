@@ -18,61 +18,12 @@
 //! Much as I loathe catch-all "utility" modules, I truly don't know where these belong. Hopefully,
 //! as I build-out the project, this will become more clear.
 
-use std::{fmt::Display, ops::Deref};
+use std::ops::Deref;
 
-use either::Either;
-use secrecy::{ExposeSecret, SecretSlice, SecretString};
+use secrecy::{ExposeSecret, SecretSlice};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_bytes::ByteBuf;
 use tap::{Conv, Pipe};
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                          exactly_two                                           //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug)]
-pub struct ExactlyTwoError<T: std::iter::Iterator> {
-    #[allow(clippy::type_complexity)]
-    cause: Option<Either<T::Item, (T::Item, T::Item, T::Item)>>,
-}
-
-impl<T: std::iter::Iterator> Display for ExactlyTwoError<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.cause {
-            Some(either) => match either {
-                Either::Left(_one) => write!(f, "ExactlyTwoError: One element"),
-                Either::Right(_three) => write!(f, "ExactlyTwoError: Three or more elements"),
-            },
-            None => write!(f, "ExactlyTwoError: no elements"),
-        }
-    }
-}
-
-impl<T: std::iter::Iterator> ExactlyTwoError<T> {
-    #[allow(clippy::type_complexity)]
-    pub fn new(cause: Option<Either<T::Item, (T::Item, T::Item, T::Item)>>) -> ExactlyTwoError<T> {
-        ExactlyTwoError { cause }
-    }
-}
-
-pub fn exactly_two<T>(mut iter: T) -> std::result::Result<(T::Item, T::Item), ExactlyTwoError<T>>
-where
-    T: std::iter::Iterator,
-{
-    // sample code at https://docs.rs/itertools/latest/src/itertools/lib.rs.html#4050-4064
-    match iter.next() {
-        Some(first) => match iter.next() {
-            Some(second) => match iter.next() {
-                Some(third) => Err(ExactlyTwoError::<T>::new(Some(Either::Right((
-                    first, second, third,
-                ))))),
-                None => Ok((first, second)),
-            },
-            None => Err(ExactlyTwoError::<T>::new(Some(Either::Left(first)))),
-        },
-        None => Err(ExactlyTwoError::<T>::new(None)),
-    }
-}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           UpToThree                                            //
@@ -180,49 +131,5 @@ impl Serialize for Key {
 impl From<Vec<u8>> for Key {
     fn from(value: Vec<u8>) -> Self {
         Key(value.into())
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                      generic credentials                                       //
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// General-purpose credentials-- presumably username, password
-// Not sure that the username should be secret, but why not?
-#[derive(Clone, Debug, Deserialize)]
-pub struct Credentials(pub (SecretString, SecretString));
-
-impl clap::builder::ValueParserFactory for Credentials {
-    type Parser = CredentialsParser;
-
-    fn value_parser() -> Self::Parser {
-        CredentialsParser
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct CredentialsParser;
-
-impl clap::builder::TypedValueParser for CredentialsParser {
-    type Value = Credentials;
-
-    fn parse_ref(
-        &self,
-        _cmd: &clap::Command,
-        _arg: Option<&clap::Arg>,
-        value: &std::ffi::OsStr,
-    ) -> std::result::Result<Self::Value, clap::Error> {
-        use clap::error::ErrorKind;
-        value
-            .to_str()
-            .ok_or(clap::Error::new(ErrorKind::InvalidValue))?
-            .split(',')
-            .collect::<Vec<&str>>()
-            .into_iter()
-            .pipe(exactly_two)
-            .map_err(|_| clap::Error::new(ErrorKind::WrongNumberOfValues))?
-            .pipe(|p| (p.0.into(), p.1.into())) // OMFG-- I can't map over a tuple
-            .pipe(Credentials)
-            .pipe(Ok)
     }
 }

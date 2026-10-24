@@ -13,27 +13,42 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use std::{cmp::min, collections::HashSet, net::SocketAddr, result::Result as StdResult};
+use std::{
+    cmp::min,
+    collections::HashSet,
+    ffi::OsString,
+    net::SocketAddr,
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    result::Result as StdResult,
+};
 
 use async_trait::async_trait;
 use aws_sdk_dynamodb::types::{AttributeValue, DeleteRequest, Select, WriteRequest};
+use either::Either;
 use itertools::Itertools;
 use libtest_mimic::Failed;
 use nonempty_collections::{NEVec, NonEmptyIterator};
 use rand::{rngs::StdRng, Rng};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_dynamo::aws_sdk_dynamodb_1::{from_items, to_item};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
+use tracing::{instrument, Level};
 use url::Url;
 
-use indielinks_shared::entities::{Post, StorUrl, UserEmail, UserId, Username};
+use indielinks_shared::{
+    credentials::Credentials,
+    dynamodb::{create_client as create_ddb_client, Location},
+    entities::{Post, StorUrl, UserEmail, UserId, Username},
+    scylla::create_client as create_scylla_client,
+};
 
 use indielinks::{
     dynamodb::{
         add_followers as add_ddb_followers, add_following as add_ddb_following,
-        add_user as add_ddb_user, create_client as create_ddb_client, Location,
+        add_user as add_ddb_user,
     },
     entities::{
         FollowId, LikeReplyShareRef, OutgoingLike, OutgoingReply, OutgoingShare, ReplyId, User,
@@ -43,15 +58,22 @@ use indielinks::{
     scylla::{
         add_followers as add_scylla_followers, add_following as add_scylla_following,
         add_outgoing_like_reply_share as add_scylla_outgoing_lrs, add_user as add_scylla_user,
-        create_client as create_scylla_client,
     },
-    util::Credentials,
 };
+
+use crate::run::{run, run_indio};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("While creating the DDB client, {source}"))]
-    Client { source: indielinks::dynamodb::Error },
+    Client {
+        source: indielinks_shared::dynamodb::Error,
+    },
+    #[snafu(display("Failed to run {cmd}: {source}"))]
+    Command {
+        cmd: String,
+        source: Box<crate::run::Error>,
+    },
     #[snafu(display("DynamoDB query failed: {source}"))]
     DdbQuery {
         #[snafu(source(from(aws_smithy_runtime_api::client::result::SdkError<
@@ -93,7 +115,9 @@ pub enum Error {
         backtrace: Backtrace,
     },
     #[snafu(display("Failed to create a ScyllaDB session: {source}"))]
-    NewSession { source: indielinks::scylla::Error },
+    NewSession {
+        source: indielinks_shared::scylla::Error,
+    },
     #[snafu(display("No user {username}"))]
     NoSuchUser {
         username: Username,
@@ -189,6 +213,152 @@ impl Default for DynamoConfig {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct IndielinksUpSingleNode {
+    pub public: Url,
+    pub ops: Url,
+    pub grpc: SocketAddr,
+    pub local_state_dir: PathBuf,
+    pub alternator_config_file: PathBuf,
+    pub scylla_config_file: PathBuf,
+}
+
+/// Start a single-node `indielinksd` instance without touching the datastore.
+///
+/// This is the service-only half of fixture setup: the caller is responsible for ensuring the
+/// datastore is already running. When `no_raft_init` is true, the launcher will skip the Raft
+/// initialization step and wait for the daemon to report an uninitialized live state.
+#[instrument(level = Level::DEBUG)]
+fn start_indielinksd_single_node(
+    grpc: &SocketAddr,
+    ops: &Url,
+    public: &Url,
+    local_state_dir: &Path,
+    config_file: &Path,
+    no_raft_init: bool,
+) -> Result<()> {
+    let mut args: Vec<OsString> = vec![
+        "-v".into(),
+        "-G".into(),
+        format!("{}", grpc).into(),
+        "-O".into(),
+        format!("{}", ops).into(),
+        "-P".into(),
+        format!("{}", public).into(),
+        "-L".into(),
+        local_state_dir.as_os_str().into(),
+    ];
+    if no_raft_init {
+        args.push("-R".into());
+    }
+    args.push(config_file.as_os_str().into());
+    run("../infra/indielinks-up", args).context(CommandSnafu {
+        cmd: "indielinks-up".to_string(),
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct IndielinksUpClustered {
+    pub alternator_config_base: PathBuf,
+    pub scylla_config_base: PathBuf,
+    pub haproxy_port: u16,
+    pub haproxy_id: u32,
+    pub local_state_base: PathBuf,
+    pub cluster_size: u8,
+}
+
+/// Start an `indielinksd` cluster without touching the datastore.
+///
+/// This is the service-only half of fixture setup: the caller is responsible for ensuring the
+/// datastore is already running. When `no_raft_init` is true, the launcher will skip the Raft
+/// initialization step and wait for the daemons to report an uninitialized live state.
+#[instrument(level = Level::DEBUG)]
+fn start_indielinksd_cluster(
+    config_base: &Path,
+    haproxy_port: u16,
+    haproxy_id: u32,
+    local_state_base: &Path,
+    cluster_size: u8,
+    no_raft_init: bool,
+) -> Result<()> {
+    let mut args: Vec<OsString> = vec![
+        "-v".into(),
+        "-C".into(),
+        config_base.as_os_str().into(),
+        "-H".into(),
+        format!("{}", haproxy_port).into(),
+        "-I".into(),
+        format!("{}", haproxy_id).into(),
+        "-L".into(),
+        local_state_base.as_os_str().into(),
+    ];
+    if no_raft_init {
+        args.push("-R".into());
+    }
+    args.push(format!("{}", cluster_size).into());
+    run("../infra/indielinks-cluster-up", args).context(CommandSnafu {
+        cmd: "indielinks-cluster-up".to_string(),
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct IndielinksUpParams {
+    pub single_node: IndielinksUpSingleNode,
+    pub clustered: IndielinksUpClustered,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndielinksDownSingleNode {
+    pub local_state_dir: PathBuf,
+}
+
+/// Stop a single-node `indielinksd` instance without touching the datastore.
+#[instrument(level = Level::DEBUG)]
+fn stop_indielinksd_single_node(params: &IndielinksDownSingleNode) -> Result<()> {
+    run(
+        "../infra/indielinks-down",
+        [
+            OsStrExt::from_bytes(b"-L"),
+            params.local_state_dir.as_os_str(),
+        ],
+    )
+    .context(CommandSnafu {
+        cmd: "indielinks-down".to_string(),
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct IndielinksDownClustered {
+    pub haproxy_id: u32,
+    pub local_state_base: PathBuf,
+}
+
+/// Stop an `indielinksd` cluster without touching the datastore.
+#[instrument(level = Level::DEBUG)]
+fn stop_indielinksd_cluster(params: &IndielinksDownClustered) -> Result<()> {
+    let args: Vec<OsString> = vec![
+        "-I".into(),
+        format!("{}", params.haproxy_id).into(),
+        "-L".into(),
+        params.local_state_base.as_os_str().into(),
+    ];
+    run("../infra/indielinks-cluster-down", args).context(CommandSnafu {
+        cmd: "indielinks-cluster-down".to_string(),
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct IndielinksDownParams {
+    pub single_node: IndielinksDownSingleNode,
+    pub clustered: IndielinksDownClustered,
+}
+
+#[derive(Clone, Debug)]
+pub struct PurgeRaftLogsParams {
+    pub scylla: ScyllaConfig,
+    pub dynamo: DynamoConfig,
+}
+
 /// Implementations of this trait will be passed to each test function to enable them to do things
 /// like talk directly to the back-end, ensure a known starting point for the test, & so on. Each
 /// fixture will need to provide an implemetnation.
@@ -228,6 +398,15 @@ pub trait Helper {
     /// Retrieve the nodes comprising the indielinks cluster under test.
     // It would be nicer to return `impl Iterator<Item = ...>`, but that's not dyn compatible
     fn nodes(&self) -> NEVec<(Url, Url, SocketAddr)>;
+    /// (Re-)start indielinks, either in single-node or clustered configuration
+    fn indielinks_up(
+        &self,
+        params: &IndielinksUpParams,
+        no_raft_init: bool,
+    ) -> StdResult<(), Failed>;
+    /// Take down an indielinks instance or cluster in an orderly manner
+    fn indielinks_down(&self, params: &IndielinksDownParams) -> StdResult<(), Failed>;
+    fn purge_raft_logs(&self, params: &PurgeRaftLogsParams) -> StdResult<(), Failed>;
 }
 
 /// Application state shared across all tests
@@ -244,7 +423,7 @@ impl DynamoDBHelper {
         cfg: &DynamoConfig,
     ) -> Result<DynamoDBHelper> {
         Ok(DynamoDBHelper {
-            client: create_ddb_client(&cfg.location, &cfg.credentials)
+            client: create_ddb_client(&cfg.location, cfg.credentials.as_ref())
                 .await
                 .context(ClientSnafu)?,
             indielinks,
@@ -457,6 +636,66 @@ impl Helper for DynamoDBHelper {
     fn nodes(&self) -> NEVec<(Url, Url, SocketAddr)> {
         self.nodes.clone()
     }
+    fn indielinks_up(
+        &self,
+        params: &IndielinksUpParams,
+        no_raft_init: bool,
+    ) -> StdResult<(), Failed> {
+        if 1 == self.nodes.len().get() {
+            Ok(start_indielinksd_single_node(
+                &params.single_node.grpc,
+                &params.single_node.ops,
+                &params.single_node.public,
+                &params.single_node.local_state_dir,
+                &params.single_node.alternator_config_file,
+                no_raft_init,
+            )?)
+        } else {
+            Ok(start_indielinksd_cluster(
+                &params.clustered.alternator_config_base,
+                params.clustered.haproxy_port,
+                params.clustered.haproxy_id,
+                &params.clustered.local_state_base,
+                params.clustered.cluster_size,
+                no_raft_init,
+            )?)
+        }
+    }
+    fn indielinks_down(&self, params: &IndielinksDownParams) -> StdResult<(), Failed> {
+        if 1 == self.nodes.len().get() {
+            Ok(stop_indielinksd_single_node(&params.single_node)?)
+        } else {
+            Ok(stop_indielinksd_cluster(&params.clustered)?)
+        }
+    }
+    fn purge_raft_logs(&self, params: &PurgeRaftLogsParams) -> StdResult<(), Failed> {
+        let params = &params.dynamo;
+
+        let location = match &*params.location {
+            Either::Left(region) => region.to_string(),
+            Either::Right(urls) => urls
+                .iter()
+                .map(Url::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        };
+
+        let mut parameters = vec![
+            "purge-raft-logs".to_owned(),
+            "--location".to_owned(),
+            location,
+        ];
+        if let Some(ref credentials) = params.credentials {
+            parameters.push("--credentials".to_owned());
+            parameters.push(format!(
+                "{},{}",
+                credentials.0 .0.expose_secret(),
+                credentials.0 .1.expose_secret()
+            ));
+        }
+
+        Ok(run_indio(parameters)?)
+    }
 }
 
 pub struct ScyllaHelper {
@@ -627,5 +866,64 @@ impl Helper for ScyllaHelper {
     }
     fn nodes(&self) -> NEVec<(Url, Url, SocketAddr)> {
         self.nodes.clone()
+    }
+    fn indielinks_up(
+        &self,
+        params: &IndielinksUpParams,
+        no_raft_init: bool,
+    ) -> StdResult<(), Failed> {
+        if 1 == self.nodes.len().get() {
+            Ok(start_indielinksd_single_node(
+                &params.single_node.grpc,
+                &params.single_node.ops,
+                &params.single_node.public,
+                &params.single_node.local_state_dir,
+                &params.single_node.scylla_config_file,
+                no_raft_init,
+            )?)
+        } else {
+            Ok(start_indielinksd_cluster(
+                &params.clustered.scylla_config_base,
+                params.clustered.haproxy_port,
+                params.clustered.haproxy_id,
+                &params.clustered.local_state_base,
+                params.clustered.cluster_size,
+                no_raft_init,
+            )?)
+        }
+    }
+    fn indielinks_down(&self, params: &IndielinksDownParams) -> StdResult<(), Failed> {
+        if 1 == self.nodes.len().get() {
+            Ok(stop_indielinksd_single_node(&params.single_node)?)
+        } else {
+            Ok(stop_indielinksd_cluster(&params.clustered)?)
+        }
+    }
+    fn purge_raft_logs(&self, params: &PurgeRaftLogsParams) -> StdResult<(), Failed> {
+        let params = &params.scylla;
+
+        let mut parameters = vec!["purge-raft-logs".to_owned()];
+        parameters.extend(
+            params
+                .hosts
+                .iter()
+                .flat_map(|addr| ["--node".to_owned(), addr.to_string()]),
+        );
+        if let Some(ref credentials) = params.credentials {
+            parameters.push("--credentials".to_owned());
+            parameters.push(format!(
+                "{},{}",
+                credentials.0 .0.expose_secret(),
+                credentials.0 .1.expose_secret()
+            ));
+        }
+        if let Some(ref translations) = params.translations {
+            parameters.extend(
+                translations.iter().flat_map(|(from, to)| {
+                    ["--translation".to_owned(), format!("{},{}", from, to)]
+                }),
+            );
+        }
+        Ok(run_indio(parameters)?)
     }
 }
