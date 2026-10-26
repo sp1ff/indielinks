@@ -470,10 +470,11 @@ async fn verify_signature(
             Ok(actor) => actor,
             Err(ApError {
                 source: FailedApError { rsp, backtrace: _ },
-            }) if rsp.status() == StatusCode::GONE => {
+            }) if rsp.status() == StatusCode::GONE || rsp.status() == StatusCode::FORBIDDEN => {
                 warn!(
                     "While attempting to fetch public key {key_id}, ification, I was \
-                               told that the signing Actor was Gone."
+                     told that the signing Actor was Gone (http status {}).",
+                    rsp.status()
                 );
                 return Err(ActorIsGoneSnafu {
                     request: Box::new(http::request::Request::from_parts(parts, bytes)),
