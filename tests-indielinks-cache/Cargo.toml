@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["macros"] }
-bpaf = { workspace = true, features = ["bright-color"] }
+bpaf = { version = "0.9.20", features = ["bright-color"] }
 http = { workspace = true }
 indielinks-cache = { workspace = true }
 indielinks-shared = { workspace = true }

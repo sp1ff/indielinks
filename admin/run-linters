@@ -40,3 +40,19 @@ if command -v neato >/dev/null 2>&1 && command -v guile >/dev/null 2>&1; then
 else
     echo "WARNING: unable to check for cyclic module dependencies; consider installing `guile` and `neato`"
 fi
+
+# If guile is available, check for workspace dependencies that are used by only
+# one crate and could therefore live in that crate's Cargo.toml instead.
+if command -v guile >/dev/null 2>&1; then
+    admin/find-needless-workspace-dependencies
+else
+    echo "WARNING: unable to check for needless workspace dependencies; consider installing `guile`"
+fi
+
+# If guile is available, check for dependencies declared directly by multiple
+# crates that should instead be hoisted into the workspace Cargo.toml.
+if command -v guile >/dev/null 2>&1; then
+    admin/find-direct-dependencies-to-hoist
+else
+    echo "WARNING: unable to check for direct dependencies to hoist; consider installing `guile`"
+fi

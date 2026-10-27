@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Report workspace-inherited [dependencies] that are used by only one crate in
+# the workspace.  Such dependencies should be moved into that crate's own
+# Cargo.toml rather than living in the workspace root.
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+workspace_root="$(cd "${script_dir}/.." && pwd)"
+
+cd "${workspace_root}"
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "Error: cargo is required but not installed." >&2
+    exit 1
+fi
+
+if ! command -v guile >/dev/null 2>&1; then
+    echo "Error: guile is required but not installed." >&2
+    exit 1
+fi
+
+cargo metadata --format-version 1 --no-deps \
+    | GUILE_AUTO_COMPILE=0 guile "${script_dir}/find-needless-workspace-dependencies.scm"

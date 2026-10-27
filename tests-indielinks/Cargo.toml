@@ -28,7 +28,7 @@ libc = { workspace = true }
 libtest-mimic = { workspace = true }
 nonempty-collections = { workspace = true, features = ["serde"] }
 nonzero = { workspace = true }
-once_cell = { workspace = true }
+once_cell = "1.21.3"
 openraft = { workspace = true, features = ["serde", "storage-v2"] }
 picky = { workspace = true }
 rand = { workspace = true, features = ["std_rng"] }
@@ -50,8 +50,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url = { workspace = true }
 uuid = { workspace = true }
-waitpid-any = { workspace = true }
-wiremock = { workspace = true }
+waitpid-any = "0.3.0"
+wiremock = "0.6.5"
 
 [dev-dependencies]
 tests-support = { workspace = true }

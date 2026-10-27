@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Report dependencies declared directly (not via workspace inheritance) in
+# [dependencies] by two or more workspace crates. Such dependencies should be
+# moved into the workspace Cargo.toml.
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+workspace_root="$(cd "${script_dir}/.." && pwd)"
+
+cd "${workspace_root}"
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "Error: cargo is required but not installed." >&2
+    exit 1
+fi
+
+if ! command -v guile >/dev/null 2>&1; then
+    echo "Error: guile is required but not installed." >&2
+    exit 1
+fi
+
+cargo metadata --format-version 1 --no-deps \
+    | GUILE_AUTO_COMPILE=0 guile "${script_dir}/find-direct-dependencies-to-hoist.scm" "${workspace_root}"

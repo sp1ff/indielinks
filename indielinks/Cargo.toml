@@ -6,56 +6,57 @@ license-file = "../COPYING"
 description = "Social bookmarking in the Fediverse"
 
 [dependencies]
-ammonia = { workspace = true }
+ammonia = "4.1.2"
 argon2 = { version = "0.6.0" }
-askama = { workspace = true, features = ["code-in-doc"] }
-async-stream = { workspace = true }
+askama = { version = "0.16", features = ["code-in-doc"] }
+async-stream = "0.3.6"
 async-trait = { workspace = true }
 atom_syndication = { workspace = true, features = ["with-serde"] }
 aws-config = { workspace = true, features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = { workspace = true }
-aws-sdk-ssm = { workspace = true }
-aws-smithy-async = { workspace = true, features = ["rt-tokio"] }
+aws-sdk-ssm = "1.110.0"
+aws-smithy-async = { version = "1.2.14", features = ["rt-tokio"] }
 aws-smithy-runtime-api = { workspace = true, features = ["client"] }
 axum = { workspace = true, features = ["macros", "tracing"] }
-axum-accept = { workspace = true }
-axum-extra = { workspace = true, features = ["cookie", "query", "typed-header"] }
+axum-accept = "0.0.7"
+axum-extra = { version = "0.12.6", features = ["cookie", "query", "typed-header"] }
 base64 = { workspace = true }
 bytes = { workspace = true }
-chacha20poly1305 = { workspace = true }
+chacha20poly1305 = "0.11.0"
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["cargo", "env"] }
-comrak = { workspace = true }
+comrak = "0.56.0"
 crypto-common = { workspace = true }
-dashmap = { workspace = true }
+dashmap = "6.1.0"
 either = { workspace = true, features = ["serde"] }
-enum-map = { workspace = true }
-errno = { workspace = true }
-form_urlencoded = { workspace = true }
+enum-map = "3.1.0"
+errno = "0.3.10"
+form_urlencoded = "1.2.2"
 futures = { workspace = true }
 governor = { workspace = true }
 hex = { workspace = true }
-hkdf = { workspace = true }
-hmac = { workspace = true }
+hkdf = "0.13"
+hmac = "0.13"
 http = { workspace = true }
 indielinks-cache = { workspace = true }
 indielinks-shared = { workspace = true, features = ["backend", "__internal"] }
 inventory = { workspace = true }
 itertools = { workspace = true }
-jwt = { workspace = true }
-keyed_priority_queue = { workspace = true }
+jwt = { git = "https://github.com/mikkyang/rust-jwt.git", rev = "refs/pull/105/head" } # was 0.16.0
+keyed_priority_queue = "0.4.2"
 lazy_static = { workspace = true }
 libc = { workspace = true }
 lru = { workspace = true }
 nonempty-collections = { workspace = true, features = ["serde"] }
 nonzero = { workspace = true }
-num-bigint = { workspace = true, features = ["serde"] }
+# We can't upgrade to 0.5+ until scylla does...
+num-bigint = { version = "~0.4", features = ["serde"] }
 openraft = { workspace = true, features = ["serde", "storage-v2"] }
 opentelemetry = { workspace = true, features = ["metrics"] }
-opentelemetry-otlp = { workspace = true, features = ["metrics", "http-proto", "reqwest-blocking-client"] }
-opentelemetry-prometheus-text-exporter = { workspace = true }
-opentelemetry_sdk = { workspace = true }
-ordered-float = { workspace = true, features = ["libm", "serde"] }
+opentelemetry-otlp = { version = "0.33.0", default-features = false, features = ["metrics", "http-proto", "reqwest-blocking-client"] }
+opentelemetry-prometheus-text-exporter = "0.4.0"
+opentelemetry_sdk = "0.33.1"
+ordered-float = { version = "5.3.0", features = ["libm", "serde"] }
 password-hash = { version = "0.6.1", features = ["rand_core"] }
 pct-str = { workspace = true }
 phc = { version = "0.6.1", features = ["getrandom"] }
@@ -71,14 +72,14 @@ rsa = { workspace = true }
 scylla = { workspace = true, features = ["full-serialization"] }
 secrecy = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
-serde_bytes = { workspace = true, features = ["alloc"] }
+serde_bytes = { version = "0.11.15", features = ["alloc"] }
 serde_dynamo = { workspace = true, features = ["aws-sdk-dynamodb+1"] }
 serde_json = { workspace = true }
 serde_urlencoded = { workspace = true }
 sha2 = { workspace = true }
 snafu = { workspace = true }
 tap = { workspace = true }
-tempfile = { workspace = true }
+tempfile = "3.27.0"
 time = { workspace = true } # RUSTSEC-2026-0009
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "sync"] }
 toml = { workspace = true }
@@ -92,7 +93,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 unicode-segmentation = { workspace = true }
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
-zxcvbn = { workspace = true }
+zxcvbn = "3.1.0"
 
 [build-dependencies]
 nickel-lang = { workspace = true }

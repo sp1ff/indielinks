@@ -12,11 +12,11 @@ bytes = { workspace = true } # RUSTSEC-2026-0007
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true }
 either = { workspace = true, features = [ "serde" ] }
-email_address = { workspace = true }
+email_address = "0.2.9"
 # `getrandom` is really a transitive dependency, but we need the "js"
 # feature for indielinks-fe builds (indielinks-fe depends on this
 # crate). This is required despite what `cargo outdated` may say.
-getrandom = { workspace = true, features = ["wasm_js"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 hex = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }

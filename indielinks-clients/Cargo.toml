@@ -19,7 +19,7 @@ itertools = { workspace = true }
 nonzero = { workspace = true }
 pin-project = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
-rpassword = { workspace = true }
+rpassword = "7.4.0"
 scylla = { workspace = true, features = ["full-serialization"] }
 secrecy = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
