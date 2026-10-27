@@ -71,7 +71,7 @@ pub type Result<T> = StdResult<T, Error>;
 // Might be nice to make the backoff policy configurable, too.
 pub fn make_indielinks_client(
     user_agent: HeaderValue,
-    token: Option<SecretString>,
+    token: Option<&SecretString>,
     requests_per_minute: Option<NonZero<u32>>,
 ) -> Result<
     impl Service<

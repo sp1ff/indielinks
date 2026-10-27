@@ -212,7 +212,10 @@ impl std::default::Default for ConfigurationRepr {
 // specified on the command line and/or the environment.
 #[derive(Clone, Debug)]
 struct Configuration {
-    token: SecretString,
+    // I hate making this optional, but at the time of this writing, *none* of our sub-commands
+    // require it. I suppose I could intro a sub-command-specific `Configuration`, but for now,
+    // let's leave & see how the sub-commands develop.
+    token: Option<SecretString>,
     public_api: Origin,
     ops_api: Origin,
     requests_per_minute: NonZero<u32>,
@@ -231,7 +234,7 @@ impl Configuration {
         // command line and/or environment).
         Ok(match from_file {
             ConfigurationRepr::V1(from_file) => Self {
-                token: token.or(from_file.token).ok_or(MissingTokenSnafu.build())?,
+                token: token.or(from_file.token),
                 public_api: public_api
                     .or(from_file.public_api)
                     .ok_or(MissingPublicApiSnafu.build())?,
@@ -251,8 +254,8 @@ impl Configuration {
     pub fn requests_per_minute(&self) -> NonZero<u32> {
         self.requests_per_minute
     }
-    pub fn token(&self) -> &SecretString {
-        &self.token
+    pub fn token(&self) -> Option<&SecretString> {
+        self.token.as_ref()
     }
 }
 
@@ -537,7 +540,7 @@ async fn main() -> Result<()> {
 
             let client = make_indielinks_client(
                 USER_AGENT.clone(),
-                Some(configuration.token().clone()),
+                configuration.token(),
                 Some(configuration.requests_per_minute()),
             )
             .context(ClientSnafu)?;

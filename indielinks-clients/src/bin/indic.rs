@@ -607,7 +607,7 @@ async fn main() -> Result<()> {
 
     let client = make_indielinks_client(
         USER_AGENT.clone(),
-        Some(configuration.token().clone()),
+        Some(configuration.token()),
         Some(configuration.requests_per_minute()),
     )
     .context(ClientSnafu)?;

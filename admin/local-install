@@ -103,6 +103,7 @@ cd ..
 
 install -C -D -t /home/$USER/bin target/release/indielinksd
 install -C -D -t /home/$USER/bin target/release/indic
+install -C -D -t /home/$USER/bin target/release/indio
 install -C -D -t /home/$USER/bin target/release/indielinks-schemas
 install -C -D -t /home/$USER/bin scripts/indielinks-post-install
 install -C -D -t /home/$USER/bin scripts/indielinks-ctl

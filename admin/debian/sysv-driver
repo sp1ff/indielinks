@@ -23,6 +23,7 @@ indielinksd --version
 indielinks-schemas --version
 indielinks-ctl --version
 indic --help
+indio --help
 
 # Test conflict: the AWS package must fail to install
 if sudo dpkg -i "${aws_pkg}" 2>/dev/null; then
@@ -48,8 +49,7 @@ if [ "${hc}" != "GOOD" ]; then
     hc=$(curl -s http://127.0.0.1:20676/healthcheck)
 fi
 # indielinks now up & running
-# BUG: we shouldn't have to specify the API key; use a dummy value for now
-INDIO_API_KEY=fake indio -A http://127.0.0.1:20676 -O http://127.0.0.1:20677 add-user -u john.doe -p 'f00-b@r-sp1at' -m 'john.doe@gmail.com'
+indio -A http://127.0.0.1:20676 -O http://127.0.0.1:20677 add-user -u john.doe -p 'f00-b@r-sp1at' -m 'john.doe@gmail.com'
 # Check that the front-end is being served at the root
 status_code=$(curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:20676/)
 if [ ${status_code} -ne 200 ]; then

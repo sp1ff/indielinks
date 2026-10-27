@@ -16,6 +16,7 @@ indielinksd --version
 indielinks-schemas --version
 indielinks-ctl --version
 indic --help
+indio --help
 
 # simulate the operator hand-editing the indielinks config file
 scylla=$(dig +short scylla-node-1)
@@ -28,8 +29,7 @@ indielinks-post-install --verbose             \
                         --state=$HOME/var/run \
                         --config=$HOME/etc/indielinks.toml
 # indielinks now up & running
-# BUG: we shouldn't have to specify the API key; use a dummy value for now
-INDIO_API_KEY=fake indio -A http://127.0.0.1:20676 -O http://127.0.0.1:20677 add-user -u john.doe -p 'f00-b@r-sp1at' -m 'john.doe@gmail.com'
+indio -A http://127.0.0.1:20676 -O http://127.0.0.1:20677 add-user -u john.doe -p 'f00-b@r-sp1at' -m 'john.doe@gmail.com'
 indielinks-ctl -v -u packager                     \
                -g packager                        \
                -L=$HOME/var/run                   \
