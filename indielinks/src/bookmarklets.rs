@@ -460,7 +460,7 @@ struct SaveRequest {
 ///             <textarea class="form-control form-control--textarea" id="description" name="description" rows="4">{{ description }}</textarea>
 ///         </div>
 ///         <div class="form-field">
-///             <label class="form-field__label" for="tags">Tags <span class="bookmarklet-optional">(optional)</span></label>
+///             <label class="form-field__label" for="tags">Tags <span class="bookmarklet-optional">(optional, whitespace delimited)</span></label>
 ///             <input class="form-control" id="tags" name="tags" value="{{ tags }}">
 ///         </div>
 ///         <fieldset class="form-options form-options--inline">
