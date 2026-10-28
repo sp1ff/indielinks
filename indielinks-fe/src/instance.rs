@@ -495,7 +495,7 @@ pub fn Instance() -> impl IntoView {
                 </p>
                 <p class="instance-layout__contact">
                     "Want an account? "
-                    <a href="mailto:sp1ff@pobox.com?subject=indielinks%20account%20request">
+                    <a href="mailto:indielinks@pobox.com?subject=indielinks%20account%20request">
                         "Contact the administrator"
                     </a>
                     "."

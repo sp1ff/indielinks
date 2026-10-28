@@ -43,7 +43,7 @@ pub fn SignUp() -> impl IntoView {
                 </p>
                 <a
                     class="form-button form-button--primary authentication-card__primary-action"
-                    href="mailto:sp1ff@pobox.com?subject=indielinks%20account%20request"
+                    href="mailto:indielinks@pobox.com?subject=indielinks%20account%20request"
                 >
                     <Icon icon=icondata::FiMail />
                     "Request an account"
