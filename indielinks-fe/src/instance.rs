@@ -468,6 +468,10 @@ fn InstanceDetails() -> impl IntoView {
                                             <div><dt>"Raft term"</dt><dd>{stats.raft_term}</dd></div>
                                         </dl>
                                     </details>
+                                    <p class="instance-service-details__contact">
+                                        "Contact: "
+                                        <a href="mailto:indielinks@pobox.com">"indielinks@pobox.com"</a>
+                                    </p>
                                 </section>
                             }
                         }))
