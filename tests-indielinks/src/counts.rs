@@ -88,6 +88,7 @@ pub async fn test_counts(
         raft_initialized,
         raft_term: _,
         raft_leader,
+        version: _,
     } = response.json::<ClusterStatsResponse>().await?;
 
     assert_eq!(num_users, 1);

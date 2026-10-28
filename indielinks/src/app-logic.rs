@@ -1241,6 +1241,7 @@ pub async fn get_cluster_stats(state: Arc<Indielinks>) -> Result<ClusterStatsRes
         raft_initialized: state.cache_node.read().await.initialized().await,
         raft_term: metrics.raft.current_term,
         raft_leader: metrics.raft.current_leader,
+        version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
 

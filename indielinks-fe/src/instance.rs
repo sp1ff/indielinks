@@ -463,6 +463,7 @@ fn InstanceDetails() -> impl IntoView {
                                     <details class="instance-service-details">
                                         <summary>"Service details"</summary>
                                         <dl>
+                                            <div><dt>"Version"</dt><dd>{stats.version}</dd></div>
                                             <div><dt>"Raft initialized"</dt><dd>{initialized}</dd></div>
                                             <div><dt>"Raft leader"</dt><dd>{leader}</dd></div>
                                             <div><dt>"Raft term"</dt><dd>{stats.raft_term}</dd></div>

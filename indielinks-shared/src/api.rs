@@ -557,6 +557,7 @@ pub struct ClusterStatsResponse {
     pub raft_term: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raft_leader: Option<u64>,
+    pub version: String,
 }
 
 /// Opaque type representing an replies pagination token
