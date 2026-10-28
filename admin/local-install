@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+VERSION=0.0.1
 
 # This is a start on an installation procedure. I hope to eventually produce
 # Arch and Debian packages, as well as an OpenTofu script, but for now I just
@@ -77,7 +78,7 @@ fi
 
 if test -n "${version}"; then
     cat <<EOF
-local-install 0.0.1
+local-install ${VERSION}
 EOF
     exit 0
 fi
@@ -125,7 +126,7 @@ install -C -D style.css          /home/$USER/share/indielinks/assets/style.css
 install -C -D indielinks-fe.wasm /home/$USER/share/indielinks/assets/indielinks-fe.wasm
 cd ../..
 
-install -D indielinks/local-indielinks.toml /home/$USER/etc/indielinks.toml
+install -D conf/indielinks-local.toml /home/$USER/etc/indielinks.toml
 sed -i -e s@/home/USER/@/home/$USER/@ /home/$USER/etc/indielinks.toml
 
 mkdir -p $HOME/var/{log,run}
