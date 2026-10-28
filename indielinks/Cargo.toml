@@ -2,6 +2,7 @@
 name = "indielinks"
 version = { workspace = true }
 edition = "2021"
+publish = false
 license-file = "../COPYING"
 description = "Social bookmarking in the Fediverse"
 

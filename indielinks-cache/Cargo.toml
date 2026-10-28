@@ -2,6 +2,7 @@
 name = "indielinks-cache"
 version = { workspace = true }
 edition = "2024"
+publish = false
 
 [dependencies]
 async-trait = { workspace = true }

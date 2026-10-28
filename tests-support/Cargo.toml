@@ -2,6 +2,7 @@
 name = "tests-support"
 version = { workspace = true }
 edition = "2024"
+publish = false
 
 [dependencies]
 async-trait = { workspace = true }

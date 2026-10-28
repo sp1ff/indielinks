@@ -2,6 +2,7 @@
 name = "indielinks-shared"
 version = { workspace = true }
 edition = "2024"
+publish = false
 
 [dependencies]
 async-trait = { workspace = true }

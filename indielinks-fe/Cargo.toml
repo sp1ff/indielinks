@@ -2,6 +2,7 @@
 name = "indielinks-fe"
 version = { workspace = true }
 edition = "2024"
+publish = false
 
 # Only the pure theme model (`theme::model`) compiles off-wasm; everything else is a browser
 # dependency and is declared in the wasm32 target section below.
