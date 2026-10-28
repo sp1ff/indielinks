@@ -3,6 +3,9 @@ members = ["indielinks-shared", "indielinks-cache", "tests-indielinks-cache", "i
 default-members = ["indielinks-shared", "indielinks-cache", "tests-indielinks-cache", "indielinks", "tests-indielinks", "indielinks-clients", "tests-support"]
 resolver = "2"
 
+[workspace.package]
+version = "0.0.1"
+
 [workspace.dependencies]
 approx = "0.5.1"
 async-trait = "0.1.89"

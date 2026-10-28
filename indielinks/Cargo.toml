@@ -1,6 +1,6 @@
 [package]
 name = "indielinks"
-version = "0.0.1"
+version = { workspace = true }
 edition = "2021"
 license-file = "../COPYING"
 description = "Social bookmarking in the Fediverse"

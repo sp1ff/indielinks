@@ -1,6 +1,6 @@
 [package]
 name = "indielinks-fe"
-version = "0.0.1"
+version = { workspace = true }
 edition = "2024"
 
 # Only the pure theme model (`theme::model`) compiles off-wasm; everything else is a browser
