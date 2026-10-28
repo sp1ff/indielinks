@@ -4,7 +4,7 @@ log-file = "/var/log/indielinks/indielinks.log"
 private-address = "127.0.0.1:20677"
 public-address = "0.0.0.0:20676"
 raft-grpc-address = "127.0.0.1:20678"
-user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
+user-agent = "indielinks/0.0.1; +indielinks@pobox.com"
 version = "1"
 
 [otlp-export]

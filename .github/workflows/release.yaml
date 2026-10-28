@@ -1,0 +1,118 @@
+# This is the release job for `indielinks`-- when a tag of the form
+# "vx.y.z" is pushed, this will create a Github release, build the two
+# Debian packages, and upload them to the release.
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Version to release (e.g. 1.2.3); if omitted, the pushed tag must be vx.y.z'
+        required: false
+        type: string
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  release:
+    name: Build release packages and publish GitHub release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - name: Determine release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.release_version }}" ]]; then
+            version="${{ inputs.release_version }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Tag '${tag}' does not match the required vx.y.z format" >&2
+              exit 1
+            fi
+            version="${tag#v}"
+          else
+            echo "Could not determine release version: provide release_version input or push a vx.y.z tag" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        # This can be really frustrating when trouble-shooting, but it seems like
+        # the right thing...
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - name: Verify version numbers match release
+        shell: bash
+        run: |
+          set -euo pipefail
+          admin/manage-version check "${{ steps.version.outputs.version }}"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: "clippy, rustfmt"
+          targets: "wasm32-unknown-unknown"
+
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler libprotobuf-dev haproxy
+
+      - name: Install Rust tooling
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          rustup set auto-install disable
+          cargo install --force ripgrep
+          cargo install --force nickel-lang-cli
+          cargo install --force cargo-deb
+          cargo install --locked trunk
+
+      - name: Install TailwindCSS
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          curl -sL \
+            https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-linux-x64 \
+            -o /usr/local/bin/tailwindcss
+          chmod +x /usr/local/bin/tailwindcss
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.version }}" \
+            --generate-notes
+
+      - name: Build Debian packages
+        shell: bash
+        run: |
+          set -xeuo pipefail
+          admin/debian/build-packages
+
+      - name: Upload Debian packages to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          gh release upload "${{ steps.version.outputs.tag }}" \
+            "target/debian/indielinks_${version}_amd64.deb" \
+            "target/debian/indielinks-aws_${version}_amd64.deb"

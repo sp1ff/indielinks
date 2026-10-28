@@ -33,7 +33,7 @@
 # reference their secrets by SSM parameter name.
 {
     version = "1",
-    user-agent = "indielinks/0.0.1; +sp1ff@pobox.com",
+    user-agent = "indielinks/0.0.1; +indielinks@pobox.com",
     collection-page-size = 64,
     otlp-export = { endpoint = "http://localhost:9090/api/v1/otlp/v1/metrics" },
     signing-keys = {

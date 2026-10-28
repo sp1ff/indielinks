@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: admin/manage-version {set | check} VERSION
+
+  set VERSION    Rewrite version numbers in all four canonical locations to VERSION.
+  check VERSION  Verify that each of the four canonical locations contains VERSION.
+
+The canonical locations are:
+  - Cargo.toml (workspace.package.version)
+  - conf/indielinksd-common.ncl (user-agent string)
+  - conf/indielinks-deb.toml   (user-agent string)
+  - conf/indielinks-local.toml (user-agent string)
+EOF
+}
+
+if [[ $# -ne 2 ]]; then
+    usage >&2
+    exit 2
+fi
+
+cmd="$1"
+version="$2"
+
+root="$(cd "$(dirname "$(realpath "$0")")/../" && pwd)"
+
+cargo_toml="${root}/Cargo.toml"
+common_ncl="${root}/conf/indielinksd-common.ncl"
+deb_toml="${root}/conf/indielinks-deb.toml"
+local_toml="${root}/conf/indielinks-local.toml"
+
+# Cargo.toml: version = "0.0.1"
+get_cargo_version() {
+    awk -F= '/^\s*version\s*=\s*"/ { gsub(/[ "]/, "", $2); print $2; exit }' "${cargo_toml}"
+}
+
+# ".../0.0.1; +..."
+get_ua_version() {
+    local file="$1"
+    grep -oP 'indielinks/\K[0-9]+\.[0-9]+\.[0-9]+' "${file}" || true
+}
+
+case "${cmd}" in
+    set)
+        # Cargo.toml: version = "x.y.z"
+        sed -i -E "s/^(version[[:space:]]*=[[:space:]]*\")[^\"]+(\")$/\\1${version}\\2/" "${cargo_toml}"
+
+        # Config files: user-agent = "indielinks/x.y.z; +..."
+        sed -i -E "s|(user-agent[[:space:]]*=[[:space:]]*\"[^/]+/)[0-9]+\.[0-9]+\.[0-9]+(; .+)\"|\\1${version}\\2\"|g" "${common_ncl}" "${deb_toml}" "${local_toml}"
+
+        echo "Version set to ${version}"
+        ;;
+    check)
+        errors=0
+
+        current_cargo_version="$(get_cargo_version)"
+        current_common_version="$(get_ua_version "${common_ncl}")"
+        current_deb_version="$(get_ua_version "${deb_toml}")"
+        current_local_version="$(get_ua_version "${local_toml}")"
+
+        check_one() {
+            local name="$1"
+            local current="$2"
+            if [[ "${current}" != "${version}" ]]; then
+                echo "ERROR: ${name} has version '${current}' (expected '${version}')" >&2
+                errors=$((errors + 1))
+            fi
+        }
+
+        check_one "Cargo.toml" "${current_cargo_version}"
+        check_one "conf/indielinksd-common.ncl" "${current_common_version}"
+        check_one "conf/indielinks-deb.toml" "${current_deb_version}"
+        check_one "conf/indielinks-local.toml" "${current_local_version}"
+
+        if [[ ${errors} -gt 0 ]]; then
+            echo "Version check failed." >&2
+            exit 1
+        fi
+
+        echo "All version numbers match ${version}."
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

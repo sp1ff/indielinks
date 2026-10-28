@@ -2503,7 +2503,7 @@ mod prototype {
             concat!(
                 "ap_entities::prototype Client/",
                 env!("CARGO_PKG_VERSION"),
-                " +sp1ff@pobox.com"
+                " +indielinks@pobox.com"
             ),
             true,
             HostExtractor,

@@ -322,7 +322,7 @@ mod test {
             concat!(
                 "indielinks unit tests/",
                 env!("CARGO_PKG_VERSION"),
-                "; +sp1ff@pobox.com"
+                "; +indielinks@pobox.com"
             ),
             true,
             HostExtractor,

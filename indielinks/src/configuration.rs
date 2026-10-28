@@ -315,7 +315,7 @@ impl Default for ConfigV1 {
             pepper: Either::Right(Peppers::from_entropy()),
             signing_keys: SigningKeysConfig::from_entropy(),
             users_config: UsersConfiguration::default(),
-            user_agent: format!("indielinks/{}; +sp1ff@pobox.com", crate_version!()),
+            user_agent: format!("indielinks/{}; +indielinks@pobox.com", crate_version!()),
             client_exponential_backoff: Default::default(),
             client_configuration: Default::default(),
             local_client_configuration: Default::default(),
@@ -352,7 +352,7 @@ private-address = "127.0.0.1:20677"
 raft-grpc-address = "0.0.0.0:20678"
 user-agent = "indielinks/"##,
             env!("CARGO_PKG_VERSION"),
-            r##"; +sp1ff@pobox.com"
+            r##"; +indielinks@pobox.com"
 collection-page-size = 64
 
 "##,
