@@ -2500,7 +2500,11 @@ mod prototype {
             .await;
 
         let mut client = make_client(
-            "ap_entities::prototype Client/0.0.1 +sp1ff@pobox.com",
+            concat!(
+                "ap_entities::prototype Client/",
+                env!("CARGO_PKG_VERSION"),
+                " +sp1ff@pobox.com"
+            ),
             true,
             HostExtractor,
             RateLimiter::keyed(Quota::per_second(nonzero!(16u32)))

@@ -319,7 +319,11 @@ mod test {
             .await;
 
         let mut client = make_client(
-            "indielinks unit tests/0.0.1; +sp1ff@pobox.com",
+            concat!(
+                "indielinks unit tests/",
+                env!("CARGO_PKG_VERSION"),
+                "; +sp1ff@pobox.com"
+            ),
             true,
             HostExtractor,
             RateLimiter::keyed(Quota::per_second(nonzero!(10u32))),

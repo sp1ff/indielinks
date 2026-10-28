@@ -350,7 +350,9 @@ log-file = "/tmp/indielinksd.log"
 public-address = "0.0.0.0:20676"
 private-address = "127.0.0.1:20677"
 raft-grpc-address = "0.0.0.0:20678"
-user-agent = "indielinks/0.0.1; +sp1ff@pobox.com"
+user-agent = "indielinks/"##,
+            env!("CARGO_PKG_VERSION"),
+            r##"; +sp1ff@pobox.com"
 collection-page-size = 64
 
 "##,

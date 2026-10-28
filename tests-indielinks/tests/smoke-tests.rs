@@ -313,7 +313,11 @@ async fn init_raft_cluster(ops: &Url, nodes: impl Iterator<Item = SocketAddr>) -
         .collect();
 
     let client = Client::builder()
-        .user_agent("indielinks-test/raft-ops 0.0.1 (+sp1ff@pobox.com)")
+        .user_agent(concat!(
+            "indielinks-test/raft-ops ",
+            env!("CARGO_PKG_VERSION"),
+            " (+sp1ff@pobox.com)"
+        ))
         .build()
         .context(RequestSnafu)?;
 

@@ -46,7 +46,11 @@ use indielinks_shared::{entities::Username, origin::Origin};
 
 use indielinks::ap_entities::{self, make_user_id};
 
-pub static TEST_USER_AGENT: &str = "indielinks integration tests/0.0.1; +sp1ff@pobox.com";
+pub static TEST_USER_AGENT: &str = concat!(
+    "indielinks integration tests/",
+    env!("CARGO_PKG_VERSION"),
+    "; +sp1ff@pobox.com"
+);
 
 #[path = "activity-pub.rs"]
 pub mod activity_pub;

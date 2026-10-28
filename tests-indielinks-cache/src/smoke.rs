@@ -39,7 +39,10 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
     // We expect a five-node cluster to be up & ready to take traffic on localhost, port `base_port`
     // through `base_port` + 4.
     let client = ClientBuilder::new()
-        .user_agent("tests-indielinks-cache/0.0.1")
+        .user_agent(concat!(
+            "tests-indielinks-cache/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .build()?;
     let metrics = get_metrics(&client, base_port)?;
     assert_eq!(metrics.raft.id, 0); // sanity check
@@ -186,7 +189,7 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
 pub fn single_node(port: u16) -> Result<(), Failed> {
     // We expect a single-node cluster to be up & ready to take traffic on localhost, listening on port `port`.
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent(concat!("indielinks-cache-test/", env!("CARGO_PKG_VERSION")))
         .build()?;
     let metrics = get_metrics(&client, port)?;
     assert_eq!(metrics.raft.id, 0); // sanity check

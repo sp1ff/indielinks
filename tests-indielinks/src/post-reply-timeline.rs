@@ -456,7 +456,11 @@ pub async fn post_replies_endpoint(
     helper.remove_user(&username).await?;
 
     let client = Client::builder()
-        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
+        .user_agent(concat!(
+            "indielinks integration tests/",
+            env!("CARGO_PKG_VERSION"),
+            "; +sp1ff@pobox.com"
+        ))
         .build()?;
 
     let api_key = helper

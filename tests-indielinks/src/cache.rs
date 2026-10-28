@@ -89,7 +89,11 @@ pub fn raft_ops(
     indielinks: &Url,
 ) -> Result<(), Failed> {
     let client = Client::builder()
-        .user_agent("indielinks-test/raft-ops 0.0.1 (+sp1ff@pobox.com)")
+        .user_agent(concat!(
+            "indielinks-test/raft-ops ",
+            env!("CARGO_PKG_VERSION"),
+            " (+sp1ff@pobox.com)"
+        ))
         .build()?;
 
     let mut ops_endpoints: Vec<(NodeId, (ClusterNode, Url))> = nodes
@@ -278,7 +282,11 @@ pub fn raft_snapshot(
     config_base: &str,
 ) -> Result<(), Failed> {
     let client = Client::builder()
-        .user_agent("indielinks-test/raft-ops 0.0.1 (+sp1ff@pobox.com)")
+        .user_agent(concat!(
+            "indielinks-test/raft-ops ",
+            env!("CARGO_PKG_VERSION"),
+            " (+sp1ff@pobox.com)"
+        ))
         .build()?;
 
     let mut ops_endpoints: Vec<(NodeId, (ClusterNode, Url))> = nodes

@@ -26,7 +26,10 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
     // We expect a five-node cluster to be up & ready to take traffic on localhost, port `base_port`
     // through `base_port` + 4.
     let client = ClientBuilder::new()
-        .user_agent("tests-indielinks-cache/0.0.1")
+        .user_agent(concat!(
+            "tests-indielinks-cache/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .build()?;
 
     // The /admin/init endpoint blocks until a leader is elected, so we expect one now.

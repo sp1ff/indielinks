@@ -42,4 +42,8 @@ pub type Token = RwSignal<Option<SecretString>>;
 //                                    indielinks-fe constants                                     //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-pub static USER_AGENT: &str = "indielinks-fe/0.0.1 (+indielinks@pobox.com)";
+pub static USER_AGENT: &str = concat!(
+    "indielinks-fe/",
+    env!("CARGO_PKG_VERSION"),
+    " (+indielinks@pobox.com)"
+);

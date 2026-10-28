@@ -84,7 +84,11 @@ pub async fn setup_test(
         .await;
 
     let client = Client::builder()
-        .user_agent("indielinks integration tests/0.0.1; +sp1ff@pobox.com")
+        .user_agent(concat!(
+            "indielinks integration tests/",
+            env!("CARGO_PKG_VERSION"),
+            "; +sp1ff@pobox.com"
+        ))
         .build()?;
 
     Ok((mock_server, mock_user, client))

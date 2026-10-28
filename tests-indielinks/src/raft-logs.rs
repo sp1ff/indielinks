@@ -46,7 +46,11 @@ async fn assert_raft_initialized(ops: &Url, expect_initialized: bool) -> StdResu
 /// Fetch and deserialize `/ops/cluster-stats`.
 async fn fetch_cluster_stats(ops: &Url) -> StdResult<ClusterStatsResponse, Failed> {
     let client = Client::builder()
-        .user_agent("indielinks-test/purge-raft-logs 0.0.1 (+sp1ff@pobox.com)")
+        .user_agent(concat!(
+            "indielinks-test/purge-raft-logs ",
+            env!("CARGO_PKG_VERSION"),
+            " (+sp1ff@pobox.com)"
+        ))
         .build()?;
     Ok(client
         .get(ops.join("/ops/cluster-stats")?)
@@ -76,7 +80,11 @@ pub async fn smoke(
     assert_raft_initialized(&ops, false).await?;
 
     let client = Client::builder()
-        .user_agent("indielinks-test/purge-raft-logs 0.0.1 (+sp1ff@pobox.com)")
+        .user_agent(concat!(
+            "indielinks-test/purge-raft-logs ",
+            env!("CARGO_PKG_VERSION"),
+            " (+sp1ff@pobox.com)"
+        ))
         .build()?;
 
     let nodes = (0u64..)

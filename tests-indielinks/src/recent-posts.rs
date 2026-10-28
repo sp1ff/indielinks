@@ -82,7 +82,11 @@ pub async fn recent_posts(
     );
 
     let client = Client::builder()
-        .user_agent("indielinks-test/recent-posts 0.0.1 (+sp1ff@pobox.com)")
+        .user_agent(concat!(
+            "indielinks-test/recent-posts ",
+            env!("CARGO_PKG_VERSION"),
+            " (+sp1ff@pobox.com)"
+        ))
         .build()?;
 
     let first_three = all_nodes

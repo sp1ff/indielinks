@@ -22,7 +22,7 @@ use crate::{CacheInsertRequest, CacheLookupRequest};
 /// Verify that requests with an unknown cache ID are rejected with 400 Bad Request.
 pub fn test(base_port: u16) -> Result<(), Failed> {
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent(concat!("indielinks-cache-test/", env!("CARGO_PKG_VERSION")))
         .build()?;
     let insert_status = client
         .post(format!("http://127.0.0.1:{base_port}/cache/insert"))

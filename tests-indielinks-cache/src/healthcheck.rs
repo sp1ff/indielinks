@@ -18,7 +18,7 @@ use reqwest::blocking::ClientBuilder;
 
 pub fn test(base_port: u16, num_nodes: u16) -> Result<(), Failed> {
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent(concat!("indielinks-cache-test/", env!("CARGO_PKG_VERSION")))
         .build()?;
     for i in 0..num_nodes {
         let port = base_port + i;

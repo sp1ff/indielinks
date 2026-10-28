@@ -27,7 +27,7 @@ const KEYS: &[&str] = &[
 /// different node, verifying the correct value is returned.
 pub fn test(base_port: u16) -> Result<(), Failed> {
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent(concat!("indielinks-cache-test/", env!("CARGO_PKG_VERSION")))
         .build()?;
     for (i, key) in KEYS.iter().enumerate() {
         let port = base_port + (i % 3) as u16;
@@ -48,7 +48,7 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
 /// Single-node variant: all inserts and reads on the same port.
 pub fn single_node(port: u16) -> Result<(), Failed> {
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent(concat!("indielinks-cache-test/", env!("CARGO_PKG_VERSION")))
         .build()?;
     for (i, key) in KEYS.iter().enumerate() {
         insert_key(&client, port, key, i + 1)?;

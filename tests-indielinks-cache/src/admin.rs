@@ -29,7 +29,7 @@ use crate::{insert_key, lookup_key, smoke::get_metrics};
 /// `base_port` through `base_port+4`).
 pub fn remove_member(base_port: u16) -> Result<(), Failed> {
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent(concat!("indielinks-cache-test/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     // Insert a handful of keys before the membership change so we can check invalidation.

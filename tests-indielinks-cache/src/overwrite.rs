@@ -22,7 +22,7 @@ use crate::{insert_key, lookup_key};
 /// read back from node 0.
 pub fn test(base_port: u16) -> Result<(), Failed> {
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent(concat!("indielinks-cache-test/", env!("CARGO_PKG_VERSION")))
         .build()?;
     insert_key(&client, base_port, "bar", 100)?;
     assert_eq!(lookup_key(&client, base_port + 1, "bar")?, Some(100));
@@ -34,7 +34,7 @@ pub fn test(base_port: u16) -> Result<(), Failed> {
 /// Single-node variant.
 pub fn single_node(port: u16) -> Result<(), Failed> {
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent(concat!("indielinks-cache-test/", env!("CARGO_PKG_VERSION")))
         .build()?;
     insert_key(&client, port, "bar", 100)?;
     assert_eq!(lookup_key(&client, port, "bar")?, Some(100));

@@ -25,7 +25,7 @@ use crate::{insert_key, lookup_key};
 /// eviction order directly.
 pub fn test(port: u16) -> Result<(), Failed> {
     let client = ClientBuilder::new()
-        .user_agent("indielinks-cache-test/0.0.1")
+        .user_agent(concat!("indielinks-cache-test/", env!("CARGO_PKG_VERSION")))
         .build()?;
     for i in 0usize..=256 {
         insert_key(&client, port, &format!("evict-{i}"), i)?;
