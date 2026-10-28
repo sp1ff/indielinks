@@ -56,7 +56,7 @@ if test -n "${help}"; then
 
 Usage:
 
-    build-packages [OPTION...] GIT_COMMIT
+    build-packages [OPTION...]
 
 Options:
 
@@ -86,12 +86,6 @@ fi
 
 if test -n "${verbose}"; then
     set -x
-fi
-
-git_commit="$1"
-if test -z "${git_commit}"; then
-    echo "You didn't specify the git commit number." >2
-    exit 2
 fi
 
 # Assumes we're in the distribution driectory
@@ -144,9 +138,8 @@ source $HOME/.cargo/env
 
 here=$(dirname "$(realpath "$0")")
 cd "$here/../.."
-revision="r${git_commit}"
 version=$(cargo pkgid -p indielinks | sed 's/.*#//')
-release="${version}~git.${revision}"
+release="${version}"
 
 cargo clean
 cargo build --release

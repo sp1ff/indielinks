@@ -90,14 +90,10 @@ fi
 
 here=$(dirname "$(realpath "$0")")
 cd ${here}/..
-# Take care to run this command *outside* of the container; if the project root
-# is a git worktree, the bind mounts will screw-up any git commands in the
-# container.
-git_commit="$(git rev-list --count HEAD)"
 cd ${here}
 ./debian/build-debian-image
 docker run --mount type=bind,src=..,dst=/indielinks \
         -u packager:users                           \
         indielinks-debian:latest                     \
-       /indielinks/admin/debian/build-packages ${git_commit}
+       /indielinks/admin/debian/build-packages
 ./validate-aws-frontend ${here}/../indielinks-fe/dist-aws

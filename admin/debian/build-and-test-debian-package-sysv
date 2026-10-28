@@ -13,10 +13,6 @@ set -ex
 
 here=$(dirname $(realpath $0))
 cd ${here}/../..
-# Take care to run this command *outside* of the container; if the project root
-# is a git worktree, the bind mounts will screw-up any git commands in the
-# container.
-export GIT_COMMIT="$(git rev-list --count HEAD)"
 cd ${here}
 ./build-debian-image
 
