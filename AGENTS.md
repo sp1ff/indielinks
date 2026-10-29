@@ -28,7 +28,7 @@ prerequisites.
 | `indielinks-shared`                          | types shared between server and clients                                                  |
 | `indielinks-cache`                           | turns a cluster of indielinks nodes into a distributed cache over Raft (openraft)        |
 | `indielinks-fe`                              | Leptos/WASM front end (not in `default-members`; built for `wasm32-unknown-unknown`)     |
-| `indielinks-client`                          | CLI, binary name `indic`                                                                 |
+| `indielinks-clients`                         | CLIs, binary names `indic` & `indio`                                                     |
 | `tests-support`                              | shared integration-test harness (fixtures/domains/backends)                              |
 | `tests-indielinks`, `tests-indielinks-cache` | integration tests, custom `harness = false`                                              |
 
@@ -69,9 +69,6 @@ instance can run at a time. To allow parallel test runs across git worktrees, th
 wrapper that sets `INDIELINKS_{SMOKE,CACHE,CACHE_CLUSTER,BACKGROUND_TASK}_TESTS_CONFIG` to files
 under `target/conf/<stack>/`, and an `infra/<stack>.env` for docker compose.
 
-This worktree is the **cloud** stack — use `admin/cargo-test-cloud`, not bare `cargo test`, when
-running the integration suite here.
-
 ## Configuration
 
 Config lives in Nickel (`*.ncl`) under `conf/` and each test crate's `conf/`. Server configs and the
@@ -95,11 +92,16 @@ Per-module `make_router(state: Arc<Indielinks>)` functions are composed in
 axum state: storage backend, caches, clients, signing keys, peppers, background-task sender, Raft
 cache node.
 
-Cluster bring-up is not automatic: a fresh node must be told its Raft membership via
-`POST /ops/cache/init-cluster` before `/healthcheck` returns `GOOD`.
+Cluster bring-up is not automatic: a fresh node must be told its Raft
+membership via `POST /ops/cache/init-cluster`. When a node is up and
+taking requests, a `GET` to the `/healthcheck` endpoint will return
+201 Created with a respond body of "GOOD". Once the Raft has been
+initialized, it will return 202 Accepted with a response body of
+"READY".
 
-Storage goes through the `Backend` trait (`indielinks/src/storage.rs`), implemented over ScyllaDB
-native CQL (`scylla.rs`) and DynamoDB/Alternator (`dynamodb.rs`).
+Storage goes through the `Backend` trait
+(`indielinks/src/storage.rs`), implemented over ScyllaDB native CQL
+(`scylla.rs`) and DynamoDB/Alternator (`dynamodb.rs`).
 
 ## Module Layering
 

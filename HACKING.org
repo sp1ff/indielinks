@@ -1,6 +1,6 @@
 #+TITLE: HACKING
 #+DESCRIPTION: How to hack on indielinks
-#+DATE: <2026-10-11 Sun 09:42>
+#+DATE: <2026-10-28 Wed 17:55>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -18,7 +18,7 @@ indielinks itself is a workspace containing a number of crates:
   - indielinks-shared :: types shared between indielinks & its clients
   - indielinks-cache :: logic for turning a cluster of indielinks nodes into a distributed cache backed by the Raft consensus protocol
   - indielinks-fe :: the indielinks web front end
-  - indielinks-client :: a CLI for interacting with the indielinks server
+  - indielinks-clients :: CLIs for interacting with the indielinks server
   - tests-support :: support code for indielinks integration tests
   - tests-indielinks :: integration tests for the indielinks crate
   - tests-indielinks-cache :: integration tests for indielinks-cache
@@ -47,7 +47,7 @@ You may find it useful to generate rustdocs (especially the aforementioned docum
 
 The indielinks test suite is a weak spot, but the project _does_ contain both unit & integration tests.
 
-To run integration tests, you will need to add this to your hosts file:
+To run integration tests, you will need to add this to your =/etc/hosts= file:
 
 ```
 127.0.0.1   indiemark.local
@@ -94,7 +94,7 @@ Pick a username & password. Don't choose a trivial password: the signup endpoint
 
 #+BEGIN_SRC bash
   export user=<your username here>
-  cargo run -p indielinks-client --bin=indic -- -v -C -A http://localhost:20679 add-user -u ${user} -p 'f00-b@r-sp1at' -m '${user}@gmail.com'
+  cargo run -p indielinks-client --bin=indio -- -C -O http://localhost:20680 -A http://localhost:20679 add-user -u ${user} -p 'f00-b@r-sp1at' -m '${user}@gmail.com'
 #+END_SRC
 
 Make a note of the API key that's printed on stdout.
