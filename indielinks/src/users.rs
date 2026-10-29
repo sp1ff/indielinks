@@ -321,6 +321,17 @@ impl Error {
             Error::InvalidCredentials { .. } => StatusCode::UNAUTHORIZED,
             Error::NoAuthToken { .. } => StatusCode::UNAUTHORIZED,
             Error::NoKeys { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            Error::Refresh { ref source, .. }
+                if matches!(
+                    **source,
+                    crate::token::Error::NotBefore { .. }
+                        | crate::token::Error::Expired { .. }
+                        | crate::token::Error::UnknownIssuer { .. }
+                        | crate::token::Error::UnknownAudience { .. },
+                ) =>
+            {
+                StatusCode::UNAUTHORIZED
+            }
             Error::UnsupportedAuthScheme { .. } => StatusCode::UNAUTHORIZED,
             ////////////////////////////////////////////////////////////////////////////////////////
             // Internal failure-- own up to it:
