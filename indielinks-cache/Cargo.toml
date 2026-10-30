@@ -15,7 +15,6 @@ non-zero = "0.2.0"
 nonempty-collections = { workspace = true, features = ["serde"] }
 nonzero = { workspace = true }
 openraft = { workspace = true, features = ["serde", "storage-v2"] }
-reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 snafu = { workspace = true, features = ["backtrace"] }
@@ -23,9 +22,11 @@ tap = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 typenum = { workspace = true }
-url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh64"] }
 
 [dev-dependencies]
 test-log = { workspace = true, features = ["trace"] }
+
+[package.metadata.cargo-shear]
+ignored-paths = ["src/_docs.rs"]

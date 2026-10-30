@@ -12,11 +12,9 @@ snafu = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1.7"
-futures = { workspace = true }
 # This is actually a transitive dependnecy, but I need the "js" feature
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 gloo-net = { version = "0.7.0", features = ["http"] }
-gloo-timers = { version = "0.4.0", features = ["futures"] }
 icondata = "0.7.0"
 indielinks-shared = { workspace = true }
 itertools = { workspace = true }
@@ -24,11 +22,9 @@ leptos = { version = "0.8.6", features = ["csr"] }
 leptos_router = "0.8.6"
 nonempty-collections = { workspace = true, features = ["serde"] }
 nonzero = { workspace = true }
-reactive_stores = "0.4.2"
 secrecy = { workspace = true, features = ["serde"] }
 send_wrapper = "0.6.0"
 serde = { workspace = true, features = ["derive"] }
-serde-wasm-bindgen = "0.6"
 serde_urlencoded = { workspace = true }
 tap = { workspace = true }
 thaw = { git = "https://github.com/thaw-ui/thaw", branch = "thaw/v0.5", features = ["csr"] }
@@ -36,10 +32,12 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-subscriber-wasm = "0.1.0"
 url = { workspace = true, features = ["serde"] }
-uuid = { workspace = true, features = ["v4", "serde"] }
 wasm-bindgen = "0.2.100"
 wasm-cookies = "0.2.1"
 web-sys = { version = "0.3.77", features = ["Clipboard", "Document", "Element", "EventTarget", "MediaQueryList", "MediaQueryListEvent", "Navigator", "Storage", "Window"] }
 
 [build-dependencies]
 url = "2.5.4"
+
+[package.metadata.cargo-shear]
+ignored = ["getrandom02"]

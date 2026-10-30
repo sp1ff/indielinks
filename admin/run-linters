@@ -56,3 +56,7 @@ if command -v guile >/dev/null 2>&1; then
 else
     echo "WARNING: unable to check for direct dependencies to hoist; consider installing `guile`"
 fi
+
+# `cargo shear` checks for unused/misplaced dependencies & source files
+# unreachable from any module
+cargo shear --deny-warnings

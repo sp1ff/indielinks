@@ -5,7 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-async-trait = { workspace = true }
 aws-sdk-dynamodb = { workspace = true }
 bytes = { workspace = true } # RUSTSEC-2026-0007
 chrono = { workspace = true, features = ["serde"] }
@@ -18,7 +17,6 @@ http = { workspace = true }
 indielinks-shared = { workspace = true, features = ["backend"] }
 itertools = { workspace = true }
 nonzero = { workspace = true }
-pin-project = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 rpassword = "7.4.0"
 scylla = { workspace = true, features = ["full-serialization"] }

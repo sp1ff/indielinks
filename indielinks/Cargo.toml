@@ -27,8 +27,7 @@ chacha20poly1305 = "0.11.0"
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["cargo", "env"] }
 comrak = "0.57.0"
-crypto-common = { workspace = true }
-dashmap = "6.1.0"
+crypto-common = "0.2.2"
 either = { workspace = true, features = ["serde"] }
 enum-map = "3.1.0"
 errno = "0.3.10"
@@ -59,11 +58,9 @@ opentelemetry-prometheus-text-exporter = "0.4.0"
 opentelemetry_sdk = "0.33.1"
 ordered-float = { version = "5.3.0", features = ["libm", "serde"] }
 password-hash = { version = "0.6.1", features = ["rand_core"] }
-pct-str = { workspace = true }
 phc = { version = "0.6.1", features = ["getrandom"] }
 picky = { workspace = true }
 pin-project = { workspace = true }
-pkcs8 = { workspace = true }
 prost = "0.14.4"
 rand = { workspace = true, features = ["std_rng"] }
 regex = { workspace = true }
@@ -81,7 +78,6 @@ sha2 = { workspace = true }
 snafu = { workspace = true }
 tap = { workspace = true }
 tempfile = "3.27.0"
-time = { workspace = true } # RUSTSEC-2026-0009
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "sync"] }
 toml = { workspace = true }
 tonic = "0.14.6"
@@ -91,7 +87,6 @@ tower-gcra = { workspace = true }
 tower-http = { workspace = true, features = ["auth", "cors", "request-id", "set-header", "trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-unicode-segmentation = { workspace = true }
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
 zxcvbn = "3.1.0"
@@ -152,3 +147,7 @@ assets = [
     ["../indielinks-fe/dist-aws/indielinks-fe.wasm", "/usr/share/indielinks/assets/indielinks-fe.wasm", "644"],
     ["../admin/debian/aws-deb-maintainer-scripts/logrotate", "/etc/logrotate.d/indielinks", "644"],
 ]
+
+[package.metadata.cargo-shear]
+ignored = ["prost", "tonic-prost"]
+ignored-paths = ["src/_docs.rs"]

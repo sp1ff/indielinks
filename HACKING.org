@@ -1,6 +1,6 @@
 #+TITLE: HACKING
 #+DESCRIPTION: How to hack on indielinks
-#+DATE: <2026-10-28 Wed 17:55>
+#+DATE: <2026-10-30 Fri 09:56>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
@@ -30,6 +30,24 @@ other directories:
   - conf :: indielinks configuration files
   - infra :: scripts & configuration related to infrastructure surrounding indielinks
   - scripts :: scripts for installing & administering indielinks
+* Pre-requisites
+
+I've probably missed something, here, but I try to keep this up-to-date:
+
+  - the Rust stable [[https://rustup.rs/][toolchain]]
+    + including clippy & rustfmt
+    + and the following Cargo commands
+      * cargo-deb
+      * cargo-shear
+  - [[https://www.docker.com/][Docker]]
+  - [[https://www.haproxy.org/][haproxy]]
+  - [[https://trunkrs.dev/][trunk]]
+  - [[https://tailwindcss.com/][TailwindCSS]]
+  - [[https://nickel-lang.org/getting-started/][nickel]]
+  - ripgrep
+  - neato
+  - Gnu Guile
+
 * Compiling
 
 indielinks builds on stable Rust. Assuming you've got the toolchain installed (see [[INSTALL.org]]), just do:

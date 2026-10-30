@@ -2570,7 +2570,7 @@ dependencies = [
  "gloo-net 0.3.1",
  "gloo-render",
  "gloo-storage",
- "gloo-timers 0.2.6",
+ "gloo-timers",
  "gloo-utils 0.1.7",
  "gloo-worker",
 ]
@@ -2629,7 +2629,7 @@ dependencies = [
  "gloo-events",
  "gloo-utils 0.1.7",
  "serde",
- "serde-wasm-bindgen 0.5.0",
+ "serde-wasm-bindgen",
  "serde_urlencoded",
  "thiserror 1.0.69",
  "wasm-bindgen",
@@ -2730,18 +2730,6 @@ version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b995a66bb87bebce9a0f4a95aed01daca4872c050bfcb21653361c03bc35e5c"
 dependencies = [
- "js-sys",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "gloo-timers"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "482ce8a491a501da4cd806bd190275363d674f2845005c6ddbd5d3e1dd54495d"
-dependencies = [
- "futures-channel",
- "futures-core",
  "js-sys",
  "wasm-bindgen",
 ]
@@ -3626,7 +3614,6 @@ dependencies = [
  "clap",
  "comrak",
  "crypto-common 0.2.2",
- "dashmap",
  "either",
  "enum-map",
  "errno",
@@ -3657,11 +3644,9 @@ dependencies = [
  "opentelemetry_sdk",
  "ordered-float",
  "password-hash",
- "pct-str",
  "phc",
  "picky",
  "pin-project",
- "pkcs8",
  "prost",
  "prost-build",
  "rand 0.10.3",
@@ -3680,7 +3665,6 @@ dependencies = [
  "snafu",
  "tap",
  "tempfile",
- "time",
  "tokio",
  "toml 1.1.8+spec-1.1.0",
  "tonic",
@@ -3691,7 +3675,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "unicode-segmentation",
  "url",
  "uuid",
  "wiremock",
@@ -3712,7 +3695,6 @@ dependencies = [
  "nonempty-collections",
  "nonzero",
  "openraft",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "snafu",
@@ -3721,7 +3703,6 @@ dependencies = [
  "tokio",
  "tracing",
  "typenum",
- "url",
  "uuid",
  "xxhash-rust",
 ]
@@ -3730,7 +3711,6 @@ dependencies = [
 name = "indielinks-clients"
 version = "0.0.1"
 dependencies = [
- "async-trait",
  "aws-sdk-dynamodb",
  "bytes",
  "chrono",
@@ -3743,7 +3723,6 @@ dependencies = [
  "indielinks-shared",
  "itertools 0.15.0",
  "nonzero",
- "pin-project",
  "reqwest 0.12.28",
  "rpassword",
  "scylla",
@@ -3769,10 +3748,8 @@ version = "0.0.1"
 dependencies = [
  "chrono",
  "console_error_panic_hook",
- "futures",
  "getrandom 0.2.17",
  "gloo-net 0.7.0",
- "gloo-timers 0.4.0",
  "icondata",
  "indielinks-shared",
  "itertools 0.15.0",
@@ -3780,11 +3757,9 @@ dependencies = [
  "leptos_router",
  "nonempty-collections",
  "nonzero",
- "reactive_stores 0.4.4",
  "secrecy 0.10.3",
  "send_wrapper",
  "serde",
- "serde-wasm-bindgen 0.6.5",
  "serde_urlencoded",
  "snafu",
  "tap",
@@ -3793,7 +3768,6 @@ dependencies = [
  "tracing-subscriber",
  "tracing-subscriber-wasm",
  "url",
- "uuid",
  "wasm-bindgen",
  "wasm-cookies",
  "web-sys",
@@ -3813,7 +3787,6 @@ dependencies = [
  "either",
  "email_address",
  "getrandom 0.4.3",
- "hex",
  "http 1.5.0",
  "itertools 0.15.0",
  "lazy_static",
@@ -3834,7 +3807,6 @@ dependencies = [
  "serde_json",
  "snafu",
  "tap",
- "time",
  "tokio",
  "tower",
  "tower-http",
@@ -6611,17 +6583,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde-wasm-bindgen"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
-dependencies = [
- "js-sys",
- "serde",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "serde_bytes"
 version = "0.11.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7346,13 +7307,11 @@ version = "0.0.1"
 dependencies = [
  "approx",
  "async-trait",
- "aws-config",
  "aws-sdk-dynamodb",
  "aws-smithy-runtime-api",
  "axum",
  "base64 0.23.1",
  "chrono",
- "crypto-common 0.2.2",
  "either",
  "futures",
  "governor",
@@ -7373,7 +7332,6 @@ dependencies = [
  "openraft",
  "picky",
  "rand 0.10.3",
- "regex",
  "reqwest 0.12.28",
  "rmp-serde",
  "scylla",
@@ -7389,7 +7347,6 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tower-gcra",
  "tracing",
- "tracing-subscriber",
  "url",
  "uuid",
  "waitpid-any",
