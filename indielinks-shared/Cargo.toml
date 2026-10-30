@@ -18,16 +18,15 @@ email_address = "0.2.9"
 # feature for indielinks-fe builds (indielinks-fe depends on this
 # crate). This is required despite what `cargo outdated` may say.
 getrandom = { version = "0.4", features = ["wasm_js"] }
-hex = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
 lazy_static = { workspace = true }
 nonempty-collections = { workspace = true, features = ["serde"] }
 opentelemetry = { workspace = true }
-pct-str = { workspace = true }
+pct-str = "3.0.1"
 picky = { workspace = true }
 pin-project = { workspace = true }
-pkcs8 = { workspace = true }
+pkcs8 = "0.11.0"
 rand = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
@@ -38,11 +37,10 @@ secrecy = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 snafu = { workspace = true, features = ["backtrace"] }
 tap = { workspace = true }
-time = { workspace = true } # RUSTSEC-2026-0009
 tower = { workspace = true, features = ["retry"] }
 tower-http = { workspace = true, features = ["cors"] }
 typenum = { workspace = true }
-unicode-segmentation = { workspace = true }
+unicode-segmentation = "1.12.0"
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde", "v4"] }
 
@@ -60,3 +58,6 @@ backend = [
     "dep:scylla",
     "__internal"
 ]
+
+[package.metadata.cargo-shear]
+ignored = ["getrandom"]

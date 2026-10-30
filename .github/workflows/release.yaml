@@ -81,6 +81,20 @@ jobs:
           cargo install --force cargo-deb
           cargo install --locked trunk
 
+      - name: Install version sensitive tools - pinned
+        shell: bash
+        if: matrix.rust-build == 'pinned'
+        run: |
+          set -xeuo pipefail
+          cargo install --force --locked --version 1.12.4 cargo-shear
+          
+      - name: Install version sensitive tools - not pinned
+        shell: bash
+        if: matrix.rust-build != 'pinned'
+        run: |
+          set -xeuo pipefail
+          cargo install --force --locked cargo-shear
+
       - name: Install TailwindCSS
         shell: bash
         run: |
