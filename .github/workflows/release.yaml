@@ -79,7 +79,7 @@ jobs:
           cargo install --force ripgrep
           cargo install --force nickel-lang-cli
           cargo install --force cargo-deb
-          cargo install --force cargo-shear
+          cargo install --force --locked cargo-shear
           cargo install --locked trunk
 
       - name: Install TailwindCSS
