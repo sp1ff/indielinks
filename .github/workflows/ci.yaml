@@ -69,13 +69,26 @@ jobs:
         cargo install --force ripgrep
         cargo install --force nickel-lang-cli
         cargo install --force cargo-deb
-        cargo install --force --locked cargo-shear
         # Turning this off, since as of 0.22.2 it requires a fairly
         # recent version of rust, breaking my "pinned" variant, and
         # I'm not using it RN, anyway. When I turn `cargo audit` back
         # on in my linting, I'll have to address this, somehow.
         # cargo install --force cargo-audit
         rustc --version
+
+    - name: Install version sensitive tools - pinned
+      shell: bash
+      if: matrix.rust-build == 'pinned'
+      run: |
+        set -xeuo pipefail
+        cargo install --force --locked --version 1.12.4 cargo-shear
+        
+    - name: Install version sensitive tools - not pinned
+      shell: bash
+      if: matrix.rust-build != 'pinned'
+      run: |
+        set -xeuo pipefail
+        cargo install --force --locked cargo-shear
 
     - name: Lint
       shell: bash
