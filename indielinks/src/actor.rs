@@ -265,6 +265,13 @@ pub enum Error {
     },
     #[snafu(display("Failed to buld an http request: {source}"))]
     Request { source: crate::ap_entities::Error },
+    #[snafu(display("possible request forgery: request was signed by {}, but that resolves to {}",
+                    key_id.as_str(), actor_id.as_str()))]
+    RequestForgery {
+        key_id: Box<Url>,
+        actor_id: Box<Url>,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Failed to resolve a key ID to an Actor: {source}"))]
     ResolveKeyId {
         #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
@@ -335,6 +342,7 @@ impl Error {
             Error::PostUserMismatch { .. } => (StatusCode::NOT_FOUND, format!("{self}")),
             Error::PublicKey { .. } => (StatusCode::UNAUTHORIZED, format!("{self}")),
             Error::ResolveKeyId { .. } => (StatusCode::UNAUTHORIZED, format!("{self}")),
+            Error::RequestForgery { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
             Error::SignatureParse { .. } => (StatusCode::BAD_REQUEST, format!("{self}")),
             _ => (StatusCode::INTERNAL_SERVER_ERROR, format!("{self}")),
         }
@@ -401,7 +409,7 @@ async fn verify_signature(
         ap_resolver: Arc<Mutex<ApResolver>>,
     ) -> Result<(axum::extract::Request, ap_entities::Actor)> {
         // Huh. Per <https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12>, the
-        // signature should be transmitted in an Authorizatoin header, with a scheme of "Signature":
+        // signature should be transmitted in an Authorization header, with a scheme of "Signature":
         // "The client is expected to send an Authorization header... where the 'auth-scheme' is
         // 'Signature' and the 'auth-param' parameters meet the requirements listed in ...The
         // Components of a Signature." Mastodon, however, sends a "signature" header 🤷 Not sure how
@@ -458,13 +466,11 @@ async fn verify_signature(
         // they're not cached, the resulting HTTP call will fail with 410 Gone.
         use crate::ap_entities::Error::FailedAp as FailedApError;
         use crate::ap_resolution::Error::Ap as ApError;
+        let key_id = Url::parse(key_id).context(BadKeyIdSnafu)?;
         let actor = match ap_resolver
             .lock()
             .await
-            .get_actor(
-                principal.as_ref(),
-                &Url::parse(key_id).context(BadKeyIdSnafu)?,
-            )
+            .get_actor(principal.as_ref(), &key_id)
             .await
         {
             Ok(actor) => actor,
@@ -485,6 +491,27 @@ async fn verify_signature(
                 return Err(ResolveKeyIdSnafu.into_error(err));
             }
         };
+
+        // Guard against request forgery: an attacker (call him "mallory") could craft a request,
+        // signed with his private key, with a key ID naming a document in his control. That
+        // document could be a legit Actor, but naming SOMEONE ELSE (call her "alice"). Let's check
+        // that the returned Actor ID matches that in the key ID:
+
+        // Seems ugly; I really ought to be able to get a read-only view into the existing
+        // instance (i.e. without making a clone).
+        fn no_fragment(url: &Url) -> Url {
+            let mut url = url.clone();
+            url.set_fragment(None);
+            url
+        }
+
+        if no_fragment(&key_id) != no_fragment(actor.id()) {
+            return RequestForgerySnafu {
+                key_id: Box::new(key_id),
+                actor_id: Box::new(actor.id().clone()),
+            }
+            .fail();
+        }
 
         let public_key = actor.public_key().context(PublicKeySnafu)?;
 
