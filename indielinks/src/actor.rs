@@ -742,7 +742,7 @@ async fn accept_create(
     timelines: Arc<Mutex<HomeTimelines>>,
 ) -> Result<()> {
     // I'm going to log aggressively here, as I explore the corners of the ActivityPub protocol:
-    warn!("In receipt of a Create: {:?}", create);
+    info!("In receipt of a Create: {:?}", create);
 
     // At this time, we're expecting the `Create` entity's `object` attribute to be a `Note`-- the `Note`
     // corresponding to a Post made by some user.
@@ -759,7 +759,7 @@ async fn accept_create(
     // field naming a post on this instance. *However*, sometimes Mastodon relays replies to people
     // I follow. In that case, the message will be signed by my followee. Ah... ActivityPub!
     if actor.id() != create.actor() {
-        info!(
+        warn!(
             "I have a `Create` signed by {}, while the `Create` itself reports an actor of {}. \
              I'm assuming this is a reply to {} who has followers on this instance.",
             actor.id(), // Url::url
@@ -1231,10 +1231,21 @@ async fn accept_follow(
 async fn accept_like(
     user: &User,
     like: &Like,
+    actor: &Actor,
     origin: &Origin,
     storage: &(dyn StorageBackend + Send + Sync),
 ) -> Result<()> {
     info!("Received a Like: {:?}", like);
+
+    // Let's first check that the Actor sending us this like matches the Actor who signed the
+    // request (it would be weird if Mallory were sending a Like on behalf of Alice).
+    if like.actor_id() != actor.id() {
+        return MismatchedActorIdSnafu {
+            signature: actor.id().as_str().to_owned(),
+            request: like.actor_id().as_str().to_owned(),
+        }
+        .fail();
+    }
 
     // We have, in `like`, an `Url` naming the post that was liked. We resolve that to a `Post` by
     // first extracting the post ID from that URL...
@@ -1276,8 +1287,17 @@ async fn accept_like(
 }
 
 // This is a stub.
-async fn accept_undo(undo: &Undo) -> Result<()> {
+async fn accept_undo(actor: &Actor, undo: &Undo) -> Result<()> {
     warn!("In receipt of an Undo: {:?}", undo);
+
+    if actor.id() != undo.actor_id() {
+        return MismatchedActorIdSnafu {
+            signature: actor.id().as_str().to_owned(),
+            request: undo.actor_id().as_str().to_owned(),
+        }
+        .fail();
+    }
+
     Ok(())
 }
 
@@ -1349,11 +1369,11 @@ async fn inbox(
             }
             InboxPayload::Like(like) => {
                 inbox_follows.add(1, &[]);
-                accept_like(&user, like, origin, storage).await
+                accept_like(&user, like, actor, origin, storage).await
             }
             InboxPayload::Undo(undo) => {
                 inbox_undos.add(1, &[]);
-                accept_undo(undo).await
+                accept_undo(actor, undo).await
             }
             InboxPayload::Accept(accept) => {
                 inbox_accepts.add(1, &[]);
@@ -1365,13 +1385,7 @@ async fn inbox(
     fn handle_err(err: Error) -> axum::response::Response {
         error!("{:#?}", err);
         inbox_errors.add(1, &[]);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponseBody {
-                error: format!("{err}"),
-            }),
-        )
-            .into_response()
+        err.into_response()
     }
 
     match inbox1(

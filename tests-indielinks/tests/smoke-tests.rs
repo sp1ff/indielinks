@@ -90,6 +90,7 @@ use tests_indielinks::{
         as_follower, context_with_mastodon, posting_creates_note, request_forgery, send_follow,
         send_follow_by_handle,
     },
+    actor::like_actor_mismatch,
     counts::test_counts,
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
@@ -1062,6 +1063,20 @@ inventory::submit!(Test {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(request_forgery(
+            helper.indielinks(),
+            version,
+            pepper,
+            helper,
+        ))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode]),
+});
+
+inventory::submit!(Test {
+    name: "086like_actor_mismatch",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(like_actor_mismatch(
             helper.indielinks(),
             version,
             pepper,
