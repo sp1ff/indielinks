@@ -87,7 +87,7 @@ use indielinks::{grpc::InitClusterRequest, peppers::Peppers, scylla::execute_cql
 
 use tests_indielinks::{
     activity_pub::{
-        as_follower, context_with_mastodon, posting_creates_note, send_follow,
+        as_follower, context_with_mastodon, posting_creates_note, request_forgery, send_follow,
         send_follow_by_handle,
     },
     counts::test_counts,
@@ -1055,6 +1055,20 @@ inventory::submit!(Test {
         Box::pin(test_mint_key(helper.indielinks(), helper.ops(), helper))
     },
     fixtures: None,
+});
+
+inventory::submit!(Test {
+    name: "085request_forgery",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(request_forgery(
+            helper.indielinks(),
+            version,
+            pepper,
+            helper,
+        ))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode]),
 });
 
 inventory::submit!(Test {

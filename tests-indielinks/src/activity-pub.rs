@@ -21,8 +21,10 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use lazy_static::lazy_static;
 use libtest_mimic::Failed;
+use picky::key::PrivateKey;
 use reqwest::{header::ACCEPT, header::CONTENT_TYPE, Client, Url};
 use secrecy::SecretString;
+use serde_json::json;
 use tap::Pipe;
 use tracing::{debug, instrument};
 use uuid::Uuid;
@@ -92,6 +94,97 @@ pub async fn setup_test(
         .build()?;
 
     Ok((mock_server, mock_user, client))
+}
+
+/// Reject a request whose signing actor document claims a different identity.
+///
+/// Mallory runs a peer server and signs a request with her own private key, but configures her
+/// actor document to claim Alice's identity (while still publishing Mallory's public key). When
+/// indielinks resolves the `keyId` to Mallory's actor URL, it fetches a document identifying the
+/// actor as Alice. The request should be rejected with 400 Bad Request.
+pub async fn request_forgery(
+    indielinks: Url,
+    pepper_version: PepperVersion,
+    pepper_key: Pepper,
+    helper: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
+    let username = Username::new("request_forgery_user").unwrap(/* known good */);
+
+    helper.remove_user(&username).await?;
+
+    // Mallory: the attacker. She will sign with her own key, but claim to be Alice.
+    let mallory = PeerUser {
+        name: Username::new("mallory").unwrap(/* known good */),
+        priv_key: PrivateKey::generate_rsa(2048)?,
+    };
+
+    let mock_server = MockServer::start().await;
+    let mock_origin: Origin = mock_server.uri().try_into()?;
+
+    // Mallory's actor document claims to be Alice, but includes Mallory's public key so the
+    // HTTP signature itself verifies.
+    let mallory_pub_key_pem = mallory.pub_key()?.to_pem_str()?;
+    let malicious_actor = json!({
+        "@context": [
+            "https://www.w3.org/ns/activitystreams",
+            "https://w3id.org/security/v1"
+        ],
+        "type": "Person",
+        "id": format!("{mock_origin}/users/alice"),
+        "preferredUsername": "alice",
+        "inbox": format!("{mock_origin}/users/alice/inbox"),
+        "outbox": format!("{mock_origin}/users/alice/outbox"),
+        "publicKey": {
+            "id": format!("{mock_origin}/users/alice#main-key"),
+            "owner": format!("{mock_origin}/users/alice"),
+            "publicKeyPem": mallory_pub_key_pem
+        }
+    });
+
+    Mock::given(method("GET"))
+        .and(path(format!("/users/{}", mallory.name())))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(malicious_actor.to_string())
+                .insert_header("Content-Type", "application/activity+json"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let client = Client::builder().user_agent(TEST_USER_AGENT).build()?;
+
+    // Create a local user whose outbox Mallory will target.
+    helper
+        .create_user(
+            &pepper_version,
+            &pepper_key,
+            &username,
+            &TEST_PASSWORD,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .await?;
+
+    // Ask for the local user's outbox, signing the request as Mallory. The authenticated actor
+    // resolved from Mallory's keyId will be Alice, exposing the forged document.
+    let request = make_signed_request(
+        axum::http::Method::GET,
+        indielinks.join(&format!("/users/{username}/outbox"))?,
+        reqwest::Body::default(),
+        &mock_origin,
+        mallory.priv_key(),
+        mallory.name(),
+    )
+    .await?;
+
+    let rsp = client.execute(request).await?;
+    assert_eq!(
+        rsp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "forged actor document should be rejected with 400 Bad Request"
+    );
+
+    Ok(())
 }
 
 pub async fn posting_creates_note(
