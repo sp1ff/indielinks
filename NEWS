@@ -14,6 +14,9 @@ requests for the same remote Note.
 *** Added `cargo shear` to `run-linters`
 
 Removed several unused dependencies in the doing.
+*** Tighten-up XSS protection
+
+Uniformly sanitize incoming HTML contained in AcitivtyPub messages.
 * 0.0.1
 
 Initial indielinks release.

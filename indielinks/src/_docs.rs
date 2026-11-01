@@ -471,6 +471,39 @@
 //! When both secrets resolve to SSM parameters, they are fetched in a single batched
 //! `GetParameters` call.
 //!
+//! ## XSS & Sanitizing HTML
+//!
+//! The santization story is a mess. Not that we don't sanitize incoming HTML, just that we don't do
+//! it very elegantly. First, where do we take _in_ HTML from untrusted sources?
+//!
+//! - the shared inbox receives a `Create` of a `Note`
+//!   - if it's a reply to one of our `Post`s, it's written-down in the datastore (in `incoming_likes_replies_shares`)
+//!   - if it's just someing created by someone one of our users follows, it is *never* persisted; we note it in the ap-resolver, but that's it
+//! - the shared inbox receives an `Announce` referencing a `Note`
+//!    - this isn't fully implemented yet, but will be written-down in the `incoming_likes_replies_shares` table
+//! - a `Note` that we know about as an AP ID/URL is resolved by the `ApResolver`; this is *never* persisted; it lives only in memory
+//!
+//! In all these cases, it's possible that the HTML in these incoming documents contains malicious
+//! code (i.e. XSS, or Cross-Site Cripting). I saw two ways of dealing with this:
+//!
+//! - sanitize it at the edge: create a refined type that can only be instantiated by sanitizing the
+//!   input text and define our request types in terms of it; this way, the sanitization will be
+//!   performed when axum deserializes the incomign request, and our application code will never
+//!   have to even see "dirty" HTML
+//!
+//! - accept "dirty" HTML, sanitize it early, and record both the original input and the santized
+//!   version; serve only the sanitized version
+//!
+//! The second appeals to me for a few reasons. We preserve the original input for forensic
+//! purposes. If a new vulnerability is discovered, we can just re-santize everything (whereas with
+//! the first option, we're stuck with the insufficiently sanitized HTML). That said, the second
+//! option means that we now need to maintain the progrmaming discipline to only implement features
+//! & systems in terms of internal, "clean" types that can only be constructed from untrusted input
+//! by sanitizing that input, first.
+//!
+//! It is that last part that pushed me toward the first option, along with the fact that it was
+//! much easier to implement.
+//!
 //! # Developers' Documentation
 //!
 //! I spent the best part of a year (on & off) "picking at" the problem of implementing an
