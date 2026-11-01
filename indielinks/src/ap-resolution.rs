@@ -45,6 +45,7 @@ use bytes::Bytes;
 use indielinks_cache::{cache::Cache, network::ClientFactory};
 
 use indielinks_shared::acct::Account;
+use uuid::Uuid;
 
 use crate::{
     ap_entities::{
@@ -60,43 +61,49 @@ use crate::{
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum Error<FC: indielinks_cache::network::Client + 'static = GrpcClient>
 where
     FC::ErrorType: std::error::Error + std::fmt::Debug + 'static,
 {
-    #[snafu(display("Failed to produce an ActivityPub Actor from a User"))]
+    #[snafu(display("failed to produce an ActivityPub Actor from a User"))]
     Actor { source: crate::ap_entities::Error },
-    #[snafu(display("While sending an ActivityPub request, {source}"))]
+    #[snafu(display("failed sending an ActivityPub request"))]
     Ap { source: crate::ap_entities::Error },
-    #[snafu(display("While making a Grpc call, {source}"))]
+    #[snafu(display("failed making a Grpc call"))]
     Grpc {
         source: indielinks_cache::cache::Error<FC>,
     },
-    #[snafu(display("The handle username {username} isn't a valid indielinks username"))]
+    #[snafu(display("the handle username {username} isn't a valid indielinks username"))]
     Handle {
         username: indielinks_shared::acct::Username,
         #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
         source: Box<indielinks_shared::entities::Error>,
     },
-    #[snafu(display("No 'self' Link from a webfinger"))]
+    #[snafu(display("no 'self' Link from a webfinger"))]
     NoSelf { backtrace: Backtrace },
-    #[snafu(display("While forming an URL, {source}"))]
+    #[snafu(display("failed to lookup Note {postid}"))]
+    Note {
+        postid: Uuid,
+        source: crate::storage::Error,
+    },
+    #[snafu(display("failed to format an URL"))]
     Url {
         source: url::ParseError,
         backtrace: Backtrace,
     },
-    #[snafu(display("Failed to find a user named {username}"))]
+    #[snafu(display("failed to find a user named {username}"))]
     User {
         username: Username,
         source: crate::storage::Error,
     },
-    #[snafu(display("Failed to parse an indielinks username from {}", url.as_str()))]
+    #[snafu(display("failed to parse an indielinks username from {}", url.as_str()))]
     Username {
         url: Url,
         #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
         source: Box<crate::ap_entities::Error>,
     },
-    #[snafu(display("Failed to parse an indielinks username and post ID from {}", url.as_str()))]
+    #[snafu(display("failed to parse an indielinks username and post ID from {}", url.as_str()))]
     UsernameAndPostId {
         url: Url,
         #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
@@ -264,30 +271,37 @@ where
         if let Some(note) = self.notes.get(url).await.context(GrpcSnafu)? {
             debug!("Cache hit: {} :=> {note:?}", url.as_str());
             note
-        } else if self.origin.matches_url(url) {
-            debug!(
-                "Cache miss; however {} is hosted on this intance",
-                url.as_str()
-            );
-
-            let (username, postid) = username_and_postid_from_url(&self.origin, url)
-                .context(UsernameAndPostIdSnafu { url: url.clone() })?;
-            get_note(&self.origin, self.storage.as_ref(), &username, &postid)
-                .await
-                .unwrap()
         } else {
-            // Cache miss
-            ap_request(
-                &mut self.client,
-                &self.origin,
-                principal,
-                url,
-                Method::GET,
-                None,
-                &(),
-            )
-            .await
-            .context(ApSnafu)?
+            let note = if self.origin.matches_url(url) {
+                debug!(
+                    "Cache miss; however {} is hosted on this intance",
+                    url.as_str()
+                );
+
+                let (username, postid) = username_and_postid_from_url(&self.origin, url)
+                    .context(UsernameAndPostIdSnafu { url: url.clone() })?;
+                get_note(&self.origin, self.storage.as_ref(), &username, &postid)
+                    .await
+                    .context(NoteSnafu { postid })?
+            } else {
+                ap_request(
+                    &mut self.client,
+                    &self.origin,
+                    principal,
+                    url,
+                    Method::GET,
+                    None,
+                    &(),
+                )
+                .await
+                .context(ApSnafu)?
+            };
+
+            self.notes
+                .insert(url.clone(), note.clone())
+                .await
+                .context(GrpcSnafu)?;
+            note
         }
         .pipe(Ok)
     }
@@ -421,12 +435,14 @@ mod test {
     /// for the same URL, the test fails rather than silently succeeding.
     struct MockHttpClient {
         responses: HashMap<String, http::Response<Bytes>>,
+        request_count: usize,
     }
 
     impl MockHttpClient {
         fn new(entries: impl IntoIterator<Item = (String, http::Response<Bytes>)>) -> Self {
             Self {
                 responses: entries.into_iter().collect(),
+                request_count: 0,
             }
         }
     }
@@ -444,6 +460,7 @@ mod test {
         }
 
         fn call(&mut self, req: http::Request<Bytes>) -> Self::Future {
+            self.request_count += 1;
             let rsp = self
                 .responses
                 .remove(&req.uri().to_string())
@@ -770,6 +787,55 @@ mod test {
             .await
             .expect("Failed to retrieve the actor");
         assert_eq!(actor.id().as_str(), "https://indieweb.social/users/sp1ff");
+    }
+
+    #[tokio::test]
+    async fn test_note_id_to_note_caches_http_response() {
+        let note_id = known_good!(Url::parse("https://remote.example/notes/1"));
+        let document = serde_json::json!({
+            "@context": "https://www.w3.org/ns/activitystreams",
+            "type": "Note",
+            "id": note_id.as_str(),
+            "published": "2026-01-01T00:00:00Z",
+            "attributedTo": "https://remote.example/users/alice",
+            "to": ["https://www.w3.org/ns/activitystreams#Public"],
+            "cc": [],
+            "content": "<p>A cached note.</p>",
+            "replies": {
+                "id": "https://remote.example/notes/1/replies",
+                "totalItems": 0
+            }
+        });
+        let response = http::Response::builder()
+            .status(200)
+            .body(Bytes::from(document.to_string()))
+            .expect("the mock Note response should build");
+        let client = MockHttpClient::new([(note_id.to_string(), response)]);
+        let mut resolver = make_resolver(client).await;
+        let (_, private_key) =
+            generate_rsa_keypair().expect("the signing key pair should generate");
+
+        let note = resolver
+            .note_id_to_note(Right(&private_key), &note_id)
+            .await
+            .expect("the first lookup should retrieve the Note over HTTP");
+        assert_eq!(note.id(), &note_id);
+        assert_eq!(
+            resolver.client.request_count, 1,
+            "the first lookup should make one HTTP request"
+        );
+
+        let cached_note = resolver
+            .note_id_to_note(Right(&private_key), &note_id)
+            .await;
+        assert_eq!(
+            resolver.client.request_count, 1,
+            "the second lookup should use the cache without another HTTP request"
+        );
+        assert_eq!(
+            cached_note.expect("the second lookup should retrieve the cached Note"),
+            note
+        );
     }
 
     #[tokio::test]
