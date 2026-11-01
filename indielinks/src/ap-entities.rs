@@ -776,12 +776,13 @@ impl Actor {
         })
     }
     // This is amazingly lame & is just a placeholder.
-    pub fn as_html(&self) -> Result<Html> {
-        Ok(Html(format!(
+    pub fn as_html(&self) -> Result<SanitizedHtml> {
+        Ok(format!(
             "<html><body>{} ({})</body></html>",
             self.preferred_username(),
             self.id()
-        )))
+        )
+        .into())
     }
     pub fn as_jld(&self, context: Option<Context>) -> Result<Jld> {
         Jld::new(self, context)
@@ -1269,9 +1270,9 @@ pub struct Note {
     attributed_to: Url,
     to: Vec<Url>,
     cc: Vec<Url>,
-    content: Html,
+    content: SanitizedHtml,
     // Should be using crate `isolang`: <https://docs.rs/isolang/latest/isolang/>
-    content_map: Option<HashMap<String, Html>>,
+    content_map: Option<HashMap<String, SanitizedHtml>>,
     replies: Replies,
     // Yet to be implemented:
     // - tag
@@ -1281,7 +1282,7 @@ pub struct Note {
 
 // Not sure where this belongs, but since this module is the only place it's called at the moment,
 // I'm going to leave it here.
-fn parse_post(origin: &Origin, post: &Post) -> Result<Html> {
+fn parse_post(origin: &Origin, post: &Post) -> Result<SanitizedHtml> {
     let untagged = match post.notes() {
         // Lame-- just include `s` verbatim
         Some(s) => format!("<a href=\"{}\">{}</a>: {}", post.url(), post.title(), s),
@@ -1308,7 +1309,7 @@ fn parse_post(origin: &Origin, post: &Post) -> Result<Html> {
     };
 
     let ParseResult { html, .. } = parse(&html).context(ParseSnafu)?;
-    Ok(html.into())
+    Ok(html)
 }
 
 impl Note {
@@ -1348,7 +1349,6 @@ impl Note {
         T: Iterator<Item = Url>,
         U: Iterator<Item = Url>,
     {
-        let content: Html = content.into();
         Ok(Note {
             id,
             summary: None,
@@ -1378,8 +1378,8 @@ impl Note {
             to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
                 .context(UrlParseSnafu)?],
             cc: vec![make_user_followers(username, origin)?],
-            content: html.clone().into(),
-            content_map: Some(HashMap::from([("en".to_owned(), html.into())])),
+            content: html.clone(),
+            content_map: Some(HashMap::from([("en".to_owned(), html)])),
             replies: Replies::empty_for_reply(origin, username, &reply.id())?,
         })
     }
@@ -1398,8 +1398,8 @@ impl Note {
             to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
                 .context(UrlParseSnafu)?],
             cc: vec![make_user_followers(username, origin)?],
-            content: html.clone().into(),
-            content_map: Some(HashMap::from([("en".to_owned(), html.into())])),
+            content: html.clone(),
+            content_map: Some(HashMap::from([("en".to_owned(), html)])),
             replies: Replies::empty_for_share(origin, username, &share.id())?,
         })
     }
@@ -1455,15 +1455,15 @@ impl Note {
             attributed_to: reply.attributed_to().clone(),
             to,
             cc,
-            content: content.into(),
+            content,
             // Lame: how do I know the language of `content`?
             content_map: Default::default(),
             replies: Replies::new(reply.replies().clone(), None, None),
         })
     }
     // Ack! Placeholder!
-    pub fn as_html(&self) -> Result<Html> {
-        Ok(Html(self.content().to_string()))
+    pub fn as_html(&self) -> Result<SanitizedHtml> {
+        Ok(self.content().clone())
     }
     pub fn as_jld(&self, context: Option<Context>) -> Result<Jld> {
         Jld::new(self, context)
@@ -1471,7 +1471,7 @@ impl Note {
     pub fn attributed_to(&self) -> &Url {
         &self.attributed_to
     }
-    pub fn content(&self) -> &Html {
+    pub fn content(&self) -> &SanitizedHtml {
         &self.content
     }
     pub fn id(&self) -> &Url {
@@ -1669,7 +1669,7 @@ pub struct Share {
     actor: Url,
     published: DateTime<Utc>,
     original_id: Url,
-    content: Html,
+    content: SanitizedHtml,
 }
 
 impl Share {
@@ -1678,7 +1678,7 @@ impl Share {
         actor: Url,
         published: DateTime<Utc>,
         original_id: Url,
-        content: Html,
+        content: SanitizedHtml,
     ) -> Self {
         Self {
             id,
@@ -2329,36 +2329,6 @@ mod test {
         );
         assert!(x.is_ok());
         assert!(matches!(x.unwrap(/* known good */), InboxPayload::Like(_)))
-    }
-}
-
-/// Refined type representing not just any text, but HTML
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Html(String);
-
-impl Display for Html {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl AsRef<str> for Html {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-// We can always go from sanitized HTML to just HTML,
-impl From<SanitizedHtml> for Html {
-    fn from(value: SanitizedHtml) -> Self {
-        Html(value.into())
-    }
-}
-
-// but to go in the other direction, we need to actually sanitize the HTML.
-impl From<Html> for SanitizedHtml {
-    fn from(value: Html) -> Self {
-        value.0.into()
     }
 }
 

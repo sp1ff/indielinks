@@ -38,14 +38,14 @@
 //!
 //! [pulldown-cmark]: https://docs.rs/pulldown-cmark/latest/pulldown_cmark/index.html
 //!
-//! [markdown-it] and its fork [markdown-that] are Rust prots of the popular JavaScript [library] by
+//! [markdown-it] and its fork [markdown-that] are Rust ports of the popular JavaScript [library] by
 //! the same name, but are too rarely used & dormant for me to feel comfortable using them.
 //!
 //! [markdown-it]: https://docs.rs/markdown-it/latest/markdown_it/index.html
 //! [markdown-that]: https://docs.rs/markdown-that/latest/markdown_that/index.html
 //! [library]: https://github.com/markdown-it/markdown-it
 
-use std::{cell::RefCell, fmt::Display, result::Result as StdResult};
+use std::{cell::RefCell, collections::HashMap, fmt::Display, result::Result as StdResult};
 
 use comrak::{
     arena_tree::Node,
@@ -61,9 +61,45 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use indielinks_shared::acct::Account;
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       HTML Sanitization                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+lazy_static! {
+    // I use `ammonia::Builder` rather than the convenience function `ammonia::clean()` both to make
+    // the parameters explicit, as well as to tighten them up a bit from the defaults (which are
+    // general-purpose).
+    static ref AMMONIA_OPTIONS: ammonia::Builder<'static> = {
+        let mut builder = ammonia::Builder::default();
+        builder
+            .tags(["a", "b", "blockquote", "br", "code", "del", "em", "i", "li", "mark", "ol", "p",
+                   "pre", "s", "small", "span", "strong", "sub", "sup", "time", "u", "ul",].into())
+            .clean_content_tags(["script", "style", "iframe", "object", "embed", "svg", "math",
+                                 "template", "form", "textarea"].into())
+            .tag_attributes([("a", ["href", "hreflang"].into()),
+                             ("blockquote", ["cite"].into()),
+                             ("time", ["datetime"].into())].into())
+            .generic_attributes(["lang", "title"].into())
+            .url_schemes(["http", "https", "mailto"].into())
+            .url_relative(ammonia::UrlRelative::Deny)
+            .link_rel(Some("noopener noreferrer nofollow ugc"))
+            .strip_comments(true)
+            .allowed_classes(HashMap::new());
+        builder
+    };
+}
+
 /// Refined type that can only be instantiated by sanitizing input HTML
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SanitizedHtml(String);
+
+impl SanitizedHtml {
+    // It bothers me that `text` can be an arbitrary UTF-8 string, but, then, that's the type
+    // ammonia accepts, so 🤷.
+    pub fn new(text: &str) -> Self {
+        Self(AMMONIA_OPTIONS.clean(text).into())
+    }
+}
 
 impl Display for SanitizedHtml {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -79,13 +115,13 @@ impl AsRef<str> for SanitizedHtml {
 
 impl From<&str> for SanitizedHtml {
     fn from(value: &str) -> Self {
-        SanitizedHtml(ammonia::clean(value))
+        SanitizedHtml::new(value)
     }
 }
 
 impl From<String> for SanitizedHtml {
     fn from(value: String) -> Self {
-        SanitizedHtml(ammonia::clean(&value))
+        SanitizedHtml::new(&value)
     }
 }
 
@@ -101,6 +137,7 @@ impl<'de> Deserialize<'de> for SanitizedHtml {
         D: Deserializer<'de>,
     {
         let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        // Will sanitize
         Ok(s.into())
     }
 }
@@ -183,10 +220,13 @@ mod test {
     fn test_sanitization() {
         let sanitized: SanitizedHtml =
             "<b><img src='' onerror=alert('hax')>I'm not trying to XSS you</b>".into();
-        assert_eq!(
-            sanitized.as_ref(),
-            "<b><img src=\"\">I'm not trying to XSS you</b>"
-        );
+        assert_eq!(sanitized.as_ref(), "<b>I'm not trying to XSS you</b>");
+
+        // Is sanitization idempotent?
+        let already_sanitized: String = sanitized.clone().into(); // infallible
+        let resanitized: SanitizedHtml = already_sanitized.into();
+
+        assert_eq!(sanitized, resanitized);
     }
 
     #[test]
@@ -204,7 +244,7 @@ https://foo.com is a cool site.
         );
         assert!(result.is_ok());
         let result = result.unwrap(/* known good */);
-        assert_eq!(result.html.as_ref(), "<p><a href=\"https://example.com\" rel=\"noopener noreferrer\">example</a></p>\n<p>@sp1ff@indieweb.social #example #indielinks Blah.\nBlahblahblah.\n@coffeehouse-talker@sfba.social</p>\n<p>https://foo.com is a cool site.</p>\n");
+        assert_eq!(result.html.as_ref(), "<p><a href=\"https://example.com\" rel=\"noopener noreferrer nofollow ugc\">example</a></p>\n<p>@sp1ff@indieweb.social #example #indielinks Blah.\nBlahblahblah.\n@coffeehouse-talker@sfba.social</p>\n<p>https://foo.com is a cool site.</p>\n");
         assert_eq!(
             result.mentions,
             vec![
