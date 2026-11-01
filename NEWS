@@ -17,6 +17,9 @@ Removed several unused dependencies in the doing.
 *** Tighten-up XSS protection
 
 Uniformly sanitize incoming HTML contained in AcitivtyPub messages.
+*** Stop tagging frontend.asset.404s with the asset name
+
+This produced a massive blow-up in the # of metrics being tracekd.
 * 0.0.1
 
 Initial indielinks release.

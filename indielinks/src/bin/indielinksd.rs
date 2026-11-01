@@ -701,7 +701,10 @@ fn frontend_response(assets: &Path, file: &Path) -> axum::response::Response {
             }
             frontend_asset_successes.add(
                 1,
-                &[KeyValue::new("asset", file.to_string_lossy().into_owned())],
+                // I had at one point tagged this with the requested file, thinking it would be
+                // handy for debugging. In fact, under load, it produces a *huge* number of
+                // different metrics!
+                &[],
             );
             rsp.status(http::StatusCode::OK).body(body.into()).expect(
                 "Failed to construct a front-end response. This is a bug & should be investigated",
@@ -710,7 +713,10 @@ fn frontend_response(assets: &Path, file: &Path) -> axum::response::Response {
         Err(Error::AssetNotFound { .. }) => {
             frontend_asset_404s.add(
                 1,
-                &[KeyValue::new("asset", file.to_string_lossy().into_owned())],
+                // I had at one point tagged this with the requested file, thinking it would be
+                // handy for debugging. In fact, under load, it produces a *huge* number of
+                // different metrics!
+                &[],
             );
             http::StatusCode::NOT_FOUND.into_response()
         }
@@ -718,7 +724,10 @@ fn frontend_response(assets: &Path, file: &Path) -> axum::response::Response {
             error!("{err:?}");
             frontend_asset_failures.add(
                 1,
-                &[KeyValue::new("asset", file.to_string_lossy().into_owned())],
+                // I had at one point tagged this with the requested file, thinking it would be
+                // handy for debugging. In fact, under load, it produces a *huge* number of
+                // different metrics!
+                &[],
             );
             http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
