@@ -1,22 +1,22 @@
 indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
-* UNRELEASED
+* 0.0.2
 
 ** Bug Fixes
 
+*** Rule out ActivityPub signature forgery
 *** Fixed bug in how Notes are resolved from IDs
 
 Cache ActivityPub Notes after resolving them, avoiding repeated HTTP
 requests for the same remote Note.
+*** Tighten-up XSS protection
 
+Uniformly sanitize incoming HTML contained in AcitivtyPub messages.
 ** Project Updates
 
 *** Added `cargo shear` to `run-linters`
 
 Removed several unused dependencies in the doing.
-*** Tighten-up XSS protection
-
-Uniformly sanitize incoming HTML contained in AcitivtyPub messages.
 *** Stop tagging frontend.asset.404s with the asset name
 
 This produced a massive blow-up in the # of metrics being tracekd.
