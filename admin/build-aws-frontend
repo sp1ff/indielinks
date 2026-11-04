@@ -15,9 +15,8 @@ cd indielinks-fe
 
 rm -rf dist-aws
 
-# Build the AWS frontend with production endpoint and empty base path.
-INDIELINKS_FE_API="https://indiemark.sh" \
-    INDIELINKS_BASE="" \
+# Build the AWS frontend with empty base path.
+INDIELINKS_BASE="" \
     INDIELINKS_PAGE_SIZE="20" \
     trunk build --release --dist dist-aws
 

@@ -77,7 +77,9 @@
 //! The frontend is configured at *compile* time via environment variables; changing any of them
 //! requires rebuilding the WASM bundle:
 //!
-//! - `INDIELINKS_FE_API`: the public API base URL; defaults to `http://localhost:20679`
+//! - `INDIELINKS_FE_API`: the public API base URL; if unset, the app derives the API location
+//!   from the browser's current origin as `${window.location.origin}/api/v1`. Set this when
+//!   developing with `trunk` serving the UI from a different origin than the indielinks API.
 //! - `INDIELINKS_PAGE_SIZE`: the number of items requested per page; defaults to `4`
 //! - `INDIELINKS_BASE`: the path at which the frontend is mounted; defaults to the empty string
 //! - `INDIELINKS_FE_DARK_THEME`: `true` (or unset) enables the dark-theme capability: the
@@ -133,18 +135,13 @@ use indielinks_fe::{
 /// palette first rendered here is the same one already advertised by the document element's
 /// `data-theme` attribute.
 #[component]
-fn App(initial_theme: InitialTheme) -> impl IntoView {
-    // Setup the network location at which we can reach indielinks. In my world (the backend), this
-    // would be a configuration item, typically provided by something as sophisticated as a
-    // parameter management system, or as simple as a configuration file. In this world
-    // (frontend/CSR/SPA) there are a few options, including fetching, at runtime, a configuration
-    // file from the same endpoint at which this WASM bundle is being served.
-    //
-    // For now, I'm going to go with the simplest option, which is to read environment variables;
-    // the read happens at *compile* time, meaning that this can be configured as part of the build.
-    provide_context(Api(option_env!("INDIELINKS_FE_API")
-        .unwrap_or("http://localhost:20679")
-        .to_owned()));
+fn App(initial_theme: InitialTheme, api_base: String) -> impl IntoView {
+    // The public API base URL is normally derived from the browser's current origin, since
+    // indielinks serves the API at `/api/v1` on the same origin that serves this frontend. For
+    // development builds where `trunk` serves the UI from a different origin, `main()` accepts an
+    // explicit value (typically supplied via the `INDIELINKS_FE_API` compile-time environment
+    // variable) and passes it here as a prop.
+    provide_context(Api(api_base));
 
     provide_context(PageSize(
         option_env!("INDIELINKS_PAGE_SIZE")
@@ -344,6 +341,20 @@ fn main() {
         .expect("INDIELINKS_FE_DARK_THEME should have been validated at build time");
     let initial_theme = InitialTheme::detect(availability);
     initial_theme.apply_to_document();
+    // Determine the public API base URL. A compile-time override supports development builds
+    // where `trunk` serves the frontend from an origin other than the indielinks API; in
+    // production, the API lives at `/api/v1` on the same origin as the frontend.
+    let api_base = option_env!("INDIELINKS_FE_API")
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| {
+            let origin = web_sys::window()
+                .expect("frontend should run in a browser")
+                .location()
+                .origin()
+                .expect("window.location.origin should be available");
+            format!("{origin}/api/v1")
+        });
+
     // Mount the `App` component as the document <body>:
-    leptos::mount::mount_to_body(move || view! { <App initial_theme/> });
+    leptos::mount::mount_to_body(move || view! { <App initial_theme api_base/> });
 }

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 
-# Validate an AWS frontend dist directory. Rejects bundles that contain
-# localhost API endpoints, a /fe base path, or an origin other than
-# https://indiemark.sh.
+# Validate an AWS frontend dist directory. Rejects bundles that 
+# localhost API endpoints, or an /fe base path.
 
 set -euo pipefail
 
@@ -40,21 +39,7 @@ for f in "$dist/indielinks-fe.js" "$dist/indielinks-fe.wasm"; do
     fi
 done
 
-# 3. At least one artifact must contain the production origin.
-origin_found=0
-for f in "$dist/indielinks-fe.js" "$dist/indielinks-fe.wasm"; do
-    if [ -f "$f" ]; then
-        if strings "$f" | grep 'https://indiemark.sh' >/dev/null; then
-            origin_found=1
-        fi
-    fi
-done
-if [ "$origin_found" -eq 0 ]; then
-    echo "error: no artifact contains 'https://indiemark.sh'" >&2
-    fail=1
-fi
-
-# 4. No artifact may contain the old /fe base path.
+# 3. No artifact may contain the old /fe base path.
 for f in "$dist/indielinks-fe.js" "$dist/indielinks-fe.wasm"; do
     if [ -f "$f" ] && strings "$f" | grep '/fe/' >/dev/null; then
         echo "error: $(basename "$f") contains '/fe/' base path reference" >&2
