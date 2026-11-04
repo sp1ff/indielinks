@@ -19,6 +19,7 @@
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
+use chrono::Utc;
 use lazy_static::lazy_static;
 use libtest_mimic::Failed;
 use picky::key::PrivateKey;
@@ -35,7 +36,10 @@ use wiremock::{
 
 use indielinks_shared::{
     acct::Account,
-    api::{FollowRequest, FollowTarget, ThreadContextRequest, ThreadContextResponse},
+    api::{
+        FollowRequest, FollowTarget, ThreadContextRequest, ThreadContextResponse,
+        TimelineInitialRsp, TimelineReq,
+    },
     entities::Username,
     origin::Origin,
 };
@@ -771,6 +775,127 @@ pub async fn context_with_mastodon(
     );
     assert!(response.parent.is_none());
     assert!(response.children.len() == 1);
+
+    Ok(())
+}
+
+/// Integration test that ActivityPub Note content is sanitized when received in a `Create`.
+///
+/// A malicious peer sends a `Create` wrapping a `Note` whose `content` contains an event handler
+/// on an `<img>` tag. The instance under test should strip the dangerous attribute and place only
+/// the sanitized markup into the recipient's home timeline.
+#[instrument(level = "debug", skip(helper, pepper_key))]
+pub async fn test_sanitization(
+    indielinks: Url,
+    pepper_version: PepperVersion,
+    pepper_key: Pepper,
+    helper: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
+    let username = Username::new("test_sanitization").unwrap(/* known good */);
+    let (peer_server, peer_user, client) = setup_test(&username, helper.clone()).await?;
+    let peer_origin: Origin = peer_server.uri().try_into()?;
+
+    let api_key = helper
+        .create_user(
+            &pepper_version,
+            &pepper_key,
+            &username,
+            &TEST_PASSWORD,
+            &HashSet::new(),
+            &HashSet::from([(peer_user.id(&peer_origin)?.into(), FollowId::default())]),
+        )
+        .await?;
+
+    // Fetch the timeline once to force creation of the in-memory home timeline.
+    let initial: TimelineInitialRsp = client
+        .post(format!("{indielinks}api/v1/users/timeline"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {username}:{api_key}"),
+        )
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::to_string(&TimelineReq::Initial {
+            max_posts: None,
+        })?)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(
+        initial.is_none(),
+        "timeline should be empty before the Create arrives"
+    );
+
+    let post_id = Uuid::new_v4();
+    let actor_id = format!("{peer_origin}/users/{}", peer_user.name());
+    let note_id = format!("{actor_id}/posts/{post_id}");
+    let published = Utc::now().to_rfc3339();
+    let followers = format!("{actor_id}/followers");
+    let public = "https://www.w3.org/ns/activitystreams#Public";
+
+    let create_body = json!({
+        "@context": [
+            "https://www.w3.org/ns/activitystreams",
+            "https://w3id.org/security/v1"
+        ],
+        "type": "Create",
+        "id": format!("{note_id}/activity"),
+        "actor": &actor_id,
+        "published": &published,
+        "to": [public],
+        "cc": [&followers],
+        "object": {
+            "type": "Note",
+            "id": &note_id,
+            "attributedTo": &actor_id,
+            "published": &published,
+            "to": [public],
+            "cc": [&followers],
+            "content": "<b><img src='' onerror=alert('hax')>I'm not trying to XSS you</b>",
+            "replies": {
+                "id": format!("{note_id}/replies"),
+                "totalItems": 0
+            }
+        }
+    });
+
+    let request = make_signed_request(
+        axum::http::Method::POST,
+        indielinks.join("/inbox")?,
+        serde_json::to_string(&create_body)?.into(),
+        &peer_origin,
+        peer_user.priv_key(),
+        peer_user.name(),
+    )
+    .await?;
+
+    let rsp = client.execute(request).await?;
+    assert_eq!(rsp.status(), reqwest::StatusCode::ACCEPTED);
+
+    // Fetch the timeline again and verify the Note content has been sanitized.
+    let timeline: TimelineInitialRsp = client
+        .post(format!("{indielinks}api/v1/users/timeline"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {username}:{api_key}"),
+        )
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::to_string(&TimelineReq::Initial {
+            max_posts: None,
+        })?)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let timeline = timeline.expect("timeline should contain the sanitized Note");
+    assert_eq!(timeline.posts.len().get(), 1);
+    assert_eq!(
+        timeline.posts.first().content,
+        "<b>I'm not trying to XSS you</b>"
+    );
 
     Ok(())
 }

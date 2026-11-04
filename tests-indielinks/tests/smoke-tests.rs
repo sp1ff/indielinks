@@ -88,7 +88,7 @@ use indielinks::{grpc::InitClusterRequest, peppers::Peppers, scylla::execute_cql
 use tests_indielinks::{
     activity_pub::{
         as_follower, context_with_mastodon, posting_creates_note, request_forgery, send_follow,
-        send_follow_by_handle,
+        send_follow_by_handle, test_sanitization,
     },
     actor::like_actor_mismatch,
     counts::test_counts,
@@ -1077,6 +1077,20 @@ inventory::submit!(Test {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(like_actor_mismatch(
+            helper.indielinks(),
+            version,
+            pepper,
+            helper,
+        ))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode]),
+});
+
+inventory::submit!(Test {
+    name: "087test_sanitization",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(test_sanitization(
             helper.indielinks(),
             version,
             pepper,
