@@ -83,10 +83,11 @@ EOF
     exit 0
 fi
 
+container_args=""
 if test -n "${verbose}"; then
     set -x
+    container_args="${container_args} --verbose"
 fi
-
 
 here=$(dirname "$(realpath "$0")")
 cd ${here}/..
@@ -94,6 +95,6 @@ cd ${here}
 ./debian/build-debian-image
 docker run --mount type=bind,src=..,dst=/indielinks \
         -u packager:users                           \
-        indielinks-debian:latest                     \
-       /indielinks/admin/debian/build-packages
+        indielinks-debian:latest                    \
+       /indielinks/admin/debian/build-packages ${container_args}
 ./validate-aws-frontend ${here}/../indielinks-fe/dist-aws

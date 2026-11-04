@@ -129,8 +129,8 @@ function build_packages () {
     local release="$1"
     local old_pwd="$PWD"
     cd indielinks
-    cargo deb --no-build --deb-version=${release}
-    cargo deb --no-build --variant=aws --deb-version=${release}
+    cargo deb --no-build
+    cargo deb --no-build --variant=aws
     cd "$old_pwd"
 }
 
