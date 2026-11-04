@@ -19,7 +19,9 @@ specify the `wasm32-unknown-unknown` target when checking or building this crate
 The following environment variables are read at compile time in `src/main.rs`; changing one
 requires rebuilding the frontend:
 
-- `INDIELINKS_FE_API`: public API base URL; defaults to `http://localhost:20679`.
+- `INDIELINKS_FE_API`: public API base URL; if unset, the app derives the API location from the
+  browser's current origin as `${window.location.origin}/api/v1`. Set this when developing with
+  `trunk` serving the UI from a different origin than the indielinks API.
 - `INDIELINKS_PAGE_SIZE`: number of items requested per page; defaults to `4`.
 - `INDIELINKS_BASE`: path at which the frontend is mounted; defaults to the empty string.
 - `INDIELINKS_FE_DARK_THEME`: `true` (or unset) enables the dark-theme capability; `false` forces

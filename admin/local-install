@@ -99,7 +99,7 @@ here=$(dirname $(realpath $0))
 cd $here/..
 cargo build --release -j ${nproc}
 cd indielinks-fe
-INDIELINKS_FE_API="http://localhost:20676" INDIELINKS_BASE="" INDIELINKS_PAGE_SIZE="20" trunk build --release
+INDIELINKS_BASE="" INDIELINKS_PAGE_SIZE="20" trunk build --release
 cd ..
 
 install -C -D -t /home/$USER/bin target/release/indielinksd
