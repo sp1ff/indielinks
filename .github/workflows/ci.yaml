@@ -101,3 +101,30 @@ jobs:
     - name: Build indielinks & run unit & integration tests
       shell: bash
       run: 'admin/cargo-build-test-smoke all-cores'
+
+  # This is experimental; this workflow takes a while, so it's handy
+  # to "context switch" and go work on something else; this provides a
+  # notification (success, failure or cancelled).
+  notification:
+    name: notify
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: always()
+    env:
+      NTFY_SH_TOPIC_NAME: ${{ secrets.NTFY_SH_TOPIC_NAME }}
+    steps:
+        - uses: martialonline/workflow-status@v3
+          id: check
+        - name: On success
+          if: ${{ steps.check.outputs.status == 'success' && env.NTFY_SH_TOPIC_NAME != '' }}
+          run: |
+            curl --fail -d "Continuous integration workflow on branch ${{ github.ref_name }} successful 😀" ntfy.sh/${NTFY_SH_TOPIC_NAME}
+        - name: On failure
+          if: ${{ steps.check.outputs.status == 'failure' && env.NTFY_SH_TOPIC_NAME != '' }}
+          run: |
+            curl --fail -d "Continuous integration workflow on branch ${{ github.ref_name }} failed! 🥲" ntfy.sh/${NTFY_SH_TOPIC_NAME}
+        - name: On cancellation
+          if: ${{ steps.check.outputs.status == 'cancelled' && env.NTFY_SH_TOPIC_NAME != '' }}
+          run: |
+            curl --fail -d "Continuous integration workflow on branch ${{ github.ref_name }} was cancelled 🤷" ntfy.sh/${NTFY_SH_TOPIC_NAME}
+
