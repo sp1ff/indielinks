@@ -759,30 +759,39 @@ async fn accept_create(
     // field naming a post on this instance. *However*, sometimes Mastodon relays replies to people
     // I follow. In that case, the message will be signed by my followee. Ah... ActivityPub!
     if actor.id() != create.actor() {
-        warn!(
-            "I have a `Create` signed by {}, while the `Create` itself reports an actor of {}. \
-             I'm assuming this is a reply to {} who has followers on this instance.",
-            actor.id(), // Url::url
-            create.actor(),
-            actor.id(), // Url::url
-        );
-
-        let mut followers = actor.id().clone();
-        followers
-            .path_segments_mut()
-            .map_err(|_| {
-                ActorCannotBeABaseSnafu {
-                    id: Box::new(actor.id().clone()),
-                }
-                .build()
-            })?
-            .pop_if_empty()
-            .push("followers");
-
-        local_recipients.push(Recipient::new(origin, &followers).context(FollowersSnafu {
-            id: actor.id().clone(),
-        })?);
+        // In this case, we expect the enclosed `Note` to have an `in_reply_to` field that is
+        // an extension of the signing `Actor` id.
+        if !note
+            .in_reply_to()
+            .map(|url| url.to_string())
+            .map(|url| url.starts_with(actor.id().as_str()))
+            .unwrap_or(false)
+        {
+            warn!(
+                    "I have a `Create` signed by {}, while the `Create` itself reports an actor of {}. \
+                     I'm assuming this is a reply to {} who has followers on this instance.",
+                    actor.id(), // Url::url
+                    create.actor(),
+                    actor.id(), // Url::url
+                )
+        }
     }
+
+    let mut followers = actor.id().clone();
+    followers
+        .path_segments_mut()
+        .map_err(|_| {
+            ActorCannotBeABaseSnafu {
+                id: Box::new(actor.id().clone()),
+            }
+            .build()
+        })?
+        .pop_if_empty()
+        .push("followers");
+
+    local_recipients.push(Recipient::new(origin, &followers).context(FollowersSnafu {
+        id: actor.id().clone(),
+    })?);
 
     debug!(
         "This Create has visibility {:?} and local recipients {:?}",
