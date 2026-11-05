@@ -19,14 +19,17 @@
 //! of anything else.
 
 use std::{
-    collections::HashSet, convert::Infallible, ops::Deref, result::Result as StdResult,
+    collections::{HashMap, HashSet},
+    convert::Infallible,
+    ops::Deref,
+    result::Result as StdResult,
     time::Duration,
 };
 
 use atom_syndication::{Entry, Feed, FeedBuilder, Generator, Person, Text, TextType};
 use axum::Json;
 use chrono::{DateTime, FixedOffset};
-use http::{header::HOST, HeaderMap, HeaderName, Request};
+use http::{header::HOST, HeaderMap, HeaderName, Request, Uri};
 use indielinks_shared::{
     entities::{Post, Tagname, Username},
     origin::{NetLoc, Origin},
@@ -40,7 +43,7 @@ use tap::Pipe;
 use tower::{Layer, Service};
 use tower_gcra::keyed::KeyExtractor;
 use tower_http::{
-    trace::{MakeSpan, OnResponse},
+    trace::{MakeSpan, OnRequest, OnResponse},
     LatencyUnit,
 };
 use tracing::{debug, error, Level, Span};
@@ -375,6 +378,18 @@ impl<B> KeyExtractor<Request<B>> for HostExtractor {
 //                                        SanitizeHeaders                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// `tower_http::trace` provides for logging incoming requests & responses, which is of course
+// essential. However, the default behaviors are not great. The following classes customize them in
+// a few ways:
+//
+// - allow for customization of the default level at which they'll be logged
+// - allows to "demote" the logging level for certain paths, if desired (do we really need to
+//   know about every `/healthcheck` invocation?)
+// - sanitizes the request & response headers, so things like API keys don't leak into the logs
+//
+// This arrangement feels a bit delicate to me, but I'm constrained by the points of extension
+// offered by `tower_http`, and, in fairness, they *do* get the job done.
+
 /// Scrub a [HeaderMap] of a given list of headers
 // Consume the `HeaderMap`, giving the caller the choice as to whether to clone or not.
 pub fn sanitize_headers(headers: HeaderMap, denials: &HashSet<HeaderName>) -> HeaderMap {
@@ -431,20 +446,28 @@ static DEFAULT_DENIALS: [&str; 4] = ["authorization", "cookie", "set-cookie", "s
 
 static DEFAULT_LEVEL: Level = Level::DEBUG;
 
+static DEFAULT_LEVELS: [(&str, Level); 1] = [("/healthcheck", Level::TRACE)];
+
 static DEFAULT_LATENCY_UNIT: LatencyUnit = LatencyUnit::Millis;
 
 /// A [MakeSpan] implementation that excludes headers based on a blacklist
 #[derive(Clone, Debug)]
 pub struct HygienicMakeSpan {
-    level: Level,
+    default_level: Level,
     denials: HashSet<HeaderName>,
+    levels: HashMap<String, Level>,
 }
 
 impl HygienicMakeSpan {
     pub fn new() -> Self {
         Self {
-            level: DEFAULT_LEVEL,
+            default_level: DEFAULT_LEVEL,
             denials: HashSet::from_iter(DEFAULT_DENIALS.into_iter().map(HeaderName::from_static)),
+            levels: HashMap::from_iter(
+                DEFAULT_LEVELS
+                    .into_iter()
+                    .map(|(path, level)| (path.to_owned(), level)),
+            ),
         }
     }
     pub fn with_deny_list<I>(self, deny_list: I) -> Self
@@ -452,8 +475,9 @@ impl HygienicMakeSpan {
         I: IntoIterator<Item = HeaderName>,
     {
         Self {
-            level: self.level,
+            default_level: self.default_level,
             denials: HashSet::from_iter(deny_list),
+            levels: self.levels,
         }
     }
     pub fn with_option_deny_list<I>(self, maybe_deny_list: Option<I>) -> Self
@@ -461,20 +485,32 @@ impl HygienicMakeSpan {
         I: IntoIterator<Item = HeaderName>,
     {
         Self {
-            level: self.level,
+            default_level: self.default_level,
             denials: match maybe_deny_list {
                 Some(deny_list) => HashSet::from_iter(deny_list),
                 None => {
                     HashSet::from_iter(DEFAULT_DENIALS.into_iter().map(HeaderName::from_static))
                 }
             },
+            levels: self.levels,
         }
     }
     pub fn with_level(self, level: Level) -> Self {
         Self {
-            level,
+            default_level: level,
             denials: self.denials,
+            levels: self.levels,
         }
+    }
+    pub fn with_levels(self, levels: HashMap<String, Level>) -> Self {
+        Self {
+            default_level: self.default_level,
+            denials: self.denials,
+            levels,
+        }
+    }
+    pub fn level_for_uri(&self, uri: &Uri) -> Level {
+        *self.levels.get(uri.path()).unwrap_or(&self.default_level)
     }
 }
 
@@ -502,12 +538,74 @@ impl<B> MakeSpan<B> for HygienicMakeSpan {
             }
         }
 
-        match self.level {
+        match self.level_for_uri(request.uri()) {
             Level::ERROR => make_span!(Level::ERROR),
             Level::WARN => make_span!(Level::WARN),
             Level::INFO => make_span!(Level::INFO),
             Level::DEBUG => make_span!(Level::DEBUG),
             Level::TRACE => make_span!(Level::TRACE),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct HygienicOnRequest {
+    default_level: Level,
+    levels: HashMap<String, Level>,
+}
+
+impl HygienicOnRequest {
+    pub fn new() -> Self {
+        Self {
+            default_level: DEFAULT_LEVEL,
+            levels: HashMap::from_iter(
+                DEFAULT_LEVELS
+                    .into_iter()
+                    .map(|(path, level)| (path.to_owned(), level)),
+            ),
+        }
+    }
+    pub fn with_level(self, level: Level) -> Self {
+        Self {
+            default_level: level,
+            levels: self.levels,
+        }
+    }
+    pub fn with_levels(self, levels: HashMap<String, Level>) -> Self {
+        Self {
+            default_level: self.default_level,
+            levels,
+        }
+    }
+    pub fn level_for_uri(&self, uri: &Uri) -> Level {
+        *self.levels.get(uri.path()).unwrap_or(&self.default_level)
+    }
+}
+
+impl Default for HygienicOnRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B> OnRequest<B> for HygienicOnRequest {
+    fn on_request(&mut self, request: &Request<B>, parent: &Span) {
+        macro_rules! make_event {
+            ($level:expr) => {
+                tracing::event!(
+                    parent: parent,
+                    $level,
+                    "started processing request"
+                )
+            }
+        }
+
+        match self.level_for_uri(request.uri()) {
+            Level::ERROR => make_event!(Level::ERROR),
+            Level::WARN => make_event!(Level::WARN),
+            Level::INFO => make_event!(Level::INFO),
+            Level::DEBUG => make_event!(Level::DEBUG),
+            Level::TRACE => make_event!(Level::TRACE),
         }
     }
 }
@@ -602,6 +700,11 @@ impl<B> OnResponse<B> for HygienicOnResponse {
         let response_headers =
             tracing::field::debug(sanitize_headers(response.headers().clone(), &self.denials));
 
+        let level = *span
+            .metadata()
+            .map(|meta| meta.level())
+            .unwrap_or(&self.level);
+
         macro_rules! make_event {
             ($level:expr) => {
                 tracing::event!(
@@ -614,7 +717,7 @@ impl<B> OnResponse<B> for HygienicOnResponse {
                 )
             }
         }
-        match self.level {
+        match level {
             Level::ERROR => make_event!(Level::ERROR),
             Level::WARN => make_event!(Level::WARN),
             Level::INFO => make_event!(Level::INFO),

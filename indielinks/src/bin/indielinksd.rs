@@ -99,7 +99,7 @@ use indielinks::{
         NOTE_ID_TO_NOTE,
     },
     home_timeline::HomeTimelines,
-    http::{HostKey, HygienicMakeSpan, HygienicOnResponse},
+    http::{HostKey, HygienicMakeSpan, HygienicOnRequest, HygienicOnResponse},
     indielinks::Indielinks,
     metrics::check_metric_names,
     metrics_task::produce_metrics,
@@ -766,11 +766,18 @@ async fn frontend_asset(
 fn make_frontend_router<S>(assets: PathBuf) -> Router<S> {
     Router::new()
         .route("/", get(frontend_index))
-        // Client-side routes used by the current Leptos router (cf. indielinks-fe)
+        // Client-side routes used by the current Leptos router (cf. indielinks-fe) This way, if a
+        // client requests an URL used by the SPA, it will be re-loaded.
         .route("/s", get(frontend_index))
         .route("/h", get(frontend_index))
         .route("/a", get(frontend_index))
         .route("/u", get(frontend_index))
+        .route("/m", get(frontend_index))
+        .route("/m/profile", get(frontend_index))
+        .route("/m/password", get(frontend_index))
+        .route("/m/api-keys", get(frontend_index))
+        .route("/m/following", get(frontend_index))
+        .route("/m/followers", get(frontend_index))
         .route("/{file}", get(frontend_asset))
         .with_state(assets)
 }
@@ -847,6 +854,7 @@ fn make_world_router(state: Arc<Indielinks>, header_blacklist: Option<&HeaderBla
                 // at the the of this writing, I'm rewiring the configuration system in another
                 // worktree. I've setup sensible defaults, so I'll leave them off, for now.
                 .make_span_with(HygienicMakeSpan::new().with_option_deny_list(make_span_deny_list))
+                .on_request(HygienicOnRequest::new())
                 .on_response(
                     HygienicOnResponse::new().with_option_deny_list(on_response_deny_list),
                 ),

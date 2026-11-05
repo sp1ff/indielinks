@@ -1992,38 +1992,30 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         )
         .route(
             "/users/recent-posts",
-            get(recent_posts)
-                .merge(post(recent_posts))
-                .route_layer(from_fn_with_state(state.clone(), authenticate))
-                .layer(mk_cors(
-                    false,
-                    allow_headers.clone(),
-                    [http::Method::GET, http::Method::POST],
-                    AllowOrigin::any(),
-                )),
+            get(recent_posts).merge(post(recent_posts)).layer(mk_cors(
+                false,
+                allow_headers.clone(),
+                [http::Method::GET, http::Method::POST],
+                AllowOrigin::any(),
+            )),
         )
         .route(
             "/users/top-k-tags",
-            get(top_k_tags)
-                .merge(post(top_k_tags))
-                .route_layer(from_fn_with_state(state.clone(), authenticate))
-                .layer(mk_cors(
-                    false,
-                    allow_headers.clone(),
-                    [http::Method::GET, http::Method::POST],
-                    AllowOrigin::any(),
-                )),
+            get(top_k_tags).merge(post(top_k_tags)).layer(mk_cors(
+                false,
+                allow_headers.clone(),
+                [http::Method::GET, http::Method::POST],
+                AllowOrigin::any(),
+            )),
         )
         .route(
             "/users/cluster-stats",
-            get(cluster_stats)
-                .route_layer(from_fn_with_state(state.clone(), authenticate))
-                .layer(mk_cors(
-                    false,
-                    allow_headers.clone(),
-                    [http::Method::GET],
-                    AllowOrigin::any(),
-                )),
+            get(cluster_stats).layer(mk_cors(
+                false,
+                allow_headers.clone(),
+                [http::Method::GET],
+                AllowOrigin::any(),
+            )),
         )
         .route(
             "/users/instance",
