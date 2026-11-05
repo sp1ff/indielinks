@@ -65,7 +65,7 @@ use crate::{
     ap_resolution::ApResolver,
     background_tasks::BackgroundTasks,
     cache::{GrpcClientFactory, SLOT_TOP_K_TAGS},
-    configuration::ConfigV1,
+    configuration::Configuration,
     home_timeline::HomeTimelines,
     http::SameSite,
     outboxes::UserOutboxes,
@@ -225,7 +225,7 @@ impl Indielinks {
         ap_resolver: Arc<Mutex<ApResolver>>,
         home_timelines: Arc<Mutex<HomeTimelines>>,
         user_outboxes: Arc<Mutex<UserOutboxes>>,
-        cfg: &ConfigV1,
+        cfg: &Configuration,
     ) -> Result<Self> {
         let (pepper, signing_keys) = resolve_secrets(
             "INDIELINKS_PEPPERS",

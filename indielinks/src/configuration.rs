@@ -25,17 +25,13 @@ use std::{
     num::{NonZero, NonZeroU32},
     path::PathBuf,
     result::Result as StdResult,
+    str::FromStr,
 };
 
 use chrono::Duration;
+use clap::crate_version;
 use either::Either;
 use http::HeaderName;
-use indielinks_shared::{
-    credentials::Credentials,
-    entities::{SsmParameter, UserEmail},
-    origin::{NetLoc, Origin},
-    service::ExponentialBackoffParameters,
-};
 use nonzero::nonzero;
 use secrecy::SecretString;
 use serde::Deserialize;
@@ -44,14 +40,21 @@ use url::Url;
 
 use indielinks_cache::raft::Configuration as RaftConfiguration;
 
-use indielinks_shared::dynamodb::Location as DynamoLocation;
+use indielinks_shared::{
+    credentials::Credentials,
+    dynamodb::Location as DynamoLocation,
+    entities::{SsmParameter, UserEmail},
+    known_good,
+    origin::{NetLoc, Origin},
+    service::ExponentialBackoffParameters,
+};
 
 use crate::{background_tasks, http::SameSite, peppers::Peppers, signing_keys::SigningKeys};
 
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
 pub enum Error {
-    #[snafu(display("While reading the header blacklist, {source}"))]
+    #[snafu(display("found invalid header name while reading the header blacklist"))]
     HeaderBlacklist {
         source: http::header::InvalidHeaderName,
     },
@@ -207,7 +210,6 @@ impl From<HeaderBlacklist> for HashSet<HeaderName> {
 }
 
 // I suppose I could pull-in the `cookie` crate... but c'mon: it's a few cookies.
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct UsersConfiguration {
     #[serde(rename = "same-site")]
@@ -236,96 +238,104 @@ impl Default for UsersConfiguration {
     }
 }
 
-fn default_page_size() -> NonZero<usize> {
-    nonzero!(16usize)
-}
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                   indielinksd Configuration                                    //
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
-fn default_templates_path() -> PathBuf {
-    PathBuf::from("/usr/share/indielinks/templates")
-}
+// fn default_page_size() -> NonZero<usize> {
+//     nonzero!(16usize)
+// }
+
+// fn default_templates_path() -> PathBuf {
+//     PathBuf::from("/usr/share/indielinks/doc")
+// }
 
 /// Indielinks configuration, version one
+// This is the current version of our configuration. At some point, we'll have to revise it,
+// and we'll name *that* to `Configuration`, renaming this to something like `ConfigurationV1`
+// or something.
 #[derive(Clone, Debug, Deserialize)]
-pub struct ConfigV1 {
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Configuration {
     /// The [indielinks](crate) log file
-    #[serde(rename = "log-file")]
     pub log_file: PathBuf,
     /// OTLP export target; None means don't export
-    #[serde(rename = "otlp-export")]
     pub otlp_export: Option<OtelExportConfig>,
     /// Local address at which to listen for public requests; specify as "address:port". This
-    /// is the address to which [indielinks] will bind a listening socket for its public API.
-    #[serde(rename = "public-address")]
-    public_address: SocketAddr,
+    /// is the address to which `indielinks` will bind a listening socket for its public API.
+    pub public_address: SocketAddr,
     /// Address at which to listen for private requests; specify as "address:port"
     // See note above RE `SocketAddr`.
-    #[serde(rename = "private-address")]
-    private_address: SocketAddr,
+    pub private_address: SocketAddr,
     /// Address at which to listen for Raft-related gRPC messages
-    #[serde(rename = "raft-grpc-address")]
     pub raft_grpc_address: SocketAddr,
-    #[serde(rename = "storage-config")]
     pub storage_config: StorageConfig,
     /// The address at which this [indielinks](crate) instance may be reached from the public internet
-    #[serde(rename = "public-origin")]
     pub public_origin: Origin,
     /// The peppers, or the name of the SSM Parameter Store parameter from which they are to be
     /// fetched
     #[serde(with = "either::serde_untagged")]
     pub pepper: Either<SsmParameter, Peppers>,
-    #[serde(rename = "signing-keys")]
     pub signing_keys: SigningKeysConfig,
-    #[serde(rename = "users-config")]
     pub users_config: UsersConfiguration,
-    #[serde(rename = "user-agent")]
     pub user_agent: String,
-    #[serde(rename = "client-exponential-backoff")]
     pub client_exponential_backoff: ExponentialBackoffParameters,
-    #[serde(rename = "client-configuration")]
     pub client_configuration: ClientConfiguration,
-    #[serde(rename = "local-client-configuration")]
     pub local_client_configuration: ClientConfiguration,
-    #[serde(rename = "general-purpose-client-configuration")]
     pub general_purpose_client_configuration: ClientConfiguration,
-    #[serde(rename = "collection-page-size")]
     pub collection_page_size: usize,
     pub assets: Option<PathBuf>,
-    #[serde(rename = "background-tasks")]
-    background_tasks: background_tasks::Config,
-    #[serde(rename = "raft-config")]
+    pub background_tasks: background_tasks::Config,
     pub raft_config: RaftConfiguration,
-    #[serde(rename = "header-blacklist")]
     pub header_blacklist: Option<HeaderBlacklist>,
-    #[serde(rename = "pinboard-token")]
     pub pinboard_token: Option<SecretString>,
     /// Default page size for frontend collection views
-    #[serde(rename = "default-page-size", default = "default_page_size")]
     pub default_page_size: NonZero<usize>,
     /// Contact email address for the instance operator
-    #[serde(rename = "contact-email")]
     pub contact_email: UserEmail,
     /// Directory containing Markdown template documents
-    #[serde(rename = "templates", default = "default_templates_path")]
     pub templates: PathBuf,
 }
 
-impl ConfigV1 {
-    pub fn public_address(&self) -> &SocketAddr {
-        &self.public_address
-    }
-    pub fn private_address(&self) -> &SocketAddr {
-        &self.private_address
-    }
-    pub fn background_tasks(&self) -> &background_tasks::Config {
-        &self.background_tasks
+impl Default for Configuration {
+    fn default() -> Self {
+        Configuration {
+            log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(/* known good */),
+            otlp_export: None,
+            public_address: "0.0.0.0:20679".parse::<SocketAddr>().unwrap(/* known good */),
+            private_address: "127.0.0.1:20680".parse::<SocketAddr>().unwrap(/* known good */),
+            raft_grpc_address: "0.0.0.0:20681".parse::<SocketAddr>().unwrap(/* known good */),
+            storage_config: StorageConfig::default(),
+            public_origin: "http://localhost:20679".parse::<Origin>().unwrap(/* known good */),
+            pepper: Either::Right(Peppers::from_entropy()),
+            signing_keys: SigningKeysConfig::from_entropy(),
+            users_config: UsersConfiguration::default(),
+            user_agent: format!("indielinks/{}; +indielinks@pobox.com", crate_version!()),
+            client_exponential_backoff: Default::default(),
+            client_configuration: Default::default(),
+            local_client_configuration: Default::default(),
+            general_purpose_client_configuration: Default::default(),
+            collection_page_size: 12, // Copied from Mastodon
+            assets: None,
+            background_tasks: background_tasks::Config::default(),
+            raft_config: RaftConfiguration::default(),
+            header_blacklist: None,
+            pinboard_token: None,
+            default_page_size: nonzero!(16usize),
+            contact_email: known_good!(UserEmail::new("admin@indiemark.local")),
+            templates: PathBuf::from("assets"),
+        }
     }
 }
 
+// This is a convenient way to support a versioned configuration format. When we introduce new
+// veresions, we'll have to define a migration path from older versions to the most recent (which
+// will always be named `Configuration`)
 #[derive(Deserialize)]
 #[serde(tag = "version")] // tag "internally"
-pub enum Configuration {
+pub enum ConfigurationRepr {
     #[serde(rename = "1")]
-    V1(ConfigV1),
+    V1(Configuration),
 }
 
 #[cfg(test)]
@@ -347,7 +357,7 @@ user-agent = "indielinks/"##,
 collection-page-size = 64
 default-page-size = 16
 contact-email = "admin@indiemark.local"
-templates = "/usr/share/indielinks/templates"
+templates = "/usr/share/indielinks/doc"
 
 "##,
             pepper,
@@ -421,11 +431,11 @@ custom = []
         .concat()
     }
 
-    fn parse(text: &str) -> ConfigV1 {
-        match toml::from_str::<Configuration>(text)
+    fn parse(text: &str) -> Configuration {
+        match toml::from_str::<ConfigurationRepr>(text)
             .expect("the TOML should parse as a `Configuration`")
         {
-            Configuration::V1(cfg) => cfg,
+            ConfigurationRepr::V1(cfg) => cfg,
         }
     }
 
@@ -527,12 +537,9 @@ custom = []
                 r#"pepper = "/indielinks/prod/peppers""#,
                 r#"signing-keys = "/indielinks/prod/signing-keys""#,
             )
-            .replace("templates = \"/usr/share/indielinks/templates\"\n", ""),
+            .replace("templates = \"/usr/share/indielinks/doc\"\n", ""),
         );
-        assert_eq!(
-            cfg.templates,
-            PathBuf::from("/usr/share/indielinks/templates")
-        );
+        assert_eq!(cfg.templates, PathBuf::from("/usr/share/indielinks/doc"));
     }
 
     #[test]
@@ -543,7 +550,7 @@ custom = []
                 r#"signing-keys = "/indielinks/prod/signing-keys""#,
             )
             .replace(
-                "templates = \"/usr/share/indielinks/templates\"",
+                "templates = \"/usr/share/indielinks/doc\"",
                 "templates = \"/tmp/templates\"",
             ),
         );

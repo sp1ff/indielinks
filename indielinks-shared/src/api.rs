@@ -560,6 +560,27 @@ pub struct ClusterStatsResponse {
     pub version: String,
 }
 
+/// Markdown documents returned by `/users/instance`
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct InstanceDocuments {
+    pub about: String,
+    pub documentation: String,
+    pub privacy_policy: String,
+    pub terms_of_service: String,
+    pub motd: Option<String>,
+}
+
+/// `/users/instance` response
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct InstanceResponse {
+    pub default_page_size: NonZero<usize>,
+    pub origin: Origin,
+    pub contact_email: UserEmail,
+    pub documents: InstanceDocuments,
+}
+
 /// Opaque type representing an replies pagination token
 ///
 /// Callers cannot create instances of this type; they are returned in response to paginated outbox

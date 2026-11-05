@@ -89,7 +89,9 @@ use indielinks::{
     bookmarklets::make_router as make_bookmarklets_router,
     cache::GrpcClientFactory,
     client::make_client,
-    configuration::{ConfigV1, Configuration, HeaderBlacklist, OtelExportConfig, StorageConfig},
+    configuration::{
+        Configuration, ConfigurationRepr, HeaderBlacklist, OtelExportConfig, StorageConfig,
+    },
     define_metric,
     delicious::make_router as make_delicious_router,
     grpc::{
@@ -368,16 +370,16 @@ impl CliOpts {
 }
 
 /// Parse the indielinks configuration file
-fn parse_config(cfg: &Option<PathBuf>) -> Result<ConfigV1> {
+fn parse_config(cfg: &Option<PathBuf>) -> Result<Configuration> {
     use snafu::IntoError;
     let pth: PathBuf = cfg
         .as_ref()
         .cloned()
         .unwrap_or_else(|| PathBuf::from_str("/etc/indielinks.toml").unwrap());
     match std::fs::read_to_string(&pth) {
-        Ok(text) => match toml::from_str::<Configuration>(&text) {
+        Ok(text) => match toml::from_str::<ConfigurationRepr>(&text) {
             Ok(cfg) => match cfg {
-                Configuration::V1(cfg) => Ok(cfg),
+                ConfigurationRepr::V1(cfg) => Ok(cfg),
             },
             Err(err) => Err(ConfigParseSnafu { pth }.into_error(err)),
         },
@@ -901,7 +903,7 @@ pub async fn select_storage(
 )]
 async fn serve(
     opts: CliOpts,
-    mut cfg: ConfigV1,
+    mut cfg: Configuration,
     log_file_hup: Option<mpsc::Sender<PathBuf>>,
 ) -> Result<()> {
     std::panic::set_hook(Box::new(|info| error!("Panic detected: {info:#?}")));
@@ -1066,7 +1068,7 @@ async fn serve(
         // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
         // processing in an orderly manner:
         let task_processor =
-            background_tasks::new(nosql_tasks, context, Some(cfg.background_tasks().clone()))
+            background_tasks::new(nosql_tasks, context, Some(cfg.background_tasks.clone()))
                 .context(BackgroundTasksSnafu)?;
 
         let metrics_nfy = Arc::new(Notify::new());
@@ -1102,7 +1104,7 @@ async fn serve(
         let grpc_nfy = Arc::new(Notify::new());
 
         let world_server = axum::serve(
-            TcpListener::bind(cfg.public_address())
+            TcpListener::bind(&cfg.public_address)
                 .await
                 .context(BindSnafu)?,
             make_world_router(state.clone(), cfg.header_blacklist.as_ref()),
@@ -1110,7 +1112,7 @@ async fn serve(
         .with_graceful_shutdown(shutdown_signal(world_nfy.clone()));
 
         let local_server = axum::serve(
-            TcpListener::bind(cfg.private_address())
+            TcpListener::bind(&cfg.private_address)
                 .await
                 .context(BindSnafu)?,
             make_local_router(state.clone()),
@@ -1568,7 +1570,7 @@ async fn go_async(
     fn go_async1(
         opts: &CliOpts,
     ) -> Result<(
-        ConfigV1,
+        Configuration,
         Box<dyn Layer<Registry> + Send + Sync>,
         EnvFilter,
         Option<mpsc::Sender<PathBuf>>,

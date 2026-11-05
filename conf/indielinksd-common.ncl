@@ -37,7 +37,7 @@
     collection-page-size = 64,
     default-page-size = 16,
     contact-email = "admin@indiemark.local",
-    templates = "/usr/share/indielinks/templates",
+    templates = "indielinks/assets",
     otlp-export = { endpoint = "http://localhost:9090/api/v1/otlp/v1/metrics" },
     signing-keys = {
         token-lifetime = [300, 0], # seconds, nanoseconds => 5 min
