@@ -493,6 +493,15 @@ async fn authenticate(
             user_auth_failures.add(1, &[]);
             next.run(request).await
         }
+        Err(Error::InvalidCredentials {
+            source: authn::Error::Token { source },
+        }) if matches!(*source, token::Error::Expired { .. }) => {
+            info!(
+                "indielinks failed to authenticate this request-- the proferred token had expired"
+            );
+            user_auth_failures.add(1, &[]);
+            next.run(request).await
+        }
         // I want to be careful about what sort of information we reveal to our caller...
         Err(err) => {
             error!("indielinks failed to authenticate this request: {err}");
@@ -701,6 +710,13 @@ async fn refresh(
             info!("Successfully refreshed an access token for {username}.");
             user_refreshes_successful.add(1, &[KeyValue::new("username", username)]);
             (StatusCode::OK, Json(rsp)).into_response()
+        }
+        Err(Error::Refresh { source, .. })
+            if matches!(*source, token::Error::UnknownIssuer { .. }) =>
+        {
+            // This can happen during development
+            warn!("Attempted to refresh a token with an unknown issuer");
+            StatusCode::UNAUTHORIZED.into_response()
         }
         Err(err) => {
             error!("{:#?}", err);
