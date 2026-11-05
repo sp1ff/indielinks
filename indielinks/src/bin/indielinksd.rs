@@ -64,7 +64,7 @@ use tower_http::{
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use tracing::{debug, error, info, warn, Level};
+use tracing::{debug, error, info, Level};
 use tracing_subscriber::{
     filter::EnvFilter,
     fmt::{self, MakeWriter},
@@ -370,10 +370,10 @@ impl CliOpts {
 /// Parse the indielinks configuration file
 fn parse_config(cfg: &Option<PathBuf>) -> Result<ConfigV1> {
     use snafu::IntoError;
-    let (pth, defaulted): (PathBuf, bool) = cfg.as_ref().map_or_else(
-        || (PathBuf::from_str("/etc/indielinks.toml").unwrap(), true),
-        |p| (p.clone(), false),
-    );
+    let pth: PathBuf = cfg
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from_str("/etc/indielinks.toml").unwrap());
     match std::fs::read_to_string(&pth) {
         Ok(text) => match toml::from_str::<Configuration>(&text) {
             Ok(cfg) => match cfg {
@@ -381,22 +381,7 @@ fn parse_config(cfg: &Option<PathBuf>) -> Result<ConfigV1> {
             },
             Err(err) => Err(ConfigParseSnafu { pth }.into_error(err)),
         },
-        Err(err) => {
-            if defaulted {
-                // Running with a "default" configuration might seem a bit odd, but as I've noted
-                // elsewhere, one of my design goals is operational simplicity; if you've got a
-                // build, I want you to be able to run with without having to fuss around with
-                // configuration files, if only to poke at the thing with `curl`.
-                warn!(
-                    "indielinks is running with a default configuration. \
-                       This is only suitable for testing/debugging, since keys will be \
-                       randomly generated and not recoverable or preserved."
-                );
-                Ok(ConfigV1::default())
-            } else {
-                Err(ConfigNotFoundSnafu { pth }.into_error(err))
-            }
-        }
+        Err(err) => Err(ConfigNotFoundSnafu { pth }.into_error(err)),
     }
 }
 

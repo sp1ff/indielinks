@@ -20,17 +20,19 @@
 //! This module handles application configuration for the `indielinksd` daemon process.
 
 use std::{
-    collections::HashSet, net::SocketAddr, num::NonZeroU32, path::PathBuf,
-    result::Result as StdResult, str::FromStr,
+    collections::HashSet,
+    net::SocketAddr,
+    num::{NonZero, NonZeroU32},
+    path::PathBuf,
+    result::Result as StdResult,
 };
 
 use chrono::Duration;
-use clap::crate_version;
 use either::Either;
 use http::HeaderName;
 use indielinks_shared::{
     credentials::Credentials,
-    entities::SsmParameter,
+    entities::{SsmParameter, UserEmail},
     origin::{NetLoc, Origin},
     service::ExponentialBackoffParameters,
 };
@@ -234,6 +236,14 @@ impl Default for UsersConfiguration {
     }
 }
 
+fn default_page_size() -> NonZero<usize> {
+    nonzero!(16usize)
+}
+
+fn default_templates_path() -> PathBuf {
+    PathBuf::from("/usr/share/indielinks/templates")
+}
+
 /// Indielinks configuration, version one
 #[derive(Clone, Debug, Deserialize)]
 pub struct ConfigV1 {
@@ -288,6 +298,15 @@ pub struct ConfigV1 {
     pub header_blacklist: Option<HeaderBlacklist>,
     #[serde(rename = "pinboard-token")]
     pub pinboard_token: Option<SecretString>,
+    /// Default page size for frontend collection views
+    #[serde(rename = "default-page-size", default = "default_page_size")]
+    pub default_page_size: NonZero<usize>,
+    /// Contact email address for the instance operator
+    #[serde(rename = "contact-email")]
+    pub contact_email: UserEmail,
+    /// Directory containing Markdown template documents
+    #[serde(rename = "templates", default = "default_templates_path")]
+    pub templates: PathBuf,
 }
 
 impl ConfigV1 {
@@ -299,34 +318,6 @@ impl ConfigV1 {
     }
     pub fn background_tasks(&self) -> &background_tasks::Config {
         &self.background_tasks
-    }
-}
-
-impl Default for ConfigV1 {
-    fn default() -> Self {
-        ConfigV1 {
-            log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(/* known good */),
-            otlp_export: None,
-            public_address: "0.0.0.0:20679".parse::<SocketAddr>().unwrap(/* known good */),
-            private_address: "127.0.0.1:20680".parse::<SocketAddr>().unwrap(/* known good */),
-            raft_grpc_address: "0.0.0.0:20681".parse::<SocketAddr>().unwrap(/* known good */),
-            storage_config: StorageConfig::default(),
-            public_origin: "http://localhost:20679".parse::<Origin>().unwrap(/* known good */),
-            pepper: Either::Right(Peppers::from_entropy()),
-            signing_keys: SigningKeysConfig::from_entropy(),
-            users_config: UsersConfiguration::default(),
-            user_agent: format!("indielinks/{}; +indielinks@pobox.com", crate_version!()),
-            client_exponential_backoff: Default::default(),
-            client_configuration: Default::default(),
-            local_client_configuration: Default::default(),
-            general_purpose_client_configuration: Default::default(),
-            collection_page_size: 12, // Copied from Mastodon
-            assets: None,
-            background_tasks: background_tasks::Config::default(),
-            raft_config: RaftConfiguration::default(),
-            header_blacklist: None,
-            pinboard_token: None,
-        }
     }
 }
 
@@ -354,6 +345,9 @@ user-agent = "indielinks/"##,
             env!("CARGO_PKG_VERSION"),
             r##"; +indielinks@pobox.com"
 collection-page-size = 64
+default-page-size = 16
+contact-email = "admin@indiemark.local"
+templates = "/usr/share/indielinks/templates"
 
 "##,
             pepper,
@@ -484,6 +478,108 @@ custom = []
             ))
             .is_err(),
             "a configuration omitting `signing-keys.signing-keys` should be rejected"
+        );
+    }
+
+    #[test]
+    fn default_page_size_is_applied() {
+        let cfg = parse(
+            &full_config(
+                r#"pepper = "/indielinks/prod/peppers""#,
+                r#"signing-keys = "/indielinks/prod/signing-keys""#,
+            )
+            .replace("default-page-size = 16\n", ""),
+        );
+        assert_eq!(cfg.default_page_size.get(), 16);
+    }
+
+    #[test]
+    fn explicit_page_size_is_accepted() {
+        let cfg = parse(
+            &full_config(
+                r#"pepper = "/indielinks/prod/peppers""#,
+                r#"signing-keys = "/indielinks/prod/signing-keys""#,
+            )
+            .replace("default-page-size = 16", "default-page-size = 32"),
+        );
+        assert_eq!(cfg.default_page_size.get(), 32);
+    }
+
+    #[test]
+    fn zero_page_size_is_rejected() {
+        assert!(
+            toml::from_str::<Configuration>(
+                &full_config(
+                    r#"pepper = "/indielinks/prod/peppers""#,
+                    r#"signing-keys = "/indielinks/prod/signing-keys""#,
+                )
+                .replace("default-page-size = 16", "default-page-size = 0")
+            )
+            .is_err(),
+            "a page size of zero should be rejected"
+        );
+    }
+
+    #[test]
+    fn default_templates_path_is_applied() {
+        let cfg = parse(
+            &full_config(
+                r#"pepper = "/indielinks/prod/peppers""#,
+                r#"signing-keys = "/indielinks/prod/signing-keys""#,
+            )
+            .replace("templates = \"/usr/share/indielinks/templates\"\n", ""),
+        );
+        assert_eq!(
+            cfg.templates,
+            PathBuf::from("/usr/share/indielinks/templates")
+        );
+    }
+
+    #[test]
+    fn explicit_templates_path_is_accepted() {
+        let cfg = parse(
+            &full_config(
+                r#"pepper = "/indielinks/prod/peppers""#,
+                r#"signing-keys = "/indielinks/prod/signing-keys""#,
+            )
+            .replace(
+                "templates = \"/usr/share/indielinks/templates\"",
+                "templates = \"/tmp/templates\"",
+            ),
+        );
+        assert_eq!(cfg.templates, PathBuf::from("/tmp/templates"));
+    }
+
+    #[test]
+    fn missing_contact_email_is_rejected() {
+        assert!(
+            toml::from_str::<Configuration>(
+                &full_config(
+                    r#"pepper = "/indielinks/prod/peppers""#,
+                    r#"signing-keys = "/indielinks/prod/signing-keys""#,
+                )
+                .replace("contact-email = \"admin@indiemark.local\"\n", "")
+            )
+            .is_err(),
+            "a configuration omitting `contact-email` should be rejected"
+        );
+    }
+
+    #[test]
+    fn invalid_contact_email_is_rejected() {
+        assert!(
+            toml::from_str::<Configuration>(
+                &full_config(
+                    r#"pepper = "/indielinks/prod/peppers""#,
+                    r#"signing-keys = "/indielinks/prod/signing-keys""#,
+                )
+                .replace(
+                    "contact-email = \"admin@indiemark.local\"",
+                    "contact-email = \"not-an-email\"",
+                )
+            )
+            .is_err(),
+            "an invalid `contact-email` should be rejected"
         );
     }
 }

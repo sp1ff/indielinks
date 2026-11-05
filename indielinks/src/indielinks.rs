@@ -25,6 +25,7 @@
 
 use std::{
     env::{self, VarError},
+    num::NonZero,
     path::PathBuf,
     result::Result as StdResult,
     sync::Arc,
@@ -53,7 +54,7 @@ use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use indielinks_shared::{
-    entities::{SsmParameter, Tagname},
+    entities::{SsmParameter, Tagname, UserEmail},
     instance_state::InstanceStateV0,
     origin::Origin,
 };
@@ -186,6 +187,9 @@ pub struct Indielinks {
     pub local_client: crate::client_types::ClientType,
     pub general_purpose_client: crate::client_types::ClientType,
     pub collection_page_size: usize,
+    pub default_page_size: NonZero<usize>,
+    pub contact_email: UserEmail,
+    pub templates: PathBuf,
     pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: SharedCacheNode<crate::cache::GrpcClientFactory>,
@@ -249,6 +253,9 @@ impl Indielinks {
             local_client,
             general_purpose_client,
             collection_page_size: cfg.collection_page_size,
+            default_page_size: cfg.default_page_size,
+            contact_email: cfg.contact_email.clone(),
+            templates: cfg.templates.clone(),
             assets: cfg.assets.clone().unwrap_or(PathBuf::from("assets")),
             task_sender,
             cache_node: cache_node.clone(),
