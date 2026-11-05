@@ -20,20 +20,18 @@
 //! This module handles application configuration for the `indielinksd` daemon process.
 
 use std::{
-    collections::HashSet, net::SocketAddr, num::NonZeroU32, path::PathBuf,
-    result::Result as StdResult, str::FromStr,
+    collections::HashSet,
+    net::SocketAddr,
+    num::{NonZero, NonZeroU32},
+    path::PathBuf,
+    result::Result as StdResult,
+    str::FromStr,
 };
 
 use chrono::Duration;
 use clap::crate_version;
 use either::Either;
 use http::HeaderName;
-use indielinks_shared::{
-    credentials::Credentials,
-    entities::SsmParameter,
-    origin::{NetLoc, Origin},
-    service::ExponentialBackoffParameters,
-};
 use nonzero::nonzero;
 use secrecy::SecretString;
 use serde::Deserialize;
@@ -42,14 +40,21 @@ use url::Url;
 
 use indielinks_cache::raft::Configuration as RaftConfiguration;
 
-use indielinks_shared::dynamodb::Location as DynamoLocation;
+use indielinks_shared::{
+    credentials::Credentials,
+    dynamodb::Location as DynamoLocation,
+    entities::{SsmParameter, UserEmail},
+    known_good,
+    origin::{NetLoc, Origin},
+    service::ExponentialBackoffParameters,
+};
 
 use crate::{background_tasks, http::SameSite, peppers::Peppers, signing_keys::SigningKeys};
 
 #[derive(Debug, Snafu)]
 #[non_exhaustive]
 pub enum Error {
-    #[snafu(display("While reading the header blacklist, {source}"))]
+    #[snafu(display("found invalid header name while reading the header blacklist"))]
     HeaderBlacklist {
         source: http::header::InvalidHeaderName,
     },
@@ -205,7 +210,6 @@ impl From<HeaderBlacklist> for HashSet<HeaderName> {
 }
 
 // I suppose I could pull-in the `cookie` crate... but c'mon: it's a few cookies.
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct UsersConfiguration {
     #[serde(rename = "same-site")]
@@ -234,77 +238,60 @@ impl Default for UsersConfiguration {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                   indielinksd Configuration                                    //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// Indielinks configuration, version one
+// This is the current version of our configuration. At some point, we'll have to revise it,
+// and we'll name *that* to `Configuration`, renaming this to something like `ConfigurationV1`
+// or something.
 #[derive(Clone, Debug, Deserialize)]
-pub struct ConfigV1 {
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Configuration {
     /// The [indielinks](crate) log file
-    #[serde(rename = "log-file")]
     pub log_file: PathBuf,
     /// OTLP export target; None means don't export
-    #[serde(rename = "otlp-export")]
     pub otlp_export: Option<OtelExportConfig>,
     /// Local address at which to listen for public requests; specify as "address:port". This
-    /// is the address to which [indielinks] will bind a listening socket for its public API.
-    #[serde(rename = "public-address")]
-    public_address: SocketAddr,
+    /// is the address to which `indielinks` will bind a listening socket for its public API.
+    pub public_address: SocketAddr,
     /// Address at which to listen for private requests; specify as "address:port"
     // See note above RE `SocketAddr`.
-    #[serde(rename = "private-address")]
-    private_address: SocketAddr,
+    pub private_address: SocketAddr,
     /// Address at which to listen for Raft-related gRPC messages
-    #[serde(rename = "raft-grpc-address")]
     pub raft_grpc_address: SocketAddr,
-    #[serde(rename = "storage-config")]
     pub storage_config: StorageConfig,
     /// The address at which this [indielinks](crate) instance may be reached from the public internet
-    #[serde(rename = "public-origin")]
     pub public_origin: Origin,
     /// The peppers, or the name of the SSM Parameter Store parameter from which they are to be
     /// fetched
     #[serde(with = "either::serde_untagged")]
     pub pepper: Either<SsmParameter, Peppers>,
-    #[serde(rename = "signing-keys")]
     pub signing_keys: SigningKeysConfig,
-    #[serde(rename = "users-config")]
     pub users_config: UsersConfiguration,
-    #[serde(rename = "user-agent")]
     pub user_agent: String,
-    #[serde(rename = "client-exponential-backoff")]
     pub client_exponential_backoff: ExponentialBackoffParameters,
-    #[serde(rename = "client-configuration")]
     pub client_configuration: ClientConfiguration,
-    #[serde(rename = "local-client-configuration")]
     pub local_client_configuration: ClientConfiguration,
-    #[serde(rename = "general-purpose-client-configuration")]
     pub general_purpose_client_configuration: ClientConfiguration,
-    #[serde(rename = "collection-page-size")]
     pub collection_page_size: usize,
     pub assets: Option<PathBuf>,
-    #[serde(rename = "background-tasks")]
-    background_tasks: background_tasks::Config,
-    #[serde(rename = "raft-config")]
+    pub background_tasks: background_tasks::Config,
     pub raft_config: RaftConfiguration,
-    #[serde(rename = "header-blacklist")]
     pub header_blacklist: Option<HeaderBlacklist>,
-    #[serde(rename = "pinboard-token")]
     pub pinboard_token: Option<SecretString>,
+    /// Default page size for frontend collection views
+    pub default_page_size: NonZero<usize>,
+    /// Contact email address for the instance operator
+    pub contact_email: UserEmail,
+    /// Directory containing Markdown template documents
+    pub templates: PathBuf,
 }
 
-impl ConfigV1 {
-    pub fn public_address(&self) -> &SocketAddr {
-        &self.public_address
-    }
-    pub fn private_address(&self) -> &SocketAddr {
-        &self.private_address
-    }
-    pub fn background_tasks(&self) -> &background_tasks::Config {
-        &self.background_tasks
-    }
-}
-
-impl Default for ConfigV1 {
+impl Default for Configuration {
     fn default() -> Self {
-        ConfigV1 {
+        Configuration {
             log_file: PathBuf::from_str("/tmp/indielinks.log").unwrap(/* known good */),
             otlp_export: None,
             public_address: "0.0.0.0:20679".parse::<SocketAddr>().unwrap(/* known good */),
@@ -326,15 +313,21 @@ impl Default for ConfigV1 {
             raft_config: RaftConfiguration::default(),
             header_blacklist: None,
             pinboard_token: None,
+            default_page_size: nonzero!(16usize),
+            contact_email: known_good!(UserEmail::new("admin@indiemark.local")),
+            templates: PathBuf::from("assets"),
         }
     }
 }
 
+// This is a convenient way to support a versioned configuration format. When we introduce new
+// veresions, we'll have to define a migration path from older versions to the most recent (which
+// will always be named `Configuration`)
 #[derive(Deserialize)]
 #[serde(tag = "version")] // tag "internally"
-pub enum Configuration {
+pub enum ConfigurationRepr {
     #[serde(rename = "1")]
-    V1(ConfigV1),
+    V1(Configuration),
 }
 
 #[cfg(test)]
@@ -354,6 +347,9 @@ user-agent = "indielinks/"##,
             env!("CARGO_PKG_VERSION"),
             r##"; +indielinks@pobox.com"
 collection-page-size = 64
+default-page-size = 16
+contact-email = "admin@indiemark.local"
+templates = "/usr/share/indielinks/doc"
 
 "##,
             pepper,
@@ -427,11 +423,11 @@ custom = []
         .concat()
     }
 
-    fn parse(text: &str) -> ConfigV1 {
-        match toml::from_str::<Configuration>(text)
+    fn parse(text: &str) -> Configuration {
+        match toml::from_str::<ConfigurationRepr>(text)
             .expect("the TOML should parse as a `Configuration`")
         {
-            Configuration::V1(cfg) => cfg,
+            ConfigurationRepr::V1(cfg) => cfg,
         }
     }
 
@@ -484,6 +480,81 @@ custom = []
             ))
             .is_err(),
             "a configuration omitting `signing-keys.signing-keys` should be rejected"
+        );
+    }
+
+    #[test]
+    fn explicit_page_size_is_accepted() {
+        let cfg = parse(
+            &full_config(
+                r#"pepper = "/indielinks/prod/peppers""#,
+                r#"signing-keys = "/indielinks/prod/signing-keys""#,
+            )
+            .replace("default-page-size = 16", "default-page-size = 32"),
+        );
+        assert_eq!(cfg.default_page_size.get(), 32);
+    }
+
+    #[test]
+    fn zero_page_size_is_rejected() {
+        assert!(
+            toml::from_str::<Configuration>(
+                &full_config(
+                    r#"pepper = "/indielinks/prod/peppers""#,
+                    r#"signing-keys = "/indielinks/prod/signing-keys""#,
+                )
+                .replace("default-page-size = 16", "default-page-size = 0")
+            )
+            .is_err(),
+            "a page size of zero should be rejected"
+        );
+    }
+
+    #[test]
+    fn explicit_templates_path_is_accepted() {
+        let cfg = parse(
+            &full_config(
+                r#"pepper = "/indielinks/prod/peppers""#,
+                r#"signing-keys = "/indielinks/prod/signing-keys""#,
+            )
+            .replace(
+                "templates = \"/usr/share/indielinks/doc\"",
+                "templates = \"/tmp/templates\"",
+            ),
+        );
+        assert_eq!(cfg.templates, PathBuf::from("/tmp/templates"));
+    }
+
+    #[test]
+    fn missing_contact_email_is_rejected() {
+        assert!(
+            toml::from_str::<Configuration>(
+                &full_config(
+                    r#"pepper = "/indielinks/prod/peppers""#,
+                    r#"signing-keys = "/indielinks/prod/signing-keys""#,
+                )
+                .replace("contact-email = \"admin@indiemark.local\"\n", "")
+            )
+            .is_err(),
+            "a configuration omitting `contact-email` should be rejected"
+        );
+    }
+
+    #[test]
+    fn invalid_contact_email_is_rejected() {
+        assert!(
+            toml::from_str::<Configuration>(
+                &full_config(
+                    r#"pepper = "/indielinks/prod/peppers""#,
+                    r#"signing-keys = "/indielinks/prod/signing-keys""#,
+                )
+                .replace(
+                    "contact-email = \"admin@indiemark.local\"",
+                    "contact-email = \"not-an-email\"",
+                )
+            )
+            .is_err(),
+            "an invalid `contact-email` should be rejected"
         );
     }
 }

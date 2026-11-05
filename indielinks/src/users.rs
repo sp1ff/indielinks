@@ -79,7 +79,13 @@
 //! Finally, note that this is designed to defend against CSRF. If an attacker has a successful
 //! XSS exploit, they can refresh the token as long as they'd like!
 
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_stream::try_stream;
 use axum::{
@@ -99,7 +105,7 @@ use itertools::Itertools;
 use nonzero::nonzero;
 use opentelemetry::KeyValue;
 use secrecy::{ExposeSecret, SecretString};
-use snafu::{prelude::*, Backtrace};
+use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
 use tokio::sync::Mutex;
 use tower_http::{cors::AllowOrigin, set_header::SetResponseHeaderLayer};
@@ -109,14 +115,14 @@ use url::Url;
 use indielinks_shared::{
     api::{
         ApiKey as PublicApiKey, ChangePasswordRequest, FollowRequest, FollowTarget,
-        GetKeysResponse, LikeRequest, LoginReq, LoginRsp, MintKeyReq, MintKeyRsp,
-        RecentPostsRequest, ReplyRequest, RevokeKeyRequest, ThreadContextRequest,
-        ThreadContextResponse, TimelineReq, TopKTagsRequest, TopKTagsResponse, UpdateProfileReq,
-        UserProfile, REFRESH_COOKIE, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
-        REFRESH_CSRF_HEADER_NAME_LC,
+        GetKeysResponse, InstanceDocuments, InstanceResponse, LikeRequest, LoginReq, LoginRsp,
+        MintKeyReq, MintKeyRsp, RecentPostsRequest, ReplyRequest, RevokeKeyRequest,
+        ThreadContextRequest, ThreadContextResponse, TimelineReq, TopKTagsRequest,
+        TopKTagsResponse, UpdateProfileReq, UserProfile, REFRESH_COOKIE, REFRESH_CSRF_COOKIE,
+        REFRESH_CSRF_HEADER_NAME, REFRESH_CSRF_HEADER_NAME_LC,
     },
-    entities::Username,
-    mk_cors,
+    entities::{UserEmail, Username},
+    known_good, mk_cors,
     origin::Origin,
 };
 
@@ -143,6 +149,15 @@ use crate::{
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                       module Error type                                        //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Errors that can occur while expanding template placeholders
+#[derive(Debug, Snafu)]
+pub enum ReplacementError {
+    #[snafu(display("Unknown placeholder: %{name}"))]
+    UnknownParameter { name: String },
+    #[snafu(display("Unterminated placeholder starting at position {position}"))]
+    UnterminatedPlaceholder { position: usize },
+}
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -301,6 +316,18 @@ pub enum Error {
         username: String,
         #[snafu(source(from(indielinks_shared::entities::Error, Box::new)))]
         source: Box<indielinks_shared::entities::Error>,
+    },
+    #[snafu(display("Template not found at {}", path.display()))]
+    TemplateNotFound { path: PathBuf },
+    #[snafu(display("Failed to read template at {}", path.display()))]
+    TemplateRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[snafu(display("Failed to expand template at {}", path.display()))]
+    TemplateExpansion {
+        path: PathBuf,
+        source: ReplacementError,
     },
 }
 
@@ -1659,6 +1686,115 @@ async fn cluster_stats(State(state): State<Arc<Indielinks>>) -> axum::response::
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       `/users/instance`                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+define_metric! { "user.instance.successful", user_instance_successful, Sort::IntegralCounter }
+define_metric! { "user.instance.failures", user_instance_failures, Sort::IntegralCounter }
+
+/// Parameters for simple `%{name}` placeholder substitution in Markdown templates
+#[derive(Clone, Debug)]
+struct ReplacementParameters {
+    parameters: HashMap<String, String>,
+}
+
+impl ReplacementParameters {
+    fn new(origin: Origin, admin_email: UserEmail) -> Self {
+        Self {
+            parameters: [
+                ("origin".to_owned(), origin.to_string()),
+                ("dmca_email".to_owned(), admin_email.to_string()),
+                ("admin_email".to_owned(), admin_email.to_string()),
+            ]
+            .into(),
+        }
+    }
+    fn expand(&self, text: &str) -> String {
+        // This is elegant, but it won't catch mistakese like "email me at %{dmca_email to report..."
+        self.parameters
+            .iter()
+            .fold(text.to_owned(), |acc, (key, value)| {
+                acc.replace(&format!("%{{{key}}}"), value)
+            })
+    }
+}
+
+/// Read `path` which presumably contains parameterized text; expand the parameters therein from
+/// `parameters`
+fn text_from_template<P: AsRef<Path>>(
+    path: P,
+    parameters: &ReplacementParameters,
+) -> Result<String> {
+    match fs::read_to_string(path.as_ref()) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return TemplateNotFoundSnafu {
+                path: path.as_ref().to_path_buf(),
+            }
+            .fail();
+        }
+        Err(err) => {
+            return Err(TemplateReadSnafu {
+                path: path.as_ref().to_path_buf(),
+            }
+            .into_error(err));
+        }
+    }
+    .pipe(|text| Ok(parameters.expand(&text)))
+}
+
+fn make_documents<P: AsRef<Path>>(
+    templates_dir: P,
+    parameters: &ReplacementParameters,
+) -> Result<InstanceDocuments> {
+    let pages = [
+        "about.md",
+        "privacy-policy.md",
+        "terms-of-service.md",
+        "docs.md",
+    ]
+    .into_iter()
+    .map(|file| text_from_template(templates_dir.as_ref().join(file), parameters))
+    .collect::<Result<Vec<String>>>()?;
+
+    let motd = match text_from_template(templates_dir.as_ref().join("motd.md"), parameters) {
+        Ok(text) => Some(text),
+        Err(Error::TemplateNotFound { .. }) => None,
+        Err(err) => {
+            return Err(err);
+        }
+    };
+
+    let [about, privacy_policy, terms_of_service, documentation] = known_good!(pages.try_into());
+
+    Ok(InstanceDocuments {
+        about,
+        privacy_policy,
+        terms_of_service,
+        documentation,
+        motd,
+    })
+}
+
+/// Return instance customization data for the frontend
+async fn instance(State(state): State<Arc<Indielinks>>) -> axum::response::Response {
+    let parameters = ReplacementParameters::new(state.origin.clone(), state.contact_email.clone());
+    match make_documents(&state.templates, &parameters) {
+        Ok(documents) => (
+            StatusCode::OK,
+            Json(InstanceResponse {
+                default_page_size: state.default_page_size,
+                origin: state.origin.clone(),
+                contact_email: state.contact_email.clone(),
+                documents,
+            }),
+        )
+            .into_response(),
+        Err(err) => err.into_response(),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                           Public API                                           //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1888,6 +2024,15 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
                     [http::Method::GET],
                     AllowOrigin::any(),
                 )),
+        )
+        .route(
+            "/users/instance",
+            get(instance).layer(mk_cors(
+                false,
+                allow_headers.clone(),
+                [http::Method::GET],
+                AllowOrigin::any(),
+            )),
         )
         // All responses are JSON; add the appropriate Content-Type header (but leave the existing
         // Content-Type header should a handler set it specially).

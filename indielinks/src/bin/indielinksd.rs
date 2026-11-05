@@ -89,7 +89,9 @@ use indielinks::{
     bookmarklets::make_router as make_bookmarklets_router,
     cache::GrpcClientFactory,
     client::make_client,
-    configuration::{ConfigV1, Configuration, HeaderBlacklist, OtelExportConfig, StorageConfig},
+    configuration::{
+        Configuration, ConfigurationRepr, HeaderBlacklist, OtelExportConfig, StorageConfig,
+    },
     define_metric,
     delicious::make_router as make_delicious_router,
     grpc::{
@@ -179,6 +181,11 @@ pub enum Error {
     ConfigParse {
         pth: PathBuf,
         source: toml::de::Error,
+    },
+    #[snafu(display("failed to read the configuration file"))]
+    ConfigRead {
+        pth: PathBuf,
+        source: std::io::Error,
     },
     #[snafu(display("Couldn't resolve the present working directory: {source}"))]
     CurrentDir { source: std::io::Error },
@@ -368,20 +375,19 @@ impl CliOpts {
 }
 
 /// Parse the indielinks configuration file
-fn parse_config(cfg: &Option<PathBuf>) -> Result<ConfigV1> {
-    use snafu::IntoError;
-    let (pth, defaulted): (PathBuf, bool) = cfg.as_ref().map_or_else(
-        || (PathBuf::from_str("/etc/indielinks.toml").unwrap(), true),
-        |p| (p.clone(), false),
+fn parse_config(cfg: &Option<PathBuf>) -> Result<Configuration> {
+    let (pth, defaulted) = cfg.as_ref().map_or_else(
+        || (PathBuf::from("/etc/indielinks.toml"), true),
+        |path| (path.clone(), false),
     );
-    match std::fs::read_to_string(&pth) {
-        Ok(text) => match toml::from_str::<Configuration>(&text) {
-            Ok(cfg) => match cfg {
-                Configuration::V1(cfg) => Ok(cfg),
-            },
-            Err(err) => Err(ConfigParseSnafu { pth }.into_error(err)),
-        },
-        Err(err) => {
+
+    match fs::read_to_string(&pth) {
+        Ok(text) => {
+            let ConfigurationRepr::V1(configuration) =
+                toml::from_str::<ConfigurationRepr>(&text).context(ConfigParseSnafu { pth })?;
+            Ok(configuration)
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
             if defaulted {
                 // Running with a "default" configuration might seem a bit odd, but as I've noted
                 // elsewhere, one of my design goals is operational simplicity; if you've got a
@@ -389,14 +395,15 @@ fn parse_config(cfg: &Option<PathBuf>) -> Result<ConfigV1> {
                 // configuration files, if only to poke at the thing with `curl`.
                 warn!(
                     "indielinks is running with a default configuration. \
-                       This is only suitable for testing/debugging, since keys will be \
-                       randomly generated and not recoverable or preserved."
+                     This is only suitable for testing/debugging, since keys will be \
+                     randomly generated and not recoverable or preserved."
                 );
-                Ok(ConfigV1::default())
+                Ok(Configuration::default())
             } else {
                 Err(ConfigNotFoundSnafu { pth }.into_error(err))
             }
         }
+        Err(err) => Err(ConfigReadSnafu { pth }.into_error(err)),
     }
 }
 
@@ -916,7 +923,7 @@ pub async fn select_storage(
 )]
 async fn serve(
     opts: CliOpts,
-    mut cfg: ConfigV1,
+    mut cfg: Configuration,
     log_file_hup: Option<mpsc::Sender<PathBuf>>,
 ) -> Result<()> {
     std::panic::set_hook(Box::new(|info| error!("Panic detected: {info:#?}")));
@@ -1081,7 +1088,7 @@ async fn serve(
         // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
         // processing in an orderly manner:
         let task_processor =
-            background_tasks::new(nosql_tasks, context, Some(cfg.background_tasks().clone()))
+            background_tasks::new(nosql_tasks, context, Some(cfg.background_tasks.clone()))
                 .context(BackgroundTasksSnafu)?;
 
         let metrics_nfy = Arc::new(Notify::new());
@@ -1117,7 +1124,7 @@ async fn serve(
         let grpc_nfy = Arc::new(Notify::new());
 
         let world_server = axum::serve(
-            TcpListener::bind(cfg.public_address())
+            TcpListener::bind(&cfg.public_address)
                 .await
                 .context(BindSnafu)?,
             make_world_router(state.clone(), cfg.header_blacklist.as_ref()),
@@ -1125,7 +1132,7 @@ async fn serve(
         .with_graceful_shutdown(shutdown_signal(world_nfy.clone()));
 
         let local_server = axum::serve(
-            TcpListener::bind(cfg.private_address())
+            TcpListener::bind(&cfg.private_address)
                 .await
                 .context(BindSnafu)?,
             make_local_router(state.clone()),
@@ -1583,7 +1590,7 @@ async fn go_async(
     fn go_async1(
         opts: &CliOpts,
     ) -> Result<(
-        ConfigV1,
+        Configuration,
         Box<dyn Layer<Registry> + Send + Sync>,
         EnvFilter,
         Option<mpsc::Sender<PathBuf>>,
