@@ -352,7 +352,7 @@ impl StatusPage {
 fn render_status(status: StatusCode, page: StatusPage) -> axum::response::Response {
     match page.render() {
         Ok(html) => (status, html).into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:?}")).into_response(),
     }
 }
 
@@ -405,7 +405,7 @@ async fn authenticate(
 
             render_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                StatusPage::error(format!("{err:#?}")),
+                StatusPage::error(format!("{err:?}")),
             )
         }
     }
@@ -599,7 +599,7 @@ async fn save(
             bookmarklets_save_failures.add(1, &[]);
             render_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                StatusPage::error(format!("{err:#?}")),
+                StatusPage::error(format!("{err:?}")),
             )
         }
     }
@@ -804,7 +804,7 @@ async fn add(
             bookmarklets_add_failures.add(1, &[]);
             render_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                StatusPage::error(format!("{err:#?}")),
+                StatusPage::error(format!("{err:?}")),
             )
         }
     }

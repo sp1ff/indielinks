@@ -784,7 +784,7 @@ pub async fn get_current_schema_version(session: &InnerSession) -> Result<Option
             );
             return Ok(None);
         } else {
-            error!("get_current_schema_version: {err:#?}");
+            error!("get_current_schema_version: {err:?}");
             return Err(KeyspaceSnafu.into_error(err));
         }
     }
@@ -819,7 +819,7 @@ pub async fn get_current_schema_version(session: &InnerSession) -> Result<Option
                 info!("The `schema_migrations` table doesn't exist; assuming this database is unconfigured.");
                 Ok(None)
             } else {
-                error!("get_current_schema_version: {err:#?}");
+                error!("get_current_schema_version: {err:?}");
                 Err(ExecutionSnafu.into_error(err))
             }
         }

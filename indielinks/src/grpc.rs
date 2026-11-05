@@ -614,10 +614,10 @@ async fn init_cluster(
             }
         },
         Err(err) => {
-            error!("While initializing the Raft cluster: {err:#?}");
+            error!("While initializing the Raft cluster: {err:?}");
             // It would be nice if I could just make `indielinks_cache::raft::Error` serializable,
             // but various source error types themselves are not.
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:?}")).into_response()
         }
     }
 }
@@ -673,7 +673,7 @@ async fn change_membership(
             // It might be nice to forward this request to the leader (if we're not the leader), but
             // for now just fail. Also, this can fail for a few reasons, not all of which are on the
             // user's side... I should make this more fine-grained.
-            (StatusCode::BAD_REQUEST, format!("{err:#?}")).into_response()
+            (StatusCode::BAD_REQUEST, format!("{err:?}")).into_response()
         }
     }
 }
@@ -691,7 +691,7 @@ async fn set_slots(
         Err(err) => {
             error!("While updating the Raft slot information: {err:?}");
             // I'm not sure what else could be the problem, so just cover everything with a 500.
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:#?}")).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("{err:?}")).into_response()
         }
     }
 }

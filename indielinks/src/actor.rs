@@ -689,7 +689,7 @@ async fn log_request(
         }
         Err(err) => {
             error!("While logging the request body, {err:?}");
-            (StatusCode::UNPROCESSABLE_ENTITY, format!("{err:#?}")).into_response()
+            (StatusCode::UNPROCESSABLE_ENTITY, format!("{err:?}")).into_response()
         }
     }
 }

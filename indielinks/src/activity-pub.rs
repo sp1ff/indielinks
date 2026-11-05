@@ -946,7 +946,7 @@ impl Task<Context> for SendReply {
             // field to the database table, like, `sent` to set ourselves up for retry?
             failures
                 .iter()
-                .for_each(|err| error!("Failed to send a reply: {err:#?}"));
+                .for_each(|err| error!("Failed to send a reply: {err:?}"));
 
             match failures.into_iter().next() {
                 Some(err) => Err(ApSnafu.into_error(err)),

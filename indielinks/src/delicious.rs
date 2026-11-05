@@ -1144,7 +1144,7 @@ async fn all_posts(
     {
         Ok(response) => response,
         Err(err) => {
-            error!("{err:#?}");
+            error!("{err:?}");
             let (status, msg) = err.as_status_and_msg();
             (status, Json(GenericRsp { result_code: msg })).into_response()
         }

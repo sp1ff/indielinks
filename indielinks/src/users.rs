@@ -1101,7 +1101,7 @@ async fn reply(
                 StatusCode::ACCEPTED.into_response()
             }
             Err(err) => {
-                error!("{err:#?}");
+                error!("{err:?}");
                 user_replies_failures.add(1, &[]);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

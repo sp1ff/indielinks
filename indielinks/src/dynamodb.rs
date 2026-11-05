@@ -889,7 +889,7 @@ pub async fn get_current_schema_version(client: &aws_sdk_dynamodb::Client) -> Re
             ) {
                 Ok(None) // `schema_migrations` table not found! => return None
             } else {
-                error!("get_current_schema_version: {err:#?}");
+                error!("get_current_schema_version: {err:?}");
                 Err(ScanSnafu.into_error(err))
             }
         }
