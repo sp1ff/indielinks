@@ -3768,6 +3768,7 @@ version = "0.0.2"
 dependencies = [
  "chrono",
  "console_error_panic_hook",
+ "futures",
  "getrandom 0.2.17",
  "gloo-net 0.7.0",
  "icondata",
@@ -3777,6 +3778,7 @@ dependencies = [
  "leptos_router",
  "nonempty-collections",
  "nonzero",
+ "pulldown-cmark",
  "secrecy 0.10.3",
  "send_wrapper",
  "serde",

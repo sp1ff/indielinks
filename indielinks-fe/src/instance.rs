@@ -18,7 +18,7 @@
 //! Popular introduces an indielinks instance and presents its recent public links, ranked tags,
 //! and service statistics. Each independently useful data region owns its resource and recovery.
 
-use std::{result::Result as StdResult, sync::Arc};
+use std::{num::NonZero, result::Result as StdResult, sync::Arc};
 
 use gloo_net::http::Request;
 use leptos::{either::Either, prelude::*};
@@ -38,9 +38,13 @@ use indielinks_shared::{
 };
 
 use crate::{
-    components::feedback::{EmptyAction, EmptyState, ErrorState, LoadingState},
+    components::{
+        feedback::{EmptyAction, EmptyState, ErrorState, LoadingState},
+        markdown::MarkdownDocument,
+        shell::Paths,
+    },
     http::error_for_status1,
-    types::{Api, Base, Token},
+    types::{Api, Base, InstanceConfiguration, Token, mailto_url},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -125,11 +129,11 @@ fn RefreshButton(
 //                                      Recent public links                                       //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-async fn load_posts(api: &str) -> Result<Option<NEVec<Post>>> {
+async fn load_posts(api: &str, page_size: NonZero<usize>) -> Result<Option<NEVec<Post>>> {
     Request::post(&format!("{api}/api/v1/users/recent-posts"))
         .json(&RecentPostsRequest {
             token: None,
-            page_size: Some(nonzero!(32usize)),
+            page_size: Some(page_size),
         })
         .context(HttpSnafu)?
         .send()
@@ -183,15 +187,19 @@ fn RecentPosts() -> impl IntoView {
     let api = expect_context::<Api>().0;
     let base = expect_context::<Base>().0;
     let token = expect_context::<Token>();
+    let page_size = expect_context::<InstanceConfiguration>()
+        .0
+        .default_page_size;
     let refresh = ArcTrigger::new();
     let loading = RwSignal::new(true);
     let posts = LocalResource::new({
         let refresh = refresh.clone();
         move || {
             let api = api.clone();
+            let page_size = page_size;
             refresh.track();
             async move {
-                let result = load_posts(&api).await;
+                let result = load_posts(&api, page_size).await;
                 loading.set(false);
                 result
             }
@@ -469,10 +477,16 @@ fn InstanceDetails() -> impl IntoView {
                                             <div><dt>"Raft term"</dt><dd>{stats.raft_term}</dd></div>
                                         </dl>
                                     </details>
-                                    <p class="instance-service-details__contact">
-                                        "Contact: "
-                                        <a href="mailto:indielinks@pobox.com">"indielinks@pobox.com"</a>
-                                    </p>
+                                    <nav aria-label="Instance resources" class="instance-resources instance-resources--panel">
+                                        <a class="instance-resources__link" href={expect_context::<Paths>().about().to_string()}>"About"</a>
+                                        <a class="instance-resources__link" href={expect_context::<Paths>().documentation().to_string()}>"Documentation"</a>
+                                        <a class="instance-resources__link" href={expect_context::<Paths>().privacy().to_string()}>"Privacy"</a>
+                                        <a class="instance-resources__link" href={expect_context::<Paths>().terms().to_string()}>"Terms"</a>
+                                        <a class="instance-resources__link" href={mailto_url(
+                                            &expect_context::<InstanceConfiguration>().0.contact_email,
+                                            None,
+                                        )}>"Contact"</a>
+                                    </nav>
                                 </section>
                             }
                         }))
@@ -490,20 +504,36 @@ fn InstanceDetails() -> impl IntoView {
 /// Render the public instance page.
 #[component]
 pub fn Instance() -> impl IntoView {
+    let instance = expect_context::<InstanceConfiguration>().0;
+    let origin = instance.origin.host().to_string();
+    let contact = instance.contact_email.clone();
+    let mailto = mailto_url(&contact, Some(&format!("Account request for {origin}")));
+    let motd = instance.documents.motd;
+    let paths = expect_context::<Paths>();
+    let about_href = paths.about().to_string();
+    let docs_href = paths.documentation().to_string();
+
     view! {
         <div class="instance-layout">
             <section class="instance-layout__introduction">
-                <p class="instance-layout__eyebrow">"Welcome to indielinks"</p>
+                <p class="instance-layout__eyebrow">"Welcome to "{origin.clone()}</p>
                 <h1>"Popular"</h1>
                 <p class="instance-layout__lead">
                     "Del.icio.us on the Fediverse: save, tag, and discover useful links."
                 </p>
+                {motd.filter(|m| !m.trim().is_empty()).map(|motd| view! {
+                    <aside class="instance-layout__motd-callout" aria-label="Instance notice">
+                        <MarkdownDocument markdown=motd />
+                    </aside>
+                })}
                 <p class="instance-layout__contact">
-                    "Want an account? "
-                    <a href="mailto:indielinks@pobox.com?subject=indielinks%20account%20request">
-                        "Contact the administrator"
-                    </a>
-                    "."
+                    "Read more "
+                    <a href=about_href.clone() aria-label={format!("Read more about {origin}")}>"here"</a>
+                    ", or check-out the "
+                    <a href=docs_href.clone() aria-label={format!("Read documentation for {origin}")}>"documentation"</a>
+                    ". Want an account? "
+                    <a href=mailto>"Contact"</a>
+                    " the sysop."
                 </p>
             </section>
             <InstanceDetails />
@@ -513,4 +543,103 @@ pub fn Instance() -> impl IntoView {
             </div>
         </div>
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                              Instance document pages & navigation                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+use crate::content::Document;
+
+/// Return the base-aware URL for a given document.
+fn document_route(doc: Document, paths: &Paths) -> String {
+    match doc {
+        Document::About => paths.about().to_string(),
+        Document::Documentation => paths.documentation().to_string(),
+        Document::Privacy => paths.privacy().to_string(),
+        Document::Terms => paths.terms().to_string(),
+    }
+}
+
+/// Compact navigation row for the four instance documents.
+///
+/// `active` is the currently displayed document, if any.
+#[component]
+fn InstanceResources(#[prop(optional)] active: Option<Document>) -> impl IntoView {
+    let paths = expect_context::<Paths>();
+    let origin = expect_context::<InstanceConfiguration>()
+        .0
+        .origin
+        .host()
+        .to_string();
+
+    view! {
+        <ul class="instance-resources__list" role="list">
+            {Document::ALL.into_iter().map(|doc| {
+                let route = document_route(doc, &paths);
+                let is_active = active == Some(doc);
+                let aria_current = if is_active { Some("page") } else { None };
+                let label = format!("{} for {}", doc.label(), origin);
+                view! {
+                    <li class="instance-resources__item">
+                        <a
+                            aria-current=aria_current
+                            class="instance-resources__link"
+                            href=route
+                            aria-label=label
+                        >
+                            {doc.label()}
+                        </a>
+                    </li>
+                }
+            }).collect_view()}
+        </ul>
+    }
+}
+
+/// Render a single instance document page.
+#[component]
+pub fn DocumentPage(doc: Document) -> impl IntoView {
+    let instance = expect_context::<InstanceConfiguration>().0;
+    let markdown = doc.markdown(&instance.documents).to_string();
+    let slug = match doc {
+        Document::About => "about",
+        Document::Documentation => "docs",
+        Document::Privacy => "privacy",
+        Document::Terms => "terms",
+    };
+    let heading_id = StoredValue::new(format!("document-{slug}-heading"));
+
+    view! {
+        <div class="document-page">
+            <section aria-labelledby=heading_id.get_value() class="content-panel markdown-panel">
+                <nav aria-label="Instance resources" class="instance-resources">
+                    <InstanceResources active=doc />
+                </nav>
+                <h1 id=heading_id.get_value()>{doc.heading()}</h1>
+                <MarkdownDocument markdown />
+            </section>
+        </div>
+    }
+}
+
+/// Shorthand views for the four public document routes.
+#[component]
+pub fn AboutPage() -> impl IntoView {
+    view! { <DocumentPage doc=Document::About /> }
+}
+
+#[component]
+pub fn DocumentationPage() -> impl IntoView {
+    view! { <DocumentPage doc=Document::Documentation /> }
+}
+
+#[component]
+pub fn PrivacyPage() -> impl IntoView {
+    view! { <DocumentPage doc=Document::Privacy /> }
+}
+
+#[component]
+pub fn TermsPage() -> impl IntoView {
+    view! { <DocumentPage doc=Document::Terms /> }
 }

@@ -50,18 +50,11 @@ where
 
 fn main() {
     println!("cargo:rerun-if-env-changed=INDIELINKS_FE_DARK_THEME");
-    println!("cargo:rerun-if-env-changed=INDIELINKS_PAGE_SIZE");
     println!("cargo:rerun-if-env-changed=INDIELINKS_FE_API");
     validate_env_variable("INDIELINKS_FE_DARK_THEME", |value| {
         (
             ["true", "false"].contains(&value),
             "expected `true` or `false`",
-        )
-    });
-    validate_env_variable("INDIELINKS_PAGE_SIZE", |value| {
-        (
-            value.parse::<usize>().is_ok(),
-            "expected an unsigned integer",
         )
     });
     validate_env_variable("INDIELINKS_FE_API", |value| {

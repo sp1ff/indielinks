@@ -1,5 +1,15 @@
 indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
+* UNRELEASED
+
+** User-visible Changes
+
+*** Add docs to the front end
+
+Add "about", user docs, terms of service & privacy policy.
+** Project Updates
+
+*** Make the front end customizable per instance
 * 0.0.2
 
 ** Bug Fixes

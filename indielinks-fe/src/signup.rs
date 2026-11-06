@@ -21,12 +21,21 @@
 use leptos::prelude::*;
 use thaw::Icon;
 
-use crate::{components::brand::Logo, types::Base};
+use crate::{
+    components::brand::Logo,
+    types::{Base, InstanceConfiguration, mailto_url},
+};
 
 /// Render the public account-request page.
 #[component]
 pub fn SignUp() -> impl IntoView {
     let sign_in = StoredValue::new(format!("{}/s", expect_context::<Base>().0));
+    let instance = expect_context::<InstanceConfiguration>().0;
+    let origin = instance.origin.host().to_string();
+    let mailto = mailto_url(
+        &instance.contact_email,
+        Some(&format!("Account request for {origin}")),
+    );
 
     view! {
         <div class="authentication-page">
@@ -38,12 +47,12 @@ pub fn SignUp() -> impl IntoView {
                     "Request an account"
                 </h1>
                 <p class="authentication-card__introduction">
-                    "This indielinks instance currently creates accounts by request. Email the "
+                    "This instance currently creates accounts by request. Email the "
                     "administrator to get started."
                 </p>
                 <a
                     class="form-button form-button--primary authentication-card__primary-action"
-                    href="mailto:indielinks@pobox.com?subject=indielinks%20account%20request"
+                    href=mailto
                 >
                     <Icon icon=icondata::FiMail />
                     "Request an account"

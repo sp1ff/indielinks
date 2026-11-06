@@ -26,6 +26,7 @@ pub mod account;
 pub mod add_link;
 #[cfg(target_arch = "wasm32")]
 pub mod components;
+pub mod content;
 #[cfg(target_arch = "wasm32")]
 pub mod feeds;
 #[cfg(target_arch = "wasm32")]
