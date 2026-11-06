@@ -242,14 +242,6 @@ impl Default for UsersConfiguration {
 //                                   indielinksd Configuration                                    //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// fn default_page_size() -> NonZero<usize> {
-//     nonzero!(16usize)
-// }
-
-// fn default_templates_path() -> PathBuf {
-//     PathBuf::from("/usr/share/indielinks/doc")
-// }
-
 /// Indielinks configuration, version one
 // This is the current version of our configuration. At some point, we'll have to revise it,
 // and we'll name *that* to `Configuration`, renaming this to something like `ConfigurationV1`
@@ -492,18 +484,6 @@ custom = []
     }
 
     #[test]
-    fn default_page_size_is_applied() {
-        let cfg = parse(
-            &full_config(
-                r#"pepper = "/indielinks/prod/peppers""#,
-                r#"signing-keys = "/indielinks/prod/signing-keys""#,
-            )
-            .replace("default-page-size = 16\n", ""),
-        );
-        assert_eq!(cfg.default_page_size.get(), 16);
-    }
-
-    #[test]
     fn explicit_page_size_is_accepted() {
         let cfg = parse(
             &full_config(
@@ -528,18 +508,6 @@ custom = []
             .is_err(),
             "a page size of zero should be rejected"
         );
-    }
-
-    #[test]
-    fn default_templates_path_is_applied() {
-        let cfg = parse(
-            &full_config(
-                r#"pepper = "/indielinks/prod/peppers""#,
-                r#"signing-keys = "/indielinks/prod/signing-keys""#,
-            )
-            .replace("templates = \"/usr/share/indielinks/doc\"\n", ""),
-        );
-        assert_eq!(cfg.templates, PathBuf::from("/usr/share/indielinks/doc"));
     }
 
     #[test]

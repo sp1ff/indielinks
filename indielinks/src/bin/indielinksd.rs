@@ -64,7 +64,7 @@ use tower_http::{
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
 };
-use tracing::{debug, error, info, Level};
+use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::{
     filter::EnvFilter,
     fmt::{self, MakeWriter},
@@ -181,6 +181,11 @@ pub enum Error {
     ConfigParse {
         pth: PathBuf,
         source: toml::de::Error,
+    },
+    #[snafu(display("failed to read the configuration file"))]
+    ConfigRead {
+        pth: PathBuf,
+        source: std::io::Error,
     },
     #[snafu(display("Couldn't resolve the present working directory: {source}"))]
     CurrentDir { source: std::io::Error },
@@ -371,19 +376,34 @@ impl CliOpts {
 
 /// Parse the indielinks configuration file
 fn parse_config(cfg: &Option<PathBuf>) -> Result<Configuration> {
-    use snafu::IntoError;
-    let pth: PathBuf = cfg
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from_str("/etc/indielinks.toml").unwrap());
-    match std::fs::read_to_string(&pth) {
-        Ok(text) => match toml::from_str::<ConfigurationRepr>(&text) {
-            Ok(cfg) => match cfg {
-                ConfigurationRepr::V1(cfg) => Ok(cfg),
-            },
-            Err(err) => Err(ConfigParseSnafu { pth }.into_error(err)),
-        },
-        Err(err) => Err(ConfigNotFoundSnafu { pth }.into_error(err)),
+    let (pth, defaulted) = cfg.as_ref().map_or_else(
+        || (PathBuf::from("/etc/indielinks.toml"), true),
+        |path| (path.clone(), false),
+    );
+
+    match fs::read_to_string(&pth) {
+        Ok(text) => {
+            let ConfigurationRepr::V1(configuration) =
+                toml::from_str::<ConfigurationRepr>(&text).context(ConfigParseSnafu { pth })?;
+            Ok(configuration)
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            if defaulted {
+                // Running with a "default" configuration might seem a bit odd, but as I've noted
+                // elsewhere, one of my design goals is operational simplicity; if you've got a
+                // build, I want you to be able to run with without having to fuss around with
+                // configuration files, if only to poke at the thing with `curl`.
+                warn!(
+                    "indielinks is running with a default configuration. \
+                     This is only suitable for testing/debugging, since keys will be \
+                     randomly generated and not recoverable or preserved."
+                );
+                Ok(Configuration::default())
+            } else {
+                Err(ConfigNotFoundSnafu { pth }.into_error(err))
+            }
+        }
+        Err(err) => Err(ConfigReadSnafu { pth }.into_error(err)),
     }
 }
 
