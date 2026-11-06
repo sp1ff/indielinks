@@ -34,12 +34,19 @@ pub enum Variant {
 /// The component's text supplies an accessible name when the logo is wrapped in a link. The two
 /// offset ribbons suggest both saved bookmarks and connected sites. The SVG is decorative and
 /// therefore hidden from assistive technology.
+///
+/// When `wordmark` is supplied, it replaces the default "indielinks" text. Use this to show the
+/// instance origin in the application shell.
 #[component]
-pub fn Logo(#[prop(optional)] variant: Variant) -> impl IntoView {
+pub fn Logo(
+    #[prop(optional)] variant: Variant,
+    #[prop(optional, into)] wordmark: Option<String>,
+) -> impl IntoView {
+    let text = wordmark.unwrap_or_else(|| "indielinks".to_string());
     let wordmark = match variant {
-        Variant::Mark => Either::Left(view! { <span class="sr-only">"indielinks"</span> }),
+        Variant::Mark => Either::Left(view! { <span class="sr-only">{text}</span> }),
         Variant::Full => Either::Right(view! {
-            <span class="text-wordmark font-bold leading-none">"indielinks"</span>
+            <span class="text-wordmark font-bold leading-none">{text}</span>
         }),
     };
 

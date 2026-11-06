@@ -1,7 +1,7 @@
 # Instance-aware frontend plan
 
-Status: **planning only**. This document is an implementation handoff; it does
-not authorize feature implementation or a Git commit.
+Status: **implemented**. This document has been realized in a single commit and
+served as the implementation guide.
 
 ## Goal
 
@@ -209,73 +209,73 @@ The four long-form document routes remain available regardless of MotD state.
 
 ### Instance loading and context
 
-- [ ] Add a frontend error variant for sending, status-checking, and decoding
+- [x] Add a frontend error variant for sending, status-checking, and decoding
       the public instance response with call-site-specific SNAFU context.
-- [ ] Implement a focused loader for `GET /api/v1/users/instance` that returns
+- [x] Implement a focused loader for `GET /api/v1/users/instance` that returns
       the shared `InstanceResponse`.
-- [ ] Start the instance loader at root-component startup in parallel with the
+- [x] Start the instance loader at root-component startup in parallel with the
       existing token refresh.
-- [ ] Add a retryable full-page startup error state and retain the existing
+- [x] Add a retryable full-page startup error state and retain the existing
       startup loading state while instance configuration is pending.
-- [ ] Wrap the successful response in `InstanceConfiguration` (or an
+- [x] Wrap the successful response in `InstanceConfiguration` (or an
       equivalently named context newtype) and provide it above the router and
       shell.
-- [ ] Replace `PageSize` context reads with the response's
+- [x] Replace `PageSize` context reads with the response's
       `default_page_size` and remove the redundant context type.
-- [ ] Remove `INDIELINKS_PAGE_SIZE` handling from `main.rs`, `build.rs`, and
+- [x] Remove `INDIELINKS_PAGE_SIZE` handling from `main.rs`, `build.rs`, and
       frontend configuration documentation.
-- [ ] Verify development API overrides and same-origin production builds both
+- [x] Verify development API overrides and same-origin production builds both
       request exactly `/api/v1/users/instance` without duplicating `/api/v1`.
 
 ### Branding and contact information
 
-- [ ] Let the shell brand component receive or consume the formatted origin
+- [x] Let the shell brand component receive or consume the formatted origin
       for both its full visible label and compact accessible name.
-- [ ] Replace the Popular-page eyebrow with `Welcome to <origin>`.
-- [ ] Add one percent-encoding `mailto:` helper based on `UserEmail` and an
+- [x] Replace the Popular-page eyebrow with `Welcome to <origin>`.
+- [x] Add one percent-encoding `mailto:` helper based on `UserEmail` and an
       optional subject.
-- [ ] Render the exact three-part introductory sentence and link About,
+- [x] Render the exact three-part introductory sentence and link About,
       Documentation, and Contact the sysop to their respective targets.
-- [ ] Give both visible `here` links descriptive accessible names.
-- [ ] Replace the Popular instance-panel email and sign-up account-request
+- [x] Give both visible `here` links descriptive accessible names.
+- [x] Replace the Popular instance-panel email and sign-up account-request
       address with context-derived links.
-- [ ] Search all frontend Rust, HTML, and CSS sources for remaining hard-coded
+- [x] Search all frontend Rust, HTML, and CSS sources for remaining hard-coded
       contact addresses and `mailto:` URLs.
 
 ### Document model, routes, and navigation
 
-- [ ] Add the closed document enum and define each route, label, heading, and
+- [x] Add the closed document enum and define each route, label, heading, and
       response-field selection once.
-- [ ] Extend base-aware `Paths` and router registration for About,
+- [x] Extend base-aware `Paths` and router registration for About,
       Documentation, Privacy, and Terms.
-- [ ] Add the compact `Instance resources` navigation to the bottom of the
+- [x] Add the compact `Instance resources` navigation to the bottom of the
       existing instance-information panel.
-- [ ] Implement the shared document-page layout with heading, resource
+- [x] Implement the shared document-page layout with heading, resource
       navigation, active-page semantics, and article content.
-- [ ] Confirm direct navigation, browser back/forward, configured base paths,
+- [x] Confirm direct navigation, browser back/forward, configured base paths,
       and the unknown-route fallback continue to work.
 
 ### Markdown presentation and MotD
 
-- [ ] Add `pulldown-cmark` as a direct dependency for the WASM frontend.
-- [ ] Implement and document the Markdown conversion policy, including escaped
+- [x] Add `pulldown-cmark` as a direct dependency for the WASM frontend.
+- [x] Implement and document the Markdown conversion policy, including escaped
       raw HTML and blocked unsafe links.
-- [ ] Implement the reusable `MarkdownDocument` component with semantic article
+- [x] Implement the reusable `MarkdownDocument` component with semantic article
       markup.
-- [ ] Add responsive, theme-aware prose, heading, list, quote, table, link, and
+- [x] Add responsive, theme-aware prose, heading, list, quote, table, link, and
       code styles using existing CSS variables.
-- [ ] Render a non-empty MotD in an `Instance notice` callout on Popular and
+- [x] Render a non-empty MotD in an `Instance notice` callout on Popular and
       omit the callout for missing or blank content.
-- [ ] Check long origins, long unbroken document text, wide tables, and code
+- [x] Check long origins, long unbroken document text, wide tables, and code
       blocks for overflow at desktop and phone widths.
 
 ### Tests and validation
 
-- [ ] Add focused Markdown tests for every supported construct, raw HTML,
+- [x] Add focused Markdown tests for every supported construct, raw HTML,
       unsafe schemes, allowed links, escaping, and blank input.
-- [ ] Add focused tests for document-enum field selection and route metadata so
+- [x] Add focused tests for document-enum field selection and route metadata so
       each response field is connected to the intended route exactly once.
-- [ ] Test mail URL generation with a plain address, origin-derived subject,
+- [x] Test mail URL generation with a plain address, origin-derived subject,
       spaces, `+`, and other characters requiring percent encoding.
 - [ ] Add browser/WASM component tests for startup loading, successful context
       provision, failed loading with retry, all four document pages, active
@@ -283,15 +283,15 @@ The four long-form document routes remain available regardless of MotD state.
 - [ ] Test narrow and wide layouts, keyboard navigation, focus indicators,
       accessible link names, heading structure, light/dark contrast, and
       horizontal overflow.
-- [ ] Run `cargo test -p indielinks-fe --lib` for existing host-side tests.
+- [x] Run `cargo test -p indielinks-fe --lib` for existing host-side tests.
 - [ ] Run the configured `wasm-bindgen-test` browser suite for the new WASM
       behavior.
-- [ ] Run
+- [x] Run
       `cargo check -p indielinks-fe --target wasm32-unknown-unknown`.
-- [ ] Run
+- [x] Run
       `cargo build -p indielinks-fe --target wasm32-unknown-unknown`.
-- [ ] Run `admin/run-linters` from the repository root.
-- [ ] Run `git diff --check` and inspect the final diff for generated
+- [x] Run `admin/run-linters` from the repository root.
+- [x] Run `git diff --check` and inspect the final diff for generated
       `tailwind.css` or `dist/` files; neither belongs in the change.
 
 ## Acceptance criteria

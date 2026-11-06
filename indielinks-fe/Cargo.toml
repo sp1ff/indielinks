@@ -8,6 +8,8 @@ publish = false
 # dependency and is declared in the wasm32 target section below.
 [dependencies]
 chrono = { workspace = true, features = ["serde"] }
+indielinks-shared = { workspace = true }
+pulldown-cmark = { version = "0.13", default-features = false }
 snafu = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -15,6 +17,7 @@ console_error_panic_hook = "0.1.7"
 # This is actually a transitive dependnecy, but I need the "js" feature
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 gloo-net = { version = "0.7.0", features = ["http"] }
+futures = { workspace = true }
 icondata = "0.7.0"
 indielinks-shared = { workspace = true }
 itertools = { workspace = true }
@@ -31,6 +34,7 @@ thaw = { git = "https://github.com/thaw-ui/thaw", branch = "thaw/v0.5", features
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-subscriber-wasm = "0.1.0"
+pulldown-cmark = { version = "0.13", default-features = false }
 url = { workspace = true, features = ["serde"] }
 wasm-bindgen = "0.2.100"
 wasm-cookies = "0.2.1"

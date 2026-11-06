@@ -18,6 +18,7 @@
 //! I normally loathe these sorts of "types" or "entities" modules, but again, there really is a set
 //! of shared types for this crate.
 
+use indielinks_shared::api::InstanceResponse;
 use leptos::prelude::RwSignal;
 use secrecy::SecretString;
 
@@ -30,13 +31,17 @@ use secrecy::SecretString;
 pub struct Api(pub String); // Make this a proper `Url`
 #[derive(Clone, Debug)]
 pub struct Base(pub String); // How to represent the path portion of an `Url` here?
+
+/// Runtime instance configuration returned by `GET /api/v1/users/instance`.
 #[derive(Clone, Debug)]
-pub struct PageSize(pub usize);
+pub struct InstanceConfiguration(pub InstanceResponse);
 
 // and a type alias for obvious reasons. We want this to be reactive because the whole structure of
 // the app is driven by this. We either have one or we don't: in the case of, say, network error, we
 // simply don't have a token. This will drive the display logic at the top level.
 pub type Token = RwSignal<Option<SecretString>>;
+
+pub use crate::content::{Document, mailto_url, markdown_to_html};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                    indielinks-fe constants                                     //

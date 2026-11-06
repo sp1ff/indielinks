@@ -27,7 +27,9 @@ use tap::Pipe;
 use tracing::debug;
 use wasm_cookies::FromUrlEncodingError;
 
-use indielinks_shared::api::{LoginRsp, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME};
+use indielinks_shared::api::{
+    InstanceResponse, LoginRsp, REFRESH_CSRF_COOKIE, REFRESH_CSRF_HEADER_NAME,
+};
 
 use crate::types::{Api, Token, USER_AGENT};
 
@@ -216,4 +218,53 @@ where
         }
     };
     send_with_retry_internal(send_request).await
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                    instance configuration                                      //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Errors encountered when fetching instance configuration.
+#[derive(Clone, Debug, Snafu)]
+pub enum FetchInstanceError {
+    #[snafu(display("Failed to fetch instance configuration: {source}"))]
+    InstanceRequest {
+        #[snafu(source(from(gloo_net::Error, Arc::new)))]
+        source: Arc<gloo_net::Error>,
+    },
+    #[snafu(display("Server returned error {status_code}: {status_text}"))]
+    InstanceStatus {
+        status_code: u16,
+        status_text: String,
+    },
+    #[snafu(display("Failed to decode instance response: {source}"))]
+    InstanceDecode {
+        #[snafu(source(from(gloo_net::Error, Arc::new)))]
+        source: Arc<gloo_net::Error>,
+    },
+}
+
+/// Fetch the instance configuration from the backend.
+///
+/// This endpoint is unauthenticated and must succeed before the application shell can render.
+pub async fn fetch_instance(api: &str) -> Result<InstanceResponse, FetchInstanceError> {
+    let response = Request::get(&format!("{api}/api/v1/users/instance"))
+        .header("User-Agent", USER_AGENT)
+        .send()
+        .await
+        .context(InstanceRequestSnafu)?;
+
+    let status = response.status();
+    if !(200..300).contains(&status) {
+        return InstanceStatusSnafu {
+            status_code: status,
+            status_text: response.status_text(),
+        }
+        .fail();
+    }
+
+    response
+        .json::<InstanceResponse>()
+        .await
+        .context(InstanceDecodeSnafu)
 }

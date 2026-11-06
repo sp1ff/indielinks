@@ -20,6 +20,7 @@
 pub mod brand;
 pub mod dropdown;
 pub mod feedback;
+pub mod markdown;
 pub mod post;
 pub mod shell;
 pub mod theme_control;

@@ -80,7 +80,6 @@
 //! - `INDIELINKS_FE_API`: the public API base URL; if unset, the app derives the API location
 //!   from the browser's current origin as `${window.location.origin}/api/v1`. Set this when
 //!   developing with `trunk` serving the UI from a different origin than the indielinks API.
-//! - `INDIELINKS_PAGE_SIZE`: the number of items requested per page; defaults to `4`
 //! - `INDIELINKS_BASE`: the path at which the frontend is mounted; defaults to the empty string
 //! - `INDIELINKS_FE_DARK_THEME`: `true` (or unset) enables the dark-theme capability: the
 //!   frontend follows the operating system's `prefers-color-scheme` setting until the user makes
@@ -95,19 +94,20 @@
 //!
 
 use gloo_net::http::Request;
+use leptos::either::Either;
 use leptos::prelude::*;
 use leptos_router::{
     components::{ProtectedRoute, Route, Router, Routes},
     path,
 };
 use secrecy::ExposeSecret;
-use thaw::{ConfigProvider, ToasterProvider};
+use thaw::{ConfigProvider, Icon, ToasterProvider};
 use tracing::{Level, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 // use wasm_bindgen::JsValue;
 
-use indielinks_shared::api::REFRESH_CSRF_COOKIE;
+use indielinks_shared::api::{InstanceResponse, REFRESH_CSRF_COOKIE};
 
 use indielinks_fe::{
     account::{
@@ -119,15 +119,45 @@ use indielinks_fe::{
         feedback::{LoadingPlacement, LoadingState},
         shell::{Paths, Shell},
     },
-    http::{refresh_token, string_for_status},
-    instance::Instance,
+    http::{fetch_instance, refresh_token, string_for_status},
+    instance::{AboutPage, DocumentationPage, Instance, PrivacyPage, TermsPage},
     personal::Personal,
     signin::SignIn,
     signup::SignUp,
     theme::model::{Appearance, Availability},
     theme::{self, InitialTheme, ThemeController},
-    types::{Api, Base, PageSize, Token, USER_AGENT},
+    types::{Api, Base, InstanceConfiguration, Token, USER_AGENT},
 };
+
+/// A retryable full-page error shown when instance configuration cannot be loaded at startup.
+#[component]
+fn StartupError(#[prop(into)] error: String, retry: Callback<(), ()>) -> impl IntoView {
+    view! {
+        <div class="feedback-state feedback-state--error feedback-state--startup" role="alert">
+            <span aria-hidden="true" class="feedback-state__startup-mark">
+                <span class="feedback-state__startup-mark-prefix">"indie"</span>
+                <span class="feedback-state__startup-mark-suffix">"links"</span>
+            </span>
+            <span aria-hidden="true" class="feedback-state__icon">
+                <Icon icon=icondata::FiAlertCircle />
+            </span>
+            <div class="feedback-state__content">
+                <h3 class="feedback-state__heading">"Could not load instance configuration"</h3>
+                <p class="feedback-state__message">{error}</p>
+                <div class="feedback-state__actions">
+                    <button
+                        class="form-button form-button--secondary"
+                        type="button"
+                        on:click=move |_| retry.run(())
+                    >
+                        <Icon icon=icondata::IoRefresh />
+                        "Retry"
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+}
 
 /// [App] is [indielinks-fe](crate) root component; `main()` will mount it as the DOM body.
 ///
@@ -142,13 +172,6 @@ fn App(initial_theme: InitialTheme, api_base: String) -> impl IntoView {
     // explicit value (typically supplied via the `INDIELINKS_FE_API` compile-time environment
     // variable) and passes it here as a prop.
     provide_context(Api(api_base));
-
-    provide_context(PageSize(
-        option_env!("INDIELINKS_PAGE_SIZE")
-            .unwrap_or("4")
-            .parse::<usize>()
-            .expect("Couldn't parse INDIELINKS_PAGE_SIZE"),
-    ));
 
     // Finally, this is where we "mount" this frontend. When developing against Trunk, this will
     // just be ""; the backend now serves the front end at the origin root, so production builds
@@ -186,10 +209,25 @@ fn App(initial_theme: InitialTheme, api_base: String) -> impl IntoView {
         });
     });
 
-    // If I don't use a `LocalResource`; if I, say, just call `refresh_token()` directly in an
-    // `Await` below, I get pages of warnings about the future not being Send (?)
-    let try_token_refresh = LocalResource::new(|| async move { refresh_token().await.is_ok() });
-    // So... `try_token_refresh.get()` will return an `Option<bool>`.
+    // Fetch instance configuration in parallel with token refresh. Both must complete before the
+    // application shell is rendered. Token refresh is idempotent; the result is stored as a side
+    // effect in the `Token` signal. The instance configuration is provided via context.
+    let startup_retry = ArcTrigger::new();
+    let startup = LocalResource::new({
+        let api = expect_context::<Api>().0.clone();
+        let startup_retry = startup_retry.clone();
+        move || {
+            let api = api.clone();
+            startup_retry.track();
+            async move {
+                let (token_res, instance_res) =
+                    futures::future::join(refresh_token(), fetch_instance(&api)).await;
+                // Token refresh sets the signal by side effect; ignore its result here.
+                let _ = token_res;
+                instance_res.map_err(|e| e.to_string())
+            }
+        }
+    });
 
     let on_sign_out = Action::new_unsync(move |_: &()| {
         wasm_cookies::delete(REFRESH_CSRF_COOKIE);
@@ -234,80 +272,99 @@ fn App(initial_theme: InitialTheme, api_base: String) -> impl IntoView {
                     />
                 }>
                     {
-                        // This closure returns an `Option<impl IntoView>`, but because we're inside
-                        // a `<Suspense>` component, the `None` case will never be returned.
+                        // This closure returns an `Option<Either<View, View>>`, but because we're
+                        // inside a `<Suspense>` component, the `None` case will never be returned.
                         move || {
                             let base = base.clone();
                             let paths = paths.clone();
-                            try_token_refresh.get().map(move |_| {
-                                view! {
-                                    <Router base=base.clone()>
-                                        <Shell
-                                            paths=paths.clone()
-                                            signed_in
-                                            on_sign_out=dispatch_sign_out
-                                        >
-                                            <Routes fallback=Instance>
-                                                <Route path=path!("/") view=Instance />
-                                                <Route path=path!("/s") view=SignIn />
-                                                <Route path=path!("/u") view=SignUp />
-                                                <ProtectedRoute
-                                                    path=path!("/h")
-                                                    // Some(true) means display, Some(false) means do *not* display, and
-                                                    // None means that this information is still loading
-                                                    condition = move || Some(token.get().is_some())
-                                                    redirect_path = || "/"
-                                                    view=Personal
-                                                />
-                                                <ProtectedRoute
-                                                    path=path!("/a")
-                                                    // Some(true) means display, Some(false) means do *not* display, and
-                                                    // None means that this information is still loading
-                                                    condition = move || {
-                                                        Some(token.get().is_some())
-                                                    }
-                                                    redirect_path = || "/"
-                                                    view=AddLink
-                                                />
-                                                <ProtectedRoute
-                                                    path=path!("/m")
-                                                    condition = move || Some(token.get().is_some())
-                                                    redirect_path = || "/"
-                                                    view=AccountLanding
-                                                />
-                                                <ProtectedRoute
-                                                    path=path!("/m/profile")
-                                                    condition = move || Some(token.get().is_some())
-                                                    redirect_path = || "/"
-                                                    view=AccountProfile
-                                                />
-                                                <ProtectedRoute
-                                                    path=path!("/m/password")
-                                                    condition = move || Some(token.get().is_some())
-                                                    redirect_path = || "/"
-                                                    view=AccountPassword
-                                                />
-                                                <ProtectedRoute
-                                                    path=path!("/m/api-keys")
-                                                    condition = move || Some(token.get().is_some())
-                                                    redirect_path = || "/"
-                                                    view=AccountApiKeys
-                                                />
-                                                <ProtectedRoute
-                                                    path=path!("/m/following")
-                                                    condition = move || Some(token.get().is_some())
-                                                    redirect_path = || "/"
-                                                    view=AccountFollowing
-                                                />
-                                                <ProtectedRoute
-                                                    path=path!("/m/followers")
-                                                    condition = move || Some(token.get().is_some())
-                                                    redirect_path = || "/"
-                                                    view=AccountFollowers
-                                                />
-                                            </Routes>
-                                        </Shell>
-                                    </Router>
+                            let startup_retry = startup_retry.clone();
+                            startup.get().map(move |result: Result<InstanceResponse, String>| {
+                                match result {
+                                    Err(e) => Either::Left(view! {
+                                        <StartupError
+                                            error=e
+                                            retry=Callback::new({
+                                                let startup_retry = startup_retry.clone();
+                                                move |_| startup_retry.notify()
+                                            })
+                                        />
+                                    }),
+                                    Ok(instance) => {
+                                        provide_context(InstanceConfiguration(instance));
+                                        Either::Right(view! {
+                                            <Router base=base.clone()>
+                                                <Shell
+                                                    paths=paths.clone()
+                                                    signed_in
+                                                    on_sign_out=dispatch_sign_out
+                                                >
+                                                    <Routes fallback=Instance>
+                                                        <Route path=path!("/") view=Instance />
+                                                        <Route path=path!("/about") view=AboutPage />
+                                                        <Route path=path!("/docs") view=DocumentationPage />
+                                                        <Route path=path!("/privacy") view=PrivacyPage />
+                                                        <Route path=path!("/terms") view=TermsPage />
+                                                        <Route path=path!("/s") view=SignIn />
+                                                        <Route path=path!("/u") view=SignUp />
+                                                        <ProtectedRoute
+                                                            path=path!("/h")
+                                                            // Some(true) means display, Some(false) means do *not* display, and
+                                                            // None means that this information is still loading
+                                                            condition = move || Some(token.get().is_some())
+                                                            redirect_path = || "/"
+                                                            view=Personal
+                                                        />
+                                                        <ProtectedRoute
+                                                            path=path!("/a")
+                                                            // Some(true) means display, Some(false) means do *not* display, and
+                                                            // None means that this information is still loading
+                                                            condition = move || {
+                                                                Some(token.get().is_some())
+                                                            }
+                                                            redirect_path = || "/"
+                                                            view=AddLink
+                                                        />
+                                                        <ProtectedRoute
+                                                            path=path!("/m")
+                                                            condition = move || Some(token.get().is_some())
+                                                            redirect_path = || "/"
+                                                            view=AccountLanding
+                                                        />
+                                                        <ProtectedRoute
+                                                            path=path!("/m/profile")
+                                                            condition = move || Some(token.get().is_some())
+                                                            redirect_path = || "/"
+                                                            view=AccountProfile
+                                                        />
+                                                        <ProtectedRoute
+                                                            path=path!("/m/password")
+                                                            condition = move || Some(token.get().is_some())
+                                                            redirect_path = || "/"
+                                                            view=AccountPassword
+                                                        />
+                                                        <ProtectedRoute
+                                                            path=path!("/m/api-keys")
+                                                            condition = move || Some(token.get().is_some())
+                                                            redirect_path = || "/"
+                                                            view=AccountApiKeys
+                                                        />
+                                                        <ProtectedRoute
+                                                            path=path!("/m/following")
+                                                            condition = move || Some(token.get().is_some())
+                                                            redirect_path = || "/"
+                                                            view=AccountFollowing
+                                                        />
+                                                        <ProtectedRoute
+                                                            path=path!("/m/followers")
+                                                            condition = move || Some(token.get().is_some())
+                                                            redirect_path = || "/"
+                                                            view=AccountFollowers
+                                                        />
+                                                    </Routes>
+                                                </Shell>
+                                            </Router>
+                                        })
+                                    }
                                 }
                             })
                         }

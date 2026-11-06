@@ -31,6 +31,7 @@ use crate::{
         theme_control::ThemeControl,
     },
     theme::ThemeController,
+    types::InstanceConfiguration,
 };
 
 /// URLs used by the application shell.
@@ -50,6 +51,10 @@ pub struct Paths {
     account_api_keys: String,
     account_following: String,
     account_followers: String,
+    about: String,
+    documentation: String,
+    privacy: String,
+    terms: String,
 }
 
 impl Paths {
@@ -67,6 +72,10 @@ impl Paths {
             account_api_keys: format!("{base}/m/api-keys"),
             account_following: format!("{base}/m/following"),
             account_followers: format!("{base}/m/followers"),
+            about: format!("{base}/about"),
+            documentation: format!("{base}/docs"),
+            privacy: format!("{base}/privacy"),
+            terms: format!("{base}/terms"),
         }
     }
 
@@ -114,6 +123,22 @@ impl Paths {
 
     pub fn account_followers(&self) -> &str {
         &self.account_followers
+    }
+
+    pub fn about(&self) -> &str {
+        &self.about
+    }
+
+    pub fn documentation(&self) -> &str {
+        &self.documentation
+    }
+
+    pub fn privacy(&self) -> &str {
+        &self.privacy
+    }
+
+    pub fn terms(&self) -> &str {
+        &self.terms
     }
 }
 
@@ -226,9 +251,14 @@ fn PrimaryLink(destination: Destination, paths: Paths, placement: Placement) -> 
 /// The brand link used by the rail and responsive header.
 #[component]
 fn BrandLink(paths: Paths, variant: Variant) -> impl IntoView {
+    let origin = expect_context::<InstanceConfiguration>()
+        .0
+        .origin
+        .host()
+        .to_string();
     view! {
         <a class="shell-brand" href=paths.popular>
-            <Logo variant />
+            <Logo variant wordmark=origin />
         </a>
     }
 }

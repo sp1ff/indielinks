@@ -158,11 +158,13 @@ body {
 
     .shell-brand {
         display: inline-flex;
+        flex-wrap: wrap;
         align-items: center;
         min-width: 44px;
         min-height: 44px;
         color: var(--colorNeutralForeground1);
         text-decoration: none;
+        overflow-wrap: anywhere;
     }
 
     .shell-brand:visited {
@@ -2229,8 +2231,8 @@ body {
 
         .shell--signed-in .shell-frame {
             display: grid;
-            grid-template-columns: 216px minmax(0, 1fr);
-            gap: 24px;
+            grid-template-columns: 280px minmax(0, 1fr);
+            gap: 48px;
         }
 
         .shell--signed-in .shell-rail {
@@ -2243,7 +2245,7 @@ body {
             flex-direction: column;
             align-self: start;
             height: 100vh;
-            padding-block: 24px;
+            padding: 24px 16px;
             box-sizing: border-box;
             gap: 16px;
         }
@@ -2516,5 +2518,195 @@ body {
         transition-duration: 0.01ms !important;
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
+    }
+}
+
+/* ------------------------------------------------------------------
+   Markdown document presentation
+   ------------------------------------------------------------------ */
+
+@layer components {
+    .document-page {
+        max-width: 65ch;
+        margin: 0 auto;
+        padding: 16px;
+    }
+
+    .markdown-panel {
+        padding: 24px;
+    }
+
+    .markdown-document {
+        font-size: var(--text-body);
+        line-height: var(--text-body--line-height);
+        color: var(--colorNeutralForeground1);
+    }
+
+    .markdown-document h1,
+    .markdown-document h2,
+    .markdown-document h3,
+    .markdown-document h4 {
+        margin-top: 1.5em;
+        margin-bottom: 0.5em;
+        font-weight: 600;
+        color: var(--colorNeutralForeground1);
+    }
+
+    .markdown-document h1 {
+        font-size: var(--text-page-title);
+        line-height: var(--text-page-title--line-height);
+    }
+
+    .markdown-document h2 {
+        font-size: var(--text-section-title);
+        line-height: var(--text-section-title--line-height);
+    }
+
+    .markdown-document h3 {
+        font-size: var(--text-link-title);
+        line-height: var(--text-link-title--line-height);
+    }
+
+    .markdown-document p {
+        margin: 0 0 1em 0;
+    }
+
+    .markdown-document a {
+        color: var(--colorBrandForegroundLink);
+        text-decoration: underline;
+    }
+
+    .markdown-document a:visited {
+        color: var(--colorBrandForegroundLink);
+    }
+
+    .markdown-document a:hover {
+        color: var(--colorBrandForegroundLinkHover);
+    }
+
+    .markdown-document ul,
+    .markdown-document ol {
+        margin: 0 0 1em 1.5em;
+        padding: 0;
+    }
+
+    .markdown-document li {
+        margin-bottom: 0.25em;
+    }
+
+    .markdown-document blockquote {
+        margin: 0 0 1em 0;
+        padding: 0.5em 1em;
+        border-left: 3px solid var(--colorNeutralStroke2);
+        color: var(--colorNeutralForeground2);
+    }
+
+    .markdown-document pre {
+        margin: 0 0 1em 0;
+        padding: 12px;
+        border-radius: var(--borderRadiusSmall);
+        background-color: var(--colorNeutralBackground4);
+        overflow-x: auto;
+    }
+
+    .markdown-document code {
+        font-family: monospace;
+        font-size: 0.9em;
+        background-color: var(--colorNeutralBackground4);
+        padding: 2px 4px;
+        border-radius: var(--borderRadiusSmall);
+    }
+
+    .markdown-document pre code {
+        background: none;
+        padding: 0;
+    }
+
+    .markdown-document table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 1em;
+        overflow-x: auto;
+        display: block;
+    }
+
+    .markdown-document th,
+    .markdown-document td {
+        padding: 8px 12px;
+        border: 1px solid var(--colorNeutralStroke2);
+        text-align: left;
+    }
+
+    .markdown-document th {
+        background-color: var(--colorNeutralBackground4);
+        font-weight: 600;
+    }
+
+    .markdown-document hr {
+        border: none;
+        border-top: 1px solid var(--colorNeutralStroke2);
+        margin: 1.5em 0;
+    }
+
+    /* Instance resources navigation */
+    .instance-resources {
+        margin-bottom: 16px;
+    }
+
+    .instance-resources__list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .instance-resources__item {
+        margin: 0;
+    }
+
+    .instance-resources__link {
+        display: inline-block;
+        padding: 4px 0;
+        color: var(--colorBrandForegroundLink);
+        font-size: var(--text-control);
+        line-height: var(--text-control--line-height);
+        text-decoration: none;
+    }
+
+    .instance-resources__link:hover {
+        text-decoration: underline;
+    }
+
+    .instance-resources__link[aria-current="page"] {
+        font-weight: 600;
+        color: var(--colorNeutralForeground1);
+        text-decoration: none;
+    }
+
+    .instance-resources--panel {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        margin: 24px 0 0;
+        padding: 0;
+    }
+
+    .instance-resources--panel .instance-resources__link {
+        padding: 4px 0;
+    }
+
+    /* MotD callout on Popular page */
+    .instance-layout__motd-callout {
+        margin: 12px 0;
+        padding: 12px 16px;
+        border-radius: var(--borderRadiusMedium);
+        background-color: var(--colorNeutralBackground4);
+        border-left: 3px solid var(--colorBrandBackground);
+    }
+
+    .instance-layout__motd-callout .markdown-document p:last-child {
+        margin-bottom: 0;
     }
 }

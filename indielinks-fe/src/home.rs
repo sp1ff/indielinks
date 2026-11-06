@@ -54,7 +54,7 @@ use indielinks_shared::{
 use crate::{
     components::feedback::{EmptyAction, EmptyState, ErrorState, LoadingState, show_toast},
     http::{error_for_status1, send_with_retry_no_body},
-    types::{Api, Base},
+    types::{Api, Base, InstanceConfiguration},
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -977,8 +977,7 @@ async fn load_data(
     Ok((posts, tags.is_none() && (!unread_only)))
 }
 
-// This should really be configurable, ideally by the user.
-const PAGE_SIZE: usize = 20;
+// Page size is read from the instance configuration at runtime.
 
 /// A component for displaying a paged "feed" of saved links.
 ///
@@ -987,6 +986,10 @@ const PAGE_SIZE: usize = 20;
 pub fn LinkFeed() -> impl IntoView {
     let api = expect_context::<Api>().0;
     let base = expect_context::<Base>().0;
+    let page_size = expect_context::<InstanceConfiguration>()
+        .0
+        .default_page_size
+        .get();
     let add_href = StoredValue::new(format!("{base}/a"));
     let clear_href = StoredValue::new(format!("{base}/h"));
 
@@ -1011,7 +1014,7 @@ pub fn LinkFeed() -> impl IntoView {
                 load_data(
                     api,
                     query_params.page.unwrap_or(0),
-                    PAGE_SIZE,
+                    page_size,
                     query_params.tag.map(|tags| tags.0),
                     query_params.unread.unwrap_or(Unread(false)).0,
                 )
@@ -1057,7 +1060,7 @@ pub fn LinkFeed() -> impl IntoView {
                     Ok(posts.map(|(maybe_posts, none_means_no_posts)| {
                         match (maybe_posts, none_means_no_posts) {
                             (Some(posts), _) => {
-                                let last = posts.len().get() != PAGE_SIZE;
+                                let last = posts.len().get() != page_size;
                                 last_page.set(last);
                                 EitherOf3::A(view! {
                                     <FeedControls last=last_page.into() />

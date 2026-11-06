@@ -22,7 +22,6 @@ requires rebuilding the frontend:
 - `INDIELINKS_FE_API`: public API base URL; if unset, the app derives the API location from the
   browser's current origin as `${window.location.origin}/api/v1`. Set this when developing with
   `trunk` serving the UI from a different origin than the indielinks API.
-- `INDIELINKS_PAGE_SIZE`: number of items requested per page; defaults to `4`.
 - `INDIELINKS_BASE`: path at which the frontend is mounted; defaults to the empty string.
 - `INDIELINKS_FE_DARK_THEME`: `true` (or unset) enables the dark-theme capability; `false` forces
   the light theme and omits the theme control. Any other value fails the build (see `build.rs`).
