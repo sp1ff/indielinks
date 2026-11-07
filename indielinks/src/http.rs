@@ -442,7 +442,7 @@ mod test {
     }
 }
 
-static DEFAULT_DENIALS: [&str; 4] = ["authorization", "cookie", "set-cookie", "signature"];
+static DEFAULT_DENIALS: [&str; 3] = ["authorization", "cookie", "set-cookie"];
 
 static DEFAULT_LEVEL: Level = Level::DEBUG;
 
