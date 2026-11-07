@@ -45,7 +45,6 @@ use chrono::Utc;
 use futures::{stream::BoxStream, StreamExt};
 use http::uri::{Parts, PathAndQuery};
 use itertools::Itertools;
-use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
 use snafu::prelude::*;
 use tap::Pipe;
@@ -1104,7 +1103,11 @@ async fn all_posts(
         // consume the clone to get the count:
         delicious_posts_all.add(
             posts.clone().count() as u64,
-            &[KeyValue::new("username", user.username().to_string())],
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            &[],
         );
 
         match accept {

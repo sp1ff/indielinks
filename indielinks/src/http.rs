@@ -35,7 +35,6 @@ use indielinks_shared::{
     origin::{NetLoc, Origin},
 };
 use itertools::Itertools;
-use opentelemetry::KeyValue;
 use pin_project::pin_project;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
@@ -242,7 +241,11 @@ impl<InnerFut> InstrumentedServiceFuture<InnerFut> {
         let span = tracing::span!(Level::DEBUG, "indielinks-client-call");
         let _ = span.enter();
         debug!("Sending request to {host}: {request:?}");
-        client_requests.add(1, &[KeyValue::new("host", host.clone())]);
+        // It would be useful to tag this metric by "host", so as to be able to tease-out
+        // problematic hosts when the client is, overall, behaving well. Regrettably, each *value*
+        // for a tag creates a new metric series in AWS CloudWatch, leading to a geometric explosion
+        // in costs.
+        client_requests.add(1, &[]);
         InstrumentedServiceFuture {
             host,
             span,
@@ -276,7 +279,11 @@ where
                         500..=599 => client_responses_server_error.deref(),
                         _ => client_responses_unknown.deref(),
                     };
-                    instrument.add(1, &[KeyValue::new("host", this.host.clone())]);
+                    // It would be useful to tag this metric by "host", so as to be able to
+                    // tease-out problematic hosts when the client is, overall, behaving well.
+                    // Regrettably, each *value* for a tag creates a new metric series in AWS
+                    // CloudWatch, leading to a geometric explosion in costs.
+                    instrument.add(1, &[]);
                     debug!(
                         "{rsp:?} from {} returned with status {}",
                         this.host,
@@ -286,7 +293,11 @@ where
                 }
                 Err(err) => {
                     error!("While sending a request to {}, got {}", this.host, err);
-                    client_errors.add(1, &[KeyValue::new("host", this.host.clone())]);
+                    // It would be useful to tag this metric by "host", so as to be able to
+                    // tease-out problematic hosts when the client is, overall, behaving well.
+                    // Regrettably, each *value* for a tag creates a new metric series in AWS
+                    // CloudWatch, leading to a geometric explosion in costs.
+                    client_errors.add(1, &[]);
                     std::task::Poll::Ready(Err(err))
                 }
             },

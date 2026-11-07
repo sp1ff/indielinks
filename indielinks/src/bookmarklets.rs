@@ -77,7 +77,6 @@ use indielinks_shared::{
 };
 use itertools::Itertools;
 use jwt::VerifyWithKey;
-use opentelemetry::KeyValue;
 use rand::Rng;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
@@ -390,7 +389,11 @@ async fn authenticate(
     match authenticate1(state, &jar).await {
         Ok(username) => {
             debug!("Authenticated user {}", username);
-            bookmarklets_auth_successes.add(1, &[KeyValue::new("username", username.to_string())]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            bookmarklets_auth_successes.add(1, &[]);
             request.extensions_mut().insert(username);
             next.run(request).await
         }
@@ -591,7 +594,11 @@ async fn save(
     match save1(state, &username.0, headers, request).await {
         Ok((headers, html)) => {
             debug!("Sending back a save form for {}", username.to_string());
-            bookmarklets_save_successes.add(1, &[KeyValue::new("username", username.to_string())]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            bookmarklets_save_successes.add(1, &[]);
             (StatusCode::OK, headers, html).into_response()
         }
         Err(err) => {
@@ -796,7 +803,11 @@ async fn add(
     match add1(state, jar, &username.0, request).await {
         Ok(_) => {
             debug!("Successfully added a link for {}.", username.0);
-            bookmarklets_add_successes.add(1, &[KeyValue::new("username", username.0.to_string())]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            bookmarklets_add_successes.add(1, &[]);
             render_status(StatusCode::ACCEPTED, StatusPage::saved())
         }
         Err(err) => {

@@ -103,7 +103,6 @@ use futures::{StreamExt, TryStreamExt};
 use http::{header::SET_COOKIE, HeaderMap, Method};
 use itertools::Itertools;
 use nonzero::nonzero;
-use opentelemetry::KeyValue;
 use secrecy::{ExposeSecret, SecretString};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
@@ -595,7 +594,11 @@ async fn login(
         Ok((rsp, refresh_token, csrf_token)) => {
             info!("Logged-in user {}", login_req.username);
 
-            user_logins_successful.add(1, &[KeyValue::new("username", login_req.username)]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            user_logins_successful.add(1, &[]);
 
             let mut refresh_cookie = format!(
                 "{}={}; Max-Age={}; Path=/; HttpOnly; SameSite={}",
@@ -625,7 +628,11 @@ async fn login(
         }
         Err(Error::Password { username, .. }) => {
             error!("Bad password for user {}", username);
-            user_logins_failures.add(1, &[KeyValue::new("username", login_req.username)]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            user_logins_failures.add(1, &[]);
             (
                 StatusCode::UNAUTHORIZED,
                 Json(ErrorResponseBody {
@@ -636,7 +643,11 @@ async fn login(
         }
         Err(err) => {
             error!("{:#?}", err);
-            user_logins_failures.add(1, &[KeyValue::new("username", login_req.username)]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            user_logins_failures.add(1, &[]);
             err.into_response()
         }
     }
@@ -708,7 +719,11 @@ async fn refresh(
     ) {
         Ok((rsp, username)) => {
             info!("Successfully refreshed an access token for {username}.");
-            user_refreshes_successful.add(1, &[KeyValue::new("username", username)]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            user_refreshes_successful.add(1, &[]);
             (StatusCode::OK, Json(rsp)).into_response()
         }
         Err(Error::Refresh { source, .. })
@@ -829,12 +844,20 @@ async fn change_password(
                 Ok(_) => {
                     info!("Password changed for user {}", user.username());
                     user_password_changes_successful
-                        .add(1, &[KeyValue::new("username", user.username())]);
+                        // It would be useful to tag this metric by "username", so as to be able to
+                        // tease-out problematic users when the underlying metric is, overall,
+                        // behaving well. Regrettably, each *value* for a tag creates a new metric
+                        // series in AWS CloudWatch, leading to a geometric explosion in costs.
+                        .add(1, &[]);
                     StatusCode::ACCEPTED.into_response()
                 }
                 Err(err) => {
                     user_password_changes_failures
-                        .add(1, &[KeyValue::new("username", user.username())]);
+                        // It would be useful to tag this metric by "username", so as to be able to
+                        // tease-out problematic users when the underlying metric is, overall,
+                        // behaving well. Regrettably, each *value* for a tag creates a new metric
+                        // series in AWS CloudWatch, leading to a geometric explosion in costs.
+                        .add(1, &[]);
 
                     // Really irritating workaround for the fact that `matches!` doesn't bind any names.
                     let source = match &err {
@@ -894,7 +917,11 @@ async fn get_profile(
 ) -> axum::response::Response {
     match user {
         Ok(Extension(user)) => {
-            user_profile_gets_successful.add(1, &[KeyValue::new("username", user.username())]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            user_profile_gets_successful.add(1, &[]);
             (
                 StatusCode::OK,
                 Json(UserProfile {
@@ -942,11 +969,19 @@ async fn update_profile(
         Ok(Extension(mut user)) => match update_profile1(state, &mut user, request).await {
             Ok(()) => {
                 user_profile_updates_successful
-                    .add(1, &[KeyValue::new("username", user.username())]);
+                    // It would be useful to tag this metric by "username", so as to be able to
+                    // tease-out problematic users when the underlying metric is, overall, behaving
+                    // well. Regrettably, each *value* for a tag creates a new metric series in AWS
+                    // CloudWatch, leading to a geometric explosion in costs.
+                    .add(1, &[]);
                 StatusCode::ACCEPTED.into_response()
             }
             Err(err) => {
-                user_profile_updates_failures.add(1, &[KeyValue::new("username", user.username())]);
+                // It would be useful to tag this metric by "username", so as to be able to
+                // tease-out problematic users when the underlying metric is, overall, behaving
+                // well. Regrettably, each *value* for a tag creates a new metric series in AWS
+                // CloudWatch, leading to a geometric explosion in costs.
+                user_profile_updates_failures.add(1, &[]);
                 error!("{err:?}");
                 mk_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{err}"))
             }
@@ -1209,7 +1244,11 @@ async fn keys(user: StdResult<Extension<User>, ExtensionRejection>) -> axum::res
 
     match user {
         Ok(Extension(user)) => {
-            user_keys_successful.add(1, &[KeyValue::new("username", user.username())]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            user_keys_successful.add(1, &[]);
             (StatusCode::OK, Json(mk_response(&user))).into_response()
         }
         Err(err) => {
@@ -1280,13 +1319,21 @@ async fn revoke_key(
             match revoke_key1(state.storage.as_ref(), &mut user, request.id).await {
                 Ok(_) => {
                     user_key_revocations_successful
-                        .add(1, &[KeyValue::new("username", user.username())]);
+                        // It would be useful to tag this metric by "username", so as to be able to
+                        // tease-out problematic users when the underlying metric is, overall,
+                        // behaving well. Regrettably, each *value* for a tag creates a new metric
+                        // series in AWS CloudWatch, leading to a geometric explosion in costs.
+                        .add(1, &[]);
                     StatusCode::ACCEPTED.into_response()
                 }
                 Err(err) => {
                     error!("{err:?}");
                     user_key_revocation_failures
-                        .add(1, &[KeyValue::new("username", user.username())]);
+                        // It would be useful to tag this metric by "username", so as to be able to
+                        // tease-out problematic users when the underlying metric is, overall,
+                        // behaving well. Regrettably, each *value* for a tag creates a new metric
+                        // series in AWS CloudWatch, leading to a geometric explosion in costs.
+                        .add(1, &[]);
                     mk_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("{err}"))
                 }
             }
@@ -1321,7 +1368,11 @@ async fn timeline(
             // responsible for this user's timeline.
             match handle_timeline_or_redirect(state.clone(), &user, request).await {
                 Ok(rsp) => {
-                    user_timeline_successful.add(1, &[KeyValue::new("username", user.username())]);
+                    // It would be useful to tag this metric by "username", so as to be able to
+                    // tease-out problematic users when the underlying metric is, overall, behaving
+                    // well. Regrettably, each *value* for a tag creates a new metric series in AWS
+                    // CloudWatch, leading to a geometric explosion in costs.
+                    user_timeline_successful.add(1, &[]);
                     match rsp {
                         TimelineRsp::Initial(rsp) => (StatusCode::OK, Json(rsp)).into_response(),
                         TimelineRsp::Since(rsp) => (StatusCode::OK, Json(rsp)).into_response(),
@@ -1329,7 +1380,11 @@ async fn timeline(
                     }
                 }
                 Err(err) => {
-                    user_timeline_failures.add(1, &[KeyValue::new("username", user.username())]);
+                    // It would be useful to tag this metric by "username", so as to be able to
+                    // tease-out problematic users when the underlying metric is, overall, behaving
+                    // well. Regrettably, each *value* for a tag creates a new metric series in AWS
+                    // CloudWatch, leading to a geometric explosion in costs.
+                    user_timeline_failures.add(1, &[]);
                     error!("{err:?}");
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1577,12 +1632,20 @@ async fn context(
         .await
         {
             Ok(response) => {
-                user_context_successful.add(1, &[KeyValue::new("username", user.username())]);
+                // It would be useful to tag this metric by "username", so as to be able to
+                // tease-out problematic users when the underlying metric is, overall, behaving
+                // well. Regrettably, each *value* for a tag creates a new metric series in AWS
+                // CloudWatch, leading to a geometric explosion in costs.
+                user_context_successful.add(1, &[]);
                 (StatusCode::OK, Json(response)).into_response()
             }
             Err(err) => {
                 error!("{err:?}");
-                user_context_failures.add(1, &[KeyValue::new("username", user.username())]);
+                // It would be useful to tag this metric by "username", so as to be able to
+                // tease-out problematic users when the underlying metric is, overall, behaving
+                // well. Regrettably, each *value* for a tag creates a new metric series in AWS
+                // CloudWatch, leading to a geometric explosion in costs.
+                user_context_failures.add(1, &[]);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponseBody {

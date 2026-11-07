@@ -32,7 +32,6 @@ use either::Either::Left;
 use futures::TryStreamExt;
 use http::Method;
 use nonempty_collections::{IntoNonEmptyIterator, NEVec, NonEmptyIterator};
-use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::Pipe;
@@ -408,7 +407,11 @@ pub async fn handle_timeline_or_redirect(
     match this_node_is_responsible(state.cache_node.clone(), user).await? {
         None => handle_timeline(state, user, request).await,
         Some(responsible_node) => {
-            user_timeline_redirects.add(1, &[KeyValue::new("username", user.username())]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            user_timeline_redirects.add(1, &[]);
             redirect_timeline(state.clone(), user, request, responsible_node).await
         }
     }
@@ -675,7 +678,11 @@ pub async fn handle_outbox_or_redirect(
     match this_node_is_responsible(state.cache_node.clone(), user).await? {
         None => handle_outbox(state, user, request).await,
         Some(responsible_node) => {
-            user_outbox_redirects.add(1, &[KeyValue::new("username", user.username())]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            user_outbox_redirects.add(1, &[]);
             redirect_outbox(state, user, request, responsible_node).await
         }
     }

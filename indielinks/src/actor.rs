@@ -38,7 +38,6 @@ use futures::{future, stream::iter, StreamExt, TryStreamExt};
 use http::{HeaderName, HeaderValue, Method};
 use itertools::Itertools;
 use nonzero::nonzero;
-use opentelemetry::KeyValue;
 use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, OptionExt, Report, ResultExt, Snafu};
@@ -1688,7 +1687,11 @@ async fn outbox(
     {
         Ok(doc) => {
             debug!("Serving outbox: {doc:#?}");
-            outbox_pages.add(1, &[KeyValue::new("username", username)]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            outbox_pages.add(1, &[]);
             patch_content_type((StatusCode::OK, doc.to_string()).into_response())
         }
         Err(err) => handle_err(err, outbox_errors.deref()),
@@ -1728,7 +1731,11 @@ async fn get_post(
         },
         Err(err @ crate::storage::Error::NoPost { .. }) => {
             error!("{}", err);
-            posts_errors.add(1, &[KeyValue::new("username", username)]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            posts_errors.add(1, &[]);
             StatusCode::NOT_FOUND.into_response()
         }
         Err(err) => handle_err(err, posts_errors.deref()),
@@ -1785,7 +1792,11 @@ async fn get_post_replies(
     {
         Ok(doc) => {
             debug!("Serving replies: {doc:#?}");
-            replies_pages.add(1, &[KeyValue::new("username", username)]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            replies_pages.add(1, &[]);
             patch_content_type((StatusCode::OK, doc.to_string()).into_response())
         }
         Err(err) => handle_err(err, replies_errors.deref()),
@@ -1883,7 +1894,11 @@ pub async fn atom_feed(
 
     match feed1(&request, state.storage.as_ref(), &username, &state.origin).await {
         Ok(body) => {
-            delicious_feed_successes.add(1, &[KeyValue::new("username", username.to_string())]);
+            // It would be useful to tag this metric by "username", so as to be able to tease-out
+            // problematic users when the underlying metric is, overall, behaving well. Regrettably,
+            // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
+            // geometric explosion in costs.
+            delicious_feed_successes.add(1, &[]);
             (StatusCode::OK, body).into_response()
         }
         Err(err) => handle_err(err, delicious_feed_failures.deref()),
