@@ -1273,7 +1273,7 @@ pub struct Note {
     content: SanitizedHtml,
     // Should be using crate `isolang`: <https://docs.rs/isolang/latest/isolang/>
     content_map: Option<HashMap<String, SanitizedHtml>>,
-    replies: Replies,
+    replies: Option<Replies>,
     // Yet to be implemented:
     // - tag
     // - likes (Collection)
@@ -1331,7 +1331,7 @@ impl Note {
             cc: vec![make_user_followers(username, origin)?],
             content: post_html.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), post_html)])),
-            replies: Replies::empty(origin, username, &post.id())?,
+            replies: Some(Replies::empty(origin, username, &post.id())?),
         })
     }
     #[allow(clippy::too_many_arguments)]
@@ -1360,7 +1360,7 @@ impl Note {
             cc: cc.collect::<Vec<Url>>(),
             content: content.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), content)])),
-            replies,
+            replies: Some(replies),
         })
     }
     pub fn from_reply(reply: &OutgoingReply, username: &Username, origin: &Origin) -> Result<Note> {
@@ -1380,7 +1380,7 @@ impl Note {
             cc: vec![make_user_followers(username, origin)?],
             content: html.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), html)])),
-            replies: Replies::empty_for_reply(origin, username, &reply.id())?,
+            replies: Some(Replies::empty_for_reply(origin, username, &reply.id())?),
         })
     }
     pub fn from_share(share: &OutgoingShare, username: &Username, origin: &Origin) -> Result<Note> {
@@ -1400,7 +1400,7 @@ impl Note {
             cc: vec![make_user_followers(username, origin)?],
             content: html.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), html)])),
-            replies: Replies::empty_for_share(origin, username, &share.id())?,
+            replies: Some(Replies::empty_for_share(origin, username, &share.id())?),
         })
     }
     pub fn from_incoming_reply(
@@ -1458,7 +1458,9 @@ impl Note {
             content,
             // Lame: how do I know the language of `content`?
             content_map: Default::default(),
-            replies: Replies::new(reply.replies().clone(), None, None),
+            replies: reply
+                .replies()
+                .map(|reply| Replies::new(reply.clone(), None, None)),
         })
     }
     // Ack! Placeholder!
@@ -1492,8 +1494,8 @@ impl Note {
     pub fn published(&self) -> &DateTime<Utc> {
         &self.published
     }
-    pub fn replies(&self) -> &Replies {
-        &self.replies
+    pub fn replies(&self) -> Option<&Replies> {
+        self.replies.as_ref()
     }
 }
 

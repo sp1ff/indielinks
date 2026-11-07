@@ -832,7 +832,7 @@ async fn accept_create(
                         visibility,
                         // Irritating, as this has already been sanitized:
                         note.content().as_ref().to_owned(),
-                        note.replies().id().clone(),
+                        note.replies().map(|replies| replies.id().clone()),
                     ))
                     .await
                     .context(StorageSnafu)?;

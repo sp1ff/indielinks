@@ -1381,7 +1381,7 @@ pub struct IncomingReply {
     attributed_to: StorUrl,
     visibility: Visibility,
     content: String,
-    replies: StorUrl,
+    replies: Option<StorUrl>,
 }
 
 impl IncomingReply {
@@ -1392,7 +1392,7 @@ impl IncomingReply {
         attributed_to: Url,
         visibility: Visibility,
         content: String,
-        replies: Url,
+        replies: Option<Url>,
     ) -> Self {
         Self {
             user_id,
@@ -1402,7 +1402,7 @@ impl IncomingReply {
             in_reply_to,
             visibility,
             content,
-            replies: replies.into(),
+            replies: replies.map(|url| url.into()),
         }
     }
     pub fn ap_reply_id(&self) -> &Url {
@@ -1420,8 +1420,8 @@ impl IncomingReply {
     pub fn received(&self) -> &DateTime<Utc> {
         &self.received
     }
-    pub fn replies(&self) -> &Url {
-        self.replies.as_ref()
+    pub fn replies(&self) -> Option<&Url> {
+        self.replies.as_ref().map(|url| url.as_ref())
     }
     pub fn visibility(&self) -> Visibility {
         self.visibility
@@ -1627,7 +1627,7 @@ impl<'de> serde::de::Visitor<'de> for IncomingLikeReplyShareVisitor {
                 attributed_to: attributed_to.ok_or(DeError::missing_field("attributed_to"))?,
                 visibility: visibility.ok_or(DeError::missing_field("visibility"))?,
                 content: content.ok_or(DeError::missing_field("content"))?,
-                replies: replies.ok_or(DeError::missing_field("replies"))?,
+                replies,
             })),
             2 => Ok(IncomingLikeReplyShare::Share(IncomingShare {
                 user_id: user_id.ok_or(DeError::missing_field("user_id"))?,
@@ -1700,7 +1700,7 @@ impl scylla::serialize::row::SerializeRow for IncomingLikeReplyShareRef<'_> {
                     id,
                     &Some(reply.visibility),
                     &Some(&reply.content),
-                    &Some(&reply.replies),
+                    &reply.replies.as_ref(),
                     &Option::<&StorUrl>::None,
                 )
             }
@@ -1812,8 +1812,7 @@ impl<'frame, 'metadata> scylla::deserialize::row::DeserializeRow<'frame, 'metada
                 ))?,
                 content: content
                     .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
-                replies: replies
-                    .ok_or(mk_de_err(MissingFieldSnafu { field: "content" }.build()))?,
+                replies,
             })),
             2 => Ok(IncomingLikeReplyShare::Share(IncomingShare {
                 user_id,

@@ -1446,33 +1446,6 @@ async fn context(
 
         debug!("The Note is: {note:#?}");
 
-        // This is what I've seen in the wild, mostly with Mastodon:
-        //
-        // - the `Note` always has a `reply` field
-        // - the `reply` field can be of type `Collection` or `OrderedCollection`
-        // - either way, it always has a `reply` field, and that field is always an URL
-        // - the collection MAY proffer a `first` field, of type `CollectionPage`, but in the case of
-        //
-        // I don't know if this is a Mastodon bug, or if I'm misinterpreting the field (ah,
-        // ActivityPub!), but if you kick-off your pagination using the included items and the
-        // `next` field, you don't get all the replies
-        //
-        // - AFAICT, the way to handle this is to fetch `reply.id`, getting a `Collection` in return
-        // - this will have a `first` element of type `CollectionPage`-- base the iteration on THAT: i.e.:
-        //   - consume anything in the `items` collection therein
-        //   - move on to the `next` field in the page
-        let replies = ap_request::<_, Replies, _>(
-            &mut client,
-            origin,
-            Left(user),
-            note.replies().id(),
-            Method::GET,
-            None,
-            &(),
-        )
-        .await
-        .context(ApSnafu)?;
-
         async fn resolve_note_field(
             field: NoteField,
             user: &User,
@@ -1500,36 +1473,68 @@ async fn context(
             }
         }
 
-        let replies = reply_stream(origin, user, client, &replies)?
-            // We've got a `Stream` yielding `Result<NoteField>`s. For each, we need to make sure
-            // the `Note` is cached, if it's inlined, or resolve it through the cache if it's not.
-            .and_then(|field| {
-                let ap_resolver = ap_resolver.clone();
-                debug!("Resolving replies: {field:#?}");
-                async move {
-                    resolve_note_field(field, user, ap_resolver).await
-                }
-            })
-            // We now have a `Stream` yielding `Result<Note>`, with all notes having been cached. The
-            // question now is: how to handle errors? I think
-            // for now I'm just going to log them & return what I can; i.e. don't fail the operation
-            // altogether if we failed anywhere therein. This goes against my preference for "fail fast",
-            // but in this *particular* case, it seems reasonable to expect that we'll sometimes fail
-            // to pull an individual reply from some server & still want to display what we can.
-            .collect::<Vec<Result<Note>>>()
+        // This is what I've seen in the wild, mostly with Mastodon:
+        //
+        // - the `Note` always has a `reply` field
+        // - the `reply` field can be of type `Collection` or `OrderedCollection`
+        // - either way, it always has a `reply` field, and that field is always an URL
+        // - the collection MAY proffer a `first` field, of type `CollectionPage`
+        //
+        // I don't know if this is a Mastodon bug, or if I'm misinterpreting the field (ah,
+        // ActivityPub!), but if you kick-off your pagination using the included items and the
+        // `next` field, you don't get all the replies
+        //
+        // - AFAICT, the way to handle this is to fetch `reply.id`, getting a `Collection` in return
+        // - this will have a `first` element of type `CollectionPage`-- base the iteration on THAT: i.e.:
+        //   - consume anything in the `items` collection therein
+        //   - move on to the `next` field in the page
+        //
+        // UPDATE: PixelFed, at least, does *not* include a "reply" field!
+        let replies = if let Some(replies) = note.replies() {
+            let replies = ap_request::<_, Replies, _>(
+                &mut client,
+                origin,
+                Left(user),
+                replies.id(),
+                Method::GET,
+                None,
+                &(),
+            )
             .await
-            .into_iter()
-            .filter(|result| {
-                match result {
-                    Ok(_) => true,
-                    Err(err) => {
-                        error!("While pulling replies: {err:?}");
-                        false
+            .context(ApSnafu)?;
+
+            reply_stream(origin, user, client, &replies)?
+                // We've got a `Stream` yielding `Result<NoteField>`s. For each, we need to make sure
+                // the `Note` is cached, if it's inlined, or resolve it through the cache if it's not.
+                .and_then(|field| {
+                    let ap_resolver = ap_resolver.clone();
+                    async move {
+                        resolve_note_field(field, user, ap_resolver).await
                     }
-                }
-            })
-            .collect::<Result<Vec<Note>>>()
-            .unwrap(/* known good */);
+                })
+                // We now have a `Stream` yielding `Result<Note>`, with all notes having been
+                // cached. The question now is: how to handle errors? I think for now I'm just going
+                // to log them & return what I can; i.e. don't fail the operation altogether if we
+                // failed anywhere therein. This goes against my preference for "fail fast", but in
+                // this *particular* case, it seems reasonable to expect that we'll sometimes fail
+                // to pull an individual reply from some server & still want to display what we can.
+                .collect::<Vec<Result<Note>>>()
+                .await
+                .into_iter()
+                .filter(|result| {
+                    match result {
+                        Ok(_) => true,
+                        Err(err) => {
+                            error!("While pulling replies: {err:?}");
+                            false
+                        }
+                    }
+                })
+                .collect::<Result<Vec<Note>>>()
+                .unwrap(/* known good */)
+        } else {
+            Vec::new()
+        };
 
         debug!("Replies: {replies:#?}");
 
