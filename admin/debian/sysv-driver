@@ -25,6 +25,16 @@ indielinks-ctl --version
 indic --help
 indio --help
 
+# This should be a NOP, but if whitespace diffs creep-in, naively re-installing
+# would hang (on a dialog asking what to do). This is a workaround:
+checksum_old=$(sudo md5sum /etc/indielinks.toml)
+UCF_FORCE_CONFNEW=1 sudo dpkg --debug=2 -i ${pkg}
+checksum_new=$(sudo md5sum /etc/indielinks.toml)
+if [ "${checksum_old}" != "${checksum_new}" ]; then
+    echo "Configuration differences in indielinks.toml!" >&2
+    exit 1
+fi
+
 # Test conflict: the AWS package must fail to install
 if sudo dpkg -i "${aws_pkg}" 2>/dev/null; then
     echo "The AWS package installed despite the base package being present" >&2
@@ -58,5 +68,18 @@ if [ ${status_code} -ne 200 ]; then
 fi
 indielinks-ctl -v restart
 indielinks-ctl -v stop
+
 sudo dpkg --debug=2 -r indielinks
+
+if [ ! -f /etc/indielinks.toml ]; then
+    echo "/etc/indielinks.toml improperly removed after package removal" >&2
+    exit 1
+fi
+
+sudo dpkg --debug=2 -P indielinks
+
+if [ -f /etc/indielinks.toml ]; then
+    echo "/etc/indielinks.toml improperly remaining after package purge" >&2
+    exit 1
+fi
 

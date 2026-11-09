@@ -1,0 +1,12 @@
+#!/usr/bin/bash
+set -e
+
+case "$1" in
+    purge)
+        rm -f /etc/indielinks.toml
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

@@ -118,7 +118,7 @@ jobs:
         shell: bash
         run: |
           set -xeuo pipefail
-          admin/debian/build-packages
+          admin/build-debian-packages
 
       - name: Upload Debian packages to release
         env:

@@ -328,8 +328,6 @@ struct SigningKeysOuter {
 }
 
 fn generate_secrets<P: AsRef<Path>>(path: P) -> Result<()> {
-    // The `Default` implementations of these two types generate new values-- I know, I know...
-    // don't judge me.
     let peppers = toml::to_string(&Pepper {
         pepper: Peppers::from_entropy(),
     })
@@ -361,8 +359,8 @@ fn generate_secrets<P: AsRef<Path>>(path: P) -> Result<()> {
         .context(ReadConfigSnafu {
             path: path.as_ref().to_path_buf(),
         })?
-        .replace("PEPPER", &peppers)
-        .replace("SIGNINGKEYS", &signing_keys)
+        .replace("PEPPER\n", &peppers)
+        .replace("SIGNINGKEYS\n", &signing_keys)
         .pipe(|text| fs::write(&tmpfile, &text))
         .context(WriteTempFileSnafu)?;
 

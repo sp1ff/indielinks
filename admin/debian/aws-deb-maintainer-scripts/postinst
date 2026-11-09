@@ -2,6 +2,7 @@
 set -e
 
 cfg='/etc/indielinks.toml'
+cfg_template='/usr/share/indielinks/templates/indielinks.toml'
 group='indielinks'
 local_state='/var/run/indielinks'
 log='/var/log/indielinks'
@@ -34,16 +35,39 @@ case "$1" in
         fi
 
         if [ -f "$cfg" ]; then
+            # render from the extant file
+            nodeid=$(grep -E '^this-node = [0-9]+' $cfg 2>/dev/null || true)
+            content=$(cat "$cfg_template"; printf x)
+            content=${content%x}
+            rendered=${content//this-node = '"PLACEHOLDER"'/"$nodeid"}
+
+            tmp=$(mktemp "$cfg.XXXXXX")
+            trap 'rm -f "$tmp"' EXIT
+            printf '%s' "$rendered" > "$tmp"
+            chmod 644 "$tmp"
+            ucf --debconf-ok --three-way "$tmp" "$cfg"
+            rm -rf "$tmp"
             setfacl -m u:indielinks:r "$cfg"
-        fi
+            trap - EXIT
+        else
+            # render a new file
+            tmp=$(mktemp -d) # temp directory
+            cp $cfg_template $tmp
+            trap 'rm -f "$tmp"' EXIT
+            # Debconf: retrieve the Raft node ID and replace the placeholder
+            . /usr/share/debconf/confmodule
+            db_get indielinks/node-id
+            NODE_ID="$RET"
 
-        # Debconf: retrieve the Raft node ID and replace the placeholder
-        . /usr/share/debconf/confmodule
-        db_get indielinks/node-id
-        NODE_ID="$RET"
+            if [ -n "$NODE_ID" ]; then
+                sed -i "s/this-node = \"PLACEHOLDER\"/this-node = ${NODE_ID}/" "$tmp/indielinks.toml"
+            fi
 
-        if [ -n "$NODE_ID" ] && [ -f "$cfg" ]; then
-            sed -i "s/this-node = \"PLACEHOLDER\"/this-node = ${NODE_ID}/" "$cfg"
+            cp -v "$tmp/indielinks.toml" "$cfg"
+            chmod 644 "$cfg"
+            chown indielinks:indielinks "$cfg"
+            rm -rf "$tmp"
+            trap - EXIT
         fi
 
         db_stop

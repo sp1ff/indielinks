@@ -1,6 +1,7 @@
 #!/usr/bin/bash
 set -e
 
+cfg_template='/usr/share/indielinks/templates/indielinks.toml'
 cfg='/etc/indielinks.toml'
 group='indielinks'
 local_state='/var/run/indielinks'
@@ -33,7 +34,33 @@ case "$1" in
         fi
 
         if [ -f "$cfg" ]; then
+            # render from the extant file
+            peppers=$(grep -m1 -A1 -e '^\[pepper.peppers\]' $cfg 2>/dev/null || true)
+            keys=$(grep -m1 -A1 -e '^\[signing-keys.signing-keys.keys\]' $cfg 2>/dev/null || true)
+            content=$(cat "$cfg_template"; printf x)
+            content=${content%x}
+            rendered=${content//PEPPER/"$peppers"}
+            rendered=${rendered//SIGNINGKEYS/"$keys"}
+
+            tmp=$(mktemp "$cfg.XXXXXX")
+            trap 'rm -f "$tmp"' EXIT
+            printf '%s' "$rendered" > "$tmp"
+            chmod 600 "$tmp"
+            ucf --debconf-ok --three-way "$tmp" "$cfg"
+            rm -rf "$tmp"
             setfacl -m u:indielinks:r "$cfg"
+            trap - EXIT
+        else
+            # render a new file
+            tmp=$(mktemp -d) # temp directory
+            cp $cfg_template $tmp
+            trap 'rm -f "$tmp"' EXIT
+            indielinks-schemas secrets "$tmp/indielinks.toml"
+            cp -v "$tmp/indielinks.toml" "$cfg"
+            chmod 600 "$cfg"
+            chown indielinks:indielinks "$cfg"
+            rm -rf "$tmp"
+            trap - EXIT
         fi
 
     ;;
