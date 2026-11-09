@@ -664,6 +664,8 @@
 //! so I just fell back to using an Arch Docker container for building binary packages, linting and
 //! testing them.
 //!
+//! Having moved the AUR package into a separate repo, I'll place more detailed documentation there.
+//!
 //! ### Debian
 //!
 //! The same situation presents itself with respect to [cargo-deb], though in this case the
@@ -692,6 +694,40 @@
 //! [dh-rust]: https://packages.debian.org/search?keywords=dh-rust&searchon=names&suite=stable&section=all
 //!
 //! At this point, I threw up my hands & went with [cargo-deb].
+//!
+//! #### The Debian `postinst` script
+//!
+//! Installing indielinks is a bit tricky due to the existence of things that must be present in the
+//! configuration file in order for indielinks to start, but that cannot be known until install
+//! time:
+//!
+//! - the instance signing key
+//! - the instance pepper
+//! - the Raft node ID
+//!
+//! Also, operator will likely want to customize the deployment environment and instance ID
+//! command-line options at start-up, as well. This is perhaps a sign of poor design. Nevertheless,
+//! it is the current state of affairs, so I want to document how the Debian packages deal with it.
+//!
+//! It is important to understand that Debian packaging distinguishes so-called "conffiles":
+//! configuration files installed under `/etc`. They are explicitly declared, generally, but
+//! cargo-deb simply looks for any files installed under `/etc`. On upgrade, if a *conffile* in the
+//! package differs from the local copy, you're going to get an interactive dialog asking you to
+//! resolve the differences. If we were to install a "template" configuraiton file and then update
+//! it in-place, this would guarantee that what Debian sees as a conffile (i.e. the template)
+//! differs from what's already there, so we get the dialog.
+//!
+//! The better option is to regard the configuration file we ship with the package explicitly as a
+//! template, install it under `/usr/share/indielinks`, and then, in the `postinst` Debian
+//! maintainer script, generate the signing key, pepper, and, in the AWS package, the node ID,
+//! render the template, and then copy the result into the final location under `/etc`.
+//!
+//! As far as customizing the systemd units, I've largely left that to manual intervention on the
+//! part of the operator. The plain Debian package sets the deployment environment to "local" (on
+//! the assumption that this is being installed for personal use on a desktop), and the AWS package
+//! sets it to "production". Both leave the instance ID un-touched. sysadmins can easily customize
+//! both by adding the salient environment variables (`INDIELINKS_DEPLOYMENT_ENVIRONMENT` and
+//! `INDIELINKS_INSTANCE_ID`, respectively) in a systemd override file (i.e. under `/etc/systemd`).
 //!
 //! ### The "Post-Install" Script
 //!

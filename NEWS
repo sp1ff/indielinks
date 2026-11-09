@@ -10,6 +10,9 @@ Add "about", user docs, terms of service & privacy policy.
 ** Project Updates
 
 *** Make the front end customizable per instance
+*** The Debian packages no-longer track indielinks.toml as a conffile
+
+They now ship a configuration template which is rendered & intsalled in `postinst`.
 * 0.0.2
 
 ** Bug Fixes
