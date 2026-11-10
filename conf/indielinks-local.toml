@@ -1,13 +1,13 @@
 # indielinks configuration file for my prototype local installation
 assets = "/home/USER/share/indielinks/assets"
 collection-page-size = 64
-default-page-size = 16
 contact-email = "admin@indiemark.local"
-templates = "/home/USER/share/indielinks/doc"
+default-page-size = 16
 log-file = "/home/USER/var/log/indielinks.log"
 private-address = "127.0.0.1:20677"
 public-address = "0.0.0.0:20676"
 raft-grpc-address = "127.0.0.1:20678"
+templates = "/home/USER/share/indielinks/doc"
 user-agent = "indielinks/0.0.2; +indielinks@pobox.com"
 version = "1"
 
