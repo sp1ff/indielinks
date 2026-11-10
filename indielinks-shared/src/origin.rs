@@ -106,7 +106,7 @@ use http::uri::Uri;
 use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use snafu::{Backtrace, prelude::*};
+use snafu::{prelude::*, Backtrace};
 use url::Url;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -316,6 +316,15 @@ pub struct Origin {
 impl Origin {
     pub fn host(&self) -> &Host {
         &self.host
+    }
+    pub fn netloc(&self) -> NetLoc {
+        NetLoc {
+            host: self.host.clone(),
+            port: self.port,
+        }
+    }
+    pub fn scheme(&self) -> Protocol {
+        self.scheme
     }
     pub fn new(origin: &url::Origin) -> Result<Origin> {
         match origin {

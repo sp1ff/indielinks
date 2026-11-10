@@ -1,7 +1,7 @@
 ## Introduction
 
 These terms of service (the "Terms") cover your access and use of Server
-Operator's ("Administrator", "we", or "us") instance, located at %{origin} (the
+Operator's ("Administrator", "we", or "us") instance, located at %{host} (the
 "Instance"). These Terms apply solely to your use of the Instance as operated
 by the Administrator. Please note that we have no affiliation with Mastodon
 GmbH (“Mastodon”) and these Terms do not contain any representations or

@@ -1786,7 +1786,10 @@ impl ReplacementParameters {
     fn new(origin: Origin, admin_email: UserEmail) -> Self {
         Self {
             parameters: [
-                ("origin".to_owned(), origin.host().to_string()),
+                ("origin".to_owned(), origin.to_string()),
+                ("host".to_owned(), origin.host().to_string()),
+                ("netloc".to_owned(), origin.netloc().to_string()),
+                ("scheme".to_owned(), origin.scheme().to_string()),
                 ("dmca_email".to_owned(), admin_email.to_string()),
                 ("admin_email".to_owned(), admin_email.to_string()),
             ]

@@ -1,10 +1,10 @@
-This privacy policy describes how %{origin} ("%{origin}", "we", "us") collects,
+This privacy policy describes how %{host} ("%{host}", "we", "us") collects,
 protects and uses the personally identifiable information you may provide
-through the %{origin} website or its API. The policy also describes the choices
+through the %{host} website or its API. The policy also describes the choices
 available to you regarding our use of your personal information and how you can
 access and update this information. This policy does not apply to the practices
-of companies that %{origin} does not own or control, or to individuals that
-%{origin} does not employ or manage. Indielinks is early-stage software; some
+of companies that %{host} does not own or control, or to individuals that
+%{host} does not employ or manage. Indielinks is early-stage software; some
 of what follows pertains to features not yet implemented.
 
 # What information do we collect?
@@ -109,7 +109,5 @@ Law requirements can be different if this server is in another jurisdiction.
 
 ---
 
-This document is CC-BY-SA. Originally adapted from the [Mastodon
-privacy policy]
-(https://raw.githubusercontent.com/mastodon/mastodon/refs/heads/main/config/templates/privacy-policy.md), which itself was originally adapted from the [Discourse privacy
+This document is CC-BY-SA. Originally adapted from the [Mastodon privacy policy](https://raw.githubusercontent.com/mastodon/mastodon/refs/heads/main/config/templates/privacy-policy.md), which itself was originally adapted from the [Discourse privacy
 policy](https://github.com/discourse/discourse).
