@@ -77,9 +77,9 @@
 //! The frontend is configured at *compile* time via environment variables; changing any of them
 //! requires rebuilding the WASM bundle:
 //!
-//! - `INDIELINKS_FE_API`: the public API base URL; if unset, the app derives the API location
-//!   from the browser's current origin as `${window.location.origin}/api/v1`. Set this when
-//!   developing with `trunk` serving the UI from a different origin than the indielinks API.
+//! - `INDIELINKS_FE_API`: the public API base URL; if unset, the app derives the API location from
+//!   the browser's current origin as `${window.location.origin}`. Set this when developing with
+//!   `trunk` serving the UI from a different origin than the indielinks API.
 //! - `INDIELINKS_BASE`: the path at which the frontend is mounted; defaults to the empty string
 //! - `INDIELINKS_FE_DARK_THEME`: `true` (or unset) enables the dark-theme capability: the
 //!   frontend follows the operating system's `prefers-color-scheme` setting until the user makes
@@ -102,7 +102,7 @@ use leptos_router::{
 };
 use secrecy::ExposeSecret;
 use thaw::{ConfigProvider, Icon, ToasterProvider};
-use tracing::{Level, info};
+use tracing::{info, Level};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 // use wasm_bindgen::JsValue;
@@ -409,7 +409,7 @@ fn main() {
                 .location()
                 .origin()
                 .expect("window.location.origin should be available");
-            format!("{origin}/api/v1")
+            format!("{origin}")
         });
 
     // Mount the `App` component as the document <body>:
