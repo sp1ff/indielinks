@@ -102,7 +102,7 @@ use leptos_router::{
 };
 use secrecy::ExposeSecret;
 use thaw::{ConfigProvider, Icon, ToasterProvider};
-use tracing::{info, Level};
+use tracing::{Level, info};
 use tracing_subscriber::fmt;
 use tracing_subscriber_wasm::MakeConsoleWriter;
 // use wasm_bindgen::JsValue;

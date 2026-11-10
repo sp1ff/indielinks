@@ -119,7 +119,10 @@ assets = [
        ["../indielinks-fe/dist/indielinks-fe.js", "/usr/share/indielinks/assets/indielinks-fe.js", "644"],
        ["../indielinks-fe/dist/style.css", "/usr/share/indielinks/assets/style.css", "644"],
        ["../indielinks-fe/dist/indielinks-fe.wasm", "/usr/share/indielinks/assets/indielinks-fe.wasm", "644"],
-
+       ["assets/about.md", "/usr/share/indielinks/templates/about.md", "644"],
+       ["assets/docs.md", "/usr/share/indielinks/templates/docs.md", "644"],
+       ["assets/privacy-policy.md", "/usr/share/indielinks/templates/privacy-policy.md", "644"],
+       ["assets/terms-of-service.md", "/usr/share/indielinks/templates/terms-of-service.md", "644"],
 ]
 # indielinks requries a post-installation script to be run by the
 # operator before it can startup. If using stystemd, enable the unit,
@@ -146,6 +149,10 @@ assets = [
     ["../indielinks-fe/dist-aws/style.css", "/usr/share/indielinks/assets/style.css", "644"],
     ["../indielinks-fe/dist-aws/indielinks-fe.wasm", "/usr/share/indielinks/assets/indielinks-fe.wasm", "644"],
     ["../admin/debian/aws-deb-maintainer-scripts/logrotate", "/etc/logrotate.d/indielinks", "644"],
+    ["assets/about.md", "/usr/share/indielinks/templates/about.md", "644"],
+    ["assets/docs.md", "/usr/share/indielinks/templates/docs.md", "644"],
+    ["assets/privacy-policy.md", "/usr/share/indielinks/templates/privacy-policy.md", "644"],
+    ["assets/terms-of-service.md", "/usr/share/indielinks/templates/terms-of-service.md", "644"],
 ]
 
 [package.metadata.cargo-shear]
