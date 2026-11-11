@@ -1,15 +1,15 @@
  #+TITLE: indielinks
 #+DESCRIPTION: Bookmarks in the Fediverse
-#+DATE: <2026-10-28 Wed 18:58>
+#+DATE: <2026-11-10 Tue 17:30>
 #+AUTODATE: t
 #+OPTIONS: toc:nil org-md-headline-style:setext *:t ^:nil
 #+STARTUP: overview
 
 * Introduction
 
-[[https://web.archive.org/web/20080906021806/http://delicious.com/][del.icio.us]] on the [[https://en.wikipedia.org/wiki/Fediverse][Fediverse]]; bookmark (and tag) the web, follow people you trust, and discover content without a platform deciding what you see.
+Indielinks is [[https://web.archive.org/web/20080906021806/http://delicious.com/][del.icio.us]] in the [[https://en.wikipedia.org/wiki/Fediverse][Fediverse]]; bookmark what you're reading, follow people whose taste _you_ trust, and discover without a platform deciding what you see.
 
-[[https://en.wikipedia.org/wiki/Delicious_(website)][Social bookmarking]] used to be a content discovery mechanism: save links, follow other people and see what they were reading. Indielinks is social bookmarking over [[https://www.w3.org/TR/activitypub/][ActivityPub]]: save & tag things here, links you make public appear in your followers' feeds--  on indielinks, [[https://joinmastodon.org/][Mastodon]], or any other app that speaks ActivityPub.
+[[https://en.wikipedia.org/wiki/Delicious_(website)][Social bookmarking]] used to be a means of content discovery: you'd save links, follow other people and see what _they_ were reading. Indielinks is social bookmarking over [[https://www.w3.org/TR/activitypub/][ActivityPub]]: save & tag things here, and the links you make public appear in your followers' feeds; on indielinks, [[https://joinmastodon.org/][Mastodon]], or any other app that speaks ActivityPub.
 
 indielinks lets you manage your links:
 
@@ -40,6 +40,8 @@ as well as their indielinks feeds:
 [[assets/indielinks-timeline.png]]
 
 Either way, you can like, share or discuss whatever you & your friends are reading.
+
+Run your own instance locally, join a public instance, or stand-up your own.
 * License
 
 indielinks is released under the [[https://spdx.org/licenses/GPL-3.0-or-later.html][GPL v3.0]].
@@ -59,7 +61,7 @@ To run indielinks locally, you'll need to have [[https://www.scylladb.com/][Scyl
 To build from source, the Rust stable [[https://rustup.rs/][toolchain]] is required. The integration tests require [[https://www.docker.com/][Docker]], as well as [[https://www.haproxy.org/][haproxy]]. You'll want [[https://trunkrs.dev/][trunk]] for building & working on the frontend, along with [[https://tailwindcss.com/][TailwindCSS]], and the [[https://nickel-lang.org/getting-started/][nickel]] configuration language tool. See [[file:HACKING.org][HACKING.org]] for a complete list, as well as more information on, well, on hacking on the project.
 * Status & Roadmap
 
-I've been using indielinks locally for some time, now, running it as a systemd unit on bare metal to save bookmarks, maintain reading lists, & post to the Fediverse (via a CloudFlare tunnel-- I'm [[https://indiemark.net/.well-known/webfinger?resource=acct:sp1ff@indiemark.net][sp1ff@indiemark.net]], there). I've just stood-up my first hosted instance, [[https://indiemark.sh][indiemark.sh]], on a "friends & family" basis & will be transferring my Fediverse presence there, while knocking-off bugs, adding features & so on before opening it up more generally.
+I've been using indielinks locally for some time, now, running it as a systemd unit on bare metal to save bookmarks, maintain reading lists & post to the Fediverse (via a CloudFlare tunnel-- I'm [[https://indiemark.net/.well-known/webfinger?resource=acct:sp1ff@indiemark.net][sp1ff@indiemark.net]], there). I've just stood-up my first hosted instance, [[https://indiemark.sh][indiemark.sh]], on a "friends & family" basis & will be transferring my Fediverse presence there, while knocking-off bugs, adding features & so on before opening it up more generally.
 
 You can read more about the project & goals [[https://www.unwoundstack.com/blog/indielinks.html][here]]. I presented on the project last year at the [[https://www.meetup.com/vancouver-rust/events/307731034/][Vancouver Rust Meetup]] (recording [[https://www.youtube.com/watch?v=aztJzpBRFAQ][here]]).
 
