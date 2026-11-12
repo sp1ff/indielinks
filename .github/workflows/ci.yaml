@@ -113,7 +113,7 @@ jobs:
     env:
       NTFY_SH_TOPIC_NAME: ${{ secrets.NTFY_SH_TOPIC_NAME }}
     steps:
-        - uses: martialonline/workflow-status@v3
+        - uses: martialonline/workflow-status@v4
           id: check
         - name: On success
           if: ${{ steps.check.outputs.status == 'success' && env.NTFY_SH_TOPIC_NAME != '' }}
