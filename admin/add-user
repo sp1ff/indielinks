@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+VERSION=0.0.1
+
+set -euo pipefail
+
+follows=()
+help=
+nargs=0
+num_octets_in_password=8
+ops_api=
+prev_option=
+public_api=
+verbose=
+version=
+for option
+do
+    # If the previous option required an argument, assign it now.
+    if test -n "$prev_option"; then
+        eval $prev_option=\$option
+        prev_option=
+        nargs=$(($nargs+1))
+        continue
+    fi
+
+    # Parse out the argument option in $option, if present.
+    case $option in
+        *=?*) optarg=$(expr "X$option" : '[^=]*=\(.*\)') ;;
+        *=)   optarg= ;;
+        *)    optarg=yes ;;
+    esac
+
+    # Options are handled here:
+    case $option in
+        -h | --he | --hel | --help)
+	        nargs=$(($nargs+1));
+            help=yes;;
+        -v | --verb | --verbose)
+	        nargs=$(($nargs+1));
+            verbose=yes;;
+        -V | --vers | --version)
+	        nargs=$(($nargs+1));
+            version=yes;;
+        -f | --follow)
+	        nargs=$(($nargs+1));
+            prev_option=ops_follows;;
+        -f=* | --follow=*)
+	        nargs=$(($nargs+1));
+            follows+=("$optarg");;
+        -O | --ops | --ops-api)
+	        nargs=$(($nargs+1));
+            prev_option=ops_api;;
+        -O=* | --ops=* | --ops-api=*)
+	        nargs=$(($nargs+1));
+            ops_api==$optarg;;
+        -p | --password | --password-length)
+	        nargs=$(($nargs+1));
+            prev_option=num_octets_in_password;;
+        -p=* | --password=* | --password-length=*)
+	        nargs=$(($nargs+1));
+            num_octets_in_password==$optarg;;
+        -A | --public | --public-api)
+	        nargs=$(($nargs+1));
+            prev_option=public_api;;
+        -A | --public | --public-api)
+	        nargs=$(($nargs+1));
+            public_api==$optarg;;
+        -*)
+            cat >&2 <<EOF
+Unrecognized option '$option'.
+Try 'add-user --help' for more information.
+EOF
+            exit 2;;
+	    *)
+	        # $@ now contains the arguments, $# the number of arguments
+	        shift $nargs;
+	        break;;
+    esac
+
+done
+
+if test -n "${help}"; then
+    cat <<EOF
+'add-user' -- add a user to indiemark.sh
+
+Usage:
+
+    add-user [OPTION...] USERNAME EMAIL
+
+Options:
+
+    -h, --help      Print this message & exit
+    -V, --version   Print this script's version & exit
+    -v, --verbose   Produce prolix output
+    -A NETLOC, --public-api=NETLOC
+    -O NETLOC, --ops-api=NETLOC
+    -p N, --password=N
+
+Discussion:
+
+This is a quick-and-dirty script for adding new users to indiemark.sh. At the
+time of this writing, indiemark.sh is in "friends & family" mode, with no
+sign-up flow whatsoever. Consequently, I need a means of adding users, myself.
+
+This script will:
+
+  1. generate a random password
+  2. add the user (via `indio add-user`)
+  3. set the new user & myself up as mutual follows
+
+EOF
+    exit 0
+fi
+
+if test -n "${version}"; then
+    cat <<EOF
+'add-user' $VERSION
+EOF
+    exit 0
+fi
+
+if test -n "${verbose}"; then
+    set -x
+fi
+
+if [ $# -ne 2 ]; then
+    cat >&2 <<EOF
+Expected two arguments: USERNAME EMAIL
+Try 'add-user --help' for more information.
+EOF
+    exit 2
+fi
+
+username="$1"
+email="$2"
+
+echo "Creating user ${username}/${email} with ${num_octets_in_password} octets in their random password."
+
+password=$(head -c "$num_octets_in_password" /dev/urandom | od -An -v -t x1 | tr -d ' \n')
+
+indio_args=
+if test -n "${verbose}"; then
+    indio_args="${indio_args} -v"
+fi
+# If the user didn't explicitly specify the public and/or ops APIs, they may be
+# picking it up from `indio` configuration.
+if test -n "${ops_api}"; then
+    indio_args="${indio_args} -O ${ops_api}"
+fi
+if test -n "${public_api}"; then
+    indio_args="${indio_args} -A ${public_api}"
+fi
+
+api_key=
+indio_output=$(indio ${indio_args} add-user -u "${username}" -m "${email}" -p "${password}" 2>&1)
+status=$?
+if [ $status -ne 0 ]; then
+    cat >&2 <<EOF
+indio exited with status $status; stdout & stderr follow:
+$indio_output
+EOF
+    exit 1
+fi
+
+pattern="^${username}:v1:([0-9a-fA-F]+)\\.\$"
+while IFS= read -r line; do
+    if [[ $line =~ $pattern ]]; then
+        api_key=${BASH_REMATCH[1]}
+        break
+    fi
+done <<<"${indio_output}"
+
+if test -z "${api_key}"; then
+    exit 1
+fi
+echo "User ${username} successfully added."
+echo "Password: ${password}"
+echo "API Key: ${api_key}"
+
+# Here, however, we need an explicit network location for the indielinks API.
+# If it wasn't given on this script's command line, assume we're running this
+# on a production host.
+public_api=${public_api:-https://localhost:20676}
+for follow in "${follows[@]}"; do
+    # I should tighten this up to exit on curl failure, and capture the http
+    # status code.
+    curl -v -H "Authorization: Bearer ${username}:v1:${api_key}" "${public_api}/api/v1/users/follow" \
+         -H 'Content-Type: application/json' \
+         --data "{\"id\":{\"Account\":\"acct:${follow}\"}}"
+done

@@ -106,7 +106,6 @@ use nonzero::nonzero;
 use secrecy::{ExposeSecret, SecretString};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
-use tokio::sync::Mutex;
 use tower_http::{cors::AllowOrigin, set_header::SetResponseHeaderLayer};
 use tracing::{debug, error, info, warn};
 use url::Url;
@@ -1481,7 +1480,7 @@ async fn context(
         user: &User,
         mut client: ClientType,
         ap_id: Url,
-        ap_resolver: Arc<Mutex<ApResolver>>,
+        ap_resolver: Arc<ApResolver>,
     ) -> Result<ThreadContextResponse> {
         // We (presumably) have, or can get, the `Note` identified in the request, but we just
         // serialize the *location* of the replies in the `Note`, not the replies themselves. Here
@@ -1491,8 +1490,6 @@ async fn context(
 
         // So, first: lookup the `Note` named by `ap_id`:
         let note = ap_resolver
-            .lock()
-            .await
             .note_id_to_note(Either::Left(user), &ap_id)
             .await
             .context(ResolutionSnafu {
@@ -1504,13 +1501,11 @@ async fn context(
         async fn resolve_note_field(
             field: NoteField,
             user: &User,
-            ap_resolver: Arc<Mutex<ApResolver>>,
+            ap_resolver: Arc<ApResolver>,
         ) -> Result<Note> {
             match field {
                 NoteField::Inline(note) => {
                     ap_resolver
-                        .lock()
-                        .await
                         .enter_note(note.id(), &note)
                         .await
                         .context(ResolutionSnafu {
@@ -1519,8 +1514,6 @@ async fn context(
                     Ok(*note)
                 }
                 NoteField::Iri(url) => ap_resolver
-                    .lock()
-                    .await
                     .note_id_to_note(Left(user), &url)
                     .await
                     .context(ResolutionSnafu { url: Box::new(url) })?
@@ -1594,16 +1587,11 @@ async fn context(
         debug!("Replies: {replies:#?}");
 
         let in_reply_to = match note.in_reply_to() {
-            Some(url) => Some(
-                ap_resolver
-                    .lock()
-                    .await
-                    .note_id_to_note(Left(user), url)
-                    .await
-                    .context(ResolutionSnafu {
-                        url: Box::new(url.clone()),
-                    })?,
-            ),
+            Some(url) => Some(ap_resolver.note_id_to_note(Left(user), url).await.context(
+                ResolutionSnafu {
+                    url: Box::new(url.clone()),
+                },
+            )?),
             None => None,
         };
 

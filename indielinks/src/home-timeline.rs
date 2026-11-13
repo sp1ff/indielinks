@@ -78,7 +78,6 @@ use nonzero::nonzero;
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
-use tokio::sync::Mutex;
 use tracing::{debug, error};
 use url::Url;
 
@@ -315,7 +314,7 @@ pub struct Outbox {
     /// URL naming the next page of items
     next_page: Option<NextOutboxPage>,
     /// Shared cache for looking up ActivityPub entities
-    ap_resolver: Arc<Mutex<ApResolver>>,
+    ap_resolver: Arc<ApResolver>,
 }
 
 impl Outbox {
@@ -324,11 +323,9 @@ impl Outbox {
         user: User,
         origin: Origin,
         mut client: ClientType,
-        ap_resolver: Arc<Mutex<ApResolver>>,
+        ap_resolver: Arc<ApResolver>,
     ) -> Result<Outbox> {
         let outbox = ap_resolver
-            .lock()
-            .await
             .actor_id_to_outbox(Left(&user), follow.as_ref())
             .await
             .context(ApResolutionSnafu)?;
@@ -382,12 +379,10 @@ impl Outbox {
         async fn to_note(
             aoc: AnnounceOrCreate,
             user: &User,
-            ap_resolver: Arc<Mutex<ApResolver>>,
+            ap_resolver: Arc<ApResolver>,
         ) -> Result<Item> {
             match aoc {
                 AnnounceOrCreate::Announce(announce) => ap_resolver
-                    .lock()
-                    .await
                     .note_id_to_note(Left(user), announce.object())
                     .await
                     .context(ApResolutionSnafu)?,
@@ -557,7 +552,7 @@ impl Timeline {
         origin: &Origin,
         storage: &(dyn StorageBackend + Send + Sync),
         client: &ClientType,
-        ap_resolver: Arc<Mutex<ApResolver>>,
+        ap_resolver: Arc<ApResolver>,
     ) -> Result<Timeline> {
         let mut follows = iter(
             storage

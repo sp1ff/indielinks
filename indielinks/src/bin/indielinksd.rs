@@ -1065,14 +1065,14 @@ async fn serve(
             ACCOUNT_TO_ACTOR,
             cache_node.clone(),
         ));
-        let ap_resolver = Arc::new(TokioMutex::new(ApResolver::new(
+        let ap_resolver = Arc::new(ApResolver::new(
             cfg.public_origin.clone(),
             ap_client.clone(),
             storage.clone(),
             actors.clone(),
             notes.clone(),
             handles.clone(),
-        )));
+        ));
 
         let home_timelines = Arc::new(TokioMutex::new(HomeTimelines::new(nonzero!(256usize))));
         let user_outboxes = Arc::new(TokioMutex::new(UserOutboxes::new(nonzero!(256usize))));

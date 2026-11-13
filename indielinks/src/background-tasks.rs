@@ -604,7 +604,7 @@ pub struct Context {
     pub general_purpose_client: crate::client_types::ClientType,
     pub storage: Arc<dyn StorageBackend + Send + Sync>,
     pub cache_node: SharedCacheNode<crate::cache::GrpcClientFactory>,
-    pub ap_resolver: Arc<Mutex<ApResolver>>,
+    pub ap_resolver: Arc<ApResolver>,
     pub home_timelines: Arc<Mutex<HomeTimelines>>,
 }
 

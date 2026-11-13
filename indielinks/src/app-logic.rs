@@ -1336,6 +1336,8 @@ impl SendFollow {
 
 #[async_trait]
 impl Task<Context> for SendFollow {
+    // "Tag" this with the follow ID & target.
+    #[tracing::instrument(skip_all, fields(follow.id = %self.id, follow.target = %self.target))]
     async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
         debug!(
             "Sending a Follow request to {} for {}",
@@ -1369,8 +1371,6 @@ impl Task<Context> for SendFollow {
                 }
                 FollowTarget::Account(account) => context
                     .ap_resolver
-                    .lock()
-                    .await
                     .handle_to_actor(Left(&this.user), account)
                     .await
                     .context(ApResolverSnafu)?
@@ -1382,8 +1382,6 @@ impl Task<Context> for SendFollow {
 
             let inbox = context
                 .ap_resolver
-                .lock()
-                .await
                 .actor_id_to_inbox(Left(&this.user), &actorid)
                 .await
                 .context(ApResolverSnafu)?;

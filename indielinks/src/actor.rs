@@ -405,7 +405,7 @@ async fn verify_signature(
         request: axum::extract::Request, // := http::request::Request
         storage: &(dyn StorageBackend + Send + Sync),
         principal: Either<Username, &UserPrivateKey>,
-        ap_resolver: Arc<Mutex<ApResolver>>,
+        ap_resolver: Arc<ApResolver>,
     ) -> Result<(axum::extract::Request, ap_entities::Actor)> {
         // Huh. Per <https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12>, the
         // signature should be transmitted in an Authorization header, with a scheme of "Signature":
@@ -438,7 +438,6 @@ async fn verify_signature(
         // Alright, the next step is to resolve the "key ID" to an actual, you know, key:
         let key_id = &parsed_http_signature.key_id;
         debug!("Resolving key ID {}", key_id);
-
         let principal = match principal {
             Either::Left(username) => Either::Left(
                 storage
@@ -466,12 +465,7 @@ async fn verify_signature(
         use crate::ap_entities::Error::FailedAp as FailedApError;
         use crate::ap_resolution::Error::Ap as ApError;
         let key_id = Url::parse(key_id).context(BadKeyIdSnafu)?;
-        let actor = match ap_resolver
-            .lock()
-            .await
-            .get_actor(principal.as_ref(), &key_id)
-            .await
-        {
+        let actor = match ap_resolver.get_actor(principal.as_ref(), &key_id).await {
             Ok(actor) => actor,
             Err(ApError {
                 source: FailedApError { rsp, backtrace: _ },
@@ -874,7 +868,7 @@ async fn accept_share(
     storage: &(dyn StorageBackend + Send + Sync),
     origin: &Origin,
     instance_actor_priv: &UserPrivateKey,
-    ap_resolver: Arc<Mutex<ApResolver>>,
+    ap_resolver: Arc<ApResolver>,
     timelines: Arc<Mutex<HomeTimelines>>,
 ) -> Result<()> {
     // I expect to have a `Create` whose `object` field references a `Note` containing the original
@@ -934,8 +928,6 @@ async fn accept_share(
     // Add this to the recipients' home timelines as a `Note`. First, we need to recover the
     // actual note:
     let note = ap_resolver
-        .lock()
-        .await
         .note_id_to_note(Right(instance_actor_priv), announce.object())
         .await
         .context(ApResolutionSnafu)?;
@@ -977,7 +969,7 @@ async fn shared_inbox(
         storage: &(dyn StorageBackend + Send + Sync),
         origin: &Origin,
         instance_actor_priv: &UserPrivateKey,
-        ap_resolver: Arc<Mutex<ApResolver>>,
+        ap_resolver: Arc<ApResolver>,
         timelines: Arc<Mutex<HomeTimelines>>,
     ) -> Result<()> {
         match body {

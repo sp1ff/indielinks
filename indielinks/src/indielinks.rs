@@ -193,13 +193,9 @@ pub struct Indielinks {
     pub assets: PathBuf,
     pub task_sender: Arc<BackgroundTasks>,
     pub cache_node: SharedCacheNode<crate::cache::GrpcClientFactory>,
-    // Shared, mutable access to the resolver needed, therefore we need an
-    // `Arc<thing that can give a mutable borrow>`; `ApResolver`, being a cache, pretty-much always
-    // requires a mutable borrow, so I used a `Mutex` instead of an `RwLock`.
-    //
-    // This is pretty sub-optimal, since it means we're going to be locking access to the resolver
-    // for the duration of internet calls, making this a real bottleneck.
-    pub ap_resolver: Arc<Mutex<ApResolver>>,
+    // Shared access to the resolver; no need for interior mutability (that's handled at a lower
+    // level)
+    pub ap_resolver: Arc<ApResolver>,
     // Similarly here.
     pub home_timelines: Arc<Mutex<HomeTimelines>>,
     // and here
@@ -222,7 +218,7 @@ impl Indielinks {
         general_purpose_client: crate::client_types::ClientType,
         task_sender: Arc<BackgroundTasks>,
         cache_node: SharedCacheNode<GrpcClientFactory>,
-        ap_resolver: Arc<Mutex<ApResolver>>,
+        ap_resolver: Arc<ApResolver>,
         home_timelines: Arc<Mutex<HomeTimelines>>,
         user_outboxes: Arc<Mutex<UserOutboxes>>,
         cfg: &Configuration,

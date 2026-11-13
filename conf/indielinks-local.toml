@@ -91,7 +91,7 @@ secs = 1
 nanos = 0
 
 [client-exponential-backoff.durations.max]
-secs = 3
+secs = 30
 nanos = 0
 
 

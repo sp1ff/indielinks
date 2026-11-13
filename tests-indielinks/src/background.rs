@@ -204,14 +204,14 @@ pub async fn first_background(
     let note_cache: Cache<GrpcClientFactory, Url, Note> = Cache::new(1, cache_node.clone());
     let handle_cache: Cache<GrpcClientFactory, Account, Actor> = Cache::new(2, cache_node.clone());
 
-    let ap_resolver = Arc::new(Mutex::new(ApResolver::new(
+    let ap_resolver = Arc::new(ApResolver::new(
         origin.clone(),
         ap_client.clone(),
         storage.clone(),
         Arc::new(actor_cache),
         Arc::new(note_cache),
         Arc::new(handle_cache),
-    )));
+    ));
 
     // `processor` is now the thing which we can control; we don't need `tasks` any more, so just
     // move it into the processor:

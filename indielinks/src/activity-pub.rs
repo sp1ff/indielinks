@@ -523,8 +523,6 @@ impl Task<Context> for SendCreate {
                     let ap_resolver = context.ap_resolver.clone();
                     async move {
                         ap_resolver
-                            .lock()
-                            .await
                             .actor_id_to_shared_inbox(Left(&user), follower.actor_id().as_ref())
                             .await
                             .map_err(crate::storage::Error::new)?
@@ -684,8 +682,6 @@ impl Task<Context> for SendLike {
 
             let inbox = context
                 .ap_resolver
-                .lock()
-                .await
                 .actor_id_to_inbox(Left(&this.user), &this.actor)
                 .await
                 .context(ApResolverSnafu)?;
@@ -807,8 +803,6 @@ impl Task<Context> for SendReply {
                     .then(|account| async {
                         context
                             .ap_resolver
-                            .lock()
-                            .await
                             .handle_to_actor(Left(&this.user), account)
                             .await
                             .map(|actor| actor.id().clone())
@@ -832,8 +826,6 @@ impl Task<Context> for SendReply {
                     .then(|url| async {
                         context
                             .ap_resolver
-                            .lock()
-                            .await
                             .actor_id_to_shared_inbox(Left(&this.user), url)
                             .await
                     })
@@ -867,8 +859,6 @@ impl Task<Context> for SendReply {
                         let ap_resolver = context.ap_resolver.clone();
                         async move {
                             ap_resolver
-                                .lock()
-                                .await
                                 .actor_id_to_shared_inbox(Left(&user), follower.actor_id().as_ref())
                                 .await
                                 .context(ApResolverSnafu)

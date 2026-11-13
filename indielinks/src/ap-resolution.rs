@@ -29,23 +29,22 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use either::Either;
 use http::{self, method::Method};
 use snafu::{Backtrace, OptionExt, ResultExt, Snafu};
 use tap::Pipe;
 use tracing::debug;
 use url::Url;
+use uuid::Uuid;
 
 use indielinks_shared::{
+    acct::Account,
     entities::{UserPrivateKey, Username},
     origin::Origin,
 };
 
-use bytes::Bytes;
 use indielinks_cache::{cache::Cache, network::ClientFactory};
-
-use indielinks_shared::acct::Account;
-use uuid::Uuid;
 
 use crate::{
     ap_entities::{
@@ -158,7 +157,9 @@ impl<F, C> ApResolver<F, C>
 where
     F: ClientFactory + Send + Sync + Clone + 'static,
     F::CacheClient: Clone + Send + Sync + std::fmt::Debug + 'static,
-    C: tower::Service<http::Request<Bytes>, Response = http::Response<Bytes>> + Send,
+    // `C` has to be `Clone`, because `ap_request()` requires a mutable reference-- we achieve
+    // that by creating local clones & passing mutable references thereto
+    C: tower::Service<http::Request<Bytes>, Response = http::Response<Bytes>> + Send + Clone,
     C::Error: std::error::Error + Send + Sync + 'static,
     C::Future: Send,
 {
@@ -181,7 +182,7 @@ where
     }
 
     pub async fn get_actor(
-        &mut self,
+        &self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
     ) -> Result<Actor, F::CacheClient> {
@@ -217,7 +218,7 @@ where
                 url.as_str()
             );
             let actor: Actor = ap_request(
-                &mut self.client,
+                &mut self.client.clone(),
                 &self.origin,
                 principal,
                 url,
@@ -232,13 +233,14 @@ where
                 .insert(url.clone(), actor.clone())
                 .await
                 .context(GrpcSnafu)?;
+
             actor
         }
         .pipe(Ok)
     }
     /// Given an AP "actor ID", retrieve the location of their inbox
     pub async fn actor_id_to_inbox(
-        &mut self,
+        &self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
     ) -> Result<Url, F::CacheClient> {
@@ -247,7 +249,7 @@ where
     }
     /// Given an AP "actor ID", retrieve the location of their outbox
     pub async fn actor_id_to_outbox(
-        &mut self,
+        &self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
     ) -> Result<Url, F::CacheClient> {
@@ -256,7 +258,7 @@ where
     }
     /// Given an AP "actor ID", retrieve the location of their shared inbox
     pub async fn actor_id_to_shared_inbox(
-        &mut self,
+        &self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
     ) -> Result<Option<Url>, F::CacheClient> {
@@ -265,7 +267,7 @@ where
     }
     /// Resolve an ActivityPub identifer naming a Note to that Note
     pub async fn note_id_to_note(
-        &mut self,
+        &self,
         principal: Either<&User, &UserPrivateKey>,
         url: &Url,
     ) -> Result<Note, F::CacheClient> {
@@ -287,7 +289,7 @@ where
                     .context(NoteSnafu { postid })?
             } else {
                 ap_request(
-                    &mut self.client,
+                    &mut self.client.clone(),
                     &self.origin,
                     principal,
                     url,
@@ -308,7 +310,7 @@ where
         .pipe(Ok)
     }
     /// Enter a Note with a known ID into the cache
-    pub async fn enter_note(&mut self, url: &Url, note: &Note) -> Result<(), F::CacheClient> {
+    pub async fn enter_note(&self, url: &Url, note: &Note) -> Result<(), F::CacheClient> {
         self.notes
             .insert(url.clone(), note.clone())
             .await
@@ -316,7 +318,7 @@ where
     }
     /// Given a handle in the form of @username@instance, retrieve the corresponding Actor
     pub async fn handle_to_actor(
-        &mut self,
+        &self,
         principal: Either<&User, &UserPrivateKey>,
         handle: &Account,
     ) -> Result<Actor, F::CacheClient> {
@@ -351,7 +353,7 @@ where
             url.query_pairs_mut()
                 .append_pair("resource", &handle.to_uri());
             let response: WebfingerResponse = ap_request(
-                &mut self.client,
+                &mut self.client.clone(),
                 &self.origin,
                 principal,
                 &url,
@@ -398,7 +400,7 @@ mod test {
         convert::Infallible,
         future::{ready, Ready},
         result::Result as StdResult,
-        sync::Arc,
+        sync::{Arc, Mutex},
         task::Poll,
     };
 
@@ -436,16 +438,17 @@ mod test {
     /// Each entry is consumed on first use via `remove()`; a second request for the same URL
     /// returns 404. This enforces that the cache is working: if `ApResolver` hits the mock twice
     /// for the same URL, the test fails rather than silently succeeding.
+    #[derive(Clone, Debug)]
     struct MockHttpClient {
         responses: HashMap<String, http::Response<Bytes>>,
-        request_count: usize,
+        request_count: Arc<Mutex<usize>>,
     }
 
     impl MockHttpClient {
         fn new(entries: impl IntoIterator<Item = (String, http::Response<Bytes>)>) -> Self {
             Self {
                 responses: entries.into_iter().collect(),
-                request_count: 0,
+                request_count: Arc::new(Mutex::new(0)),
             }
         }
     }
@@ -463,7 +466,7 @@ mod test {
         }
 
         fn call(&mut self, req: http::Request<Bytes>) -> Self::Future {
-            self.request_count += 1;
+            *self.request_count.lock().expect("Test lock poisoned") += 1;
             let rsp = self
                 .responses
                 .remove(&req.uri().to_string())
@@ -746,7 +749,7 @@ mod test {
     async fn test_actor_operations() {
         let actor_url = "https://indieweb.social/users/sp1ff";
         let client = MockHttpClient::new([(actor_url.to_string(), actor_response())]);
-        let mut resolver = make_resolver(client).await;
+        let resolver = make_resolver(client).await;
 
         let (_, private_key) = generate_rsa_keypair().unwrap();
         let actor = known_good!(Url::parse(actor_url));
@@ -814,7 +817,7 @@ mod test {
             .body(Bytes::from(document.to_string()))
             .expect("the mock Note response should build");
         let client = MockHttpClient::new([(note_id.to_string(), response)]);
-        let mut resolver = make_resolver(client).await;
+        let resolver = make_resolver(client).await;
         let (_, private_key) =
             generate_rsa_keypair().expect("the signing key pair should generate");
 
@@ -824,7 +827,8 @@ mod test {
             .expect("the first lookup should retrieve the Note over HTTP");
         assert_eq!(note.id(), &note_id);
         assert_eq!(
-            resolver.client.request_count, 1,
+            *resolver.client.request_count.lock().expect("Poisoned (1)"),
+            1,
             "the first lookup should make one HTTP request"
         );
 
@@ -832,7 +836,8 @@ mod test {
             .note_id_to_note(Right(&private_key), &note_id)
             .await;
         assert_eq!(
-            resolver.client.request_count, 1,
+            *resolver.client.request_count.lock().expect("Poisoned (2)"),
+            1,
             "the second lookup should use the cache without another HTTP request"
         );
         assert_eq!(
@@ -857,7 +862,7 @@ mod test {
             ),
             (actor_url.to_string(), actor_response()),
         ]);
-        let mut resolver = make_resolver(client).await;
+        let resolver = make_resolver(client).await;
 
         let (_, private_key) = generate_rsa_keypair().unwrap();
         let handle: Account = known_good!("sp1ff@indieweb.social".parse());
@@ -1009,7 +1014,7 @@ mod test {
             ),
             (actor_url.to_string(), actor_response_with_id(actor_url)),
         ]);
-        let mut resolver = make_resolver(client).await;
+        let resolver = make_resolver(client).await;
 
         let (_, private_key) = generate_rsa_keypair().unwrap();
         let handle: Account =

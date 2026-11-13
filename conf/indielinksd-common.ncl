@@ -98,7 +98,7 @@
     client-exponential-backoff = {
         jitter = 10,
         num-attempts = 3,
-        durations = { min = { secs = 1, nanos = 0 }, max = { secs = 3, nanos = 0 } }
+        durations = { min = { secs = 1, nanos = 0 }, max = { secs = 30, nanos = 0 } }
     },
     client-configuration = {
         rate-limits = { per-hour = 5760, custom = [] },
