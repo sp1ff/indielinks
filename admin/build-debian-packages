@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-VERSION=0.0.1
+VERSION=0.0.2
 
 set -euo pipefail
 
@@ -84,16 +84,18 @@ EOF
 fi
 
 container_args=""
+v=""
 if test -n "${verbose}"; then
     set -x
     container_args="${container_args} --verbose"
+    v="-v"
 fi
 
 here=$(dirname "$(realpath "$0")")
-cd ${here}/..
+src=$(realpath ${here}/..)
 cd ${here}
-./debian/build-debian-image
-docker run --mount type=bind,src=..,dst=/indielinks \
+./debian/build-debian-image ${v}
+docker run --mount type=bind,src=${src},dst=/indielinks \
         -u packager:users                           \
         indielinks-debian:latest                    \
        /indielinks/admin/debian/build-packages ${container_args}

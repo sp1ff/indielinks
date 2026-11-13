@@ -1,5 +1,11 @@
 indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
+* UNRELEASED
+
+** Bug fixes
+
+*** The documentation pages no longer 404 when reloaded
+*** Fixed a deadlock when sending Follow requests
 * 0.0.3
 
 ** User-visible Changes
