@@ -7,7 +7,7 @@ private-address = "127.0.0.1:20677"
 public-address = "0.0.0.0:20676"
 raft-grpc-address = "127.0.0.1:20678"
 templates = "/usr/share/indielinks/doc"
-user-agent = "indielinks/0.0.3; +indielinks@pobox.com"
+user-agent = "indielinks/0.0.4; +indielinks@pobox.com"
 version = "1"
 
 [otlp-export]
