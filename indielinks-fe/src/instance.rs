@@ -517,7 +517,6 @@ pub fn Instance() -> impl IntoView {
         <div class="instance-layout">
             <section class="instance-layout__introduction">
                 <p class="instance-layout__eyebrow">"Welcome to "{origin.clone()}</p>
-                <h1>"Popular"</h1>
                 <p class="instance-layout__lead">
                     "Del.icio.us on the Fediverse: save, tag, and discover useful links."
                 </p>

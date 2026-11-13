@@ -44,7 +44,7 @@ use axum::{extract::State, response::IntoResponse, routing::get, Router};
 use clap::{crate_authors, crate_version, value_parser, Arg, ArgAction, Command};
 use errno::Errno;
 use governor::Quota;
-use http::{HeaderName, HeaderValue, StatusCode};
+use http::{header::CACHE_CONTROL, HeaderName, HeaderValue, StatusCode};
 use lazy_static::lazy_static;
 use libc::{c_int, SIGPIPE, SIG_IGN};
 use nonzero::nonzero;
@@ -62,6 +62,7 @@ use tonic::transport::Server as TonicServer;
 use tower_http::{
     cors::CorsLayer,
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
 use tracing::{debug, error, info, warn, Level};
@@ -782,7 +783,15 @@ fn make_frontend_router<S>(assets: PathBuf) -> Router<S> {
         .route("/m/api-keys", get(frontend_index))
         .route("/m/following", get(frontend_index))
         .route("/m/followers", get(frontend_index))
-        .route("/{file}", get(frontend_asset))
+        .route(
+            "/{file}",
+            get(frontend_asset)
+                // Tell people not to cache these assets-- caching can break newly-deployed code.
+                .route_layer(SetResponseHeaderLayer::overriding(
+                    CACHE_CONTROL,
+                    HeaderValue::from_static("no-cache"),
+                )),
+        )
         .with_state(assets)
 }
 
