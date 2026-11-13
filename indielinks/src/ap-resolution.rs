@@ -82,6 +82,8 @@ where
     },
     #[snafu(display("no 'self' Link from a webfinger"))]
     NoSelf { backtrace: Backtrace },
+    #[snafu(display("the 'self' Link from a webfinger has no href"))]
+    NoSelfHref { backtrace: Backtrace },
     #[snafu(display("failed to lookup Note {postid}"))]
     Note {
         postid: Uuid,
@@ -365,7 +367,8 @@ where
                 .links()
                 .find(|link| link.is_rel() && link.is_activity_pub())
                 .context(NoSelfSnafu)?
-                .href();
+                .href()
+                .context(NoSelfHrefSnafu)?;
 
             let actor = self.get_actor(principal, url).await?;
 

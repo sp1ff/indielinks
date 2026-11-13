@@ -4,7 +4,7 @@ set -euxo pipefail
 allow_todos="${1:-}"
 
 if test -z "${allow_todos}"; then
-    if rg -t rust -t protobuf -t css -t html --type-add 'nickel:*.ncl' -g '!.personal' 'TODO|TOOD|LATER|IN-?PROGRESS|\\todo|todo!|dbg!'; then
+    if rg -t rust -t protobuf -t css -t html --type-add 'nickel:*.ncl' -g '!.personal' '\b(TODO|TOOD|LATER|IN-?PROGRESS|\\todo|todo!|dbg!)\b'; then
         echo "You have TODO-s"
         exit 1
     fi

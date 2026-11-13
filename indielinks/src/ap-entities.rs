@@ -2622,41 +2622,101 @@ mod prototype {
 
 /// Link Relation Type
 ///
-/// This is a trivial subset of the [registered] link relation types sufficient for indielinks. I'll
-/// build it out, later. Later, we'll want:
+/// This is a trivial subset of the lengthy list of [registered] link relation types, hopefully
+/// sufficient for indielinks. Later, we'll want:
 ///
 /// - `http://webfinger.net/rel/profile-page`
 /// - `http://webfinger.net/rel/avatar`
 ///
 /// [registered]: https://www.iana.org/assignments/link-relations/link-relations.xhtml
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+// Can't make this `Copy`, since `Url` isn't.
 pub enum LinkRelation {
     #[serde(rename = "self")]
     Myself,
+    #[serde(rename = "http://webfinger.net/rel/profile-page")]
+    ProfilePage,
+    #[serde(rename = "http://webfinger.net/rel/avatar")]
+    Avatar,
     #[serde(untagged)] // must appear last in the enum
     Url(Url),
 }
 
+#[cfg(test)]
+mod test_link_relation {
+
+    use super::*;
+
+    #[test]
+    fn test_serde() {
+        assert_eq!(
+            r#""self""#,
+            serde_json::to_string(&LinkRelation::Myself).expect("Should serialize")
+        );
+        assert_eq!(
+            r#""http://webfinger.net/rel/profile-page""#,
+            serde_json::to_string(&LinkRelation::ProfilePage).expect("Should serialize")
+        );
+
+        assert_eq!(
+            LinkRelation::ProfilePage,
+            serde_json::from_str(r#""http://webfinger.net/rel/profile-page""#)
+                .expect("Should deserialize")
+        );
+        assert_eq!(
+            LinkRelation::Url(
+                "http://ostatus.org/schema/1.0/subscribe"
+                    .parse::<Url>()
+                    .expect("Should parse")
+            ),
+            serde_json::from_str(r#""http://ostatus.org/schema/1.0/subscribe""#)
+                .expect("Should deserialize")
+        );
+    }
+}
+
 /// Media Type
 ///
-/// This is a trivial subset of the [registered] media types sufficient for indielinks. I'll build
-/// it out, later. Later we'll also want `text/html` and `image/jpeg`.
+/// This is a trivial subset of the (extremely length) [registered] media types, hopefully
+/// sufficient for indielinks.
 ///
 /// [registered]: https://www.iana.org/assignments/media-types/media-types.xhtml
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum MediaType {
     #[serde(rename = "application/activity+json")]
     ActivityPub,
     #[serde(rename = "text/html")]
     Html,
+    #[serde(rename = "image/jpeg")]
+    Jpeg,
+    #[serde(rename = "image/png")]
+    Png,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+/// "Link" type as defined in RFC [7033]: Webfinger
+///
+/// [7033]: https://www.rfc-editor.org/info/rfc7033/
+///
+/// Characteristically, the type is so loosely specified as to be difficult to code against. Per the
+/// RFC, the link object "can have the following members:
+///
+/// - rel
+/// - type
+/// - href
+/// - titles
+/// - properties"
+///
+/// ...of which only `rel` is required. In the wild, federated apps add their own attributes, as
+/// well, making it unwise to attach a `#[serde(deny_unknown_fields)]` attribute.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Link {
     rel: LinkRelation,
     #[serde(skip_serializing_if = "Option::is_none")]
     r#type: Option<MediaType>,
-    href: Url,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    href: Option<Url>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template: Option<Url>,
 }
 
 impl Link {
@@ -2665,9 +2725,10 @@ impl Link {
         Ok(Link {
             rel: LinkRelation::Myself,
             r#type: Some(MediaType::ActivityPub),
-            href: make_user_id(user.username(), origin).context(UserIdSnafu {
+            href: Some(make_user_id(user.username(), origin).context(UserIdSnafu {
                 name: user.username().to_string(),
-            })?,
+            })?),
+            template: None,
         })
     }
     /// Create a "self" [Link] for the instance actor
@@ -2675,17 +2736,113 @@ impl Link {
         Ok(Link {
             rel: LinkRelation::Myself,
             r#type: Some(MediaType::ActivityPub),
-            href: Url::parse(&format!("{origin}/actor")).context(UrlParseSnafu)?,
+            href: Some(Url::parse(&format!("{origin}/actor")).context(UrlParseSnafu)?),
+            template: None,
         })
     }
-    pub fn href(&self) -> &Url {
-        &self.href
+    pub fn href(&self) -> Option<&Url> {
+        self.href.as_ref()
     }
     pub fn is_rel(&self) -> bool {
         matches!(self.rel, LinkRelation::Myself)
     }
     pub fn is_activity_pub(&self) -> bool {
         matches!(self.r#type, Some(MediaType::ActivityPub))
+    }
+}
+
+#[cfg(test)]
+mod test_links {
+
+    use super::*;
+
+    const JSON: &str = r#"[
+  {
+    "rel": "http://webfinger.net/rel/profile-page",
+    "type": "text/html",
+    "href": "https://indieweb.social/@sp1ff"
+  },
+  {
+    "rel": "self",
+    "type": "application/activity+json",
+    "href": "https://indieweb.social/users/sp1ff"
+  },
+  {
+    "rel": "http://ostatus.org/schema/1.0/subscribe",
+    "template": "https://indieweb.social/authorize_interaction?uri={uri}"
+  },
+  {
+    "rel": "https://w3id.org/fep/3b86/Create",
+    "template": "https://indieweb.social/share?text={content}"
+  },
+  {
+    "rel": "https://w3id.org/fep/3b86/Object",
+    "template": "https://indieweb.social/authorize_interaction?uri={object}"
+  },
+  {
+    "rel": "http://webfinger.net/rel/avatar",
+    "type": "image/jpeg",
+    "href": "https://cdn.masto.host/indiewebsocial/accounts/avatars/107/934/171/185/300/184/original/3c61e964400b8d4e.jpg"
+  }
+]"#;
+
+    #[test]
+    fn test_links_serde() {
+        assert_eq!(
+            serde_json::from_str::<Vec<Link>>(JSON).expect("JSON should parse"),
+            vec![
+                Link {
+                    rel: LinkRelation::ProfilePage,
+                    r#type: Some(MediaType::Html),
+                    href: Some(known_good!(Url::parse("https://indieweb.social/@sp1ff"))),
+                    template: None,
+                },
+                Link {
+                    rel: LinkRelation::Myself,
+                    r#type: Some(MediaType::ActivityPub),
+                    href: Some(known_good!(Url::parse(
+                        "https://indieweb.social/users/sp1ff"
+                    ))),
+                    template: None,
+                },
+                Link {
+                    rel: LinkRelation::Url(known_good!(Url::parse(
+                        "http://ostatus.org/schema/1.0/subscribe"
+                    ))),
+                    r#type: None,
+                    href: None,
+                    template: Some(known_good!(Url::parse(
+                        "https://indieweb.social/authorize_interaction?uri={uri}"
+                    ))),
+                },
+                Link {
+                    rel: LinkRelation::Url(known_good!(Url::parse(
+                        "https://w3id.org/fep/3b86/Create"
+                    ))),
+                    r#type: None,
+                    href: None,
+                    template: Some(known_good!(Url::parse(
+                        "https://indieweb.social/share?text={content}"
+                    ))),
+                },
+                Link {
+                    rel: LinkRelation::Url(known_good!(Url::parse(
+                        "https://w3id.org/fep/3b86/Object"
+                    ))),
+                    r#type: None,
+                    href: None,
+                    template: Some(known_good!(Url::parse(
+                        "https://indieweb.social/authorize_interaction?uri={object}"
+                    ))),
+                },
+                Link {
+                    rel: LinkRelation::Avatar,
+                    r#type: Some(MediaType::Jpeg),
+                    href: Some(known_good!(Url::parse("https://cdn.masto.host/indiewebsocial/accounts/avatars/107/934/171/185/300/184/original/3c61e964400b8d4e.jpg"))),
+                    template: None,
+                }
+            ]
+        );
     }
 }
 
@@ -2761,5 +2918,168 @@ impl WebfingerResponse {
 impl axum::response::IntoResponse for WebfingerResponse {
     fn into_response(self) -> axum::response::Response {
         Json(self).into_response()
+    }
+}
+
+#[cfg(test)]
+mod test_webfinger {
+
+    use super::*;
+
+    const TERRANCE_TAO: &str = r#"{
+  "subject": "acct:tao@mathstodon.xyz",
+  "aliases": [
+    "https://mathstodon.xyz/@tao",
+    "https://mathstodon.xyz/users/tao"
+  ],
+  "links": [
+    {
+      "rel": "http://webfinger.net/rel/profile-page",
+      "type": "text/html",
+      "href": "https://mathstodon.xyz/@tao"
+    },
+    {
+      "rel": "self",
+      "type": "application/activity+json",
+      "href": "https://mathstodon.xyz/users/tao"
+    },
+    {
+      "rel": "http://ostatus.org/schema/1.0/subscribe",
+      "template": "https://mathstodon.xyz/authorize_interaction?uri={uri}"
+    },
+    {
+      "rel": "https://w3id.org/fep/3b86/Create",
+      "template": "https://mathstodon.xyz/share?text={content}"
+    },
+    {
+      "rel": "https://w3id.org/fep/3b86/Object",
+      "template": "https://mathstodon.xyz/authorize_interaction?uri={object}"
+    },
+    {
+      "rel": "http://webfinger.net/rel/avatar",
+      "type": "image/jpeg",
+      "href": "https://media.mathstodon.xyz/accounts/avatars/109/378/244/433/513/115/original/e7134404c3103f9a.jpg"
+    }
+  ]
+}"#;
+
+    const FEDIFOLLOWS: &str = r#"{
+  "subject": "acct:FediFollows@social.growyourown.services",
+  "aliases": [
+    "https://social.growyourown.services/@FediFollows",
+    "https://social.growyourown.services/users/FediFollows"
+  ],
+  "links": [
+    {
+      "rel": "http://webfinger.net/rel/profile-page",
+      "type": "text/html",
+      "href": "https://social.growyourown.services/@FediFollows"
+    },
+    {
+      "rel": "self",
+      "type": "application/activity+json",
+      "href": "https://social.growyourown.services/users/FediFollows"
+    },
+    {
+      "rel": "http://ostatus.org/schema/1.0/subscribe",
+      "template": "https://social.growyourown.services/authorize_interaction?uri={uri}"
+    },
+    {
+      "rel": "https://w3id.org/fep/3b86/Create",
+      "template": "https://social.growyourown.services/share?text={content}"
+    },
+    {
+      "rel": "https://w3id.org/fep/3b86/Object",
+      "template": "https://social.growyourown.services/authorize_interaction?uri={object}"
+    },
+    {
+      "rel": "http://webfinger.net/rel/avatar",
+      "type": "image/png",
+      "href": "https://cdn.masto.host/socialgrowyourownservices/accounts/avatars/109/388/902/209/559/557/original/90136a35ebc09770.png"
+    }
+  ]
+}"#;
+
+    const MASTODON: &str = r#"{
+  "subject": "acct:Mastodon@mastodon.social",
+  "aliases": [
+    "https://mastodon.social/@Mastodon",
+    "https://mastodon.social/users/Mastodon"
+  ],
+  "links": [
+    {
+      "rel": "http://webfinger.net/rel/profile-page",
+      "type": "text/html",
+      "href": "https://mastodon.social/@Mastodon"
+    },
+    {
+      "rel": "self",
+      "type": "application/activity+json",
+      "href": "https://mastodon.social/users/Mastodon"
+    },
+    {
+      "rel": "http://ostatus.org/schema/1.0/subscribe",
+      "template": "https://mastodon.social/authorize_interaction?uri={uri}"
+    },
+    {
+      "rel": "https://w3id.org/fep/3b86/Create",
+      "template": "https://mastodon.social/share?text={content}"
+    },
+    {
+      "rel": "https://w3id.org/fep/3b86/Object",
+      "template": "https://mastodon.social/authorize_interaction?uri={object}"
+    },
+    {
+      "rel": "http://webfinger.net/rel/avatar",
+      "type": "image/png",
+      "href": "https://files.mastodon.social/accounts/avatars/000/013/179/original/b4ceb19c9c54ec7e.png"
+    }
+  ]
+}"#;
+
+    const CLASSICWEB: &str = r#"{
+  "subject": "acct:classicweb@indieweb.social",
+  "aliases": [
+    "https://indieweb.social/@classicweb",
+    "https://indieweb.social/users/classicweb"
+  ],
+  "links": [
+    {
+      "rel": "http://webfinger.net/rel/profile-page",
+      "type": "text/html",
+      "href": "https://indieweb.social/@classicweb"
+    },
+    {
+      "rel": "self",
+      "type": "application/activity+json",
+      "href": "https://indieweb.social/users/classicweb"
+    },
+    {
+      "rel": "http://ostatus.org/schema/1.0/subscribe",
+      "template": "https://indieweb.social/authorize_interaction?uri={uri}"
+    },
+    {
+      "rel": "https://w3id.org/fep/3b86/Create",
+      "template": "https://indieweb.social/share?text={content}"
+    },
+    {
+      "rel": "https://w3id.org/fep/3b86/Object",
+      "template": "https://indieweb.social/authorize_interaction?uri={object}"
+    },
+    {
+      "rel": "http://webfinger.net/rel/avatar",
+      "type": "image/png",
+      "href": "https://cdn.masto.host/indiewebsocial/accounts/avatars/114/200/099/041/329/193/original/39718a489648f3bd.png"
+    }
+  ]
+}"#;
+
+    #[test]
+    fn test_webfinger_responses() {
+        // Just test that the responses deserialize, for now.
+        assert!(serde_json::from_str::<WebfingerResponse>(TERRANCE_TAO).is_ok());
+        assert!(serde_json::from_str::<WebfingerResponse>(FEDIFOLLOWS).is_ok());
+        assert!(serde_json::from_str::<WebfingerResponse>(MASTODON).is_ok());
+        assert!(serde_json::from_str::<WebfingerResponse>(CLASSICWEB).is_ok());
     }
 }
