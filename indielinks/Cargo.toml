@@ -7,7 +7,7 @@ license-file = "../COPYING"
 description = "Social bookmarking in the Fediverse"
 
 [dependencies]
-ammonia = "4.1.2"
+ammonia = ">=4.2.5" # RUSTSEC-2026-0533
 argon2 = { version = "0.6.0" }
 askama = { version = "0.16", features = ["code-in-doc"] }
 async-stream = "0.3.6"
