@@ -33,7 +33,7 @@
 # reference their secrets by SSM parameter name.
 {
     version = "1",
-    user-agent = "indielinks/0.0.4; +indielinks@pobox.com",
+    user-agent = "indielinks/0.0.5; +indielinks@pobox.com",
     collection-page-size = 64,
     default-page-size = 16,
     contact-email = "admin@indiemark.local",
