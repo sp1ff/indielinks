@@ -4,6 +4,11 @@ indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
 ** Bug fixes
 
+*** Always use the instance key to sign key requests
+* 0.0.4
+
+** Bug fixes
+
 *** The documentation pages no longer 404 when reloaded
 *** Fixed a deadlock when sending Follow requests
 * 0.0.3

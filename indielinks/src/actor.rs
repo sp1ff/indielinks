@@ -22,7 +22,7 @@ use std::{ops::Deref, result::Result as StdResult, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
-    extract::{self, Path, State},
+    extract::{self, State},
     http::{header::CONTENT_TYPE, StatusCode},
     middleware,
     response::IntoResponse,
@@ -386,11 +386,8 @@ async fn verify_signature(
     headers: axum::http::HeaderMap,
     // In order to verify the signature, I need to resolve the keyid to a public key, which means a
     // GET request back to the server. Surprisingly, Mastodon requires even GET requests to be
-    // signed, meaning I need a `User` instance.
-    //
-    // Thing is, this middleware will be invoked even for requests to the public inbox, where I'll
-    // need to use the "instance actor". That's why this parameter is an `Option`
-    username: Option<Path<Username>>,
+    // signed. HOWEVER: it is very important that we sign that request with the *instance* key,
+    // not a user key, so as to avoid an infinite loop.
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -403,8 +400,7 @@ async fn verify_signature(
     async fn verify_signature1(
         headers: axum::http::HeaderMap,  // := http::header::headerMap
         request: axum::extract::Request, // := http::request::Request
-        storage: &(dyn StorageBackend + Send + Sync),
-        principal: Either<Username, &UserPrivateKey>,
+        instance_key: &UserPrivateKey,
         ap_resolver: Arc<ApResolver>,
     ) -> Result<(axum::extract::Request, ap_entities::Actor)> {
         // Huh. Per <https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12>, the
@@ -438,16 +434,7 @@ async fn verify_signature(
         // Alright, the next step is to resolve the "key ID" to an actual, you know, key:
         let key_id = &parsed_http_signature.key_id;
         debug!("Resolving key ID {}", key_id);
-        let principal = match principal {
-            Either::Left(username) => Either::Left(
-                storage
-                    .user_for_name(username.as_ref())
-                    .await
-                    .context(StorageSnafu)?
-                    .context(BadSigningUserSnafu { username })?,
-            ),
-            Either::Right(private_key) => Either::Right(private_key.clone()),
-        };
+        let principal = Either::Right(instance_key.clone());
 
         // Our next step is to resolve the signing `Actor`. If they're gone, we'll need
         // to toss the incoming request back up to our caller, so split it up now (we'll
@@ -565,11 +552,7 @@ async fn verify_signature(
     match verify_signature1(
         headers,
         request,
-        state.storage.as_ref(),
-        match username {
-            Some(username) => Either::Left(username.0),
-            None => Either::Right(&state.instance_state.private_key),
-        },
+        &state.instance_state.private_key,
         state.ap_resolver.clone(),
     )
     .await
