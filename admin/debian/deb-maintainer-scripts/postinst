@@ -1,6 +1,8 @@
 #!/usr/bin/bash
 set -e
 
+. /usr/share/debconf/confmodule
+
 cfg_template='/usr/share/indielinks/templates/indielinks.toml'
 cfg='/etc/indielinks.toml'
 group='indielinks'

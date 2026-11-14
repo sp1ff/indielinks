@@ -128,8 +128,8 @@ jobs:
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
           gh release upload "${{ steps.version.outputs.tag }}" \
-            "target/debian/indielinks_${version}_amd64.deb" \
-            "target/debian/indielinks-aws_${version}_amd64.deb"
+            "target/debian/indielinks_${version}-1_amd64.deb" \
+            "target/debian/indielinks-aws_${version}-1_amd64.deb"
 
   notification:
     name: notify
