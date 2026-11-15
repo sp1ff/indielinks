@@ -71,7 +71,7 @@ use http::{
     HeaderMap, HeaderValue, Method, Request, StatusCode,
 };
 use indielinks_shared::{
-    api::REFRESH_COOKIE,
+    api::{SaveRequest, REFRESH_COOKIE},
     entities::{Tagname, Username},
     nonempty_string::NonEmptyString,
 };
@@ -420,14 +420,6 @@ async fn authenticate(
 
 define_metric! { "bookmarklets.save.successes", bookmarklets_save_successes, Sort::IntegralCounter }
 define_metric! { "bookmarklets.save.failures", bookmarklets_save_failures, Sort::IntegralCounter }
-
-/// Incoming "save" request
-#[derive(Clone, Debug, Deserialize)]
-struct SaveRequest {
-    url: Url,
-    title: NonEmptyString,
-    description: String,
-}
 
 /// This is an [askama] "template"-- a type-safe Jinja-like form.
 ///

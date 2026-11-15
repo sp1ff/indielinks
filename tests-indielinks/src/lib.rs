@@ -56,6 +56,7 @@ pub static TEST_USER_AGENT: &str = concat!(
 pub mod activity_pub;
 pub mod actor;
 pub mod background;
+pub mod bookmarklets;
 pub mod cache;
 pub mod counts;
 pub mod delicious;

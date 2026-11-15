@@ -619,6 +619,15 @@ pub struct PostRepliesRequest {
     pub page_size: Option<NonZero<usize>>,
 }
 
+/// Incoming "save" request
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct SaveRequest {
+    pub url: Url,
+    pub title: NonEmptyString,
+    pub description: String,
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         local methods                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////

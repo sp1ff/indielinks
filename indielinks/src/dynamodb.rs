@@ -1575,7 +1575,8 @@ impl storage::Backend for Client {
             },
             (Some(uri), _) => {
                 query = query
-                    .key_condition_expression("url=:url")
+                    .key_condition_expression("#u=:url")
+                    .expression_attribute_names("#u", "url".to_owned())
                     .expression_attribute_values(":url", AttributeValue::S(uri.to_string()))
             }
         }
@@ -1639,7 +1640,10 @@ impl storage::Backend for Client {
         self.client
             .query()
             .table_name("posts")
-            .key_condition_expression("user_id=:id AND url=:url")
+            // It turns out that "url" is a reserved word in expression values (for DynamoDB, not
+            // Scylla/Alternator, naturally), necessitating this workaround:
+            .key_condition_expression("user_id=:id AND #u=:url")
+            .expression_attribute_names("#u", "url".to_owned())
             .expression_attribute_values(":id", AttributeValue::S(userid.to_string()))
             .expression_attribute_values(":url", AttributeValue::S(uri.to_string()))
             .send()

@@ -31,13 +31,14 @@ once_cell = "1.21.3"
 openraft = { workspace = true, features = ["serde", "storage-v2"] }
 picky = { workspace = true }
 rand = { workspace = true, features = ["std_rng"] }
-reqwest = { workspace = true, features = ["blocking", "json"] }
+reqwest = { workspace = true, features = ["blocking", "cookies", "json"] }
 rmp-serde = { workspace = true }
 scylla = { workspace = true, features = ["chrono-04"] }
 secrecy = { workspace = true }
 serde = { workspace = true, features = ["serde_derive"] }
 serde_dynamo = { workspace = true }
 serde_json = { workspace = true }
+serde_urlencoded = { workspace = true }
 sha2 = { workspace = true }
 snafu = { workspace = true, features = ["backtrace"] }
 tap = { workspace = true }

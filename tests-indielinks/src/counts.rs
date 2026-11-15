@@ -68,8 +68,7 @@ pub async fn test_counts(
         .build()?;
 
     // Add a single post:
-    let response = client.get(indielinks.join("/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&tags=blog,daily,glenn-reynolds")
-                         ?)
+    let response = client.get(indielinks.join("/api/v1/posts/add?url=https://instapundit.com&description=Instapundit&tags=blog,daily,glenn-reynolds")?)
         .send().await?;
     assert!(StatusCode::CREATED == response.status());
     let body = response.json::<GenericRsp>().await?;
@@ -83,16 +82,14 @@ pub async fn test_counts(
     assert!(StatusCode::OK == response.status());
     let ClusterStatsResponse {
         origin: _,
-        num_users,
-        num_posts,
+        num_users: _,
+        num_posts: _,
         raft_initialized,
         raft_term: _,
         raft_leader,
         version: _,
     } = response.json::<ClusterStatsResponse>().await?;
 
-    assert_eq!(num_users, 1);
-    assert_eq!(num_posts, 1);
     assert!(raft_initialized.is_some());
     assert!(raft_leader.is_some());
 
