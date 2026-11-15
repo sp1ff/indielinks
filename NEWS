@@ -1,5 +1,16 @@
 indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
+* 0.0.6
+
+** Bug fixes
+
+*** Fix the bookmarklet
+
+It turns-out that "user" is a reserved word in DDB key condition
+expressions, while not in ScyllaDB/Alternator.
+** Project Updates
+
+*** Bump ammonia in response to RUSTSEC-2026-0533
 * 0.0.5
 
 ** Bug fixes
