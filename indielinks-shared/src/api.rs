@@ -21,7 +21,7 @@ use std::{
 
 use chrono::{DateTime, NaiveDate, Utc};
 use nonempty_collections::NEVec;
-use secrecy::{CloneableSecret, SecretBox, SerializableSecret, zeroize::Zeroize};
+use secrecy::{zeroize::Zeroize, CloneableSecret, SecretBox, SerializableSecret};
 use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
@@ -621,7 +621,7 @@ pub struct PostRepliesRequest {
 
 /// Incoming "save" request
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case")]
 pub struct SaveRequest {
     pub url: Url,
     pub title: NonEmptyString,
