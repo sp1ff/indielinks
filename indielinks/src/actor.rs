@@ -472,6 +472,15 @@ async fn require_signature(
             actor_verification_successes.add(1, &[]);
             StatusCode::ACCEPTED.into_response()
         }
+        Err(Error::ToBytes { .. }) => {
+            // Regrettably, axum erases the type of it's source: `axum::Error::into_inner()` just
+            // returns a `Box<dyn Error...>`. So, I'm _assuming_ that if we failed to collect the
+            // request body, that it was too large.
+            warn!("While collecting the request body, in order to verify the signature, we errored-out\
+                   I'm assuming this is due to the 16Mb length limit we place on the body size.");
+            actor_verification_failures.add(1, &[]);
+            StatusCode::PAYLOAD_TOO_LARGE.into_response()
+        }
         Err(err) => {
             error!("indielinks failed to verify an HTTP signature: {:#?}", err);
             actor_verification_failures.add(1, &[]);
@@ -565,6 +574,15 @@ async fn verify_signature(
             actor_verification_successes.add(1, &[]);
             StatusCode::ACCEPTED.into_response()
         }
+        Err(Error::ToBytes { .. }) => {
+            // Regrettably, axum erases the type of it's source: `axum::Error::into_inner()` just
+            // returns a `Box<dyn Error...>`. So, I'm _assuming_ that if we failed to collect the
+            // request body, that it was too large.
+            warn!("While collecting the request body, in order to verify the signature, we errored-out\
+                   I'm assuming this is due to the 16Mb length limit we place on the body size.");
+            actor_verification_failures.add(1, &[]);
+            StatusCode::PAYLOAD_TOO_LARGE.into_response()
+        }
         Err(err) => {
             error!("indielinks failed to verify an HTTP signature: {:#?}", err);
             actor_verification_failures.add(1, &[]);
@@ -611,7 +629,8 @@ async fn verify_signature_core(
 
     // This is a little odd, and characteristic of the sort of thing I'm finding in the wild. If
     // we've received a `Delete` of an `Actor`, that entity is likely gone at this point, and if
-    // they're not cached, the resulting HTTP call will fail with 410 Gone.
+    // they're not cached, the resulting HTTP call will fail with 410 Gone. Or 403 Forbidden.
+    // Or 404 Not Found 🤷
     use crate::ap_entities::Error::FailedAp as FailedApError;
     use crate::ap_resolution::Error::Ap as ApError;
     let key_id = Url::parse(key_id).context(BadKeyIdSnafu)?;
@@ -619,7 +638,10 @@ async fn verify_signature_core(
         Ok(actor) => actor,
         Err(ApError {
             source: FailedApError { rsp, backtrace: _ },
-        }) if rsp.status() == StatusCode::GONE || rsp.status() == StatusCode::FORBIDDEN => {
+        }) if rsp.status() == StatusCode::GONE
+            || rsp.status() == StatusCode::FORBIDDEN
+            || rsp.status() == StatusCode::NOT_FOUND =>
+        {
             warn!(
                 "While attempting to fetch public key {key_id}, ification, I was \
                  told that the signing Actor was Gone (http status {}).",
