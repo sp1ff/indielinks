@@ -17,6 +17,30 @@
 //!
 //! This module implements per-user actor endpoints, along with their inboxes, outboxes & so forth.
 //! It also implements the instance shared inbox.
+//!
+//! ## Authentication
+//!
+//! The W3C ActivityPub authorization [primer] acknowledges that the spec is largely silent on the
+//! the matter, but claims that the "community has converged on some common practices". As usual,
+//! with ActivityPub, a lot of the work is deploying and seeing what one's peers do in the wild.
+//!
+//! It's long been convention that server-to-server `POST`s (to the shared inbox, for instance) need
+//! to be authenticated via signature. I recall reading, but can't locate now, verbiage to the
+//! effect that `GET`s, being read-only, were generally unauthenticated. However, the Fediverse
+//! seems to be moving to authenticating even them.
+//!
+//! [primer]: https://www.w3.org/wiki/ActivityPub/Primer/Authentication_Authorization
+//!
+//! I suppose this will wind-up becomging configurable, but for now, I want to categorize the
+//! endpoints served in this module into a few buckets:
+//!
+//! - completely unauthenticated: fetching a user's RSS feed, e.g.
+//! - require an ActivityPub signature: this is generally integral to the handler's logic--
+//!   it would be difficult if not impossible to handle a `POST` to the shared inbox
+//!   without knowledge of the signing actor, for instance
+//! - generally unauthenticated, but if a signature is present it will be validated
+//!
+//! For now, I'm going to lean toward the permissive.
 
 use std::{ops::Deref, result::Result as StdResult, sync::Arc, time::Duration};
 
@@ -82,6 +106,7 @@ use crate::{
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum Error {
     #[snafu(display("Failed to send an Accept: {source}"))]
     Accept { source: reqwest::Error },
@@ -120,6 +145,8 @@ pub enum Error {
         #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
         source: Box<crate::ap_resolution::Error>,
     },
+    #[snafu(display("at most one Signature header expected"))]
+    AtMostOneSignature { backtrace: Backtrace },
     #[snafu(display("{url} could not be parsed as an in-reply-to"))]
     BadInReplyTo {
         url: Box<Url>,
@@ -358,13 +385,13 @@ impl axum::response::IntoResponse for Error {
 type Result<T> = std::result::Result<T, Error>;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                     assorted utilities                                         //
+//                                         authentication                                         //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 define_metric! { "actor.verification.successes", actor_verification_successes, Sort::IntegralCounter }
 define_metric! { "actor.verification.failures", actor_verification_failures, Sort::IntegralCounter }
 
-/// Verify the signature on an incoming request
+/// Require a valid signature
 ///
 /// This function is intended to be used as tower middleware. It will look for a `Signature` header
 /// containing a [draft-cavage-http-signatures-12] HTTP message signature and validate it. Per the
@@ -375,13 +402,7 @@ define_metric! { "actor.verification.failures", actor_verification_failures, Sor
 /// consumers.
 ///
 /// [draft-cavage-http-signatures-12]: https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12
-// This is still evolving: this middleware requires a valid signature on each request it processes.
-// Lacking that, the request will not be processed further. It occurs to me that we *may* want to
-// accept *unsigned* requests in some circumstances (GET requests, e.g.), though of course invalid
-// signatures will be rejected. I've begun to break it up into smaller pieces that can be
-// independently tested, but I'm waiting on the opportunity to see more signatures in the wild
-// before putting this in its final form. It should probably wind-up in `authn.rs`.
-async fn verify_signature(
+async fn require_signature(
     State(state): State<Arc<Indielinks>>,
     headers: axum::http::HeaderMap,
     // In order to verify the signature, I need to resolve the keyid to a public key, which means a
@@ -397,7 +418,7 @@ async fn verify_signature(
     // Passing an immutable borrow here leaves the resulting function failing to implement
     // `Service`, for some reason. So, I move the request into this method, use it, and then return
     // it to the caller.
-    async fn verify_signature1(
+    async fn require_signature1(
         headers: axum::http::HeaderMap,  // := http::header::headerMap
         request: axum::extract::Request, // := http::request::Request
         instance_key: &UserPrivateKey,
@@ -420,136 +441,10 @@ async fn verify_signature(
             .to_str()
             .context(NonUtf8SignatureSnafu)?;
 
-        // Sample signature value: "keyId=\"http://localhost:3000/users/admin#main-key\",\
-        // algorithm=\"rsa-sha256\",headers=\"host date digest content-type (request-target)\",\
-        // signature=\"e6PjagEDONQIWVGvANYVBhW4ckZ6216+Z4XGJOUWsOvO++mYwKP1NtT1jyRUN1rkBx/hLahA\
-        // 9B3GDj7JQgiDctcvPVwEtBPYLVuIxAM6zNXkHPugZu+e4NXLLpg9iCJWUenxhvYwT5/CRe9NhYYUQZ1ETL4p\
-        // lULh9vBU2tvfNkGBM3gXgqM1yeMFn1HJeRLW0pm7cuRgxSXQHNXejM/iSU18IaaTiW4AvPRKognxRmsX16N1\
-        // S2XcWY7wq/LYDG0GJQreL0U+f+5zEu5FhxLhltMb5aL4/bxHTJHfNw58xdi7G49kCb7T4BbxKIRSOJIXciRa\
-        // +A+aEo9XNXcOKzDd1g==\""
-        let parsed_http_signature = signature_string
-            .parse::<HttpSignature>()
-            .context(SignatureParseSnafu)?;
-
-        // Alright, the next step is to resolve the "key ID" to an actual, you know, key:
-        let key_id = &parsed_http_signature.key_id;
-        debug!("Resolving key ID {}", key_id);
-        let principal = Either::Right(instance_key.clone());
-
-        // Our next step is to resolve the signing `Actor`. If they're gone, we'll need
-        // to toss the incoming request back up to our caller, so split it up now (we'll
-        // need to do that, anyway), and resolve the body to `Bytes` (something Send + Sync
-        // that we can include in our `Error`).
-        let (parts, body) = request.into_parts();
-
-        let bytes = axum::body::to_bytes(body, 16384)
-            .await
-            .context(ToBytesSnafu)?;
-
-        // This is a little odd, and characteristic of the sort of thing I'm finding in the wild. If
-        // we've received a `Delete` of an `Actor`, that entity is likely gone at this point, and if
-        // they're not cached, the resulting HTTP call will fail with 410 Gone.
-        use crate::ap_entities::Error::FailedAp as FailedApError;
-        use crate::ap_resolution::Error::Ap as ApError;
-        let key_id = Url::parse(key_id).context(BadKeyIdSnafu)?;
-        let actor = match ap_resolver.get_actor(principal.as_ref(), &key_id).await {
-            Ok(actor) => actor,
-            Err(ApError {
-                source: FailedApError { rsp, backtrace: _ },
-            }) if rsp.status() == StatusCode::GONE || rsp.status() == StatusCode::FORBIDDEN => {
-                warn!(
-                    "While attempting to fetch public key {key_id}, ification, I was \
-                     told that the signing Actor was Gone (http status {}).",
-                    rsp.status()
-                );
-                return Err(ActorIsGoneSnafu {
-                    request: Box::new(http::request::Request::from_parts(parts, bytes)),
-                }
-                .build());
-            }
-            Err(err) => {
-                return Err(ResolveKeyIdSnafu.into_error(err));
-            }
-        };
-
-        // Guard against request forgery: an attacker (call him "mallory") could craft a request,
-        // signed with his private key, with a key ID naming a document in his control. That
-        // document could be a legit Actor, but naming SOMEONE ELSE (call her "alice"). Let's check
-        // that the returned Actor ID matches that in the key ID:
-
-        // Seems ugly; I really ought to be able to get a read-only view into the existing
-        // instance (i.e. without making a clone).
-        fn no_fragment(url: &Url) -> Url {
-            let mut url = url.clone();
-            url.set_fragment(None);
-            url
-        }
-
-        if no_fragment(&key_id) != no_fragment(actor.id()) {
-            return RequestForgerySnafu {
-                key_id: Box::new(key_id),
-                actor_id: Box::new(actor.id().clone()),
-            }
-            .fail();
-        }
-
-        let public_key = actor.public_key().context(PublicKeySnafu)?;
-
-        // Per the draft "Implementations MUST be able to discover metadata about the key from the
-        // `keyId` such that they can determine the type of digital signature algorithm to employ
-        // when creating or verifying signatures."
-
-        // And "Implementers SHOULD derive the digital signature algorithm used by an implementation
-        // from the key metadata identified by the `keyId` rather than from [the algorithm] field.
-        // If `algorithm` is provided and differs from the key metadata identified by the `keyId`,
-        // for example `rsa-sha256` but an EdDSA key is identified via `keyId`, then an
-        // implementation MUST produce an error. Implementers should note that previous versions of
-        // the `algorithm` parameter did not use the key information to derive the digital signature
-        // type and thus could be utilized by attackers to expose security vulnerabilities."
-
-        // Finally "The application verifying the signature MUST derive the digital signature
-        // algorithm from the metadata associated with the `keyId` and MUST NOT use the value of
-        // `algorithm` from the signed message."
-
-        // TBH, the situation seems like a mess. For now, I'm just hard-coding this to "rsa-sha256":
-        debug!(
-            "Signature algorithm: {:?}, key kind: {:?}",
-            parsed_http_signature.algorithm,
-            public_key.kind()
-        );
-
-        authn::enforce_cavage_2_3_2_3(&parsed_http_signature).context(Cavage2323Snafu)?;
-
-        // Ok-- let's actually validate the request: verify the body digest. If there's a request
-        // body, and the content digest is not part of the signature, I'm going to deny the request.
-        // To be fair, I haven't seen this mandated anywhere, but I'm not sure what the point of
-        // signing a message and not covering the body (unless the body's empty).
-        if !bytes.is_empty() {
-            check_sha_256_content_digest(&parts, &bytes).context(ContentDigestSnafu)?;
-        }
-
-        // With all that done, we can finally verify the signature:
-        parsed_http_signature
-            .verifier()
-            .signature_method(
-                &public_key,
-                SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
-            )
-            .generate_signing_string_using_http_request(&parts)
-            .now(Utc::now().timestamp() as u64)
-            .verify()
-            .context(BadSignatureSnafu)?;
-
-        // If we're here, we verified the signature; re-assemble the request & pass it on:
-        Ok((
-            axum::extract::Request::from_parts(parts, bytes.into()),
-            actor,
-        ))
+        verify_signature_core(request, instance_key, ap_resolver, signature_string).await
     }
 
-    // If I borrow, this functions fails to implement `Service` (I suspect the future becomes no
-    // longer `Send` or something like that).
-    match verify_signature1(
+    match require_signature1(
         headers,
         request,
         &state.instance_state.private_key,
@@ -583,6 +478,236 @@ async fn verify_signature(
             err.into_response()
         }
     }
+}
+
+/// Verify the signature on an incoming request, if present
+///
+/// This function is intended to be used as tower middleware. It will look for a `Signature` header
+/// containing a [draft-cavage-http-signatures-12] HTTP message signature and validate it if found.
+/// If it's not found, it will proceed with the call chain.
+///
+/// [draft-cavage-http-signatures-12]: https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12
+async fn verify_signature(
+    State(state): State<Arc<Indielinks>>,
+    headers: axum::http::HeaderMap,
+    // In order to verify the signature, I need to resolve the keyid to a public key, which means a
+    // GET request back to the server. Surprisingly, Mastodon requires even GET requests to be
+    // signed. HOWEVER: it is very important that we sign that request with the *instance* key,
+    // not a user key, so as to avoid an infinite loop.
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    // I "backed-in" to the curious signature of this function while trying to maintain an
+    // implementation of `tower_service::Service` on the outer function. I need access to the
+    // request in order to validate the signature, but I also need to pass it on to `next`, below.
+    // Passing an immutable borrow here leaves the resulting function failing to implement
+    // `Service`, for some reason. So, I move the request into this method, use it, and then return
+    // it to the caller.
+    async fn verify_signature1(
+        headers: axum::http::HeaderMap,  // := http::header::headerMap
+        request: axum::extract::Request, // := http::request::Request
+        instance_key: &UserPrivateKey,
+        ap_resolver: Arc<ApResolver>,
+    ) -> Result<(axum::extract::Request, Option<ap_entities::Actor>)> {
+        // Huh. Per <https://datatracker.ietf.org/doc/html/draft-cavage-http-signatures-12>, the
+        // signature should be transmitted in an Authorization header, with a scheme of "Signature":
+        // "The client is expected to send an Authorization header... where the 'auth-scheme' is
+        // 'Signature' and the 'auth-param' parameters meet the requirements listed in ...The
+        // Components of a Signature." Mastodon, however, sends a "signature" header 🤷 Not sure how
+        // I want to handle this (like, should I accept both?); for now I just want to validate a
+        // signature, so in the best traditions of ActivityPub, I'll just take my peer's
+        // implementation as definitive.
+        let signature_string = headers
+            .get_all("signature")
+            .into_iter()
+            .at_most_one()
+            .inspect_err(|err| error!("Expected at most one signature header: {err:?}"))
+            .map_err(|_| AtMostOneSignatureSnafu.build())?
+            .map(|value| value.to_str().context(NonUtf8SignatureSnafu))
+            .transpose()?;
+
+        match signature_string {
+            Some(signature_string) => {
+                verify_signature_core(request, instance_key, ap_resolver, signature_string)
+                    .await
+                    .map(|(request, actor)| (request, Some(actor)))
+            }
+            None => Ok((request, None)),
+        }
+    }
+
+    match verify_signature1(
+        headers,
+        request,
+        &state.instance_state.private_key,
+        state.ap_resolver.clone(),
+    )
+    .await
+    {
+        Ok((mut request, Some(actor))) => {
+            // Place `actor` into the request context for the convenience of downstream consumers
+            request.extensions_mut().insert(actor);
+            actor_verification_successes.add(1, &[]);
+            next.run(request).await
+        }
+        Ok((request, None)) => next.run(request).await,
+        Err(Error::ActorIsGone {
+            request: _,
+            backtrace: _,
+        }) => {
+            // For now, we just respond "202 Accepted". Soon, we'll spawn a background task to
+            // remove all references to this actor (that's why we included the original request in
+            // the error).
+            warn!(
+                "The Actor who signed this request is Gone. We need to check to see that this \
+                   is a Delete, and if so, scrub the actor from our datastore."
+            );
+            actor_verification_successes.add(1, &[]);
+            StatusCode::ACCEPTED.into_response()
+        }
+        Err(err) => {
+            error!("indielinks failed to verify an HTTP signature: {:#?}", err);
+            actor_verification_failures.add(1, &[]);
+            err.into_response()
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                     assorted utilities                                         //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+async fn verify_signature_core(
+    request: axum::extract::Request, // := http::request::Request
+    instance_key: &UserPrivateKey,
+    ap_resolver: Arc<ApResolver>,
+    signature_string: &str,
+) -> Result<(axum::extract::Request, ap_entities::Actor)> {
+    // Sample signature value: "keyId=\"http://localhost:3000/users/admin#main-key\",\
+    // algorithm=\"rsa-sha256\",headers=\"host date digest content-type (request-target)\",\
+    // signature=\"e6PjagEDONQIWVGvANYVBhW4ckZ6216+Z4XGJOUWsOvO++mYwKP1NtT1jyRUN1rkBx/hLahA\
+    // 9B3GDj7JQgiDctcvPVwEtBPYLVuIxAM6zNXkHPugZu+e4NXLLpg9iCJWUenxhvYwT5/CRe9NhYYUQZ1ETL4p\
+    // lULh9vBU2tvfNkGBM3gXgqM1yeMFn1HJeRLW0pm7cuRgxSXQHNXejM/iSU18IaaTiW4AvPRKognxRmsX16N1\
+    // S2XcWY7wq/LYDG0GJQreL0U+f+5zEu5FhxLhltMb5aL4/bxHTJHfNw58xdi7G49kCb7T4BbxKIRSOJIXciRa\
+    // +A+aEo9XNXcOKzDd1g==\""
+    let parsed_http_signature = signature_string
+        .parse::<HttpSignature>()
+        .context(SignatureParseSnafu)?;
+
+    // Alright, the next step is to resolve the "key ID" to an actual, you know, key:
+    let key_id = &parsed_http_signature.key_id;
+    debug!("Resolving key ID {}", key_id);
+    let principal = Either::Right(instance_key.clone());
+
+    // Our next step is to resolve the signing `Actor`. If they're gone, we'll need
+    // to toss the incoming request back up to our caller, so split it up now (we'll
+    // need to do that, anyway), and resolve the body to `Bytes` (something Send + Sync
+    // that we can include in our `Error`).
+    let (parts, body) = request.into_parts();
+
+    let bytes = axum::body::to_bytes(body, 16384)
+        .await
+        .context(ToBytesSnafu)?;
+
+    // This is a little odd, and characteristic of the sort of thing I'm finding in the wild. If
+    // we've received a `Delete` of an `Actor`, that entity is likely gone at this point, and if
+    // they're not cached, the resulting HTTP call will fail with 410 Gone.
+    use crate::ap_entities::Error::FailedAp as FailedApError;
+    use crate::ap_resolution::Error::Ap as ApError;
+    let key_id = Url::parse(key_id).context(BadKeyIdSnafu)?;
+    let actor = match ap_resolver.get_actor(principal.as_ref(), &key_id).await {
+        Ok(actor) => actor,
+        Err(ApError {
+            source: FailedApError { rsp, backtrace: _ },
+        }) if rsp.status() == StatusCode::GONE || rsp.status() == StatusCode::FORBIDDEN => {
+            warn!(
+                "While attempting to fetch public key {key_id}, ification, I was \
+                 told that the signing Actor was Gone (http status {}).",
+                rsp.status()
+            );
+            return Err(ActorIsGoneSnafu {
+                request: Box::new(http::request::Request::from_parts(parts, bytes)),
+            }
+            .build());
+        }
+        Err(err) => {
+            return Err(ResolveKeyIdSnafu.into_error(err));
+        }
+    };
+
+    // Guard against request forgery: an attacker (call him "mallory") could craft a request,
+    // signed with his private key, with a key ID naming a document in his control. That
+    // document could be a legit Actor, but naming SOMEONE ELSE (call her "alice"). Let's check
+    // that the returned Actor ID matches that in the key ID:
+
+    // Seems ugly; I really ought to be able to get a read-only view into the existing
+    // instance (i.e. without making a clone).
+    fn no_fragment(url: &Url) -> Url {
+        let mut url = url.clone();
+        url.set_fragment(None);
+        url
+    }
+
+    if no_fragment(&key_id) != no_fragment(actor.id()) {
+        return RequestForgerySnafu {
+            key_id: Box::new(key_id),
+            actor_id: Box::new(actor.id().clone()),
+        }
+        .fail();
+    }
+
+    let public_key = actor.public_key().context(PublicKeySnafu)?;
+
+    // Per the draft "Implementations MUST be able to discover metadata about the key from the
+    // `keyId` such that they can determine the type of digital signature algorithm to employ
+    // when creating or verifying signatures."
+
+    // And "Implementers SHOULD derive the digital signature algorithm used by an implementation
+    // from the key metadata identified by the `keyId` rather than from [the algorithm] field.
+    // If `algorithm` is provided and differs from the key metadata identified by the `keyId`,
+    // for example `rsa-sha256` but an EdDSA key is identified via `keyId`, then an
+    // implementation MUST produce an error. Implementers should note that previous versions of
+    // the `algorithm` parameter did not use the key information to derive the digital signature
+    // type and thus could be utilized by attackers to expose security vulnerabilities."
+
+    // Finally "The application verifying the signature MUST derive the digital signature
+    // algorithm from the metadata associated with the `keyId` and MUST NOT use the value of
+    // `algorithm` from the signed message."
+
+    // TBH, the situation seems like a mess. For now, I'm just hard-coding this to "rsa-sha256":
+    debug!(
+        "Signature algorithm: {:?}, key kind: {:?}",
+        parsed_http_signature.algorithm,
+        public_key.kind()
+    );
+
+    authn::enforce_cavage_2_3_2_3(&parsed_http_signature).context(Cavage2323Snafu)?;
+
+    // Ok-- let's actually validate the request: verify the body digest. If there's a request
+    // body, and the content digest is not part of the signature, I'm going to deny the request.
+    // To be fair, I haven't seen this mandated anywhere, but I'm not sure what the point of
+    // signing a message and not covering the body (unless the body's empty).
+    if !bytes.is_empty() {
+        check_sha_256_content_digest(&parts, &bytes).context(ContentDigestSnafu)?;
+    }
+
+    // With all that done, we can finally verify the signature:
+    parsed_http_signature
+        .verifier()
+        .signature_method(
+            &public_key,
+            SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+        )
+        .generate_signing_string_using_http_request(&parts)
+        .now(Utc::now().timestamp() as u64)
+        .verify()
+        .context(BadSignatureSnafu)?;
+
+    // If we're here, we verified the signature; re-assemble the request & pass it on:
+    Ok((
+        axum::extract::Request::from_parts(parts, bytes.into()),
+        actor,
+    ))
 }
 
 /// Utility function for handling an error in this module's handlers
@@ -1904,7 +2029,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             post(shared_inbox)
                 .route_layer(middleware::from_fn_with_state(
                     state.clone(),
-                    verify_signature,
+                    require_signature,
                 ))
                 // Be sure to place this last, to ensure the request is logged even if authn fails
                 .route_layer(middleware::from_fn(log_request)),
@@ -1920,7 +2045,7 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
             "/users/{username}/inbox",
             post(inbox).route_layer(middleware::from_fn_with_state(
                 state.clone(),
-                verify_signature,
+                require_signature,
             )),
         )
         .route(
@@ -1932,26 +2057,45 @@ pub fn make_router(state: Arc<Indielinks>) -> Router<Arc<Indielinks>> {
         )
         .route(
             "/users/{username}/followers",
-            get(followers).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                [Method::GET],
-                allow_origin.clone(),
-            )),
+            get(followers)
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    verify_signature,
+                ))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    [Method::GET],
+                    allow_origin.clone(),
+                )),
         )
         .route(
             "/users/{username}/following",
-            get(following).layer(mk_cors(
-                false,
-                allow_headers.clone(),
-                [Method::GET],
-                allow_origin.clone(),
+            get(following)
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    verify_signature,
+                ))
+                .layer(mk_cors(
+                    false,
+                    allow_headers.clone(),
+                    [Method::GET],
+                    allow_origin.clone(),
+                )),
+        )
+        .route(
+            "/users/{username}/posts/{postid}",
+            get(get_post).route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                verify_signature,
             )),
         )
-        .route("/users/{username}/posts/{postid}", get(get_post))
         .route(
             "/users/{username}/posts/{postid}/replies",
-            get(get_post_replies),
+            get(get_post_replies).route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                verify_signature,
+            )),
         )
         .route(
             "/users/{username}/feed",
