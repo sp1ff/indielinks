@@ -100,7 +100,7 @@ impl TryInto<PostAddReq> for Form {
         Ok(PostAddReq {
             url: Url::parse(&self.url.get()).context(UrlSnafu)?,
             title: self.title.get().try_into().context(TitleSnafu)?,
-            notes: self.notes.with(|notes| notes.as_str().try_into().ok()),
+            notes: self.notes.with(|notes| notes.as_str().parse().ok()),
             tags: self.tags.with(|tags| tags.as_str().try_into().ok()),
             dt: None,
             replace: Some(true),

@@ -356,14 +356,14 @@ fn copy_post_to_add_req(post: &Post) -> PostAddReq {
         // This is awful-- decded whether `Post::title` can be empty or not
         title: post
             .title()
-            .try_into()
-            .unwrap_or("<untitled>".try_into().unwrap(/* known good */)),
+            .parse()
+            .unwrap_or("<untitled>".parse().unwrap(/* known good */)),
         notes: match post.notes() {
             Some(s) => {
                 if s.is_empty() {
                     None
                 } else {
-                    Some(s.try_into().unwrap(/* known good */))
+                    Some(s.parse().unwrap(/* known good */))
                 }
             }
             None => None,
@@ -680,7 +680,7 @@ impl TryInto<PostAddReq> for Form {
         Ok(PostAddReq {
             url: Url::parse(&self.url.get()).context(UrlParseSnafu)?,
             title: self.title.get().try_into().context(TitleSnafu)?,
-            notes: self.notes.with(|notes| notes.as_str().try_into().ok()),
+            notes: self.notes.with(|notes| notes.as_str().parse().ok()),
             tags: self.tags.with(|tags| tags.as_str().try_into().ok()),
             dt: None,
             replace: Some(true),

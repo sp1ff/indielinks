@@ -18,7 +18,7 @@ use std::{fmt::Display, ops::Deref, result::Result as StdResult, str::FromStr};
 #[cfg(feature = "backend")]
 use scylla::{
     cluster::metadata::ColumnType,
-    deserialize::{value::DeserializeValue, FrameSlice},
+    deserialize::{FrameSlice, value::DeserializeValue},
     errors::{DeserializationError, SerializationError, TypeCheckError},
     serialize::{
         value::SerializeValue,
