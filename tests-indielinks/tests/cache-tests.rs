@@ -16,7 +16,7 @@
 //! # [indielinks] as cache integration tests
 //!
 //! This (admittedly sparse, but growing!) integration test exercises [indielinks] configured to run
-//! in a cluster as a distributed cache baed on [openraft].
+//! in a cluster as a distributed cache based on [openraft].
 
 use std::{
     borrow::Borrow,

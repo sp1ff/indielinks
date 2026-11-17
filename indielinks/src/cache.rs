@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use indielinks_shared::known_good;
 use lazy_static::lazy_static;
 use num_bigint::BigInt;
-use openraft::error::NetworkError;
+use openraft::error::Unreachable;
 use scylla::{
     cluster::metadata::ColumnType,
     deserialize::{value::DeserializeValue, FrameSlice},
@@ -37,7 +37,6 @@ use scylla::{
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use snafu::{Backtrace, IntoError, ResultExt, Snafu};
 use tap::{Pipe, TryConv};
-use tonic::Code;
 use tracing::{debug, error};
 
 use indielinks_cache::{
@@ -285,7 +284,7 @@ impl indielinks_cache::network::ClientFactory for GrpcClientFactory {
     // does not return an error because openraft can only ignore it." (openraft docs)
     async fn new_client(&mut self, target: NodeId, node: &ClusterNode) -> Self::CacheClient {
         GrpcClient {
-            _id: target,
+            id: target,
             endpoint: format!("http://{}", node.addr),
             client: None,
         }
@@ -294,7 +293,7 @@ impl indielinks_cache::network::ClientFactory for GrpcClientFactory {
 
 #[derive(Clone, Debug)]
 pub struct GrpcClient {
-    _id: NodeId,
+    id: NodeId,
     endpoint: String,
     client: Option<protobuf::grpc_service_client::GrpcServiceClient<tonic::transport::Channel>>,
 }
@@ -302,7 +301,7 @@ pub struct GrpcClient {
 impl GrpcClient {
     pub fn new(id: NodeId, addr: std::net::SocketAddr) -> Self {
         GrpcClient {
-            _id: id,
+            id,
             endpoint: format!("http://{addr}"),
             client: None,
         }
@@ -321,6 +320,7 @@ impl GrpcClient {
                         Ok(client)
                     }
                     Err(err) => {
+                        // Nb. we're testing against this message (in cache-tests, test `raft_ops`)
                         error!("gRPC client failed to connect: {err:?}");
                         Err(ConnSnafu.into_error(err))
                     }
@@ -333,29 +333,25 @@ impl GrpcClient {
 fn from_status<Err: std::error::Error>(
     err: tonic::Status,
 ) -> Box<RPCError<NodeId, ClusterNode, Err>> {
-    Box::new(match err.code() {
-        Code::Unavailable => indielinks_cache::network::RPCError::Unreachable(
-            openraft::error::Unreachable::new(&err),
-        ),
-        _ => indielinks_cache::network::RPCError::Network(NetworkError::new(&err)),
-    })
+    Box::new(indielinks_cache::network::RPCError::Unreachable(
+        Unreachable::new(&err),
+    ))
 }
 
 fn from_interop<Err: std::error::Error + 'static>(
     err: crate::protobuf_interop::Error,
+    _id: NodeId,
 ) -> Box<RPCError<NodeId, ClusterNode, Err>> {
-    // This seems kinda lame, but then there really isn't a great match
-    Box::new(indielinks_cache::network::RPCError::Network(
-        NetworkError::new(&err),
+    Box::new(indielinks_cache::network::RPCError::Unreachable(
+        Unreachable::new(&err),
     ))
 }
 
 fn from_cache<Err: std::error::Error + 'static>(
     err: Error,
 ) -> Box<RPCError<NodeId, ClusterNode, Err>> {
-    // This seems kinda lame, but then there really isn't a great match
-    Box::new(indielinks_cache::network::RPCError::Network(
-        NetworkError::new(&err),
+    Box::new(indielinks_cache::network::RPCError::Unreachable(
+        Unreachable::new(&err),
     ))
 }
 
@@ -380,7 +376,7 @@ impl indielinks_cache::network::Client for GrpcClient {
             .map_err(from_status)?
             .into_inner()
             .try_conv::<AppendEntriesResponse<NodeId>>()
-            .map_err(from_interop)
+            .map_err(|err| from_interop(err, self.id))
     }
 
     /// Install a state snapshot on the target node
@@ -400,7 +396,7 @@ impl indielinks_cache::network::Client for GrpcClient {
             .map_err(from_status)?
             .into_inner()
             .try_conv::<InstallSnapshotResponse<NodeId>>()
-            .map_err(from_interop)
+            .map_err(|err| from_interop(err, self.id))
     }
     /// Request a leadership vote from the target node
     async fn vote(
@@ -417,7 +413,7 @@ impl indielinks_cache::network::Client for GrpcClient {
             .map_err(from_status)?
             .into_inner()
             .try_conv::<VoteResponse<NodeId>>()
-            .map_err(from_interop)
+            .map_err(|err| from_interop(err, self.id))
     }
     /// Ask the target node to insert a key/value pair into it's LRU cache
     async fn cache_insert<K: Serialize + Sync, V: Serialize + Sync>(

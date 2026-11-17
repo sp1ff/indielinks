@@ -21,7 +21,14 @@
 //!
 //! [IntegrationTest]: ../tests_support/trait.IntegrationTest.html
 
-use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    fs::{self, File},
+    io::{BufRead, BufReader},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use http::StatusCode;
 use indielinks_shared::api::{RaftState, TopKTagsRequest};
@@ -271,6 +278,42 @@ pub fn raft_ops(
     debug!("Cluster metrics: {current_metrics:#?}");
 
     assert!(node_0_metrics.raft.current_term < current_metrics.raft.current_term);
+
+    // This is a little odd: what we're doing here is testing to make sure we haven't fallen into a
+    // regression. When node 1 comes back up, it will attempt to contact the node it believes to be
+    // the leader, node 0, which is down. If we don't report that error correctly to `openraft`,
+    // this results in a flurry of failed connection attempts, each of which results in an ERROR log
+    // message:
+    //
+    // 2026-11-16T22:35:46.285631Z ERROR indielinks::cache: gRPC client failed to connect: tonic::transport::Error(Transport, ConnectError(ConnectError("tcp connect error", 127.0.0.1:20711, Os { code: 111, kind: ConnectionRefused, message: "Connection refused" })))
+    //
+    // Let's crack open that log file & count how many lines we see that look like that. This seems
+    // brittle: if for whatever reason that log message changes, this test could suddenly stop
+    // testing what we want to test, but the cost of the regression is high enough that I want to
+    // leave it in.
+
+    // Lame, but we need to let the log catch-up.
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // Even more unfortunately, the test is flakey: it sometimes passed even before I fixed the bug. Still,
+    // the cost of a regression is high enough... I suspect we could make the test more reliable by killing
+    // instance 0 *before* we bring-up instance 1.
+    let num_conection_log_messages =
+        BufReader::new(File::open(format!("{local_state_base}1/indielinksd.log"))?)
+            .lines()
+            .fold(0usize, |acc, item| match item {
+                // `line.get()` would be more efficient, but I've spent enough time chasing this
+                // down, as it is.
+                Ok(line) if line.contains("ERROR indielinks::cache:") => acc + 1,
+                _ => acc,
+            });
+
+    debug!("{num_conection_log_messages} log messages regarding connection failures");
+
+    assert!(
+        num_conection_log_messages < 12,
+        "Excessive log messages regarding connection failures"
+    );
 
     Ok(())
 }

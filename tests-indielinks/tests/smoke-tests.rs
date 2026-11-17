@@ -91,7 +91,6 @@ use tests_indielinks::{
         send_follow_by_handle, test_sanitization,
     },
     actor::like_actor_mismatch,
-    bookmarklets::test_save_bookmarklet,
     counts::test_counts,
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
