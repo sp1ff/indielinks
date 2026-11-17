@@ -59,7 +59,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.99.0
+          toolchain: 1.99.1
           components: "clippy, rustfmt"
           targets: "wasm32-unknown-unknown"
 
@@ -139,7 +139,7 @@ jobs:
     env:
       NTFY_SH_TOPIC_NAME: ${{ secrets.NTFY_SH_TOPIC_NAME }}
     steps:
-        - uses: martialonline/workflow-status@v4
+        - uses: martialonline/workflow-status@v3
           id: check
         - name: On success
           if: ${{ steps.check.outputs.status == 'success' && env.NTFY_SH_TOPIC_NAME != '' }}
