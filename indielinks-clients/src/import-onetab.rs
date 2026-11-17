@@ -108,7 +108,7 @@ impl FromStr for ExportedPost {
             .context(ParseSnafu { line: s.to_owned() })?;
         Ok(ExportedPost {
             url: Url::parse(a).context(UrlSnafu { text: a.to_owned() })?,
-            title: b.trim().try_into().context(TitleSnafu)?,
+            title: b.trim().parse().context(TitleSnafu)?,
         })
     }
 }

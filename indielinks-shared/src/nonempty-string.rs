@@ -13,12 +13,12 @@
 // You should have received a copy of the GNU General Public License along with indielinks.  If not,
 // see <http://www.gnu.org/licenses/>.
 
-use std::{fmt::Display, ops::Deref, result::Result as StdResult};
+use std::{fmt::Display, ops::Deref, result::Result as StdResult, str::FromStr};
 
 #[cfg(feature = "backend")]
 use scylla::{
     cluster::metadata::ColumnType,
-    deserialize::{FrameSlice, value::DeserializeValue},
+    deserialize::{value::DeserializeValue, FrameSlice},
     errors::{DeserializationError, SerializationError, TypeCheckError},
     serialize::{
         value::SerializeValue,
@@ -88,10 +88,11 @@ impl TryFrom<String> for NonEmptyString {
     }
 }
 
-impl TryFrom<&str> for NonEmptyString {
-    type Error = Empty;
+// Used to be: `TryFrom<&str>`
+impl FromStr for NonEmptyString {
+    type Err = Empty;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value.is_empty() {
             Err(Empty)
         } else {
