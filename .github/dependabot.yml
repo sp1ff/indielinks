@@ -4,16 +4,16 @@ updates:
     directory: "/"
     schedule:
       interval: "cron"
-      # Let's run it at 06:00 Pacific time on Tuesdays & Thursdays
-      cronjob: "0 6 * * 2,4"
+      # Let's run it at 06:00 Pacific time on Tuesdays, Thursdays & Saturdays
+      cronjob: "0 6 * * 2,4,6"
       timezone: "America/Los_Angeles"
     # Extend the cooldown window to 7 days from the default 3 (or set
     # to 0 to opt out entirely)
     cooldown:
       default-days: 7
-    # The default seems to be five, but, I'd prefer to be explicit
-    # about it
-    open-pull-requests-limit: 5
+    # The default seems to be five, but I'm not sure that's enough
+    # to keep-up...
+    open-pull-requests-limit: 10
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
