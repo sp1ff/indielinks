@@ -86,6 +86,7 @@ tower = { workspace = true, features = ["retry"] }
 tower-gcra = { workspace = true }
 tower-http = { workspace = true, features = ["auth", "cors", "request-id", "set-header", "trace"] }
 tracing = { workspace = true }
+tracing_log_error = "0.1.6"
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }

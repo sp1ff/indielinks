@@ -79,6 +79,7 @@ use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
 use tracing::{debug, error};
+use tracing_log_error::log_error;
 use url::Url;
 
 use indielinks_shared::{
@@ -99,50 +100,51 @@ use crate::{
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Snafu)]
+#[non_exhaustive]
 pub enum Error {
-    #[snafu(display("While resolving an ActivityPub entity, {source}"))]
+    #[snafu(display("failure while resolving an ActivityPub entity"))]
     ApResolution {
         #[snafu(source(from(crate::ap_resolution::Error, Box::new)))]
         source: Box<crate::ap_resolution::Error>,
     },
-    #[snafu(display("Bad pagination token format"))]
+    #[snafu(display("bad pagination token format"))]
     BadToken { backtrace: Backtrace },
-    #[snafu(display("While streaming follows, {source}"))]
+    #[snafu(display("failure while streaming follows"))]
     Follow { source: crate::storage::Error },
-    #[snafu(display("While deriving the encryption key, {source}"))]
+    #[snafu(display("failed to derive the encryption key"))]
     Hkdf {
         source: hkdf::InvalidLength,
         backtrace: Backtrace,
     },
-    #[snafu(display("While looking-up {user}'s outbox page, {source}"))]
+    #[snafu(display("failed to look-up {user}'s outbox page"))]
     OutboxLookup {
         user: Username,
         #[snafu(source(from(crate::ap_entities::Error, Box::new)))]
         source: Box<crate::ap_entities::Error>,
     },
-    #[snafu(display("While fetching an Outbox page, {source}"))]
+    #[snafu(display("failed to fetch an Outbox page"))]
     OutboxPage { source: crate::ap_entities::Error },
-    #[snafu(display("While decrypting the pagination token, {source}"))]
+    #[snafu(display("failed to decrypt the pagination token"))]
     TokenDecrypt {
         source: chacha20poly1305::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("While deserializing the pagination token, {source}"))]
+    #[snafu(display("failed to deserialize the pagination token"))]
     TokenDeser {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("While encrypting the pagination token, {source}"))]
+    #[snafu(display("failed to encrypt the pagination token"))]
     TokenEncrypt {
         source: chacha20poly1305::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("The pagination token is not base64-encoded: {source}"))]
+    #[snafu(display("the pagination token is not base64-encoded"))]
     TokenNotBase64 {
         source: base64::DecodeError,
         backtrace: Backtrace,
     },
-    #[snafu(display("While serializing the pagination token, {source}"))]
+    #[snafu(display("failed to serialize the pagination token"))]
     TokenSer {
         source: serde_json::Error,
         backtrace: Backtrace,
@@ -444,7 +446,10 @@ impl Outbox {
                             // I'm not exactly sure how to handle this, but I'm finding ActivityPub
                             // calls failing (or just timing out) pretty-frequently in the wild. For
                             // now, I'm just going to log the failures and move on.
-                            errors.into_iter().for_each(|err| error!("Failed to retrieve an outbox item from {}: {err}", page.id.as_str()) );
+                            errors.into_iter().for_each(|err| {
+                                log_error!(err, "failed to retrieve an outbox item from {}",
+                                           page.id.as_str())
+                            });
                             // Now, it's possible all the items errored-out:
                             next_page = page.next.map(|url| url.into());
                             if !notes.is_empty() {

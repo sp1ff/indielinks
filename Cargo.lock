@@ -3722,6 +3722,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "tracing_log_error",
  "url",
  "uuid",
  "wiremock",
@@ -8033,6 +8034,15 @@ dependencies = [
  "gloo",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "tracing_log_error"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7cb5e468b7d47e7a9f92ab0e028ef9286fd947f72247abcdf66f2a241c9754f"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]
