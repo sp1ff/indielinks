@@ -75,9 +75,9 @@ pickup-timeout = { secs = 1, nanos = 0 }
 [raft-config]
 cluster-name = "indielinks"
 this-node = 0
-heartbeat-interval   = { secs = 0, nanos =  500000000 } # 500ms
-election-timeout-min = { secs = 0, nanos = 1500000000 } # 1500ms
-election-timeout-max = { secs = 0, nanos = 3000000000 } # 3000ms
+heartbeat-interval   = { secs = 0, nanos = 400000000 } # 400ms
+election-timeout-min = { secs = 1, nanos = 200000000 } # 1200ms
+election-timeout-max = { secs = 2, nanos = 400000000 } # 2.4s
 snapshot-policy = { LogsSinceLast = 5000 }
 
 [client-exponential-backoff]

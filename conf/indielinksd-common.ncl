@@ -88,11 +88,11 @@
     },
     raft-config = {
         cluster-name = "indielinks",
-        # These are 4x the defaults-- setting the heartbeat interval to 50ms
+        # These are 8x the defaults-- setting the heartbeat interval to 50ms
         # makes for *very* chatty logs when openraft logging is turned on.
-        heartbeat-interval = { secs = 0, nanos = 200000000 },   # 200ms
-        election-timeout-min = { secs = 0, nanos = 600000000 }, # 600ms
-        election-timeout-max = { secs = 1, nanos = 200000000 }, # 1.2s
+        heartbeat-interval = { secs = 0, nanos = 400000000 },   # 400ms
+        election-timeout-min = { secs = 1, nanos = 200000000 }, # 1200ms
+        election-timeout-max = { secs = 2, nanos = 400000000 }, # 2.4s
         snapshot-policy | default = { LogsSinceLast = 5000 }
     },
     client-exponential-backoff = {

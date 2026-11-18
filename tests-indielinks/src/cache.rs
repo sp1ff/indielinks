@@ -213,7 +213,7 @@ pub fn raft_ops(
     info!("Re-started instance 1.");
 
     // In testing, once up, a debug build took ~500ms to catch-up.
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(3000));
 
     let node_0_metrics = client
         .get(ops_endpoints[0].join("/ops/cache/metrics")?)
@@ -237,7 +237,7 @@ pub fn raft_ops(
     kill_instance(local_state_base, 0)?;
 
     // Add instance 3 as a learner. To do this, I need to figure-out who's the new leader.
-    std::thread::sleep(Duration::from_millis(3000));
+    std::thread::sleep(Duration::from_millis(6000));
 
     let leader = client
         .get(ops_endpoints[1].join("/ops/cache/metrics")?)
@@ -293,7 +293,7 @@ pub fn raft_ops(
     // leave it in.
 
     // Lame, but we need to let the log catch-up.
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(3000));
 
     // Even more unfortunately, the test is flakey: it sometimes passed even before I fixed the bug. Still,
     // the cost of a regression is high enough... I suspect we could make the test more reliable by killing
@@ -422,7 +422,7 @@ pub fn raft_snapshot(
     kill_instance(local_state_base, 1)?;
     kill_instance(local_state_base, 0)?;
 
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(3000));
 
     run(
         "../infra/indielinks-cluster-node-up",
@@ -443,7 +443,7 @@ pub fn raft_snapshot(
             .map(str::to_owned),
     )?;
 
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_millis(3000));
 
     let leader = client
         .get(ops_endpoints[1].join("/ops/cache/metrics")?)
