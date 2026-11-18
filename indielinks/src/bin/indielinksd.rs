@@ -1324,11 +1324,15 @@ fn init_telemetry(
                     "service.instance.id",
                     format!("{instance_id}"),
                 ))
-                .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
                 .with_attribute(KeyValue::new(
                     "deployment.environment.name",
                     format!("{deploy_env}"),
                 ))
+                // Nb. think carefully about the attributes attached, here. In AWS, each new
+                // attribute *value* creates a new metric for billing purposes. For instance, I
+                // initially tagged all metrics with the crate version-- seems handy, right? Except
+                // that every time I deployed to AWS, this would create a completely new set of
+                // metrics.
                 .build(),
         )
         .with_reader(old_school_exporter.clone());
