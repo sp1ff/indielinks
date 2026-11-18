@@ -1092,7 +1092,8 @@ async fn serve(
 
         // Setup background task processing. This, too, is subject to configuration. `nosql_tasks`
         // is a task processing implementation backed by our datastore.
-        let nosql_tasks = Arc::new(BackgroundTasks::new(tasks));
+        let force_read = Arc::new(Notify::new());
+        let nosql_tasks = Arc::new(BackgroundTasks::new(tasks, force_read.clone()));
         // Save a reference to it for use by our web-service:
         let task_sender = nosql_tasks.clone();
         // Setup the context for our tasks
@@ -1108,9 +1109,13 @@ async fn serve(
         };
         // Move `nosql_tasks` into a new `Processor`, which lets us shut down background task
         // processing in an orderly manner:
-        let task_processor =
-            background_tasks::new(nosql_tasks, context, Some(cfg.background_tasks.clone()))
-                .context(BackgroundTasksSnafu)?;
+        let task_processor = background_tasks::new(
+            nosql_tasks,
+            context,
+            Some(cfg.background_tasks.clone()),
+            force_read,
+        )
+        .context(BackgroundTasksSnafu)?;
 
         let metrics_nfy = Arc::new(Notify::new());
         let metrics_handle = tokio::task::spawn(produce_metrics(

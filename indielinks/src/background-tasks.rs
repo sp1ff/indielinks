@@ -15,7 +15,7 @@
 
 //! # Background Task Processing
 //!
-//! Interestingly, [axum] makes no provision for compute outside the context of handling HTTP
+//! Interestingly, axum makes no provision for compute outside the context of handling HTTP
 //! requests, and there doesn't appear to be a "go to" Rust implementation of a task queue. I'm
 //! perhaps succumbing to my tendency to "just code it up", but this module provides an async
 //! background persistent task queue for [indielinks].
@@ -39,14 +39,16 @@
 //! [Follow]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-follow
 //! [Accept]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-accept
 //!
-//! One could of course just use [tokio::spawn], but I'd rather not accept the lack of durability
-//! entailed in that solution: if the program crashes or is halted after [tokio::spawn] returns, but
-//! before the task completes, the task will be "lost" ("There is no guarantee that a spawned task
-//! will execute to completion. When a runtime is shutdown, all outstanding tasks are dropped,
-//! regardless of the lifecycle of that task."). At the other end of the spectrum, I could add a
-//! full-blown [Raft] implementation to indielinks, perhaps allowing for (unstarted) tasks to "move"
-//! around a cluster and blocking shutdown of any node with in-progress tasks until they either
-//! complete or time-out, but I'm so-far resisting the temptation 😂
+//! One could of course just use [tokio::task::spawn], but I'd rather not accept the lack of
+//! durability entailed in that solution: if the program crashes or is halted after
+//! [tokio::task::spawn] returns, but before the task completes, the task will be "lost" ("There is
+//! no guarantee that a spawned task will execute to completion. When a runtime is shutdown, all
+//! outstanding tasks are dropped, regardless of the lifecycle of that task."). At the other end of
+//! the spectrum, I could add a full-blown [Raft] implementation to indielinks, perhaps allowing for
+//! (unstarted) tasks to "move" around a cluster and blocking shutdown of any node with in-progress
+//! tasks until they either complete or time-out, but I'm so-far resisting the temptation 😂
+//! (Update: I did, in fact build a Raft impl ementation (albeit on `openraft`), but even still, if
+//! the Raft were shut-down, we'd lose all the in-memory tasks).
 //!
 //! Instead, I'm landing in between by (ab)using the data store to hold serialized tasks while a
 //! single background task (in each process) picks them up from that queue & executes them. This
@@ -85,7 +87,7 @@ use tokio::{
     sync::{Mutex, Notify},
     task::{Id, JoinError, JoinHandle, JoinSet},
 };
-use tracing::error;
+use tracing::{debug, error};
 use uuid::Uuid;
 
 use indielinks_shared::origin::Origin;
@@ -331,11 +333,15 @@ async fn take_task<C: Clone + 'static, R: Receiver<C>>(
 /// Process background tasks. `receiver` is a [Receiver] from which we can draw tasks. `config`
 /// holds configuration parameters for the algorithm. `shutdown` is a [Notify] instance the caller
 /// can use to signal this function to exit.
+///
+/// Nb. `config.sleep_duration` should be *lengthy*: on the order of several minutes, to avoid
+/// spamming the backend.
 async fn process<C: Clone + 'static, R: Receiver<C>>(
     receiver: R,
     context: C,
     config: Config,
     shutdown: Arc<Notify>,
+    force_read: Arc<Notify>,
 ) -> Result<()> {
     // The basic outline of this logic is to maintain a `JoinSet` of currently running tasks,
     let mut tasks: HashMap<Id, R::TaskId> = HashMap::new();
@@ -418,6 +424,10 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
             // mindful of our shutdown notification:
             tokio::select! {
                 _ = tokio::time::sleep(config.sleep_duration) => (), // Loop around & try again
+                _ = force_read.notified() => {
+                    // Loop around & try again
+                    debug!("background task processor forcing a read");
+                },
                 _ = shutdown.notified() => {
                     // Abandon `task` and exit!
                     done = true;
@@ -439,6 +449,7 @@ pub fn new<C: Clone + Send + 'static, R: Receiver<C> + Send + Sync + 'static>(
     receiver: R,
     context: C,
     config: Option<Config>,
+    force_read: Arc<Notify>,
 ) -> std::result::Result<Processor, Error> {
     let shutdown = Arc::new(Notify::new());
     let processor = tokio::spawn(process(
@@ -446,6 +457,7 @@ pub fn new<C: Clone + Send + 'static, R: Receiver<C> + Send + Sync + 'static>(
         context,
         config.unwrap_or_default(),
         shutdown.clone(),
+        force_read,
     ));
     Ok(Processor {
         processor,
@@ -521,7 +533,13 @@ mod mock {
         let shutdown = Arc::new(Notify::new());
 
         // Process will run forever, so spawn it...
-        let handle = tokio::task::spawn(process(backend, (), Config::default(), shutdown.clone()));
+        let handle = tokio::task::spawn(process(
+            backend,
+            (),
+            Config::default(),
+            shutdown.clone(),
+            Arc::new(Notify::new()),
+        ));
         // give it ample time to run...
         tokio::time::sleep(Duration::from_secs(1)).await;
         // signal it to shutdown...
@@ -561,6 +579,7 @@ mod mock {
                 shutdown_timeout: Duration::from_millis(800),
                 ..Default::default()
             }),
+            Arc::new(Notify::new()),
         )
         .unwrap();
 
@@ -643,11 +662,18 @@ pub trait Backend {
 /// [indielinks]: crate
 pub struct BackgroundTasks {
     storage: Arc<dyn Backend + Send + Sync>,
+    force_read: Arc<Notify>,
 }
 
 impl BackgroundTasks {
-    pub fn new(storage: Arc<dyn Backend + Send + Sync>) -> BackgroundTasks {
-        BackgroundTasks { storage }
+    pub fn new(
+        storage: Arc<dyn Backend + Send + Sync>,
+        force_read: Arc<Notify>,
+    ) -> BackgroundTasks {
+        BackgroundTasks {
+            storage,
+            force_read,
+        }
     }
 }
 
@@ -660,7 +686,10 @@ where
     async fn send(&self, task: T) -> Result<()> {
         let tag = T::get_tag();
         let buf = rmp_serde::to_vec_named(&task).context(TaskSerSnafu)?;
-        self.storage.write_task(&tag, &buf).await
+        self.storage
+            .write_task(&tag, &buf)
+            .await
+            .inspect(|_| self.force_read.notify_one())
     }
 }
 

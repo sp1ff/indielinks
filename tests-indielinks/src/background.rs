@@ -28,7 +28,7 @@ use governor::{Quota, RateLimiter};
 use libtest_mimic::Failed;
 use nonzero::nonzero;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tower_gcra::extractors::KeyedDashmapMiddleware;
 use tracing::debug;
 use url::Url;
@@ -172,7 +172,8 @@ pub async fn first_background(
     debug!("first_background!");
     // Ok: we have a `TasksBackend` instance. We'll use this to construct a `BackgroundTasks`
     // instance. This can both send & process tasks via `backend`.
-    let tasks = Arc::new(BackgroundTasks::new(backend));
+    let force_read = Arc::new(Notify::new());
+    let tasks = Arc::new(BackgroundTasks::new(backend, force_read.clone()));
     // Now we'll create a "sender" backed by `tasks`; I don't specialize it yet, since the `Sender`
     // trait is parameterized by task type. We'll give *this* to the indielinks state, and
     // specialize at send time:
@@ -241,6 +242,7 @@ pub async fn first_background(
             shutdown_timeout: Duration::from_secs(30),
             ..Default::default()
         }),
+        force_read,
     )
     .unwrap();
 

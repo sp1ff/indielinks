@@ -82,7 +82,7 @@
     background-tasks = {
         default-timeout = { secs = 5, nanos = 0 },
         max-concurrent-tasks = 16,
-        sleep-duration = { secs = 1, nanos = 0 },
+        sleep-duration = { secs = 600, nanos = 0 }, # ten minutes
         shutdown-timeout = { secs = 0, nanos = 500000000 }, # 500ms
         pickup-timeout = { secs = 1, nanos = 0 }
     },
