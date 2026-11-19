@@ -1,6 +1,6 @@
 indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
-* UNRELEASED
+* 0.0.9
 
 ** Bugfixes
 
@@ -8,7 +8,7 @@ indielinks NEWS -- history of user-visible changes       -*- outline -*-
 ** Operational changes
 
 *** Return 413 Content Too Large on large payloads
-*** Introduce `traceing_log_error`
+*** Introduce `tracing_log_error`
 
 When logging failures to fetch Outbox items, use a proper error reporter.
 * 0.0.8

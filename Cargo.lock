@@ -3612,7 +3612,7 @@ dependencies = [
 
 [[package]]
 name = "indielinks"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "ammonia",
  "approx",
@@ -3706,7 +3706,7 @@ dependencies = [
 
 [[package]]
 name = "indielinks-cache"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3732,7 +3732,7 @@ dependencies = [
 
 [[package]]
 name = "indielinks-clients"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "aws-sdk-dynamodb",
  "bytes",
@@ -3767,7 +3767,7 @@ dependencies = [
 
 [[package]]
 name = "indielinks-fe"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "chrono",
  "console_error_panic_hook",
@@ -3800,7 +3800,7 @@ dependencies = [
 
 [[package]]
 name = "indielinks-shared"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "async-trait",
  "atom_syndication",
@@ -7346,7 +7346,7 @@ dependencies = [
 
 [[package]]
 name = "tests-indielinks"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "approx",
  "async-trait",
@@ -7399,7 +7399,7 @@ dependencies = [
 
 [[package]]
 name = "tests-indielinks-cache"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "async-trait",
  "axum",
@@ -7426,7 +7426,7 @@ dependencies = [
 
 [[package]]
 name = "tests-support"
-version = "0.0.8"
+version = "0.0.9"
 dependencies = [
  "async-trait",
  "inventory",
