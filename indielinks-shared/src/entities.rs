@@ -331,6 +331,13 @@ impl Username {
                 .build(),
             )
     }
+    pub fn from_static(name: &'static str) -> Username {
+        if check_username(name) {
+            Username(name.to_owned())
+        } else {
+            panic!("{name} is not a valid Username")
+        }
+    }
 }
 
 impl AsRef<str> for Username {

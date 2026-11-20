@@ -99,7 +99,7 @@ use tests_indielinks::{
         IndielinksDownSingleNode, IndielinksUpClustered, IndielinksUpParams,
         IndielinksUpSingleNode, PurgeRaftLogsParams, ScyllaConfig, ScyllaHelper,
     },
-    home_timeline::{timeline_before, timeline_empty, timeline_initial},
+    home_timeline::{bad_page, timeline_before, timeline_empty, timeline_initial},
     outboxes::outbox_smoke_test,
     post_reply_timeline::{post_replies_endpoint, post_reply_timeline},
     raft_logs::smoke as raft_logs_smoke,
@@ -1171,6 +1171,15 @@ inventory::submit!(Test {
         FixtureId::DynamoDBSingleNode,
         FixtureId::DynamoDBCluster
     ]),
+});
+
+inventory::submit!(Test {
+    name: "103timeline_parse_failure",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(bad_page(helper.indielinks(), version, pepper, helper))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode,]),
 });
 
 inventory::submit!(Test {

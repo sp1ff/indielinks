@@ -932,7 +932,7 @@ async fn get_profile(
                 .into_response()
         }
         Err(err) => {
-            error!("{err:?}");
+            warn!("{err:?}");
             user_profile_gets_failures.add(1, &[]);
             StatusCode::UNAUTHORIZED.into_response()
         }
