@@ -78,7 +78,7 @@ use nonzero::nonzero;
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use snafu::{Backtrace, ResultExt, Snafu};
 use tap::Pipe;
-use tracing::{debug, error};
+use tracing::debug;
 use tracing_log_error::log_error;
 use url::Url;
 
@@ -582,10 +582,8 @@ impl Timeline {
             }
         })
         // Log the errors...
-        .inspect(|item| {
-            if let Err(err) = item {
-                error!("{err:?}")
-            }
+        .inspect_err(|err| {
+            log_error!(err, "initial timeline fetch failed");
         })
         .collect::<Vec<_>>()
         .await
@@ -774,9 +772,9 @@ impl Timeline {
             .await
             .into_iter()
             .flatten()
-            .collect::<StdResult<Vec<Item>, _>>()
-            .inspect_err(|err| error!("While growing the timeline: {err:?}"))?
-            .into_iter()
+            // log the errors, but don't fail the entire method on them
+            .map(|result| result.inspect_err(|err| log_error!(err, "timeline grow failed")))
+            .filter_map(Result::ok)
             .for_each(|item| {
                 self.items.insert(PostKey::new(&item), item);
             });
