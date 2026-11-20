@@ -626,7 +626,7 @@ async fn login(
                 .unwrap()
         }
         Err(Error::Password { username, .. }) => {
-            error!("Bad password for user {}", username);
+            warn!("Bad password for user {}", username);
             // It would be useful to tag this metric by "username", so as to be able to tease-out
             // problematic users when the underlying metric is, overall, behaving well. Regrettably,
             // each *value* for a tag creates a new metric series in AWS CloudWatch, leading to a
