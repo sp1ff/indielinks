@@ -1209,7 +1209,7 @@ async fn actor(
                 Err(err) => handle_err(err, actor_errors.deref()),
             },
         },
-        Err(err @ Error::NoUser { .. }) => {
+        Err(err @ Error::User { .. }) => {
             error!("{}", err);
             posts_served.add(1, &[]);
             StatusCode::NOT_FOUND.into_response()
