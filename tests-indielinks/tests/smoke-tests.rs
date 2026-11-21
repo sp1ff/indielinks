@@ -90,7 +90,7 @@ use tests_indielinks::{
         as_follower, context_with_mastodon, posting_creates_note, request_forgery, send_follow,
         send_follow_by_handle, test_sanitization,
     },
-    actor::like_actor_mismatch,
+    actor::{bad_actor_gives_404, like_actor_mismatch},
     counts::test_counts,
     delicious::{delicious_smoke_test, posts_all, posts_recent, tags_rename_and_delete},
     follow::accept_follow_smoke,
@@ -99,7 +99,7 @@ use tests_indielinks::{
         IndielinksDownSingleNode, IndielinksUpClustered, IndielinksUpParams,
         IndielinksUpSingleNode, PurgeRaftLogsParams, ScyllaConfig, ScyllaHelper,
     },
-    home_timeline::{bad_page, timeline_before, timeline_empty, timeline_initial},
+    home_timeline::{bad_page, questions, timeline_before, timeline_empty, timeline_initial},
     outboxes::outbox_smoke_test,
     post_reply_timeline::{post_replies_endpoint, post_reply_timeline},
     raft_logs::smoke as raft_logs_smoke,
@@ -1103,6 +1103,12 @@ inventory::submit!(Test {
 });
 
 inventory::submit!(Test {
+    name: "088bad_actor_gives_404",
+    test_fn: |_: Configuration, helper| { Box::pin(bad_actor_gives_404(helper.indielinks())) },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode]),
+});
+
+inventory::submit!(Test {
     name: "090context_with_mastodon",
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
@@ -1178,6 +1184,15 @@ inventory::submit!(Test {
     test_fn: |cfg: Configuration, helper| {
         let (version, pepper) = cfg.pepper.current_pepper().unwrap();
         Box::pin(bad_page(helper.indielinks(), version, pepper, helper))
+    },
+    fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode,]),
+});
+
+inventory::submit!(Test {
+    name: "104timeline_test_questions",
+    test_fn: |cfg: Configuration, helper| {
+        let (version, pepper) = cfg.pepper.current_pepper().unwrap();
+        Box::pin(questions(helper.indielinks(), version, pepper, helper))
     },
     fixtures: Some(&[FixtureId::ScyllaSingleNode, FixtureId::DynamoDBSingleNode,]),
 });

@@ -198,7 +198,8 @@ pub async fn outbox_smoke_test(
         .iter()
         .map(|item| match item {
             AnnounceOrCreate::Create(c) => match c.object() {
-                CreateObject::Note(note) => note,
+                CreateObject::Note(note) => note.clone(),
+                CreateObject::Question(question) => question.clone().into(),
             },
             AnnounceOrCreate::Announce(_) => panic!("unexpected Announce in outbox"),
         })
