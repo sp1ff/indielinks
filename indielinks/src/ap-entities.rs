@@ -129,6 +129,7 @@ use chrono::{DateTime, Utc};
 use either::Either;
 use http::{Method, Request};
 use lazy_static::lazy_static;
+use nonempty_collections::NEVec;
 use picky::key::PublicKey as PickyPublicKey;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -144,6 +145,7 @@ use indielinks_shared::{
     api::FeedPost,
     entities::{Post, PostId, UserPrivateKey, Username},
     known_good,
+    nonempty_string::NonEmptyString,
     origin::Origin,
 };
 
@@ -573,6 +575,7 @@ pub enum Type {
     Announce,
     Application,
     Collection,
+    CollectionPage,
     Create,
     Delete,
     Follow,
@@ -581,7 +584,7 @@ pub enum Type {
     Person,
     OrderedCollection,
     OrderedCollectionPage,
-    CollectionPage,
+    Question,
 }
 
 impl std::fmt::Display for Type {
@@ -595,6 +598,7 @@ impl std::fmt::Display for Type {
                 Type::Announce => "Announce",
                 Type::Application => "Application",
                 Type::Collection => "Collection",
+                Type::CollectionPage => "CollectionPage",
                 Type::Create => "Create",
                 Type::Delete => "Delete",
                 Type::Follow => "Follow",
@@ -603,7 +607,7 @@ impl std::fmt::Display for Type {
                 Type::Person => "Person",
                 Type::OrderedCollection => "OrderedCollection",
                 Type::OrderedCollectionPage => "OrderedCollectionPage",
-                Type::CollectionPage => "CollectionPage",
+                Type::Question => "Question",
             }
         )
     }
@@ -1258,7 +1262,8 @@ impl ToJld for Replies {
     }
 }
 
-/// "Represents a short written work typically less than a single paragraph in length." ([Activity Volcabulary])
+/// "Represents a short written work typically less than a single paragraph in length." ([Activity
+/// Volcabulary])
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
@@ -1505,6 +1510,79 @@ impl ToJld for Note {
     }
 }
 
+impl From<Question> for Note {
+    fn from(value: Question) -> Self {
+        Self {
+            id: value.id,
+            summary: value.summary,
+            in_reply_to: value.in_reply_to,
+            published: value.published,
+            url: value.url,
+            attributed_to: value.attributed_to,
+            to: value.to,
+            cc: value.cc,
+            content: value.content,
+            content_map: value.content_map,
+            replies: value.replies,
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                            Question                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// {
+//     "type": "Note",
+//     "name": "Tea",
+//     "replies": {
+//         "type": "Collection",
+//         "totalItems": 91
+//     }
+// }
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Choice {
+    r#type: Type,
+    name: NonEmptyString,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum Choices {
+    OneOf(NEVec<Choice>),
+    AnyOf(NEVec<Choice>),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Question {
+    id: Url,
+    summary: Option<String>,
+    in_reply_to: Option<Url>,
+    published: DateTime<Utc>,
+    url: Option<Url>,
+    attributed_to: Url,
+    to: Vec<Url>,
+    cc: Vec<Url>,
+    content: SanitizedHtml,
+    // Should be using crate `isolang`: <https://docs.rs/isolang/latest/isolang/>
+    content_map: Option<HashMap<String, SanitizedHtml>>,
+    #[serde(flatten)]
+    choices: Option<Choices>,
+    replies: Option<Replies>,
+    // Yet to be implemented:
+    // - tag
+    // - likes (Collection)
+    // - shares (Collection)
+}
+
+impl ToJld for Question {
+    fn get_type(&self) -> Type {
+        Type::Question
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                             Create                                             //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1513,6 +1591,7 @@ impl ToJld for Note {
 #[serde(tag = "type")]
 pub enum CreateObject {
     Note(Note),
+    Question(Question),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1572,6 +1651,7 @@ impl Create {
     pub fn object_id(&self) -> Result<Url> {
         match self.object {
             CreateObject::Note(ref note) => Ok(note.id.clone()),
+            CreateObject::Question(ref question) => Ok(question.id.clone()),
         }
     }
 }

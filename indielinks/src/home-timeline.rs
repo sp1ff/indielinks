@@ -390,6 +390,7 @@ impl Outbox {
                     .context(ApResolutionSnafu)?,
                 AnnounceOrCreate::Create(create) => match create.object() {
                     crate::ap_entities::CreateObject::Note(note) => note.clone(),
+                    crate::ap_entities::CreateObject::Question(question) => question.clone().into(),
                 },
             }
             .pipe(Box::new)

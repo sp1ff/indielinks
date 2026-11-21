@@ -871,6 +871,7 @@ async fn accept_create(
     // corresponding to a Post made by some user.
     let note = match create.object() {
         ap_entities::CreateObject::Note(note) => note.clone(),
+        ap_entities::CreateObject::Question(question) => question.clone().into(),
     };
 
     debug!("The Create denotes the creation of the note {:?}", note);

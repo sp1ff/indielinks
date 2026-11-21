@@ -17,6 +17,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
+use http::StatusCode;
 use libtest_mimic::Failed;
 use picky::key::PrivateKey;
 use reqwest::{Client, Url};
@@ -98,6 +99,26 @@ pub async fn like_actor_mismatch(
         reqwest::StatusCode::BAD_REQUEST,
         "Like with mismatched actor should be rejected with 400 Bad Request"
     );
+
+    Ok(())
+}
+
+pub async fn bad_actor_gives_404(indielinks: Url) -> Result<(), Failed> {
+    let client = Client::builder()
+        .user_agent(concat!(
+            "indielinks integration tests/",
+            env!("CARGO_PKG_VERSION"),
+            "; +sp1ff@pobox.com"
+        ))
+        .build()?;
+
+    let response = client
+        .get(format!("{indielinks}users/i-dont-exist"))
+        .header(reqwest::header::CONTENT_TYPE, "application/activity+json")
+        .send()
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     Ok(())
 }
