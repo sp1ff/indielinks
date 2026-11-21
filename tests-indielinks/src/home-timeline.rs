@@ -20,8 +20,10 @@
 
 use std::{collections::HashSet, sync::Arc};
 
+use http::StatusCode;
 use lazy_static::lazy_static;
 use libtest_mimic::Failed;
+use nonzero::nonzero;
 use reqwest::{Client, Url};
 use secrecy::SecretString;
 use tap::{Pipe, TryConv};
@@ -312,6 +314,100 @@ pub async fn timeline_empty(
         .await?;
 
     assert!(rsp.is_none(), "expected empty timeline");
+
+    Ok(())
+}
+
+/// Guard against a regression for a fix I made: failure to parse a single outbox item shouldn't
+/// fail the entire call: it should just skip that item
+pub async fn bad_page(
+    indielinks: Url,
+    pepper_version: PepperVersion,
+    pepper_key: Pepper,
+    helper: Arc<dyn Helper + Send + Sync>,
+) -> Result<(), Failed> {
+    let username = Username::from_static("home-timeline-parse-failure-regression");
+    helper.remove_user(&username).await?;
+
+    let mock_server = MockServer::start().await;
+    let mock_user = PeerUser::new()?;
+    let mock_origin: Origin = mock_server.uri().try_into()?;
+
+    peer_actor(&mock_user, &mock_origin)
+        .await?
+        .mount(&mock_server)
+        .await;
+
+    let outbox_url = make_user_outbox(mock_user.name(), &mock_origin)?;
+    let page_url = Url::parse(&format!("{outbox_url}?page=true"))?;
+
+    let num_items = 20;
+
+    let page_jld = include_str!("bad-outbox-page-1.json");
+
+    let outbox = Outbox {
+        id: outbox_url.clone(),
+        total_items: Some(num_items),
+        first: page_url.clone(),
+        last: Some(page_url),
+    };
+    let outbox_jld = Jld::new(&outbox, None)?.to_string();
+
+    let page_mock = Mock::given(method("GET"))
+        .and(path(format!("/users/{}/outbox", mock_user.name())))
+        .and(query_param("page", "true"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(page_jld)
+                .insert_header("Content-Type", "application/activity+json"),
+        );
+
+    let root_mock = Mock::given(method("GET"))
+        .and(path(format!("/users/{}/outbox", mock_user.name())))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(outbox_jld)
+                .insert_header("Content-Type", "application/activity+json"),
+        );
+
+    page_mock.mount(&mock_server).await;
+    root_mock.mount(&mock_server).await;
+
+    let api_key = helper
+        .create_user(
+            &pepper_version,
+            &pepper_key,
+            &username,
+            &TEST_PASSWORD,
+            &HashSet::new(),
+            &HashSet::from([(mock_user.id(&mock_origin)?.into(), FollowId::default())]),
+        )
+        .await?;
+
+    let client = Client::builder()
+        .user_agent(concat!(
+            "indielinks integration tests/",
+            env!("CARGO_PKG_VERSION"),
+            "; +sp1ff@pobox.com"
+        ))
+        .build()?;
+
+    let response = client
+        .post(format!("{indielinks}api/v1/users/timeline"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {username}:{api_key}"),
+        )
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::to_string(&TimelineReq::Initial {
+            max_posts: None,
+        })?)
+        .send()
+        .await?;
+
+    // We won't get anything back, because we couldn't parse the outbox, but we shouldn't give a
+    // 500, either.
+    assert!(response.status() == StatusCode::OK);
 
     Ok(())
 }
