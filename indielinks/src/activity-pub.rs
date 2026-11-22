@@ -461,6 +461,7 @@ impl Task<Context> for SendCreate {
     /// Send [Create] Activities regarding a user post.
     ///
     /// [Create]: https://www.w3.org/TR/activitystreams-vocabulary/#dfn-create
+    #[tracing::instrument(skip_all, fields(post.id = %self.postid))]
     async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
         debug!(
             "Sending a Create for the Note corresponding to Post {}",
@@ -658,6 +659,7 @@ impl SendLike {
 
 #[async_trait]
 impl Task<Context> for SendLike {
+    #[tracing::instrument(skip_all, fields(like.id = %self.id))]
     async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
         debug!(
             "Sending a like for {} on behalf of {}",
@@ -767,6 +769,7 @@ impl SendReply {
 
 #[async_trait]
 impl Task<Context> for SendReply {
+    #[tracing::instrument(skip_all, fields(reply.id = %self.id))]
     async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
         debug!(
             "Sending a reply to {} on behalf of {}",

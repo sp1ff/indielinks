@@ -1266,6 +1266,7 @@ use background_tasks::Error as BckError;
 
 #[async_trait]
 impl Task<Context> for AcceptFollow {
+    #[tracing::instrument(skip_all, fields(accept.follow.id = %self.follow.object_id()))]
     async fn exec(self: Box<Self>, context: Context) -> StdResult<(), background_tasks::Error> {
         debug!(
             "Sending an Accept in the background for {} to {}",
