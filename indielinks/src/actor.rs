@@ -69,6 +69,7 @@ use tap::Pipe;
 use tokio::sync::Mutex;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{debug, error, info, warn};
+use tracing_log_error::log_error;
 use url::Url;
 use uuid::Uuid;
 
@@ -714,7 +715,7 @@ async fn verify_signature_core(
     }
 
     // With all that done, we can finally verify the signature:
-    parsed_http_signature
+    if parsed_http_signature
         .verifier()
         .signature_method(
             &public_key,
@@ -723,7 +724,33 @@ async fn verify_signature_core(
         .generate_signing_string_using_http_request(&parts)
         .now(Utc::now().timestamp() as u64)
         .verify()
-        .context(BadSignatureSnafu)?;
+        .inspect_err(|err| log_error!(err, "signature validation failed"))
+        .is_err()
+    {
+        // This is a bit speculative: I've been seeing a number of validation failure on messages
+        // signed by the indieweb.social instance actor. I compared the public key logged above with
+        // that which was returned to a `curl` call, and they were two different keys, leading me to
+        // suspect they're rotating the key.
+
+        // Since a bad signature is so rare, I decided to try flushing the `Actor` from the cache,
+        // re-fetch, and try again. We'll see.
+        let actor = ap_resolver
+            .refresh_actor(principal.as_ref(), &key_id)
+            .await
+            .context(ResolveKeyIdSnafu)?;
+        let public_key = actor.public_key().context(PublicKeySnafu)?;
+        parsed_http_signature
+            .verifier()
+            .signature_method(
+                &public_key,
+                SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+            )
+            .generate_signing_string_using_http_request(&parts)
+            .now(Utc::now().timestamp() as u64)
+            .verify()
+            .context(BadSignatureSnafu)
+            .inspect_err(|err| log_error!(err, "SECOND signature validation failed"))?
+    }
 
     // If we're here, we verified the signature; re-assemble the request & pass it on:
     Ok((

@@ -184,59 +184,20 @@ where
     pub async fn get_actor(
         &self,
         principal: Either<&User, &UserPrivateKey>,
-        url: &Url,
+        actor_id: &Url,
     ) -> Result<Actor, F::CacheClient> {
-        if let Some(actor) = self.actors.get(url).await.context(GrpcSnafu)? {
-            debug!("ApResolver cache hit: {} :=> {actor:?}", url.as_str());
-            actor
-        } else if self.origin.matches_url(url) {
-            // This Actor isn't in our cache, but it's an Actor hosted on *this* instance. Skip the
-            // HTTP hop & just grab it from storage.
-            debug!(
-                "ApResolver cache miss: {}. However this appears to be a local user.",
-                url
-            );
-
-            let username =
-                username_from_url(&self.origin, url).context(UsernameSnafu { url: url.clone() })?;
-            let user = user_for_username(self.storage.as_ref(), &username)
-                .await
-                .context(UserSnafu {
-                    username: username.clone(),
-                })?;
-            let actor = Actor::new(&user, &self.origin).context(ActorSnafu)?;
-
-            self.actors
-                .insert(url.clone(), actor.clone())
-                .await
-                .context(GrpcSnafu)?;
-
-            actor
-        } else {
-            debug!(
-                "ApResolver cache miss: {}. This will require an HTTP call",
-                url.as_str()
-            );
-            let actor: Actor = ap_request(
-                &mut self.client.clone(),
-                &self.origin,
-                principal,
-                url,
-                Method::GET,
-                None,
-                &(),
-            )
-            .await
-            .context(ApSnafu)?;
-
-            self.actors
-                .insert(url.clone(), actor.clone())
-                .await
-                .context(GrpcSnafu)?;
-
-            actor
+        if let Some(actor) = self.actors.get(actor_id).await.context(GrpcSnafu)? {
+            return Ok(actor);
         }
-        .pipe(Ok)
+
+        let actor = self.fetch_actor(principal, actor_id).await?;
+
+        self.actors
+            .insert(actor_id.clone(), actor.clone())
+            .await
+            .context(GrpcSnafu)?;
+
+        Ok(actor)
     }
     /// Given an AP "actor ID", retrieve the location of their inbox
     pub async fn actor_id_to_inbox(
@@ -316,6 +277,14 @@ where
             .await
             .context(GrpcSnafu)
     }
+    /// Retrieve some metrics about this resolver
+    pub fn get_metrics(&self) -> Metrics {
+        Metrics {
+            actor_count: self.actors.count() as u64,
+            note_count: self.notes.count() as u64,
+            handle_count: self.handles.count() as u64,
+        }
+    }
     /// Given a handle in the form of @username@instance, retrieve the corresponding Actor
     pub async fn handle_to_actor(
         &self,
@@ -383,12 +352,64 @@ where
         }
         .pipe(Ok)
     }
-    /// Retrieve some metrics about this resolver
-    pub fn get_metrics(&self) -> Metrics {
-        Metrics {
-            actor_count: self.actors.count() as u64,
-            note_count: self.notes.count() as u64,
-            handle_count: self.handles.count() as u64,
+    /// Refresh an Actor
+    pub async fn refresh_actor(
+        &self,
+        principal: Either<&User, &UserPrivateKey>,
+        actor_id: &Url,
+    ) -> Result<Actor, F::CacheClient> {
+        debug!("refreshing actor {}", actor_id.as_str());
+
+        let actor = self.fetch_actor(principal, actor_id).await?;
+
+        self.actors
+            .insert(actor_id.clone(), actor.clone())
+            .await
+            .context(GrpcSnafu)?;
+
+        Ok(actor)
+    }
+
+    // Core "fetch" logic: just get the requested `Actor` and return it; don't touch the underlying
+    // cache.
+    async fn fetch_actor(
+        &self,
+        principal: Either<&User, &UserPrivateKey>,
+        actor_id: &Url,
+    ) -> Result<Actor, F::CacheClient> {
+        if self.origin.matches_url(actor_id) {
+            // It's an Actor hosted on *this* instance: skip the HTTP hop & just grab it from
+            // storage.
+            debug!(
+                "fetching actor {}; they appear to be local",
+                actor_id.as_str()
+            );
+
+            let username = username_from_url(&self.origin, actor_id).context(UsernameSnafu {
+                url: actor_id.clone(),
+            })?;
+            let user = user_for_username(self.storage.as_ref(), &username)
+                .await
+                .context(UserSnafu {
+                    username: username.clone(),
+                })?;
+            Actor::new(&user, &self.origin).context(ActorSnafu)
+        } else {
+            debug!(
+                "fetching actor {}; this will require an HTTP call",
+                actor_id.as_str()
+            );
+            ap_request(
+                &mut self.client.clone(),
+                &self.origin,
+                principal,
+                actor_id,
+                Method::GET,
+                None,
+                &(),
+            )
+            .await
+            .context(ApSnafu)
         }
     }
 }
