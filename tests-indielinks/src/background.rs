@@ -83,9 +83,6 @@ impl Task<Context> for SleepTask1 {
         debug!("SleepTask1 executing...done.");
         Ok(())
     }
-    fn timeout(&self) -> Option<Duration> {
-        Some(self.sleep * 2)
-    }
 }
 
 // 4965b08e-f72a-47a7-b9fa-a717bad5272a
@@ -136,9 +133,6 @@ impl Task<Context> for SleepTask2 {
         DATA2.store(self.on_done, Ordering::SeqCst);
         debug!("SleepTask2 executing...done.");
         Ok(())
-    }
-    fn timeout(&self) -> Option<Duration> {
-        Some(self.sleep * 2)
     }
 }
 

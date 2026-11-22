@@ -178,7 +178,6 @@ pub trait Task<C>: Send {
     // not much choice given that this will be invoked by `process()` (below) which *must* deal with
     // tasks in a generic way.
     async fn exec(self: Box<Self>, context: C) -> Result<()>;
-    fn timeout(&self) -> Option<Duration>;
 }
 
 /// A [Task] that can return a per-type "tag"; this is useful for deserialization.
@@ -207,7 +206,10 @@ pub trait Sender<C, T: Task<C>> {
 pub trait Receiver<C> {
     type TaskId: Display + Send + 'static;
     async fn mark_complete(&self, cookie: Self::TaskId) -> Result<()>;
-    async fn take_task(&self) -> Result<Option<(Box<dyn Task<C>>, Self::TaskId)>>;
+    async fn take_task(
+        &self,
+        lease_duration: Duration,
+    ) -> Result<Option<(Box<dyn Task<C>>, Self::TaskId)>>;
 }
 
 /// Blanket implementation for [Arc]s; if `T` is a [Receiver], then so is `Arc<T>`.
@@ -217,8 +219,11 @@ impl<C, T: Receiver<C> + Send + Sync> Receiver<C> for Arc<T> {
     async fn mark_complete(&self, cookie: Self::TaskId) -> Result<()> {
         self.as_ref().mark_complete(cookie).await
     }
-    async fn take_task(&self) -> Result<Option<(Box<dyn Task<C>>, Self::TaskId)>> {
-        self.as_ref().take_task().await
+    async fn take_task(
+        &self,
+        lease_duration: Duration,
+    ) -> Result<Option<(Box<dyn Task<C>>, Self::TaskId)>> {
+        self.as_ref().take_task(lease_duration).await
     }
 }
 
@@ -267,28 +272,24 @@ impl Processor {
 
 /// Configuration parameters for processing background tasks
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct Config {
-    /// Timeout that will be used for any task that doesn't define its own
-    #[serde(rename = "default-timeout")]
-    pub default_timeout: Duration,
+    /// Timeout that will be used for all tasks
+    pub task_timeout: Duration,
     /// The maximum number of tasks to drive concurrently
-    #[serde(rename = "max-concurrent-tasks")]
     pub max_concurrent_tasks: usize,
     /// Amount of time to sleep when we have no tasks in process
-    #[serde(rename = "sleep-duration")]
     pub sleep_duration: Duration,
     /// Amount of time to wait for in-flight tasks on shutdown
-    #[serde(rename = "shutdown-timeout")]
     pub shutdown_timeout: Duration,
     /// Maximum amount of time to drive in-flight tasks without attempting to pick-up new tasks
-    #[serde(rename = "pickup-timeout")]
     pub pickup_timeout: Duration,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            default_timeout: Duration::from_secs(5),
+            task_timeout: Duration::from_secs(5),
             max_concurrent_tasks: 16,
             sleep_duration: Duration::from_secs(1),
             shutdown_timeout: Duration::from_millis(500),
@@ -309,10 +310,11 @@ define_metric! { "background.processor.tasks.inflight",  background_processor_ta
 // strategy.
 async fn take_task<C: Clone + 'static, R: Receiver<C>>(
     receiver: &R,
+    lease_duration: Duration,
 ) -> Result<Option<(Box<dyn Task<C>>, R::TaskId)>> {
     let mut num_attempts = 0u32;
     loop {
-        match receiver.take_task().await {
+        match receiver.take_task(lease_duration).await {
             res @ Ok(_) => break res,
             err @ Err(Error::Id { uuid: _ }) => break err,
             Err(err) => {
@@ -353,10 +355,14 @@ async fn process<C: Clone + 'static, R: Receiver<C>>(
     while !done {
         // so long as we don't have too much on our plate, try 'n grab another task:
         if futures.len() < config.max_concurrent_tasks {
-            if let Some((task, cookie)) = take_task(&receiver).await.context(TakeSnafu)? {
+            if let Some((task, cookie)) =
+                take_task(&receiver, config.task_timeout + Duration::from_secs(30))
+                    .await
+                    .context(TakeSnafu)?
+            {
                 let id = futures
                     .spawn(tokio::time::timeout(
-                        task.timeout().unwrap_or(config.default_timeout),
+                        config.task_timeout,
                         task.exec(context.clone()),
                     ))
                     .id();
@@ -484,9 +490,6 @@ mod mock {
         async fn exec(self: Box<Self>, _: ()) -> Result<()> {
             Ok(tokio::time::sleep(self.duration).await)
         }
-        fn timeout(&self) -> Option<Duration> {
-            Some(Duration::from_secs(10))
-        }
     }
 
     struct InMemory {
@@ -502,7 +505,10 @@ mod mock {
             // Should check for error, here-- what if `cookie` hasn't been checked-out?
             Ok(())
         }
-        async fn take_task(&self) -> Result<Option<(Box<dyn Task<()>>, Self::TaskId)>> {
+        async fn take_task(
+            &self,
+            _: Duration,
+        ) -> Result<Option<(Box<dyn Task<()>>, Self::TaskId)>> {
             let mut m = self.tasks.lock().unwrap();
             let key = { m.keys().next().cloned() };
             match key {
@@ -652,8 +658,11 @@ inventory::collect!(BackgroundTask);
 #[async_trait]
 pub trait Backend {
     async fn write_task(&self, tag: &Uuid, buf: &[u8]) -> Result<()>;
+    /// The duration should be strictly greater than the task's timeout period
+    // ...which can be difficult, since we won't know the task's timeout until we take the lease &
+    // deserialize it
     // type tag, task id, messagepack-- should probably intro a newtype
-    async fn lease_task(&self) -> Result<Option<(Uuid, Uuid, Vec<u8>)>>;
+    async fn lease_task(&self, lease_duration: Duration) -> Result<Option<(Uuid, Uuid, Vec<u8>)>>;
     async fn close_task(&self, uuid: &Uuid) -> Result<()>;
 }
 
@@ -699,8 +708,11 @@ impl Receiver<Context> for BackgroundTasks {
     async fn mark_complete(&self, cookie: Self::TaskId) -> Result<()> {
         self.storage.close_task(&cookie).await
     }
-    async fn take_task(&self) -> Result<Option<(Box<dyn Task<Context>>, Self::TaskId)>> {
-        match self.storage.lease_task().await {
+    async fn take_task(
+        &self,
+        lease_duration: Duration,
+    ) -> Result<Option<(Box<dyn Task<Context>>, Self::TaskId)>> {
+        match self.storage.lease_task(lease_duration).await {
             Ok(opt) => match opt {
                 Some((tag, id, buf)) => {
                     match inventory::iter::<BackgroundTask>().find(|t| t.id == tag) {
@@ -742,9 +754,6 @@ mod test {
         async fn exec(self: Box<Self>, _context: Context) -> Result<()> {
             tokio::time::sleep(self.sleep).await;
             Ok(())
-        }
-        fn timeout(&self) -> Option<Duration> {
-            None
         }
     }
 

@@ -32,6 +32,7 @@ use std::{
     pin::Pin,
     result::Result as StdResult,
     task::Poll,
+    time::Duration as StdDuration,
 };
 
 use async_trait::async_trait;
@@ -2216,7 +2217,10 @@ impl TasksBackend for Client {
             .await?;
         Ok(())
     }
-    async fn lease_task(&self) -> StdResult<Option<(Uuid, Uuid, Vec<u8>)>, BckError> {
+    async fn lease_task(
+        &self,
+        duration: StdDuration,
+    ) -> StdResult<Option<(Uuid, Uuid, Vec<u8>)>, BckError> {
         let mut tasks = self
             .client
             .scan()
@@ -2235,8 +2239,12 @@ impl TasksBackend for Client {
         // Next, sort 'em by creation time...
         tasks.sort_by_key(|lhs| lhs.created);
 
-        async fn take_lease(client: &::aws_sdk_dynamodb::Client, t: &FlatTask) -> Result<bool> {
-            let new_lease = Utc::now() + Duration::seconds(60);
+        async fn take_lease(
+            client: &::aws_sdk_dynamodb::Client,
+            t: &FlatTask,
+            duration: StdDuration,
+        ) -> Result<bool> {
+            let new_lease = Utc::now() + duration;
             client
                 .update_item()
                 .table_name("tasks")
@@ -2260,7 +2268,10 @@ impl TasksBackend for Client {
 
         let mut task: Option<FlatTask> = None;
         for t in tasks {
-            if take_lease(&self.client, &t).await.unwrap_or(false) {
+            if take_lease(&self.client, &t, duration)
+                .await
+                .unwrap_or(false)
+            {
                 task = Some(t);
                 break;
             }

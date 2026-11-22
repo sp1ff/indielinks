@@ -42,7 +42,7 @@
 //!
 //! For now, I'm going to lean toward the permissive.
 
-use std::{ops::Deref, result::Result as StdResult, sync::Arc, time::Duration};
+use std::{ops::Deref, result::Result as StdResult, sync::Arc};
 
 use async_trait::async_trait;
 use axum::{
@@ -1290,9 +1290,6 @@ impl Task<Context> for AcceptFollow {
         }
 
         exec1(self, context).await.map_err(BckError::new)
-    }
-    fn timeout(&self) -> Option<Duration> {
-        None
     }
 }
 

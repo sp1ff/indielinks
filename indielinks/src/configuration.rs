@@ -377,7 +377,7 @@ secure-cookies = true
 allowed-origins = []
 
 [background-tasks]
-default-timeout = { secs = 5, nanos = 0 }
+task-timeout = { secs = 5, nanos = 0 }
 max-concurrent-tasks = 16
 sleep-duration = { secs = 1, nanos = 0 }
 shutdown-timeout = { secs = 0, nanos = 500000000 }

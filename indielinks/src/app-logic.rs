@@ -22,9 +22,7 @@
 //! I've refactored the common logic here, and I hope this module will grow into a general-purpose
 //! "application logic" repository.
 
-use std::{
-    collections::HashSet, num::NonZero, result::Result as StdResult, sync::Arc, time::Duration,
-};
+use std::{collections::HashSet, num::NonZero, result::Result as StdResult, sync::Arc};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -1447,9 +1445,6 @@ impl Task<Context> for SendFollow {
         exec1(self, context)
             .await
             .map_err(background_tasks::Error::new)
-    }
-    fn timeout(&self) -> Option<Duration> {
-        Some(Duration::from_secs(60))
     }
 }
 

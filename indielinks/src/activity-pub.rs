@@ -606,11 +606,6 @@ impl Task<Context> for SendCreate {
             .await
             .map_err(background_tasks::Error::new)
     }
-    fn timeout(&self) -> Option<Duration> {
-        // Not sure what I want to do, here... At a minimum, this should come from configuration
-        // (and not be hard-coded).
-        Some(Duration::from_secs(60))
-    }
 }
 
 impl TaggedTask<Context> for SendCreate {
@@ -709,9 +704,6 @@ impl Task<Context> for SendLike {
         exec1(self, context)
             .await
             .map_err(background_tasks::Error::new)
-    }
-    fn timeout(&self) -> Option<Duration> {
-        Some(Duration::from_secs(60))
     }
 }
 
@@ -947,9 +939,6 @@ impl Task<Context> for SendReply {
         exec1(self, context)
             .await
             .map_err(background_tasks::Error::new)
-    }
-    fn timeout(&self) -> Option<Duration> {
-        Some(Duration::from_secs(300))
     }
 }
 

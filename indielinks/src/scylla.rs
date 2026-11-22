@@ -35,6 +35,7 @@ use std::{
     result::Result as StdResult,
     sync::Arc,
     task::Poll,
+    time::Duration as StdDuration,
 };
 
 use async_trait::async_trait;
@@ -2380,7 +2381,10 @@ impl TasksBackend for Session {
         Ok(())
     }
     // type tag, task id, messagepack-- should probably intro a newtype
-    async fn lease_task(&self) -> StdResult<Option<(Uuid, Uuid, Vec<u8>)>, BackgroundTaskError> {
+    async fn lease_task(
+        &self,
+        duration: StdDuration,
+    ) -> StdResult<Option<(Uuid, Uuid, Vec<u8>)>, BackgroundTaskError> {
         // Start by grabbing all eligible tasks; those that are not done and that either don't have
         // leases at all, or expired leases.
         let mut tasks = self
@@ -2401,12 +2405,10 @@ impl TasksBackend for Session {
             session: &::scylla::client::session::Session,
             statement: &PreparedStatement,
             t: &FlatTask,
+            duration: StdDuration,
         ) -> StdResult<bool, BackgroundTaskError> {
             session
-                .execute_unpaged(
-                    statement,
-                    (Utc::now() + Duration::seconds(60), t.id, t.lease_expires),
-                )
+                .execute_unpaged(statement, (Utc::now() + duration, t.id, t.lease_expires))
                 .await?
                 .into_rows_result()?
                 .single_row::<(bool, DateTime<Utc>)>()?
@@ -2423,6 +2425,7 @@ impl TasksBackend for Session {
                 &self.session,
                 &self.prepared_statements[PreparedStatements::TakeLease],
                 &t,
+                duration,
             )
             .await
             .unwrap_or(false)
