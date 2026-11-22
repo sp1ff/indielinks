@@ -44,7 +44,8 @@ use serde::{Deserialize, Serialize};
 use snafu::{prelude::*, Backtrace, IntoError};
 use tap::Pipe;
 use tokio::time::Instant;
-use tracing::{debug, error, warn};
+use tracing::debug;
+use tracing_log_error::log_error;
 use url::Url;
 use uuid::Uuid;
 
@@ -541,9 +542,8 @@ impl Task<Context> for SendCreate {
                 .partition_map(|res| res.map_or_else(Either::Right, Either::Left));
 
             // Let's handle the errors first-- log 'em, then drop 'em (for now):
-            errs.into_iter().for_each(|err| {
-                warn!("Failed to resolve a follower to a shared inbox: {:#?}", err)
-            });
+            errs.into_iter()
+                .for_each(|err| log_error!(err, "failed to resolve a follower to a shared inbox"));
 
             let mut pending_calls = proto_calls
                 .into_iter()
@@ -586,7 +586,7 @@ impl Task<Context> for SendCreate {
                         debug!("successfully sent a create to {}", this_call.inbox);
                     }
                     Err(err) => {
-                        warn!("Failed to a create to {}: {:#?}", this_call.inbox, err);
+                        log_error!(err, "failed to a create to {}", this_call.inbox);
                         this_call.failure_count += 1;
                         this_call.next_call = Instant::now() + this_call.next_delay;
                         this_call.next_delay *= 2;
@@ -805,8 +805,12 @@ impl Task<Context> for SendReply {
                     .collect::<Vec<StdResult<Url, _>>>()
                     .await
                     .into_iter()
-                    .collect::<StdResult<Vec<Url>, _>>()
-                    .context(ApResolverSnafu)?,
+                    .filter_map(|result| {
+                        result
+                            .inspect_err(|err| log_error!(err, "AP resolution failed"))
+                            .ok()
+                    })
+                    .collect::<Vec<Url>>(),
             );
 
             // We add the original author as a recipient:
@@ -827,9 +831,11 @@ impl Task<Context> for SendReply {
                     .collect::<Vec<StdResult<Option<Url>, _>>>()
                     .await
                     .into_iter()
-                    .collect::<StdResult<Vec<Option<Url>>, _>>()
-                    .context(ApResolverSnafu)?
-                    .into_iter()
+                    .filter_map(|result| {
+                        result
+                            .inspect_err(|err| log_error!(err, "AP resolution failed"))
+                            .ok()
+                    })
                     .flatten()
                     .collect::<Vec<Url>>(),
             );
@@ -931,7 +937,7 @@ impl Task<Context> for SendReply {
             // field to the database table, like, `sent` to set ourselves up for retry?
             failures
                 .iter()
-                .for_each(|err| error!("Failed to send a reply: {err:?}"));
+                .for_each(|err| log_error!(err, "failed to send a reply"));
 
             match failures.into_iter().next() {
                 Some(err) => Err(ApSnafu.into_error(err)),
