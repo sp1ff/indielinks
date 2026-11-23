@@ -1,5 +1,28 @@
 indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
+* UNRELEASED
+
+** Bugfixes
+
+*** Make sending `Create`s & `Reply`s more resilient
+
+...by just logging failures to send intermediate results and moving
+on, rather than failing the entire operation.
+*** Make background tasks more resilient to failure
+
+...by making the lease time configurable; a failing task should be
+picked-up much less frequently, now.
+** User-visible changes
+
+*** Re-fetch the Actor on signature validation failure
+
+I've been seeing failures to validate signatures from the
+indieweb.social instance actor; when I fetch the actor manually, the
+public key is different from what I had cached. This is an experiment
+to see if I can catch rotated keys at runtime.
+** Project updates
+
+*** Bump the oldest-supported version of rustc to 1.96
 * 0.0.10
 
 ** Bugfixes
