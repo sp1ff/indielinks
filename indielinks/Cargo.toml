@@ -124,6 +124,8 @@ assets = [
        ["assets/docs.md", "/usr/share/indielinks/templates/docs.md", "644"],
        ["assets/privacy-policy.md", "/usr/share/indielinks/templates/privacy-policy.md", "644"],
        ["assets/terms-of-service.md", "/usr/share/indielinks/templates/terms-of-service.md", "644"],
+       ["assets/robots.txt", "/usr/share/indielinks/assets/robots.txt", "644"],
+       ["assets/llms.txt", "/usr/share/indielinks/assets/llms.txt", "644"]
 ]
 # indielinks requries a post-installation script to be run by the
 # operator before it can startup. If using stystemd, enable the unit,
@@ -154,6 +156,8 @@ assets = [
     ["assets/docs.md", "/usr/share/indielinks/templates/docs.md", "644"],
     ["assets/privacy-policy.md", "/usr/share/indielinks/templates/privacy-policy.md", "644"],
     ["assets/terms-of-service.md", "/usr/share/indielinks/templates/terms-of-service.md", "644"],
+    ["assets/robots.txt", "/usr/share/indielinks/assets/robots.txt", "644"],
+    ["assets/llms.txt", "/usr/share/indielinks/assets/llms.txt", "644"]
 ]
 
 [package.metadata.cargo-shear]

@@ -1,0 +1,5 @@
+# indiemark.sh
+
+del.icio.us on the Fediverse. [About](https://indiemark.sh/about) this site.
+
+Documentation is [here](https://indiemark.sh/docs).
