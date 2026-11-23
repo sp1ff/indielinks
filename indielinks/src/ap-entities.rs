@@ -953,7 +953,7 @@ pub struct Announce {
     actor: ActorField,
     published: DateTime<Utc>,
     to: Vec<Url>,
-    cc: Vec<Url>,
+    cc: Option<Vec<Url>>,
 }
 
 impl Announce {
@@ -972,8 +972,8 @@ impl Announce {
     pub fn to(&self) -> impl Iterator<Item = &Url> {
         self.to.iter()
     }
-    pub fn cc(&self) -> impl Iterator<Item = &Url> {
-        self.cc.iter()
+    pub fn cc(&self) -> Option<impl Iterator<Item = &Url>> {
+        self.cc.as_ref().map(|x| x.iter())
     }
     pub fn from_outgoing_reply(
         reply: &OutgoingReply,
@@ -992,7 +992,7 @@ impl Announce {
             published: reply.posted(),
             to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
                 .context(UrlParseSnafu)?],
-            cc: vec![make_user_followers(username, origin)?],
+            cc: Some(vec![make_user_followers(username, origin)?]),
         })
     }
     pub fn from_outgoing_share(
@@ -1011,7 +1011,7 @@ impl Announce {
             published: share.posted(),
             to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
                 .context(UrlParseSnafu)?],
-            cc: vec![make_user_followers(username, origin)?],
+            cc: Some(vec![make_user_followers(username, origin)?]),
         })
     }
 }
@@ -1262,6 +1262,36 @@ impl ToJld for Replies {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum RepliesField {
+    Inline(Box<Replies>),
+    Iri(Url),
+}
+
+impl RepliesField {
+    pub fn id(&self) -> &Url {
+        match self {
+            RepliesField::Inline(replies) => replies.id(),
+            RepliesField::Iri(url) => url,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum UrlType {
+    Url(Url),
+    Link(Link),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum UrlField {
+    Single(Box<UrlType>),
+    Multiple(Vec<UrlType>),
+}
+
 /// "Represents a short written work typically less than a single paragraph in length." ([Activity
 /// Volcabulary])
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1271,14 +1301,14 @@ pub struct Note {
     summary: Option<String>,
     in_reply_to: Option<Url>,
     published: DateTime<Utc>,
-    url: Option<Url>,
+    url: Option<UrlField>,
     attributed_to: Url,
     to: Vec<Url>,
-    cc: Vec<Url>,
+    cc: Option<Vec<Url>>,
     content: SanitizedHtml,
     // Should be using crate `isolang`: <https://docs.rs/isolang/latest/isolang/>
     content_map: Option<HashMap<String, SanitizedHtml>>,
-    replies: Option<Replies>,
+    replies: Option<RepliesField>,
     // Yet to be implemented:
     // - tag
     // - likes (Collection)
@@ -1329,14 +1359,22 @@ impl Note {
             // Setting this to the same value as `id` for now, but Mastodon sets them to different
             // values: `http://indieweb.social/users/sp1ff/statuses/...` versus
             // `http://indieweb.social/@sp1ff/...`
-            url: Some(make_user_post_id(username, &post.id(), origin)?),
+            url: Some(UrlField::Single(Box::new(UrlType::Url(make_user_post_id(
+                username,
+                &post.id(),
+                origin,
+            )?)))),
             attributed_to: make_user_id(username, origin)?,
             to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
                 .context(UrlParseSnafu)?],
-            cc: vec![make_user_followers(username, origin)?],
+            cc: Some(vec![make_user_followers(username, origin)?]),
             content: post_html.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), post_html)])),
-            replies: Some(Replies::empty(origin, username, &post.id())?),
+            replies: Some(RepliesField::Inline(Box::new(Replies::empty(
+                origin,
+                username,
+                &post.id(),
+            )?))),
         })
     }
     #[allow(clippy::too_many_arguments)]
@@ -1359,13 +1397,13 @@ impl Note {
             summary: None,
             in_reply_to,
             published: Utc::now(),
-            url,
+            url: url.map(|url| UrlField::Single(Box::new(UrlType::Url(url)))),
             attributed_to,
             to: to.collect::<Vec<Url>>(),
-            cc: cc.collect::<Vec<Url>>(),
+            cc: Some(cc.collect::<Vec<Url>>()),
             content: content.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), content)])),
-            replies: Some(replies),
+            replies: Some(RepliesField::Inline(Box::new(replies))),
         })
     }
     pub fn from_reply(reply: &OutgoingReply, username: &Username, origin: &Origin) -> Result<Note> {
@@ -1378,14 +1416,20 @@ impl Note {
             // Setting this to the same value as `id` for now, but Mastodon sets them to different
             // values: `http://indieweb.social/users/sp1ff/statuses/...` versus
             // `http://indieweb.social/@sp1ff/...`
-            url: Some(make_user_reply_id(username, &reply.id(), origin)?),
+            url: Some(UrlField::Single(Box::new(UrlType::Url(
+                make_user_reply_id(username, &reply.id(), origin)?,
+            )))),
             attributed_to: make_user_id(username, origin)?,
             to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
                 .context(UrlParseSnafu)?],
-            cc: vec![make_user_followers(username, origin)?],
+            cc: Some(vec![make_user_followers(username, origin)?]),
             content: html.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), html)])),
-            replies: Some(Replies::empty_for_reply(origin, username, &reply.id())?),
+            replies: Some(RepliesField::Inline(Box::new(Replies::empty_for_reply(
+                origin,
+                username,
+                &reply.id(),
+            )?))),
         })
     }
     pub fn from_share(share: &OutgoingShare, username: &Username, origin: &Origin) -> Result<Note> {
@@ -1398,14 +1442,20 @@ impl Note {
             // Setting this to the same value as `id` for now, but Mastodon sets them to different
             // values: `http://indieweb.social/users/sp1ff/statuses/...` versus
             // `http://indieweb.social/@sp1ff/...`
-            url: Some(make_user_share_id(username, &share.id(), origin)?),
+            url: Some(UrlField::Single(Box::new(UrlType::Url(
+                make_user_share_id(username, &share.id(), origin)?,
+            )))),
             attributed_to: make_user_id(username, origin)?,
             to: vec![Url::parse("https://www.w3.org/ns/activitystreams#Public")
                 .context(UrlParseSnafu)?],
-            cc: vec![make_user_followers(username, origin)?],
+            cc: Some(vec![make_user_followers(username, origin)?]),
             content: html.clone(),
             content_map: Some(HashMap::from([("en".to_owned(), html)])),
-            replies: Some(Replies::empty_for_share(origin, username, &share.id())?),
+            replies: Some(RepliesField::Inline(Box::new(Replies::empty_for_share(
+                origin,
+                username,
+                &share.id(),
+            )?))),
         })
     }
     pub fn from_incoming_reply(
@@ -1459,13 +1509,13 @@ impl Note {
             url: None,
             attributed_to: reply.attributed_to().clone(),
             to,
-            cc,
+            cc: Some(cc),
             content,
             // Lame: how do I know the language of `content`?
             content_map: Default::default(),
-            replies: reply
-                .replies()
-                .map(|reply| Replies::new(reply.clone(), None, None)),
+            replies: reply.replies().map(|reply| {
+                RepliesField::Inline(Box::new(Replies::new(reply.clone(), None, None)))
+            }),
         })
     }
     // Ack! Placeholder!
@@ -1490,16 +1540,16 @@ impl Note {
     pub fn to(&self) -> impl Iterator<Item = &Url> {
         self.to.iter()
     }
-    pub fn cc(&self) -> impl Iterator<Item = &Url> {
-        self.cc.iter()
+    pub fn cc(&self) -> Option<impl Iterator<Item = &Url>> {
+        self.cc.as_ref().map(|x| x.iter())
     }
-    pub fn url(&self) -> Option<&Url> {
+    pub fn url(&self) -> Option<&UrlField> {
         self.url.as_ref()
     }
     pub fn published(&self) -> &DateTime<Utc> {
         &self.published
     }
-    pub fn replies(&self) -> Option<&Replies> {
+    pub fn replies(&self) -> Option<&RepliesField> {
         self.replies.as_ref()
     }
 }
@@ -1517,13 +1567,15 @@ impl From<Question> for Note {
             summary: value.summary,
             in_reply_to: value.in_reply_to,
             published: value.published,
-            url: value.url,
+            url: value
+                .url
+                .map(|url| UrlField::Single(Box::new(UrlType::Url(url)))),
             attributed_to: value.attributed_to,
             to: value.to,
-            cc: value.cc,
+            cc: Some(value.cc),
             content: value.content,
             content_map: value.content_map,
-            replies: value.replies,
+            replies: value.replies.map(|x| RepliesField::Inline(Box::new(x))),
         }
     }
 }
@@ -1589,6 +1641,7 @@ impl ToJld for Question {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum CreateObject {
     Note(Note),
     Question(Question),
@@ -1601,7 +1654,7 @@ pub struct Create {
     actor: Url,
     published: DateTime<Utc>,
     to: Vec<Url>,
-    cc: Vec<Url>,
+    cc: Option<Vec<Url>>,
     object: CreateObject,
 }
 
@@ -1625,7 +1678,7 @@ impl Create {
             actor,
             published: Utc::now(),
             to: to.collect::<Vec<Url>>(),
-            cc: cc.collect::<Vec<Url>>(),
+            cc: Some(cc.collect::<Vec<Url>>()),
             object,
         })
     }
@@ -1642,8 +1695,8 @@ impl Create {
     pub fn to(&self) -> impl Iterator<Item = &Url> {
         self.to.iter()
     }
-    pub fn cc(&self) -> impl Iterator<Item = &Url> {
-        self.cc.iter()
+    pub fn cc(&self) -> Option<impl Iterator<Item = &Url>> {
+        self.cc.as_ref().map(|x| x.iter())
     }
     pub fn published(&self) -> &DateTime<Utc> {
         &self.published
@@ -2412,6 +2465,112 @@ mod test {
         assert!(x.is_ok());
         assert!(matches!(x.unwrap(/* known good */), InboxPayload::Like(_)))
     }
+
+    #[test]
+    fn test_bridgy_reply() {
+        let x = serde_json::from_str::<Note>(
+            r#"{
+  "@context": [
+    "https://www.w3.org/ns/activitystreams",
+    "https://purl.archive.org/miscellany",
+    {
+      "quote": {
+        "@id": "https://w3id.org/fep/044f#quote",
+        "@type": "@id"
+      }
+    },
+    {
+      "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote"
+    },
+    {
+      "automaticApproval": {
+        "@id": "gts:automaticApproval",
+        "@type": "@id"
+      },
+      "canQuote": {
+        "@id": "gts:canQuote",
+        "@type": "@id"
+      },
+      "gts": "https://gotosocial.org/ns#",
+      "interactionPolicy": {
+        "@id": "gts:interactionPolicy",
+        "@type": "@id"
+      }
+    },
+    {
+      "quoteAuthorization": {
+        "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+        "@type": "@id"
+      }
+    }
+  ],
+  "_misskey_quote": "https://bsky.brid.gy/convert/ap/at://did:plc:b3psimnw5xxta2n4h5qzxu55/app.bsky.feed.post/3mzin3pmulk26",
+  "attachment": [
+    {
+      "href": "https://www.politico.com/news/2026/11/10/democrats-national-popular-vote-electoral-college-2028-wisconsin-michigan-pennsylvania-01158164",
+      "name": "Democrats plot their course on national popular vote",
+      "preview": {
+        "image": {
+          "$type": "blob",
+          "mediaType": "image/jpeg",
+          "ref": {
+            "$link": "bafkreidxcaykkvxzpe4jnizvm7wdecsl6djwbhipgni7spe4vxd2svwxiy"
+          },
+          "size": 448947,
+          "type": "Image"
+        },
+        "name": "Democrats plot their course on national popular vote",
+        "summary": "Democrats have won unified control of enough swing states \\u2014 Pennsylvania, Wisconsin, and Michigan \\u2014 to sidestep the Electoral College. Will they back the effort?",
+        "type": "Article"
+      },
+      "type": "Link"
+    }
+  ],
+  "attributedTo": "https://bsky.brid.gy/ap/did:plc:b3psimnw5xxta2n4h5qzxu55",
+  "content": "<p>National Popular Vote Compact update:<br /><br />AZ: Incoming Senate majority leader says Dems will take it up.<br /><br />MI: Incoming Senate majority leader is open to it. Governor didn’t comment.<br /><br />NV: Gov didn’t comment.<br /><br />PA: Gov says he’s “open” to it.<br /><br />WI: Gov didn’t say either way when asked. He backed it in 2019<span class=\"quote-inline\"><br><br>RE: <a href=\"https://bsky.app/profile/did:plc:b3psimnw5xxta2n4h5qzxu55/post/3mzin3pmulk26\">https://bsky.app/profile/did:plc:b3psimnw5xxta2n4h5qzxu55/post/3mzin3pmulk26</a></span><br><br><a title=\"Democrats plot their course on national popular vote\" href=\"https://www.politico.com/news/2026/11/10/democrats-national-popular-vote-electoral-college-2028-wisconsin-michigan-pennsylvania-01158164\">Democrats plot their course on...</a></p>",
+  "contentMap": {
+    "en": "<p>National Popular Vote Compact update:<br /><br />AZ: Incoming Senate majority leader says Dems will take it up.<br /><br />MI: Incoming Senate majority leader is open to it. Governor didn’t comment.<br /><br />NV: Gov didn’t comment.<br /><br />PA: Gov says he’s “open” to it.<br /><br />WI: Gov didn’t say either way when asked. He backed it in 2019<span class=\"quote-inline\"><br><br>RE: <a href=\"https://bsky.app/profile/did:plc:b3psimnw5xxta2n4h5qzxu55/post/3mzin3pmulk26\">https://bsky.app/profile/did:plc:b3psimnw5xxta2n4h5qzxu55/post/3mzin3pmulk26</a></span><br><br><a title=\"Democrats plot their course on national popular vote\" href=\"https://www.politico.com/news/2026/11/10/democrats-national-popular-vote-electoral-college-2028-wisconsin-michigan-pennsylvania-01158164\">Democrats plot their courseon...</a></p>"
+  },
+  "id": "https://bsky.brid.gy/convert/ap/at://did:plc:b3psimnw5xxta2n4h5qzxu55/app.bsky.feed.post/3mzxuva3rtc2g",
+  "interactionPolicy": {
+    "canQuote": {
+      "automaticApproval": [
+        "https://www.w3.org/ns/activitystreams#Public"
+      ]
+    }
+  },
+  "published": "2026-11-10T16:38:46.916Z",
+  "quote": "https://bsky.brid.gy/convert/ap/at://did:plc:b3psimnw5xxta2n4h5qzxu55/app.bsky.feed.post/3mzin3pmulk26",
+  "quoteAuthorization": "https://bsky.brid.gy/ap/did:plc:b3psimnw5xxta2n4h5qzxu55/stamp/quote/aHR0cHM6Ly9ic2t5LmJyaWQuZ3kvY29udmVydC9hcC9hdDovL2RpZDpwbGM6YjNwc2ltbnc1eHh0YTJuNGg1cXp4dTU1L2FwcC5ic2t5LmZlZWQucG9zdC8zbXppbjNwbXVsazI2/aHR0cHM6Ly9ic2t5LmJyaWQuZ3kvY29udmVydC9hcC9hdDovL2RpZDpwbGM6YjNwc2ltbnc1eHh0YTJuNGg1cXp4dTU1L2FwcC5ic2t5LmZlZWQucG9zdC8zbXp4dXZhM3J0YzJn",
+  "quoteUrl": "https://bsky.brid.gy/convert/ap/at://did:plc:b3psimnw5xxta2n4h5qzxu55/app.bsky.feed.post/3mzin3pmulk26",
+  "replies": "https://bsky.brid.gy/ap/replies/YXQ6Ly9kaWQ6cGxjOmIzcHNpbW53NXh4dGEybjRoNXF6eHU1NS9hcHAuYnNreS5mZWVkLnBvc3QvM216eHV2YTNydGMyZw==",
+  "tag": [
+    {
+      "href": "https://bsky.brid.gy/convert/ap/at://did:plc:b3psimnw5xxta2n4h5qzxu55/app.bsky.feed.post/3mzin3pmulk26",
+      "mediaType": "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"",
+      "name": "RE: https://bsky.app/profile/did:plc:b3psimnw5xxta2n4h5qzxu55/post/3mzin3pmulk26",
+      "type": "Link"
+    }
+  ],
+  "to": [
+    "https://www.w3.org/ns/activitystreams#Public"
+  ],
+  "type": "Note",
+  "url": [
+    "https://bsky.brid.gy/r/https://bsky.app/profile/did:plc:b3psimnw5xxta2n4h5qzxu55/post/3mzxuva3rtc2g",
+    {
+      "rel": "canonical",
+      "type": "Link"
+    }
+  ]
+}"#,
+        );
+        // Truthfully, I edited the above JSON, to remove the following:
+        //     "href": "at://did:plc:b3psimnw5xxta2n4h5qzxu55/app.bsky.feed.post/3mzxuva3rtc2g",
+        // so we're still not parsing brid.gy Notes.
+        assert!(x.is_ok(), "{x:#?}");
+        assert!(matches!(known_good!(x).replies, Some(RepliesField::Iri(_))));
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2714,6 +2873,8 @@ mod prototype {
 pub enum LinkRelation {
     #[serde(rename = "self")]
     Myself,
+    #[serde(rename = "canonical")]
+    Canonical,
     #[serde(rename = "http://webfinger.net/rel/profile-page")]
     ProfilePage,
     #[serde(rename = "http://webfinger.net/rel/avatar")]
@@ -2771,6 +2932,7 @@ pub enum MediaType {
     Jpeg,
     #[serde(rename = "image/png")]
     Png,
+    Link,
 }
 
 /// "Link" type as defined in RFC [7033]: Webfinger

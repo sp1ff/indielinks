@@ -308,7 +308,7 @@ lazy_static! {
 /// (presumably an ActivityPub message's "to" & "cc" fields)
 pub fn derive_visibility<'a, S, T>(
     to: S,
-    cc: T,
+    cc: Option<T>,
     origin: &Origin,
 ) -> Result<(Visibility, Vec<Recipient>)>
 where
@@ -342,17 +342,20 @@ where
 
     let mut public_is_in_cc = false;
     let cc_local_recipients = cc
-        .filter_map(|url| {
-            if *url == *PUBLIC {
-                public_is_in_cc = true;
-            };
-            if url.path().ends_with("/followers") || origin_is_eq(url, origin) {
-                Some(url.clone())
-            } else {
-                None
-            }
+        .map(|cc| {
+            cc.filter_map(|url| {
+                if *url == *PUBLIC {
+                    public_is_in_cc = true;
+                };
+                if url.path().ends_with("/followers") || origin_is_eq(url, origin) {
+                    Some(url.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<HashSet<Url>>()
         })
-        .collect::<HashSet<Url>>();
+        .unwrap_or_default();
 
     debug!("cc: {cc_local_recipients:?}");
 
