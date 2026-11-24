@@ -16,7 +16,7 @@ snafu = { workspace = true }
 console_error_panic_hook = "0.1.7"
 # This is actually a transitive dependnecy, but I need the "js" feature
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
-gloo-net = { version = "0.7.0", features = ["http"] }
+gloo-net = { version = "0.8.0", features = ["http"] }
 futures = { workspace = true }
 icondata = "0.7.0"
 indielinks-shared = { workspace = true }
