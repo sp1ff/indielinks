@@ -25,15 +25,13 @@ use std::{
 
 use base64::{prelude::BASE64_STANDARD, Engine};
 use chrono::Utc;
-use http::{header, HeaderValue};
+use http::HeaderValue;
 use itertools::Itertools;
 use libtest_mimic::Failed;
 use once_cell::sync::Lazy;
 use picky::{
-    hash::HashAlgorithm,
-    http::{http_signature::HttpSignatureBuilder, HttpSignature},
+    http::HttpSignature,
     key::{PrivateKey, PublicKey},
-    signature::SignatureAlgorithm,
 };
 use reqwest::Url;
 use sha2::Digest;
@@ -44,7 +42,10 @@ use wiremock::{
 
 use indielinks_shared::{entities::Username, origin::Origin};
 
-use indielinks::ap_entities::{self, make_user_id};
+use indielinks::{
+    ap_entities::{self, make_user_id},
+    authn::picky_602,
+};
 
 pub static TEST_USER_AGENT: &str = concat!(
     "indielinks integration tests/",
@@ -206,32 +207,33 @@ pub fn sign_request(
     key_id: &str,
     private_key: &picky::key::PrivateKey,
 ) -> StdResult<(http::Request<reqwest::Body>, HttpSignature), Infallible> {
-    let (parts, body) = request.into_parts();
+    use picky_602::sign as workaround_602;
 
-    assert!(parts.headers.contains_key("Date"));
+    assert!(request.headers().contains_key("Date"));
 
-    assert!(parts.headers.contains_key("Host"));
+    assert!(request.headers().contains_key("Host"));
 
-    assert!(parts.headers.contains_key("Content-Type"));
+    assert!(request.headers().contains_key("Content-Type"));
 
-    let http_signature = HttpSignatureBuilder::new()
-        .key_id(key_id)
-        .signature_method(
-            private_key,
-            SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
-        )
-        // `picky::http::http_request::HttpRequest` trait is implemented for
-        // `http::request::Parts` for `http` crate with `http_trait_impl` feature gate
-        .generate_signing_string_using_http_request(&parts)
-        .request_target()
-        .http_header(header::CONTENT_TYPE.as_str())
-        .http_header(header::DATE.as_str())
-        .http_header("digest")
-        .http_header(header::HOST.as_str())
-        .build()
-        .unwrap();
+    let http_signature = workaround_602(&request, key_id, private_key)
+        // HttpSignatureBuilder::new()
+        // .key_id(key_id)
+        // .signature_method(
+        //     private_key,
+        //     SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+        // )
+        // // `picky::http::http_request::HttpRequest` trait is implemented for
+        // // `http::request::Parts` for `http` crate with `http_trait_impl` feature gate
+        // .generate_signing_string_using_http_request(&parts)
+        // .request_target()
+        // .http_header(header::CONTENT_TYPE.as_str())
+        // .http_header(header::DATE.as_str())
+        // .http_header("digest")
+        // .http_header(header::HOST.as_str())
+        // .build()
+        .expect("request should sign");
 
-    Ok((http::Request::from_parts(parts, body), http_signature))
+    Ok((request, http_signature))
 }
 
 /// Take an HTTP verb/method, URL and a reqwest [Body]. Return a signed reqwest Request. The signature

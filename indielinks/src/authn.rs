@@ -28,13 +28,8 @@ use std::{str::FromStr, string::FromUtf8Error};
 
 use axum::http::HeaderValue;
 use base64::{prelude::BASE64_STANDARD, Engine};
-use http::header;
 use itertools::Itertools;
-use picky::{
-    hash::HashAlgorithm,
-    http::{http_signature::HttpSignatureBuilder, HttpSignature},
-    signature::SignatureAlgorithm,
-};
+use picky::http::HttpSignature;
 use secrecy::{SecretSlice, SecretString};
 use sha2::Digest;
 use snafu::{ensure, Backtrace, OptionExt, ResultExt, Snafu};
@@ -585,11 +580,240 @@ pub fn check_sha_256_content_digest(
     Ok(())
 }
 
+pub mod picky_602 {
+    use std::borrow::Cow;
+
+    use http::{header, request::Parts};
+    use picky::{
+        hash::HashAlgorithm,
+        http::{
+            http_request::HttpRequestError,
+            http_signature::{Header, HttpSignatureBuilder, HttpSignatureError},
+            HttpSignature,
+        },
+        key::PrivateKey,
+        signature::SignatureAlgorithm,
+    };
+    use tracing::debug;
+
+    use super::StdResult;
+
+    pub trait PickyHttpRequest {
+        fn get_header_concatenated_values<'a>(
+            &'a self,
+            header_name: &str,
+        ) -> StdResult<Cow<'a, str>, HttpRequestError>;
+        fn get_lowercased_method(&self) -> StdResult<Cow<'_, str>, HttpRequestError>;
+        fn get_target(&self) -> StdResult<Cow<'_, str>, HttpRequestError>;
+        fn get_target_deprecated(&self) -> StdResult<Cow<'_, str>, HttpRequestError>;
+    }
+
+    impl PickyHttpRequest for http::request::Parts {
+        fn get_header_concatenated_values<'a>(
+            &'a self,
+            header_name: &str,
+        ) -> StdResult<Cow<'a, str>, HttpRequestError> {
+            let mut values = Vec::new();
+            let all_values = self.headers.get_all(header_name);
+            for value in all_values {
+                let value_str = value
+                    .to_str()
+                    .map_err(|_| HttpRequestError::HeaderValueToStr {
+                        key: header_name.to_owned(),
+                    })?;
+                values.push(value_str.trim());
+            }
+            Ok(Cow::Owned(values.join(", ")))
+        }
+
+        fn get_lowercased_method(&self) -> StdResult<Cow<'_, str>, HttpRequestError> {
+            Ok(Cow::Owned(self.method.as_str().to_lowercase()))
+        }
+
+        fn get_target(&self) -> StdResult<Cow<'_, str>, HttpRequestError> {
+            self.uri
+                .path_and_query()
+                .map(|paq| Cow::Borrowed(paq.as_str()))
+                .ok_or(HttpRequestError::Unexpected {
+                    reason: "no path and query".to_owned(),
+                })
+        }
+
+        fn get_target_deprecated(&self) -> StdResult<Cow<'_, str>, HttpRequestError> {
+            Ok(Cow::Borrowed(self.uri.path()))
+        }
+    }
+
+    impl<T> PickyHttpRequest for http::request::Request<T> {
+        fn get_header_concatenated_values<'a>(
+            &'a self,
+            header_name: &str,
+        ) -> StdResult<Cow<'a, str>, HttpRequestError> {
+            let mut values = Vec::new();
+            let all_values = self.headers().get_all(header_name);
+            for value in all_values {
+                let value_str = value
+                    .to_str()
+                    .map_err(|_| HttpRequestError::HeaderValueToStr {
+                        key: header_name.to_owned(),
+                    })?;
+                values.push(value_str.trim());
+            }
+            Ok(Cow::Owned(values.join(", ")))
+        }
+
+        fn get_lowercased_method(&self) -> StdResult<Cow<'_, str>, HttpRequestError> {
+            Ok(Cow::Owned(self.method().as_str().to_lowercase()))
+        }
+
+        fn get_target(&self) -> StdResult<Cow<'_, str>, HttpRequestError> {
+            self.uri()
+                .path_and_query()
+                .map(|paq| Cow::Borrowed(paq.as_str()))
+                .ok_or(HttpRequestError::Unexpected {
+                    reason: "no path and query".to_owned(),
+                })
+        }
+        fn get_target_deprecated(&self) -> StdResult<Cow<'_, str>, HttpRequestError> {
+            Ok(Cow::Borrowed(self.uri().path()))
+        }
+    }
+
+    pub fn sign<B>(
+        request: &http::Request<B>,
+        key_id: &str,
+        private_key: &PrivateKey,
+    ) -> StdResult<HttpSignature, HttpSignatureError> {
+        let headers = vec![
+            Header::RequestTarget,
+            Header::Name(header::CONTENT_TYPE.to_string()),
+            Header::Name(header::DATE.to_string()),
+            Header::Name("digest".to_owned()),
+            Header::Name(header::HOST.to_string()),
+        ];
+
+        let mut acc = Vec::with_capacity(headers.len());
+        for header in &headers {
+            match header {
+                Header::Name(header_name) => {
+                    let concatenated_values =
+                        request.get_header_concatenated_values(header_name)?;
+                    if concatenated_values.is_empty() {
+                        acc.push(format!("{}:", header_name.as_str()));
+                    } else {
+                        acc.push(format!("{}: {}", header_name.as_str(), concatenated_values));
+                    }
+                }
+                Header::RequestTarget => {
+                    acc.push(format!(
+                        "{}: {} {}",
+                        header.as_str(),
+                        request.get_lowercased_method()?,
+                        request.get_target()?
+                    ));
+                }
+                Header::Created => unreachable!(),
+                Header::Expires => unreachable!(),
+            }
+        }
+
+        let signing_string = acc.join("\n");
+
+        debug!("signing_string: {signing_string}");
+
+        HttpSignatureBuilder::new()
+            .key_id(key_id)
+            .signature_method(
+                private_key,
+                SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+            )
+            .pre_generated_signing_string(&signing_string)
+            .build()
+    }
+
+    pub fn verify(
+        parsed_http_signature: &HttpSignature,
+        public_key: &picky::key::PublicKey,
+        request_parts: &Parts,
+        use_legacy_target: bool,
+    ) -> StdResult<(), HttpSignatureError> {
+        const HTTP_SIGNATURE_CREATED: &str = "created";
+        const HTTP_SIGNATURE_EXPIRES: &str = "expires";
+
+        let headers = if parsed_http_signature.headers.is_empty() {
+            &[Header::Created][..]
+        } else {
+            parsed_http_signature.headers.as_slice()
+        };
+
+        let mut acc = Vec::with_capacity(headers.len());
+        for header in headers {
+            match header {
+                Header::Name(header_name) => {
+                    let concatenated_values =
+                        request_parts.get_header_concatenated_values(header_name)?;
+                    if concatenated_values.is_empty() {
+                        acc.push(format!("{}:", header_name.as_str()));
+                    } else {
+                        acc.push(format!("{}: {}", header_name.as_str(), concatenated_values));
+                    }
+                }
+                Header::RequestTarget => {
+                    acc.push(format!(
+                        "{}: {} {}",
+                        header.as_str(),
+                        request_parts.get_lowercased_method()?,
+                        if use_legacy_target {
+                            request_parts.get_target_deprecated()?
+                        } else {
+                            request_parts.get_target()?
+                        }
+                    ));
+                }
+                Header::Created => acc.push(format!(
+                    "{}: {}",
+                    header.as_str(),
+                    parsed_http_signature.created.ok_or(
+                        HttpSignatureError::MissingRequiredParameter {
+                            parameter: HTTP_SIGNATURE_CREATED,
+                        }
+                    )?
+                )),
+                Header::Expires => acc.push(format!(
+                    "{}: {}",
+                    header.as_str(),
+                    parsed_http_signature.expires.ok_or(
+                        HttpSignatureError::MissingRequiredParameter {
+                            parameter: HTTP_SIGNATURE_EXPIRES,
+                        }
+                    )?
+                )),
+            }
+        }
+
+        let signing_string = acc.join("\n");
+
+        debug!("signing_string: {signing_string}");
+
+        parsed_http_signature
+            .verifier()
+            .signature_method(
+                public_key,
+                SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+            )
+            .pre_generated_signing_string(&signing_string)
+            .now(chrono::Utc::now().timestamp() as u64)
+            .verify()
+    }
+}
+
 fn sign_request<B: AsRef<[u8]>>(
     request: &http::Request<B>,
     key_id: &str,
     private_key: &picky::key::PrivateKey,
 ) -> Result<HttpSignature> {
+    use picky_602::sign as workaround_602;
+
     let headers = request.headers();
 
     if !headers.contains_key("Date") {
@@ -609,21 +833,22 @@ fn sign_request<B: AsRef<[u8]>>(
         return Err(Error::NoDigestHeader);
     }
 
-    HttpSignatureBuilder::new()
-        .key_id(key_id)
-        .signature_method(
-            private_key,
-            SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
-        )
-        // `picky::http::http_request::HttpRequest` trait is implemented for
-        // `http::request::Parts` for `http` crate with `http_trait_impl` feature gate
-        .generate_signing_string_using_http_request(request)
-        .request_target()
-        .http_header(header::CONTENT_TYPE.as_str())
-        .http_header(header::DATE.as_str())
-        .http_header("digest")
-        .http_header(header::HOST.as_str())
-        .build()
+    workaround_602(request, key_id, private_key)
+        // HttpSignatureBuilder::new()
+        //     .key_id(key_id)
+        //     .signature_method(
+        //         private_key,
+        //         SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+        //     )
+        //     // `picky::http::http_request::HttpRequest` trait is implemented for
+        //     // `http::request::Parts` for `http` crate with `http_trait_impl` feature gate
+        //     .generate_signing_string_using_http_request(request)
+        //     .request_target()
+        //     .http_header(header::CONTENT_TYPE.as_str())
+        //     .http_header(header::DATE.as_str())
+        //     .http_header("digest")
+        //     .http_header(header::HOST.as_str())
+        //     .build()
         .context(SignatureSnafu)
 }
 
@@ -661,9 +886,11 @@ mod http_signature_tests {
     use base64::prelude::{Engine, BASE64_STANDARD};
     use http::method::Method;
     use http::{header, request, HeaderValue, Request, Uri};
+    use picky::hash::HashAlgorithm;
     use picky::http::http_signature::HttpSignatureBuilder;
     use picky::http::HttpSignature;
     use picky::key::{PrivateKey, PublicKey};
+    use picky::signature::SignatureAlgorithm;
     use rsa::{pkcs1v15, RsaPrivateKey, RsaPublicKey};
     use sha2::Digest;
 
@@ -1053,5 +1280,92 @@ ZQIDAQAB
         let b64 = BASE64_STANDARD.encode(signature.clone());
 
         assert_eq!(b64, http_signature.signature);
+    }
+
+    /// Dig into errors from fedi.ultrawebz.com
+    ///
+    /// This test started as an investigation into repeated failures to validate signatures from
+    /// fedi.ultrawebz.com in production. In the end, I discovered a [bug] in `picky`. I submitted a
+    /// [PR], but I really need this issue fixed and I don't know when the PR will be merged, let
+    /// alone released. In the meantime, I'll continue to link against the public release and work
+    /// around the bug in code. I'm leaving the salient test in-place as an expected failure;
+    /// hopefully, someday I'll be surprised by the test passing, which will be a prompt to remove
+    /// the workaround.
+    ///
+    /// [bug]: https://github.com/Devolutions/picky-rs/issues/602
+    /// [PR]: https://github.com/Devolutions/picky-rs/pull/603
+    #[test]
+    fn test_fedi_ultrawebz_com() {
+        let http_signature_str = r#"keyId="https://fedi-actor.ultrawebz.com/scraper-actor#main-key",algorithm="hs2019",headers="(request-target) host date",signature="GJmTIHGPi1JeAclRHDhmrI5NqEeocE7SsfzHF8q1H9ni8f8rIQiC8V+chdvGjn33mI6s+Y5TCkvoZinsSbRM4uGvBAFY908Ih/2voI9racgT/z6owlwvyzKko8VEzbVGraVkk2kD5nGW7+ZAkq5sc7hMNWjqjV1h9WlVFEegZKvRdt2sEbN0hULfRuliCztcNTU3y4urAll6fVuUXZGTRJwOXl0SEBT291npbtL/flkjaFBCPwho9HVXqiJu9svYKr/6DBAr+d2JfwV/rtc5hdUjSX8aZoygifaDvTUN9FXdhRFWlG8CrOd3Or4TQDwXwKfcSsZXBYe8kh6GRpQUmg==""#;
+
+        let parsed_http_signature = http_signature_str
+            .parse::<HttpSignature>()
+            .expect("the test signature should parse");
+
+        let public_key = PublicKey::from_pem_str(
+            "-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvv2VnIrH1G25qn1UWrNZ
+QXXxHD0J/4wlwYHnj8WxQWPG/40lsYuxKmP1akhqld9w+0ANbmme/diNn0y8yPuT
+FvzAp7GiOl0pRyriMXn+A2OffbwW8I/7nZYja3n5qPtWkVN6PmX3OLKEIhJj+mKz
+yynkIlqrK/h5ngcrD5EiUGIoBIhxUqImBQjJFLi9YzvivbQo1AwtsyGGwWDHtCbr
+1QKSuJvEvhN7oEnI8pSt4m5qpAo0rQuaDvMWPURydH74qRLpgl8YEGESdrP/g2Ui
+AQBkyU9PCuURLN54SlZ3NalxFiMAd4Qbeuy8EcKKMRNGC0881naglOOUmtOWGspo
+NQIDAQAB
+-----END PUBLIC KEY-----",
+        )
+        .expect("the public key PEM should be correct");
+
+        // This is the signature string *I* assembled from the server logs
+        let signing_string = "(request-target): get /users/sp1ff/followers?page=0
+host: indiemark.sh
+date: Mon, 23 Nov 2026 20:10:04 GMT";
+
+        // ...and *it* passes.
+        parsed_http_signature
+            .verifier()
+            .signature_method(
+                &public_key,
+                SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+            )
+            .pre_generated_signing_string(signing_string)
+            // I tried adding a `now()` invocation-- made no difference
+            .verify()
+            .inspect_err(|err| eprintln!("{err:#?}"))
+            .expect("the signature should verify");
+
+        // Let's try re-constructing the request:
+        // "method":"GET","uri":"/users/sp1ff/followers?page=0","version":"HTTP/1.1"
+        let (parts, _) = Request::builder()
+            .method(Method::GET)
+            .uri("/users/sp1ff/followers?page=0".parse::<Uri>().expect("URI should parse"))
+            // 1.1 is the default version
+            .header("x-forwarded-for", "103.251.26.146")
+            .header("x-forwarded-proto", "https")
+            .header("x-forwarded-port", "443")
+            .header("host", "indiemark.sh")
+            .header("x-amzn-trace-id", "Root=1-6b049d9d-0ca1a7332305902c3e38d222")
+            .header("user-agent", "fedi-archive/1.0 (+https://fedi.ultrawebz.com)")
+            .header("accept", "application/activity+json, application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"")
+            .header("date", "Mon, 23 Nov 2026 20:10:04 GMT")
+            .header("signature", "keyId=\"https://fedi-actor.ultrawebz.com/scraper-actor#main-key\",algorithm=\"hs2019\",headers=\"(request-target) host date\",signature=\"GJmTIHGPi1JeAclRHDhmrI5NqEeocE7SsfzHF8q1H9ni8f8rIQiC8V+chdvGjn33mI6s+Y5TCkvoZinsSbRM4uGvBAFY908Ih/2voI9racgT/z6owlwvyzKko8VEzbVGraVkk2kD5nGW7+ZAkq5sc7hMNWjqjV1h9WlVFEegZKvRdt2sEbN0hULfRuliCztcNTU3y4urAll6fVuUXZGTRJwOXl0SEBT291npbtL/flkjaFBCPwho9HVXqiJu9svYKr/6DBAr+d2JfwV/rtc5hdUjSX8aZoygifaDvTUN9FXdhRFWlG8CrOd3Or4TQDwXwKfcSsZXBYe8kh6GRpQUmg==\"")
+            .header("x-request-id", "97")
+            .body(())
+            .expect("the request should build")
+            .into_parts();
+
+        // This failure is expected, cf. https://github.com/Devolutions/picky-rs/issues/602.
+        // If you're here because this test *failed*, it's been fixed, and it's now safe
+        // to remove the workaround code in `actor.rs`.
+        parsed_http_signature
+            .verifier()
+            .signature_method(
+                &public_key,
+                SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+            )
+            .generate_signing_string_using_http_request(&parts)
+            .now(chrono::Utc::now().timestamp() as u64)
+            .verify()
+            .inspect_err(|err| eprintln!("{err:#?}"))
+            .expect_err("picky issue 602 fixed! remove the workaround from `actor.rs`.");
     }
 }

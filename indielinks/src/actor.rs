@@ -56,13 +56,12 @@ use axum::{
 use axum_accept::AcceptExtractor;
 use axum_extra::extract::Query;
 use bytes::Bytes;
-use chrono::Utc;
 use either::Either::{self, Left, Right};
 use futures::{future, stream::iter, StreamExt, TryStreamExt};
 use http::{HeaderName, HeaderValue, Method};
 use itertools::Itertools;
 use nonzero::nonzero;
-use picky::{hash::HashAlgorithm, http::HttpSignature, signature::SignatureAlgorithm};
+use picky::http::HttpSignature;
 use serde::{Deserialize, Serialize};
 use snafu::{Backtrace, IntoError, OptionExt, Report, ResultExt, Snafu};
 use tap::Pipe;
@@ -602,6 +601,8 @@ async fn verify_signature_core(
     ap_resolver: Arc<ApResolver>,
     signature_string: &str,
 ) -> Result<(axum::extract::Request, ap_entities::Actor)> {
+    use crate::authn::picky_602::verify as workaround_602;
+
     // Sample signature value: "keyId=\"http://localhost:3000/users/admin#main-key\",\
     // algorithm=\"rsa-sha256\",headers=\"host date digest content-type (request-target)\",\
     // signature=\"e6PjagEDONQIWVGvANYVBhW4ckZ6216+Z4XGJOUWsOvO++mYwKP1NtT1jyRUN1rkBx/hLahA\
@@ -644,7 +645,7 @@ async fn verify_signature_core(
             || rsp.status() == StatusCode::NOT_FOUND =>
         {
             warn!(
-                "While attempting to fetch public key {key_id}, ification, I was \
+                "While attempting to fetch public key {key_id}, I was \
                  told that the signing Actor was Gone (http status {}).",
                 rsp.status()
             );
@@ -715,15 +716,16 @@ async fn verify_signature_core(
     }
 
     // With all that done, we can finally verify the signature:
-    if parsed_http_signature
-        .verifier()
-        .signature_method(
-            &public_key,
-            SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
-        )
-        .generate_signing_string_using_http_request(&parts)
-        .now(Utc::now().timestamp() as u64)
-        .verify()
+    if workaround_602(&parsed_http_signature, &public_key, &parts, false)
+        // parsed_http_signature
+        // .verifier()
+        // .signature_method(
+        //     &public_key,
+        //     SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+        // )
+        // .generate_signing_string_using_http_request(&parts)
+        // .now(Utc::now().timestamp() as u64)
+        // .verify()
         .inspect_err(|err| log_error!(err, "signature validation failed"))
         .is_err()
     {
@@ -739,17 +741,20 @@ async fn verify_signature_core(
             .await
             .context(ResolveKeyIdSnafu)?;
         let public_key = actor.public_key().context(PublicKeySnafu)?;
-        parsed_http_signature
-            .verifier()
-            .signature_method(
-                &public_key,
-                SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
-            )
-            .generate_signing_string_using_http_request(&parts)
-            .now(Utc::now().timestamp() as u64)
-            .verify()
-            .context(BadSignatureSnafu)
-            .inspect_err(|err| log_error!(err, "SECOND signature validation failed"))?
+
+        match workaround_602(&parsed_http_signature, &public_key, &parts, false) {
+            Ok(_) => (),
+            Err(err) if parts.uri.query().is_some() => {
+                log_error!(err, "SECOND signature validation failed");
+                workaround_602(&parsed_http_signature, &public_key, &parts, true)
+                    .context(BadSignatureSnafu)
+                    .inspect_err(|err| log_error!(err, "THIRD siganture validation failed"))?;
+            }
+            Err(err) => {
+                log_error!(err, "SECOND signature validation failed");
+                return Err(BadSignatureSnafu.into_error(err));
+            }
+        }
     }
 
     // If we're here, we verified the signature; re-assemble the request & pass it on:

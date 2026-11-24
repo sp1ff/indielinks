@@ -71,7 +71,7 @@ wiremock = "0.6.5"
 # axum-accept = { path = "../../axum-accept-sp1ff/axum-accept", version = "0.0.5" }
 # governor = { version = "=0.10.4", git = "https://github.com/sp1ff/governor.git" }
 # openraft = { version = "=0.9.20", path = "../openraft/openraft" }
-# picky = { path = "../picky-rs-sp1ff/picky" }
+# picky = { path = "../../picky-rs-sp1ff/picky" }
 # tower = { path = "../tower-sp1ff/tower", version = "0.5.2" }
 # tower-layer = { path = "../tower-sp1ff/tower-layer", version = "0.3.3" }
 # tower-service = { path = "../tower-sp1ff/tower-service", version = "0.3.3" }
