@@ -103,7 +103,7 @@
     },
     client-configuration = {
         rate-limits = { per-hour = 5760, custom = [] },
-        timeout = [10, 0] # ten seconds, zero nanoseconds
+        timeout = [12, 0] # twelve seconds, zero nanoseconds
     },
     local-client-configuration = {
         rate-limits = { per-hour = 8320, custom = [] },

@@ -95,7 +95,7 @@ nanos = 0
 
 [client-configuration]
 timeout = [
-    10,
+    12,
     0,
 ]
 

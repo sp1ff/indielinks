@@ -397,6 +397,8 @@ impl<Req: Clone, Res: std::fmt::Debug + RetryableResponse, E>
                     None
                 }
             }
+            // I'd love to catch a timeout error, but, unfortunately, the `TimeoutLayer` we actually
+            // use in our stack erases the error type.
             _ => None,
         }
     }

@@ -482,7 +482,7 @@ async fn require_signature(
             StatusCode::PAYLOAD_TOO_LARGE.into_response()
         }
         Err(err) => {
-            error!("indielinks failed to verify an HTTP signature: {:#?}", err);
+            log_error!(err, "indielinks failed to verify an HTTP signature");
             actor_verification_failures.add(1, &[]);
             err.into_response()
         }
@@ -584,7 +584,7 @@ async fn verify_signature(
             StatusCode::PAYLOAD_TOO_LARGE.into_response()
         }
         Err(err) => {
-            error!("indielinks failed to verify an HTTP signature: {:#?}", err);
+            log_error!(err, "indielinks failed to verify an HTTP signature");
             actor_verification_failures.add(1, &[]);
             err.into_response()
         }
