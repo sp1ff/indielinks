@@ -1,5 +1,13 @@
 indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
+* UNRELEASED
+
+** User-visible changes
+
+*** Increase the Activity Pub client timeout to 12 seconds
+** Bugfixes
+
+*** Use the query string when creating & validating Activity Pub signatures
 * 0.0.11
 
 ** Bugfixes
