@@ -719,8 +719,6 @@ pub mod picky_602 {
 
         let signing_string = acc.join("\n");
 
-        debug!("signing_string: {signing_string}");
-
         HttpSignatureBuilder::new()
             .key_id(key_id)
             .signature_method(
