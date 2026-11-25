@@ -152,10 +152,9 @@ pub struct ParseResult {
 // I may need to make the parsing & rendering parameters configurable at runtime, but for now I
 // don't so make 'em static (and immutable):
 lazy_static! {
-    static ref COMRAK_OPTIONS: comrak::Options<'static> = comrak::Options {
-        render: Render::builder().r#unsafe(true).build(),
-        ..Default::default()
-    };
+    static ref COMRAK_OPTIONS: comrak::Options<'static> = comrak::Options::builder()
+        .render(Render::builder().r#unsafe(true).build())
+        .build();
 }
 
 /// Parse Markdown; render it to HTML, collect mentions & tags
