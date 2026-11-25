@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-VERSION=0.0.2
+VERSION=0.0.3
 
 set -euo pipefail
 
@@ -155,6 +155,7 @@ fi
 function hc() {
     local port=$1
     local num_polls=$2
+    local local_state_dir=${3:-none}
     # curl can fail if the server isn't up, yet
     status=$(curl -s http://localhost:${port}/healthcheck || true)
     ntries=1
@@ -164,6 +165,18 @@ function hc() {
         ntries=$(($ntries+1))
         if [ ${ntries} -gt ${num_polls} ]; then
             echo "indielinks failed to come up on port ${port}" >&2
+            if [ "${local_state_dir}" == "none" ]; then
+                echo "This was the haproxy healthcheck-- no log files!" >&2
+            else
+                echo "I will now dump the logs on stdout, beginning with indielinks' stdout:"
+                [[ -f "${local_state_dir}/stdout.log" ]] && cat "${local_state_dir}/stdout.log"
+                echo
+                echo "the daemonization log:"
+                [[ -f "${local_state_dir}/indielinksd.daemonization.log" ]] && cat "${local_state_dir}/indielinksd.daemonization.log"
+                echo
+                echo "and, finally, the daemon log file itself:"
+                [[ -f "${local_state_dir}/indielinksd.log" ]] && cat "${local_state_dir}/indielinksd.log"
+            fi
             return "1"
         fi
     done
@@ -276,12 +289,12 @@ fi
 # The problem with running these in subshells is that we arrive here with the
 # build process (potentially) in-progress, which can take quite some time. Wait
 # for the entire cluster to healthcheck.
-hc ${port_0} ${num_polls} || exit 1
-hc ${port_1} ${num_polls} || exit 1
-hc ${port_2} ${num_polls} || exit 1
+hc ${port_0} ${num_polls} ${local_state_base}0 || exit 1
+hc ${port_1} ${num_polls} ${local_state_base}1 || exit 1
+hc ${port_2} ${num_polls} ${local_state_base}2 || exit 1
 if [ "${num_nodes}" == "5" ]; then
-    hc ${port_3} ${num_polls} || exit 1
-    hc ${port_4} ${num_polls} || exit 1
+    hc ${port_3} ${num_polls} ${local_state_base}3 || exit 1
+    hc ${port_4} ${num_polls} ${local_state_base}4 || exit 1
 fi
 
 # Alright, the cluster is up & alive. Spin-up `haproxy`. If I don't place my

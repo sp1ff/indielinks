@@ -26,7 +26,7 @@ jobs:
           - stable
           - nightly
         # I suppose I could add older ubuntu versions, but why?
-        os: [ubuntu-24.04]
+        os: [ubuntu-26.04]
         include:
         - rust-build: pinned
           # 2026-11-23: ripgrep depends on grep, which just released a
@@ -36,9 +36,9 @@ jobs:
           # don't really have a policy on this.
           rust: 1.96.0
         - rust-build: stable
-          rust: 1.99.1
+          rust: 1.100.0
         - rust-build: nightly
-          rust: nightly-2026-10-15
+          rust: nightly-2026-11-09
     runs-on: ${{ matrix.os }}
     env:
       RUST_BACKTRACE: 1
@@ -56,7 +56,7 @@ jobs:
 
     # Cf. <https://university.scylladb.com/setup-a-scylla-cluster>
     - name: Configure System
-      if: matrix.os == 'ubuntu-24.04'
+      if: matrix.os == 'ubuntu-26.04'
       shell: bash
       run: |
         set -xeuo pipefail
