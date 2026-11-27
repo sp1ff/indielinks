@@ -37,7 +37,7 @@ secrecy = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 snafu = { workspace = true, features = ["backtrace"] }
 tap = { workspace = true }
-tower = { workspace = true, features = ["retry"] }
+tower = { workspace = true, features = ["retry", "timeout"] }
 tower-http = { workspace = true, features = ["cors"] }
 typenum = { workspace = true }
 unicode-segmentation = "1.12.0"
@@ -47,6 +47,7 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 [dev-dependencies]
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
+tower-http = { workspace = true, features = ["set-header"] }
 
 [features]
 default = []

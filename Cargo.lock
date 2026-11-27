@@ -3764,6 +3764,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -7869,15 +7870,11 @@ dependencies = [
 [[package]]
 name = "tower-gcra"
 version = "0.0.1"
-source = "git+https://github.com/sp1ff/tower-gcra.git#969efc8c062e27839161617f5c3e2a73a414c560"
+source = "git+https://github.com/sp1ff/tower-gcra.git#2dd6792572f2a631fbd5665c320bcf790623a36f"
 dependencies = [
- "bytes",
  "dashmap",
- "either",
- "futures",
  "futures-timer",
  "governor",
- "nonzero",
  "pin-project-lite",
  "tower",
 ]

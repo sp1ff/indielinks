@@ -36,38 +36,13 @@
 //! erased the type altogether. This, unfortunately, means imposing a number of additional
 //! contraints on the generic parameters to `make_client()`.
 
-use std::{convert::Infallible, error::Error as StdError, fmt};
-
 use bytes::Bytes;
+use indielinks_shared::service::BoxedError;
 use tower::util::BoxCloneSyncService;
-use tower_gcra::keyed::KeyExtractor;
-
-#[derive(Debug)]
-pub struct BoxedError(pub Box<dyn std::error::Error + Send + Sync + 'static>);
-
-impl fmt::Display for BoxedError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl StdError for BoxedError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        self.0.source()
-    }
-}
-
-/// The `Error` type returned by our HTTP client [Service](tower::Service)
-pub type GenericClientErrorType<KE> =
-    either::Either<<KE as KeyExtractor<http::Request<Bytes>>>::Error, BoxedError>;
 
 /// Our type-erased HTTP client
-pub type GenericClientType<KE> =
-    BoxCloneSyncService<http::Request<Bytes>, http::Response<Bytes>, GenericClientErrorType<KE>>;
+pub type GenericClientType =
+    BoxCloneSyncService<http::Request<Bytes>, http::Response<Bytes>, BoxedError>;
 
 /// Our concrete HTTP client type
-pub type ClientType = BoxCloneSyncService<
-    http::Request<Bytes>,
-    http::Response<Bytes>,
-    either::Either<Infallible, BoxedError>,
->;
+pub type ClientType = BoxCloneSyncService<http::Request<Bytes>, http::Response<Bytes>, BoxedError>;

@@ -27,6 +27,7 @@ use std::{
 use futures::{stream::iter, StreamExt};
 use indielinks_shared::{
     api::PostAddReq, entities::Tagname, nonempty_string::NonEmptyString, origin::Origin,
+    service::BoxedError,
 };
 use itertools::Itertools;
 use secrecy::SecretString;
@@ -138,7 +139,7 @@ where
     C: Service<
             http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = indielinks_shared::service::Error,
+            Error = BoxedError,
         > + Clone,
     P: AsRef<Path>,
     I: Iterator<Item = &'a Tagname>,

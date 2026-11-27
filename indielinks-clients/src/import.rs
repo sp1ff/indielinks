@@ -15,7 +15,7 @@
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use http::{header::AUTHORIZATION, Method, Request};
-use indielinks_shared::{api::PostAddReq, origin::Origin};
+use indielinks_shared::{api::PostAddReq, origin::Origin, service::BoxedError};
 use secrecy::SecretString;
 use snafu::{Backtrace, ResultExt, Snafu};
 use tower::{Service, ServiceExt};
@@ -31,18 +31,14 @@ use crate::service::RequestBody;
 #[non_exhaustive]
 pub enum Error {
     #[snafu(display("failed to invoke the client Service"))]
-    Call {
-        source: indielinks_shared::service::Error,
-    },
+    Call { source: BoxedError },
     #[snafu(display("failed response from the `/posts/add` endpoint: {status}"))]
     Failure {
         status: http::StatusCode,
         backtrace: Backtrace,
     },
     #[snafu(display("the client Service failed to become ready"))]
-    Ready {
-        source: indielinks_shared::service::Error,
-    },
+    Ready { source: BoxedError },
     #[snafu(display("failed to build an HTTP request"))]
     Request {
         source: http::Error,
@@ -74,7 +70,7 @@ where
     C: Service<
             http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = indielinks_shared::service::Error,
+            Error = BoxedError,
         > + Clone,
 {
     use secrecy::ExposeSecret;
@@ -117,7 +113,7 @@ where
     C: Service<
             http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = indielinks_shared::service::Error,
+            Error = BoxedError, /*indielinks_shared::service::Error*/
         > + Clone,
     I: Iterator<Item = PostAddReq>,
 {
