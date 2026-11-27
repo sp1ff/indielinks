@@ -71,10 +71,11 @@ use serde::Deserialize;
 use snafu::{Backtrace, IntoError, Snafu};
 #[cfg(feature = "backend")]
 use snafu::{OptionExt, ResultExt};
-use tower::{Service, retry::backoff::Backoff};
+use tower::{Service, retry::backoff::Backoff, timeout::error::Elapsed};
 
 use std::{
     error::Error as StdError,
+    fmt,
     future::Future,
     ops::Deref,
     pin::Pin,
@@ -131,6 +132,25 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 type StdResult<T, E> = std::result::Result<T, E>;
+
+/// A boxed error type that actuall implements `Error`
+///
+/// tower recommends having your middleware layers return a boxed error; unfortunately, `Box<dyn
+/// Error...>` doesn't actuall implement `Error` (!) This is a newtype that does so.
+#[derive(Debug)]
+pub struct BoxedError(pub Box<dyn std::error::Error + Send + Sync + 'static>);
+
+impl fmt::Display for BoxedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl StdError for BoxedError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.0.source()
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //                                         ReqwestService                                         //
@@ -373,9 +393,22 @@ pub struct ExponentialBackoffPolicy {
     pub num_attempts: usize,
 }
 
-impl<Req: Clone, Res: std::fmt::Debug + RetryableResponse, E>
-    tower::retry::Policy<Req, Res, /*indielinks_shared::service::Error*/ E>
-    for ExponentialBackoffPolicy
+impl ExponentialBackoffPolicy {
+    fn next(
+        &mut self,
+    ) -> Option<<tower::retry::backoff::ExponentialBackoff as tower::retry::backoff::Backoff>::Future>
+    {
+        if self.num_attempts > 0 {
+            self.num_attempts -= 1;
+            Some(self.backoff.next_backoff())
+        } else {
+            None
+        }
+    }
+}
+
+impl<Request: Clone, Response: std::fmt::Debug + RetryableResponse>
+    tower::retry::Policy<Request, Response, BoxedError> for ExponentialBackoffPolicy
 {
     type Future =
         <tower::retry::backoff::ExponentialBackoff as tower::retry::backoff::Backoff>::Future;
@@ -385,25 +418,17 @@ impl<Req: Clone, Res: std::fmt::Debug + RetryableResponse, E>
     // future resolves (I guess).
     fn retry(
         &mut self,
-        _: &mut Req,
-        result: &mut std::result::Result<Res, E>,
+        _: &mut Request,
+        result: &mut StdResult<Response, BoxedError>,
     ) -> Option<Self::Future> {
         match result {
-            Ok(res) if res.is_retryable() => {
-                if self.num_attempts > 0 {
-                    self.num_attempts -= 1;
-                    Some(self.backoff.next_backoff())
-                } else {
-                    None
-                }
-            }
-            // I'd love to catch a timeout error, but, unfortunately, the `TimeoutLayer` we actually
-            // use in our stack erases the error type.
+            Ok(res) if res.is_retryable() => self.next(),
+            Err(err) if err.0.downcast_ref::<Elapsed>().is_some() => self.next(),
             _ => None,
         }
     }
 
-    fn clone_request(&mut self, req: &Req) -> Option<Req> {
+    fn clone_request(&mut self, req: &Request) -> Option<Request> {
         Some(req.clone())
     }
 }
@@ -560,8 +585,15 @@ impl Default for ExponentialBackoffParameters {
 
 #[cfg(test)]
 mod tests {
-    use tower::retry::Policy;
+    use std::convert::Infallible;
+    use std::future::pending;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use tower::retry::backoff::{ExponentialBackoffMaker, MakeBackoff};
+    use tower::retry::{Policy, RetryLayer};
+    use tower::timeout::TimeoutLayer;
+    use tower::{ServiceBuilder, ServiceExt, service_fn};
 
     use super::*;
 
@@ -607,10 +639,7 @@ mod tests {
     async fn retries_on_retryable_response_when_attempts_remain() {
         let mut p = policy(2);
         let mut req = ();
-        assert!(
-            p.retry(&mut req, &mut Ok::<_, &str>(response(503)))
-                .is_some()
-        );
+        assert!(p.retry(&mut req, &mut Ok::<_, _>(response(503))).is_some());
         assert_eq!(p.num_attempts, 1);
     }
 
@@ -618,29 +647,47 @@ mod tests {
     fn no_retry_when_attempts_exhausted() {
         let mut p = policy(0);
         let mut req = ();
-        assert!(
-            p.retry(&mut req, &mut Ok::<_, &str>(response(503)))
-                .is_none()
-        );
+        assert!(p.retry(&mut req, &mut Ok::<_, _>(response(503))).is_none());
     }
 
     #[test]
     fn no_retry_on_success_response() {
         let mut p = policy(3);
         let mut req = ();
-        assert!(
-            p.retry(&mut req, &mut Ok::<_, &str>(response(200)))
-                .is_none()
-        );
+        assert!(p.retry(&mut req, &mut Ok::<_, _>(response(200))).is_none());
     }
 
-    #[test]
-    fn no_retry_on_error() {
-        let mut p = policy(3);
-        let mut req = ();
-        assert!(
-            p.retry(&mut req, &mut Err::<http::Response<()>, &str>("oops"))
-                .is_none()
-        );
+    impl RetryableResponse for () {
+        fn is_retryable(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_on_timeout_in_stack() {
+        let num_calls = Arc::new(AtomicUsize::new(0));
+
+        let mut service = ServiceBuilder::new()
+            .layer(RetryLayer::new(policy(2)))
+            .map_err(BoxedError)
+            .layer(TimeoutLayer::new(Duration::from_millis(50)))
+            .service(service_fn({
+                let counter = Arc::clone(&num_calls);
+                move |_: ()| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    pending::<StdResult<(), Infallible>>()
+                }
+            }));
+
+        service
+            .ready()
+            .await
+            .expect("service should be ready")
+            .call(())
+            .await
+            .expect_err("service should fail due to repeated timeouts");
+
+        // ...but we should have tried three times.
+        assert_eq!(num_calls.load(Ordering::SeqCst), 3);
     }
 }

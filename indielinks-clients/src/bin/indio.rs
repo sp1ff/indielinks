@@ -32,6 +32,7 @@ use std::{
     num::NonZero,
     path::PathBuf,
     result::Result as StdResult,
+    time::{self, Duration},
 };
 
 use clap::{
@@ -59,7 +60,7 @@ use indielinks_shared::{
 
 use indielinks_clients::{
     add_user::add_user,
-    client::make_indielinks_client,
+    client::{make_indielinks_client, Configuration as ClientConfiguration},
     raft_logs::{clean_dynamodb_raft_logs, clean_scylla_raft_logs},
 };
 
@@ -172,6 +173,31 @@ static USER_AGENT: HeaderValue = HeaderValue::from_static(concat!(
 //                                         configuration                                          //
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct BackoffParameters {
+    // the minimum backoff time when retrying
+    min_backoff: time::Duration,
+    // the maximum backoff time when retrying
+    max_backoff: time::Duration,
+    // jitter introduced into the exponential progression; must be in [0, 100]
+    backoff_jitter: f64,
+    // the maximum number of retries to be attempted (so the total number of requests will be this
+    // value plus one)
+    num_retry_attempts: usize,
+}
+
+impl Default for BackoffParameters {
+    fn default() -> Self {
+        Self {
+            min_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(5),
+            backoff_jitter: 10.0,
+            num_retry_attempts: 3,
+        }
+    }
+}
+
 // This is perhaps overly ornate, but I'm trying to incorporate hard-won lessons in how to evolve
 // file formats. To begin with I define a series of classes whose only point is to represent
 // configuration file formats.
@@ -188,6 +214,8 @@ struct ConfigurationRepr1 {
     public_api: Option<Origin>,
     ops_api: Option<Origin>,
     requests_per_minute: Option<NonZero<u32>>,
+    request_timeout: Option<time::Duration>,
+    backoff: Option<BackoffParameters>,
 }
 
 /// A unified configuration representation.
@@ -219,6 +247,8 @@ struct Configuration {
     public_api: Origin,
     ops_api: Origin,
     requests_per_minute: NonZero<u32>,
+    request_timeout: time::Duration,
+    backoff: BackoffParameters,
 }
 
 impl Configuration {
@@ -242,8 +272,13 @@ impl Configuration {
                     .or(from_file.ops_api)
                     .ok_or(MissingOpsApiSnafu.build())?,
                 requests_per_minute: from_file.requests_per_minute.unwrap_or(nonzero!(120u32)),
+                request_timeout: from_file.request_timeout.unwrap_or(Duration::from_secs(3)),
+                backoff: from_file.backoff.unwrap_or_default(),
             },
         })
+    }
+    pub fn backoff_parameters(&self) -> &BackoffParameters {
+        &self.backoff
     }
     pub fn ops_api(&self) -> &Origin {
         &self.ops_api
@@ -251,11 +286,28 @@ impl Configuration {
     pub fn public_api(&self) -> &Origin {
         &self.public_api
     }
+    pub fn request_timeout(&self) -> &Duration {
+        &self.request_timeout
+    }
     pub fn requests_per_minute(&self) -> NonZero<u32> {
         self.requests_per_minute
     }
     pub fn token(&self) -> Option<&SecretString> {
         self.token.as_ref()
+    }
+}
+
+impl From<&Configuration> for ClientConfiguration {
+    fn from(value: &Configuration) -> Self {
+        let backoff_parameters = value.backoff_parameters();
+        Self {
+            min_backoff: backoff_parameters.min_backoff,
+            max_backoff: backoff_parameters.max_backoff,
+            backoff_jitter: backoff_parameters.backoff_jitter,
+            num_retry_attempts: backoff_parameters.num_retry_attempts,
+            requests_per_minute: value.requests_per_minute(),
+            request_timeout: *value.request_timeout(),
+        }
     }
 }
 
@@ -538,10 +590,11 @@ async fn main() -> Result<()> {
                 public_api,
             )?;
 
+            let client_configuration = ClientConfiguration::from(&configuration);
             let client = make_indielinks_client(
                 USER_AGENT.clone(),
                 configuration.token(),
-                Some(configuration.requests_per_minute()),
+                Some(&client_configuration),
             )
             .context(ClientSnafu)?;
 

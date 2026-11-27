@@ -24,6 +24,7 @@ use url::Url;
 
 use indielinks_shared::{
     api::PostAddReq, entities::Tagname, nonempty_string::NonEmptyString, origin::Origin,
+    service::BoxedError,
 };
 
 use crate::service::RequestBody;
@@ -32,13 +33,9 @@ use crate::service::RequestBody;
 #[non_exhaustive]
 pub enum Error {
     #[snafu(display("failed to invoke the client Service"))]
-    Call {
-        source: indielinks_shared::service::Error,
-    },
+    Call { source: BoxedError },
     #[snafu(display("the client Service failed to become ready"))]
-    Ready {
-        source: indielinks_shared::service::Error,
-    },
+    Ready { source: BoxedError },
     #[snafu(display("failed to build an HTTP request"))]
     Request {
         source: http::Error,
@@ -83,7 +80,7 @@ where
     C: Service<
             http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = indielinks_shared::service::Error,
+            Error = BoxedError,
         > + Clone,
     I: Iterator<Item = &'a Tagname>,
 {

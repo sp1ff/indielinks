@@ -54,13 +54,15 @@ use tower_http::set_header::SetRequestHeaderLayer;
 use indielinks_shared::{
     entities::{UserPrivateKey, Username},
     origin::{NetLoc, Origin},
-    service::{Body, ExponentialBackoffParameters, ExponentialBackoffPolicy, ReqwestServiceLayer},
+    service::{
+        Body, BoxedError, ExponentialBackoffParameters, ExponentialBackoffPolicy,
+        ReqwestServiceLayer,
+    },
 };
 
 use crate::{
     ap_entities::{make_instance_actor_key_id, make_key_id},
     authn::{compute_signature, AddSha256DigestIfNotPresentLayer},
-    client_types::BoxedError,
     entities::User,
     http::InstrumentedLayer,
 };
@@ -177,7 +179,7 @@ pub fn make_client<KE, S, C, MW>(
     rate_limiter: RateLimiter<<KE as KeyExtractor<Request<Bytes>>>::Key, S, C, MW>,
     backoff_parameters: &ExponentialBackoffParameters,
     timeout: Duration,
-) -> Result<crate::client_types::GenericClientType<KE>>
+) -> Result<crate::client_types::GenericClientType>
 where
     KE: KeyExtractor<Request<Bytes>> + Clone + Send + Sync + 'static,
     <KE as KeyExtractor<Request<Bytes>>>::Key: Clone + Eq + Hash + Send + Sync + 'static,
@@ -228,6 +230,7 @@ where
         // | | | | | | | | | | +--       Reqwest layer       --+ | | | | | | | | | |
         // | | | | | | | | | | |                               | | | | | | | | | | |
         // | | | | | | | | | | |           remote              | | | | | | | | | | |
+        // | | | | | | | | | | |                               | | | | | | | | | | |
         // | | | | | | | | | | +->      Reqwest layer        <-+ | | | | | | | | | |
         // | | | | | | | | | +--->      instrumentation      <---+ | | | | | | | | |
         // | | | | | | | | +----->        timeout layer      <-----+ | | | | | | | |
@@ -266,6 +269,7 @@ where
         // I want to make this configurable, but at the time of this writing, I'm rewiring the
         // configuration system in another worktree, so I don't want to touch that, now. Pick a
         // sensible default & come back to it.
+        .map_err(BoxedError)
         .layer(GovernorLayer::new_with_limiter(key_extractor, rate_limiter))
         // `TimeoutLayer` regrettably erases the type of any error it may return; that is, it's
         // associated `Error` type is `Box<dyn StdError...>`. This brings-up good ol'
@@ -279,7 +283,7 @@ where
         .layer(ReqwestServiceLayer::new(Body))
         .service(reqwest::Client::new());
 
-    Ok(crate::client_types::GenericClientType::<KE>::new(service))
+    Ok(crate::client_types::GenericClientType::new(service))
 }
 
 #[cfg(test)]

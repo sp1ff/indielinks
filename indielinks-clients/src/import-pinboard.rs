@@ -33,6 +33,7 @@ use url::Url;
 
 use indielinks_shared::{
     api::PostAddReq, entities::Tagname, nonempty_string::NonEmptyString, origin::Origin,
+    service::BoxedError,
 };
 
 use crate::{import::import_posts, service::RequestBody};
@@ -378,7 +379,7 @@ where
     C: Service<
             http::Request<RequestBody>,
             Response = http::Response<bytes::Bytes>,
-            Error = indielinks_shared::service::Error,
+            Error = BoxedError,
         > + Clone,
     P: AsRef<Path>,
 {

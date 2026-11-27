@@ -1,5 +1,10 @@
 indielinks NEWS -- history of user-visible changes       -*- outline -*-
 
+* UNRELEASED
+
+** User-visible changes
+
+*** indielinks client requests that timeout will now be retried
 * 0.0.12
 
 ** User-visible changes
