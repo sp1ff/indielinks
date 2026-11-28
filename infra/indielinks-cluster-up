@@ -176,6 +176,10 @@ function hc() {
                 echo
                 echo "and, finally, the daemon log file itself:"
                 [[ -f "${local_state_dir}/indielinksd.log" ]] && cat "${local_state_dir}/indielinksd.log"
+                echo
+                lsof "$CARGO_HOME/.package-cache"
+                echo
+                ps -ef --forest | grep cargo
             fi
             return "1"
         fi
